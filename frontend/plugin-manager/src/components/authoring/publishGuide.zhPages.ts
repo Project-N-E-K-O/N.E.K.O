@@ -58,10 +58,10 @@ export const zhPages: Record<PublishPageId, PageGuide> = {
           '装了 gh 并已登录的话，直接点下面的「创建 GitHub 仓库」，会在你的账号下创建一个公开仓库并自动关联。没装 gh 时，按提示在 github.com 网页上新建一个空仓库（不要勾选添加 README），再把下面命令里的地址换成你的仓库地址：',
         ],
         commands: [
-          { label: '已有目录尚未初始化 Git 时', command: 'git init -b {branch}', fillIn: 'branch' },
+          { label: '已有目录尚未初始化 Git 时', command: 'git init -b {branch}', note: 'branch' },
           { label: '首次提交', command: 'git add .\ngit commit -m "Initial plugin"' },
           { label: '关联 GitHub 仓库', command: 'git remote add origin https://github.com/你的用户名/n.e.k.o_plugin_{pluginId}.git' },
-          { label: '第一次上传', command: '{firstPush}', fillIn: 'firstPush' },
+          { label: '第一次上传', command: 'git push -u origin HEAD' },
         ],
       },
       {
@@ -80,12 +80,12 @@ export const zhPages: Record<PublishPageId, PageGuide> = {
         steps: [
           '"有未提交的改动"：说明有文件改过但没提交，按上面三步操作。若某些文件不该上传（如临时文件、密钥），把它们写进 .gitignore 文件。',
           '"HEAD 还没推送"：已提交但没上传，运行 git push。',
-          '"分支没有上游"：第一次上传要用 {firstPush}。',
+          '"分支没有上游"：第一次上传要用 git push -u origin HEAD。',
           '"release.yml 不是最新"：在 N.E.K.O 源码目录运行下面的命令，然后提交并上传。',
           '"仓库不是公开的"：打开 GitHub 仓库页面 → Settings → 最下方 Danger Zone → Change visibility → Public。',
         ],
         commands: [
-          { label: '更新 release.yml', command: 'uv run neko-plugin setup-repo {dirArg} --upgrade-github-actions', fillIn: 'dirArg' },
+          { label: '更新 release.yml', command: 'uv run neko-plugin setup-repo {dirArg} --upgrade-github-actions', note: 'dirArg' },
         ],
       },
     ],

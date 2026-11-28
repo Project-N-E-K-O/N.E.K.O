@@ -128,21 +128,13 @@ export interface PublishRepositoryState {
   /** True only when the upstream is origin/<branch> and equals HEAD; null without HEAD, upstream or branch. */
   head_pushed: boolean | null
   /**
-   * The git push that gets HEAD to its origin branch, quoted for the shell; null
-   * when no push is due. Shows a placeholder when no quoting keeps the branch
-   * literal, and never holds the raw name then.
+   * The git push that gets HEAD to its origin branch, quoted for the shell (HEAD
+   * stands for the branch); null when no push is due, or when the origin branch
+   * name cannot be quoted literally.
    */
   push_command: string | null
-  /** What the placeholder of `push_command` stands for; shown as text, not pasted. */
-  push_fill_in: { placeholder: string; value: string } | null
-  /** The branch quoted as one shell argument (`git init -b`), or a placeholder. */
+  /** The branch quoted as one shell argument (`git init -b`); null without a branch or when no quoting keeps it literal. */
   branch_argument: string | null
-  /** What the placeholder of `branch_argument` stands for. */
-  branch_fill_in: { placeholder: string; value: string } | null
-  /** `git push -u origin <branch>` quoted like `push_command`, whether or not a push is due. */
-  set_upstream_command: string | null
-  /** What the placeholder of `set_upstream_command` stands for. */
-  set_upstream_fill_in: { placeholder: string; value: string } | null
   /** Same definition as the CLI publish gate. */
   worktree_clean: boolean | null
   /** The first changed paths when the worktree is not clean. */
@@ -179,10 +171,8 @@ export interface PublishStatus {
   /** Standard GitHub Actions files keyed by path. */
   actions: Record<string, 'ADD' | 'CURRENT' | 'UPGRADE' | 'CONFLICT'>
   remote: PublishRemoteState | null
-  /** The plugin directory quoted as one shell argument, or a placeholder. */
-  plugin_dir_argument: string
-  /** What the placeholder of `plugin_dir_argument` stands for. */
-  plugin_dir_fill_in: { placeholder: string; value: string } | null
+  /** The plugin directory quoted as one shell argument; null when no quoting keeps it literal. */
+  plugin_dir_argument: string | null
   /** Recent commits and uncommitted changes; null without the plugin's own repository. */
   workspace: WorkspaceLog | null
 }

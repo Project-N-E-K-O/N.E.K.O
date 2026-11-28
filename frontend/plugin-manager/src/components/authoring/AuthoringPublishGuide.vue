@@ -18,7 +18,7 @@
             :key="`c${index}`"
             :label="item.label ? fill(item.label) : undefined"
             :command="fill(item.command)"
-            :note="fillInNote(item.fillIn)"
+            :note="unsafeNote(item.note)"
           />
           <p v-if="section.links?.length" class="authoring-guide__links">
             <a
@@ -40,7 +40,7 @@ import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Reading } from '@element-plus/icons-vue'
 import AuthoringGuideCommand from '@/components/authoring/AuthoringGuideCommand.vue'
-import { fillGuide, publishGuide, type GuideFillInId, type GuideParams } from '@/components/authoring/publishGuide'
+import { fillGuide, publishGuide, type GuideNoteId, type GuideParams } from '@/components/authoring/publishGuide'
 import type { PublishPageId } from '@/components/authoring/publishFlow'
 import { openExternalUrl } from '@/utils/openExternal'
 
@@ -53,12 +53,10 @@ const { locale, t } = useI18n()
 const guide = computed(() => publishGuide(locale.value))
 const page = computed(() => guide.value.pages[props.pageId])
 const fill = (text: string) => fillGuide(text, props.params)
-/** Names the value of a placeholder the command shows, apart from the copied command. */
-function fillInNote(id: GuideFillInId | undefined) {
-  const fillIn = id ? props.params.fillIns?.[id] : undefined
-  return fillIn
-    ? t('authoring.publishRepoPushFillIn', { placeholder: fillIn.placeholder, value: fillIn.value })
-    : undefined
+const UNSAFE_NOTES = { branch: 'publishGuideBranchUnsafe', dirArg: 'publishGuideDirUnsafe' } as const
+/** Asks to rename a value no quoting keeps literal; the raw value is never offered for pasting. */
+function unsafeNote(id: GuideNoteId | undefined) {
+  return id && props.params.unsafe?.[id] ? t(`authoring.${UNSAFE_NOTES[id]}`) : undefined
 }
 </script>
 

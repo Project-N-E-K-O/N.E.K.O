@@ -68,11 +68,6 @@ def test_fresh_is_passed_through_to_the_remote_read(monkeypatch, tmp_path):
     assert result["repository"]["dirty_paths"] == ("notes.txt",)
     assert result["repository"]["detached"] is False
     # The page shows the server's quoted push command rather than building one.
-    assert result["repository"]["push_command"] == "git push -u origin refs/heads/main"
-    assert result["repository"]["push_fill_in"] is None
+    assert result["repository"]["push_command"] == "git push -u origin HEAD"
     assert result["repository"]["branch_argument"] == "main"
-    assert result["repository"]["branch_fill_in"] is None
-    assert result["repository"]["set_upstream_fill_in"] is None
     assert isinstance(result["plugin_dir_argument"], str)
-    assert "plugin_dir_fill_in" in result
-    assert result["repository"]["set_upstream_command"] == "git push -u origin refs/heads/main"

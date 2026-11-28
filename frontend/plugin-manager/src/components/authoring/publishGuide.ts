@@ -5,8 +5,8 @@
  *
  * Written in full in Simplified Chinese and English; every other locale shows
  * the English guide. Text may hold `{repo}`, `{tag}`, `{version}`, `{branch}`,
- * `{firstPush}`, `{pluginId}` and `{dirArg}`, filled from the project's publish
- * status; `{branch}`, `{firstPush}` and `{dirArg}` come quoted for the shell.
+ * `{pluginId}` and `{dirArg}`, filled from the project's publish status;
+ * `{branch}` and `{dirArg}` come quoted for the shell.
  */
 import type { PublishPageId, ToolId } from '@/components/authoring/publishFlow'
 import { enUS } from '@/components/authoring/publishGuide.en'
@@ -16,8 +16,8 @@ export interface GuideCommand {
   /** What the command does, shown above it. */
   label?: string
   command: string
-  /** The value whose placeholder the command may show, named below it then. */
-  fillIn?: GuideFillInId
+  /** The value the command holds; when no quoting keeps it literal, a note below asks to rename it. */
+  note?: GuideNoteId
 }
 
 export interface GuideSection {
@@ -64,24 +64,17 @@ export interface PublishGuide {
   tools: Record<ToolId, ToolGuide>
 }
 
-export type GuideFillInId = 'branch' | 'firstPush' | 'dirArg'
+export type GuideNoteId = 'branch' | 'dirArg'
 
-export interface GuideFillIn {
-  placeholder: string
-  value: string
-}
-
-export type GuideParams = Partial<
-  Record<'repo' | 'tag' | 'version' | 'branch' | 'firstPush' | 'pluginId' | 'dirArg', string>
-> & {
-  /** What a placeholder in `{branch}`, `{firstPush}` or `{dirArg}` stands for; shown as text, never pasted. */
-  fillIns?: Partial<Record<GuideFillInId, GuideFillIn>>
+export type GuideParams = Partial<Record<'repo' | 'tag' | 'version' | 'branch' | 'pluginId' | 'dirArg', string>> & {
+  /** Values no quoting keeps literal: the command shows a stand-in, never the raw value. */
+  unsafe?: Partial<Record<GuideNoteId, boolean>>
 }
 
 /** Fill `{name}` placeholders; an unknown or empty value keeps a readable placeholder. */
 export function fillGuide(text: string, params: GuideParams): string {
   return text.replace(/\{(\w+)\}/g, (whole, name: string) => {
-    const value = params[name as Exclude<keyof GuideParams, 'fillIns'>]
+    const value = params[name as Exclude<keyof GuideParams, 'unsafe'>]
     return typeof value === 'string' && value ? value : whole.replace(/[{}]/g, '').replace(/^/, '<').replace(/$/, '>')
   })
 }

@@ -11,7 +11,7 @@ import asyncio
 import time
 from dataclasses import asdict
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, NamedTuple, TypedDict
+from typing import Literal, NamedTuple, TypedDict
 from urllib.parse import quote
 
 from plugin.neko_plugin_cli.core.plugin_source import load_plugin_source
@@ -29,9 +29,6 @@ from plugin.utils.github_release import (
     workflow_run_state as _run_state,
 )
 from plugin.utils.http_imports import ensure_httpx
-
-if TYPE_CHECKING:
-    from plugin.neko_plugin_cli.commands.release_cmd import PushHint
 
 _GITHUB_API = "https://api.github.com"
 _CACHE_SECONDS = 60.0
@@ -85,72 +82,59 @@ class LocalStatus(NamedTuple):
     actions: dict[str, str]
 
 
-def push_hint(state: RepoState) -> PushHint | None:
-    """The git push that gets HEAD to its origin branch, None when none is due.
+def push_command(state: RepoState) -> str | None:
+    """The git push the publish page shows to get HEAD to its origin branch.
 
-    Quoted as the CLI prints it; ``fill_in`` names the value of a placeholder.
+    None when no push is due, or when the only push names an origin branch
+    no quoting keeps literal; the page then asks for a plainer name. HEAD
+    stands for the local branch, so its name is never typed: a value that
+    cannot be quoted would run when pasted, and no placeholder is offered
+    for the user to fill it in by hand.
     """
-    from plugin.neko_plugin_cli.commands.release_cmd import _push_hint
+    from plugin.neko_plugin_cli.commands.release_cmd import _shell_argument
 
     if not state.branch or state.head is None or state.head_pushed is True:
         return None
     remote, _, remote_branch = (state.upstream or "").partition("/")
-    if remote == "origin" and remote_branch:
-        # Named in full: a bare git push is refused for a differently named
-        # upstream under push.default=simple.
-        return _push_hint(state.branch, remote_branch)
-    return _push_hint(state.branch)
+    if remote != "origin" or not remote_branch:
+        return "git push -u origin HEAD"
+    if remote_branch == state.branch:
+        return "git push origin HEAD"
+    # Named in full: a bare git push is refused for a differently named
+    # upstream under push.default=simple, and refs/heads/ keeps a tag of
+    # the same name from making it ambiguous.
+    refspec = f"HEAD:refs/heads/{remote_branch}"
+    argument = _shell_argument(refspec, "")
+    return f"git push origin {argument}" if argument else None
 
 
-def _fill_in(placeholder: str, value: str | None) -> dict[str, str] | None:
-    return {"placeholder": placeholder.strip('"'), "value": value} if value is not None else None
+def _literal_argument(value: str) -> str | None:
+    """``value`` as one shell argument, None when no quoting keeps it literal."""
+    from plugin.neko_plugin_cli.commands.release_cmd import _shell_argument
+
+    return _shell_argument(value, "") or None
 
 
 def repository_status(state: RepoState) -> dict[str, object]:
     """``state`` plus the quoted commands the publish page shows for it.
 
-    A placeholder's value travels in its own ``*_fill_in`` field, never inside
-    a command: a value that cannot be quoted for the user's shell would run
-    when pasted.
+    A value no quoting keeps literal is None rather than a placeholder with
+    the raw value beside it, which a user would paste in bare.
     """
-    from plugin.neko_plugin_cli.commands.release_cmd import (
-        _BRANCH_PLACEHOLDER,
-        _push_hint,
-        _shell_argument,
-    )
-
-    due = push_hint(state)
-    first_push = _push_hint(state.branch) if state.branch else None
-    branch_argument = _shell_argument(state.branch, _BRANCH_PLACEHOLDER) if state.branch else None
     return {
         **asdict(state),
-        "push_command": due.command if due else None,
-        "push_fill_in": _fill_in(due.placeholder, due.fill_in) if due else None,
-        "branch_argument": branch_argument,
-        "branch_fill_in": (
-            _fill_in(_BRANCH_PLACEHOLDER, state.branch) if branch_argument == _BRANCH_PLACEHOLDER else None
-        ),
-        "set_upstream_command": first_push.command if first_push else None,
-        "set_upstream_fill_in": _fill_in(first_push.placeholder, first_push.fill_in) if first_push else None,
+        "push_command": push_command(state),
+        "branch_argument": _literal_argument(state.branch) if state.branch else None,
     }
 
 
 def plugin_dir_status(source_dir: Path) -> dict[str, object]:
-    """The plugin directory as one quoted argument, for the guide's setup-repo command.
+    """The plugin directory as one quoted argument for the guide's setup-repo command.
 
-    Like the gate's own hint: a placeholder when no quoting keeps the path
-    literal, its value in ``plugin_dir_fill_in``.
+    None when no quoting keeps the path literal: the guide then asks to move
+    or rename the folder.
     """
-    from plugin.neko_plugin_cli.commands.release_cmd import (
-        _PLUGIN_DIR_PLACEHOLDER,
-        _placeholder_path,
-        _plugin_dir_argument,
-    )
-
-    return {
-        "plugin_dir_argument": _plugin_dir_argument(source_dir, ""),
-        "plugin_dir_fill_in": _fill_in(_PLUGIN_DIR_PLACEHOLDER, _placeholder_path(source_dir)),
-    }
+    return {"plugin_dir_argument": _literal_argument(str(source_dir))}
 
 
 def read_local_status(project_id: str) -> LocalStatus:

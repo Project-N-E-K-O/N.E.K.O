@@ -30,8 +30,6 @@ export type PublishStepState = 'done' | 'failed' | 'todo' | 'waiting' | 'unknown
 export interface FlowMessage {
   key: AuthoringMessageKey
   params?: Record<string, string | number>
-  /** A sentence shown after this one. */
-  then?: FlowMessage
 }
 
 export interface PublishStep {
@@ -158,21 +156,15 @@ function localRepositoryProblem(status: PublishStatus): FlowMessage | null {
   if (repo.detached) return message('publishRepoDetached')
   if (repo.head_pushed !== true) {
     const branch = repo.branch ?? ''
-    // Quoted by the server for the shell, like the CLI's own hint; never
-    // built here. A server without the field gets the command-free text.
+    // Quoted by the server for the shell; never built here. None for an
+    // origin branch no quoting keeps literal: no command to paste then.
     const command = repo.push_command
-    if (!command) return message('publishRepoPushToOrigin')
-    const problem = !repo.upstream
-      ? message('publishRepoNoUpstream', { branch, command })
-      : !repo.upstream.startsWith('origin/')
-        ? message('publishRepoUpstreamNotOrigin', { upstream: repo.upstream, branch, command })
-        : message('publishRepoUnpushed', { command })
-    // The value of a placeholder goes in its own sentence, apart from the
-    // command the user copies: no quoting keeps it literal in their shell.
-    if (repo.push_fill_in) {
-      problem.then = message('publishRepoPushFillIn', { ...repo.push_fill_in })
+    if (!command) return message('publishRepoUpstreamUnsafe', { upstream: repo.upstream ?? '' })
+    if (!repo.upstream) return message('publishRepoNoUpstream', { branch, command })
+    if (!repo.upstream.startsWith('origin/')) {
+      return message('publishRepoUpstreamNotOrigin', { upstream: repo.upstream, branch, command })
     }
-    return problem
+    return message('publishRepoUnpushed', { command })
   }
   if (repo.tag_exists && repo.tag_at_head === false) {
     return message('publishRepoTagElsewhere', { tag: repo.tag })

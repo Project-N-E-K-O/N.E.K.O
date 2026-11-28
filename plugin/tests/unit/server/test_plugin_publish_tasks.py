@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import io
 import shlex
+import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -478,25 +480,21 @@ async def test_task_lookup_for_a_project_that_never_published(app, tmp_path):
             {"worktree_clean": False, "dirty_paths": ("helper.py", "notes.txt")},
             "uncommitted changes: helper.py, notes.txt",
         ),
-        ({"upstream": None, "head_pushed": None}, "run git push -u origin refs/heads/main"),
+        ({"upstream": None, "head_pushed": None}, "branch main has no upstream; run git push -u origin HEAD"),
         (
             {"branch": None, "upstream": None, "detached": True, "head_pushed": None},
             "HEAD is detached",
         ),
         ({"upstream": "fork/main", "head_pushed": False}, "tracks fork/main, which is not on origin"),
-        # The branch name is quoted like the CLI's push hint (POSIX quoting off Windows).
-        pytest.param(
-            {"branch": "feat;$(x)", "upstream": None, "head_pushed": None},
-            "run git push -u origin 'refs/heads/feat;$(x)'",
-            marks=pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell quoting"),
-        ),
-        # A leading + would make git force-push main instead.
-        ({"branch": "+main", "upstream": None, "head_pushed": None}, "run git push -u origin refs/heads/+main"),
-        ({"head_pushed": False}, "HEAD is not pushed to origin/main; run git push origin refs/heads/main"),
+        # HEAD stands for the branch: its name is never typed, so it needs no
+        # quoting, and a leading + cannot read as force.
+        ({"branch": "feat;$(x)", "upstream": None, "head_pushed": None}, "run git push -u origin HEAD"),
+        ({"branch": "+main", "upstream": None, "head_pushed": None}, "run git push -u origin HEAD"),
+        ({"head_pushed": False}, "HEAD is not pushed to origin/main; run git push origin HEAD"),
         # A bare git push is refused for a differently named upstream (push.default=simple).
         (
             {"branch": "feat", "upstream": "origin/main", "head_pushed": False},
-            "HEAD is not pushed to origin/main; run git push origin refs/heads/feat:refs/heads/main",
+            "HEAD is not pushed to origin/main; run git push origin HEAD:refs/heads/main",
         ),
         ({"tag_exists": True, "tag_at_head": False}, "tag v0.1.0 already points at another commit"),
     ],
@@ -509,75 +507,91 @@ def test_the_gate_names_what_publish_github_would_refuse(monkeypatch, tmp_path, 
     assert expected in caught.value.message
 
 
-def test_the_gate_names_a_plus_branch_behind_a_placeholder_as_its_refspec(monkeypatch, tmp_path):
+def test_the_gate_never_puts_an_unquotable_name_next_to_its_command(monkeypatch, tmp_path):
     from plugin.neko_plugin_cli.commands import release_cmd
 
     monkeypatch.setattr(release_cmd, "_WINDOWS_SHELL", True)
-    # Typed back in, a bare "+a%b" would force-push "a%b".
-    _ready_gate(monkeypatch, tmp_path, branch="+a%b", upstream=None, head_pushed=None)
+    # No Windows quoting keeps %PATH% literal; pasted bare, & would run calc.
+    _ready_gate(monkeypatch, tmp_path, branch="feat", upstream="origin/a%PATH%&calc&", head_pushed=False)
     with pytest.raises(ServerDomainError) as caught:
         tasks._local_gate("p", "github")
-    assert (
-        'run git push -u origin "<branch>". In that command, <branch> stands for: refs/heads/+a%b'
-    ) in caught.value.message
+    assert caught.value.message.endswith(
+        "HEAD is not pushed to origin/a%PATH%&calc&; push to an origin branch whose name a terminal can take literally"
+    )
 
 
 @pytest.mark.parametrize(
     ("state", "expected"),
     [
         ({}, None),
-        ({"head_pushed": None, "upstream": None}, "git push -u origin refs/heads/main"),
-        ({"head_pushed": False, "upstream": "fork/main"}, "git push -u origin refs/heads/main"),
-        ({"head_pushed": False, "upstream": "origin/feature/x"}, "git push origin refs/heads/main:refs/heads/feature/x"),
+        ({"head_pushed": None, "upstream": None}, "git push -u origin HEAD"),
+        ({"head_pushed": False, "upstream": "fork/main"}, "git push -u origin HEAD"),
+        ({"head_pushed": False}, "git push origin HEAD"),
+        ({"head_pushed": False, "upstream": "origin/feature/x"}, "git push origin HEAD:refs/heads/feature/x"),
         ({"head_pushed": None, "upstream": None, "detached": True, "branch": None}, None),
+        ({"head": None, "head_pushed": None}, None),
     ],
 )
 def test_the_status_carries_the_push_command_the_gate_names(state, expected):
     from plugin.neko_plugin_cli.repo_state import RepoState
     from plugin.server.application.plugin_publish_status import repository_status
 
-    repository = repository_status(RepoState(**{**_READY, **state}))
-    assert repository["push_command"] == expected
-    assert repository["push_fill_in"] is None
+    assert repository_status(RepoState(**{**_READY, **state}))["push_command"] == expected
 
 
-def test_the_status_keeps_an_unquotable_branch_out_of_the_push_command(monkeypatch):
+@pytest.mark.parametrize("windows", [True, False], ids=["windows", "posix"])
+@pytest.mark.parametrize("branch", ["$(calc)", "a%PATH%&calc&", 'a"&calc&"'])
+def test_the_status_never_holds_a_raw_name_a_shell_would_run(monkeypatch, windows, branch):
     from plugin.neko_plugin_cli.commands import release_cmd
     from plugin.neko_plugin_cli.repo_state import RepoState
     from plugin.server.application.plugin_publish_status import repository_status
 
-    monkeypatch.setattr(release_cmd, "_WINDOWS_SHELL", True)
-    # Pasted into cmd.exe, the raw name would run calc: no quoting keeps
-    # %PATH% literal, so the command shows a placeholder and the name travels
-    # in a field of its own.
-    branch = "feat%PATH%&calc&"
-    repository = repository_status(
-        RepoState(**{**_READY, "branch": branch, "upstream": "origin/" + branch, "head_pushed": False})
-    )
-    assert repository["push_command"] == 'git push origin "<branch>"'
-    assert repository["push_fill_in"] == {"placeholder": "<branch>", "value": f"refs/heads/{branch}"}
-    assert repository["branch_argument"] == '"<branch>"'
-    assert repository["branch_fill_in"] == {"placeholder": "<branch>", "value": branch}
-    assert repository["set_upstream_command"] == 'git push -u origin "<branch>"'
-    assert repository["set_upstream_fill_in"] == {"placeholder": "<branch>", "value": f"refs/heads/{branch}"}
-    for field in ("push_command", "branch_argument", "set_upstream_command"):
-        assert "calc" not in repository[field]
+    monkeypatch.setattr(release_cmd, "_WINDOWS_SHELL", windows)
+    same = repository_status(RepoState(**{**_READY, "branch": branch, "upstream": f"origin/{branch}", "head_pushed": False}))
+    assert same["push_command"] == "git push origin HEAD"
+    other = repository_status(RepoState(**{**_READY, "upstream": f"origin/{branch}", "head_pushed": False}))
+    if windows:
+        # Nothing keeps these literal in both cmd and PowerShell: no command
+        # and no placeholder to fill in by hand.
+        assert same["branch_argument"] is None
+        assert other["push_command"] is None
+    else:
+        assert same["branch_argument"] == shlex.quote(branch)
+        assert other["push_command"] == f"git push origin {shlex.quote(f'HEAD:refs/heads/{branch}')}"
+    assert not {"push_fill_in", "branch_fill_in", "set_upstream_command"} & same.keys()
+    assert repository_status(RepoState(**{**_READY, "branch": None, "detached": True}))["branch_argument"] is None
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell quoting")
-def test_the_status_quotes_the_branch_for_the_publish_guide():
-    from plugin.neko_plugin_cli.repo_state import RepoState
+@pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
+@pytest.mark.skipif(sys.platform == "win32", reason="runs the command in sh")
+def test_the_status_push_command_works_when_a_tag_has_the_branch_name(tmp_path):
+    from plugin.neko_plugin_cli.repo_state import read_repo_state
     from plugin.server.application.plugin_publish_status import repository_status
 
-    # The guide shows these even before the first commit (no HEAD yet).
-    repository = repository_status(RepoState(**{**_READY, "branch": "feat;$(x)", "head": None}))
-    assert repository["push_command"] is None
-    assert repository["push_fill_in"] is None
-    assert repository["branch_argument"] == "'feat;$(x)'"
-    assert repository["set_upstream_command"] == "git push -u origin 'refs/heads/feat;$(x)'"
-    assert repository["branch_fill_in"] is None
-    assert repository["set_upstream_fill_in"] is None
-    assert repository_status(RepoState(**{**_READY, "branch": None, "detached": True}))["branch_argument"] is None
+    def git(cwd, *args):
+        return subprocess.run(
+            ["git", "-c", "user.name=t", "-c", "user.email=t@example.com", *args],
+            cwd=cwd, check=True, capture_output=True, text=True,
+        ).stdout.strip()
+
+    git(tmp_path, "init", "-q", "--bare", "origin.git")
+    repo = tmp_path / "repo"
+    git(tmp_path, "init", "-q", "-b", "main", str(repo))
+    (repo / "plugin.toml").write_text("[plugin]\n", encoding="utf-8")
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "first")
+    git(repo, "remote", "add", "origin", str(tmp_path / "origin.git"))
+    # "git push -u origin main" fails here: src refspec main matches more than one.
+    git(repo, "tag", "main")
+    for upstream_setup in ([], ["push", "-q", "-u", "origin", "HEAD"]):
+        if upstream_setup:
+            git(repo, *upstream_setup)
+            git(repo, "commit", "-q", "--allow-empty", "-m", "second")
+        command = repository_status(read_repo_state(repo, version="0.1.0"))["push_command"]
+        assert command in {"git push -u origin HEAD", "git push origin HEAD"}
+        subprocess.run(["sh", "-c", command], cwd=repo, check=True, capture_output=True)
+        assert git(tmp_path / "origin.git", "rev-parse", "refs/heads/main") == git(repo, "rev-parse", "HEAD")
+    assert git(repo, "rev-parse", "--abbrev-ref", "main@{upstream}") == "origin/main"
 
 
 def test_the_gate_requires_the_current_release_workflow(monkeypatch, tmp_path):
@@ -588,20 +602,20 @@ def test_the_gate_requires_the_current_release_workflow(monkeypatch, tmp_path):
     assert "--upgrade-github-actions" in caught.value.message
 
 
-def test_the_release_workflow_hint_names_the_directory_behind_a_placeholder(monkeypatch, tmp_path):
+@pytest.mark.parametrize("name", ["%USERPROFILE%", "$(calc)"])
+def test_the_release_workflow_hint_never_shows_an_unquotable_directory(monkeypatch, tmp_path, name):
     from plugin.neko_plugin_cli.commands import release_cmd
 
     monkeypatch.setattr(release_cmd, "_WINDOWS_SHELL", True)
-    # No Windows quoting keeps %VAR% literal, so the command shows a placeholder.
-    source_dir = tmp_path / "%USERPROFILE%"
+    # No Windows quoting keeps %VAR% or $(...) literal: no command with the
+    # path, and no raw path to paste into one.
+    source_dir = tmp_path / name
     source_dir.mkdir()
     _ready_gate(monkeypatch, source_dir, actions={".github/workflows/release.yml": "UPGRADE"})
     with pytest.raises(ServerDomainError) as caught:
         tasks._local_gate("p", "github_and_market")
-    assert (
-        'run neko-plugin setup-repo "<plugin directory>" --upgrade-github-actions '
-        f"(plugin directory: {source_dir})"
-    ) in caught.value.message
+    assert "rename or move the folder" in caught.value.message
+    assert name not in caught.value.message
 
 
 def test_the_release_workflow_hint_quotes_the_source_directory(monkeypatch, tmp_path):
@@ -836,22 +850,19 @@ async def test_slow_spawn_does_not_block_polling_and_termination_reaps_the_child
     assert task.process is None
 
 
-def test_the_status_quotes_the_plugin_directory_for_the_guide(monkeypatch):
+@pytest.mark.parametrize("name", ["$(calc)", "a%PATH%&calc&"])
+def test_the_status_quotes_the_plugin_directory_for_the_guide(monkeypatch, name):
     from plugin.neko_plugin_cli.commands import release_cmd
     from plugin.server.application.plugin_publish_status import plugin_dir_status
 
-    # % and " in one name: no Windows quoting keeps it literal (and a " ends
-    # the quoting in cmd), so the guide shows a placeholder and the path
-    # travels apart from the command.
-    source_dir = Path("C:/work/%USERPROFILE%/a\"&calc&\"")
+    # PowerShell runs $(...) and cmd splits at &: no Windows quoting keeps
+    # these literal, so the guide gets no argument (and asks to move the
+    # folder) rather than a placeholder with the raw path beside it.
+    source_dir = Path("C:/work") / name
     monkeypatch.setattr(release_cmd, "_WINDOWS_SHELL", True)
-    status = plugin_dir_status(source_dir)
-    assert status["plugin_dir_argument"] == '"<plugin directory>"'
-    assert status["plugin_dir_fill_in"] == {"placeholder": "<plugin directory>", "value": str(source_dir)}
+    assert plugin_dir_status(source_dir) == {"plugin_dir_argument": None}
+    assert plugin_dir_status(Path("C:/work/demo")) == {"plugin_dir_argument": "C:/work/demo"}
 
-    # POSIX single quotes keep both characters literal: no placeholder.
+    # POSIX single quotes keep both literal.
     monkeypatch.setattr(release_cmd, "_WINDOWS_SHELL", False)
-    status = plugin_dir_status(source_dir)
-    assert status["plugin_dir_argument"] == shlex.quote(str(source_dir))
-    assert status["plugin_dir_fill_in"] is None
-    assert status["plugin_dir_argument"] != str(source_dir)
+    assert plugin_dir_status(source_dir) == {"plugin_dir_argument": shlex.quote(str(source_dir))}

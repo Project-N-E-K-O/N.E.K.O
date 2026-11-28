@@ -299,12 +299,7 @@ const pagerSteps = computed(() =>
       ]
     : []
 )
-const text = (message: FlowMessage): string => {
-  const sentence = t(`authoring.${message.key}`, message.params ?? {})
-  if (!message.then) return sentence
-  // No space after a full-width full stop (zh, ja).
-  return `${sentence}${/[。．！？]$/.test(sentence) ? '' : ' '}${text(message.then)}`
-}
+const text = (message: FlowMessage) => t(`authoring.${message.key}`, message.params ?? {})
 const taskActive = computed(() => !!task.value && publishTaskActive(task.value))
 const stepRef = (id: PublishPageId) => ({
   n: PUBLISH_PAGE_ORDER.indexOf(id),
@@ -320,16 +315,14 @@ const guideParams = computed<GuideParams>(() => ({
   tag: status.value?.repository.tag,
   version: status.value?.version,
   // Quoted by the server for the shell, never built here; main before the
-  // project has a repository.
+  // project has a repository, or when no quoting keeps the branch literal.
   branch: status.value?.repository.branch_argument ?? 'main',
-  firstPush: status.value?.repository.set_upstream_command ?? 'git push -u origin refs/heads/main',
-  fillIns: {
-    branch: status.value?.repository.branch_fill_in ?? undefined,
-    firstPush: status.value?.repository.set_upstream_fill_in ?? undefined,
-    dirArg: status.value?.plugin_dir_fill_in ?? undefined,
-  },
   pluginId: status.value?.plugin_id,
   dirArg: status.value?.plugin_dir_argument ?? '"<plugin directory>"',
+  unsafe: {
+    branch: !!status.value?.repository.branch && !status.value.repository.branch_argument,
+    dirArg: !!status.value && !status.value.plugin_dir_argument,
+  },
 }))
 /** The guide starts open on a page with something to do, folded on a finished one. */
 function guideOpen(id: PublishPageId) {

@@ -21,8 +21,7 @@ function status(
     remote?: Partial<NonNullable<PublishStatus['remote']>> | null
     actions?: PublishStatus['actions']
     workspace?: PublishStatus['workspace']
-    plugin_dir_argument?: string
-    plugin_dir_fill_in?: PublishStatus['plugin_dir_fill_in']
+    plugin_dir_argument?: string | null
   } = {}
 ): PublishStatus {
   return {
@@ -40,11 +39,7 @@ function status(
       detached: false,
       head_pushed: true,
       push_command: null,
-      push_fill_in: null,
       branch_argument: 'main',
-      branch_fill_in: null,
-      set_upstream_command: 'git push -u origin refs/heads/main',
-      set_upstream_fill_in: null,
       worktree_clean: true,
       dirty_paths: [],
       tag_exists: false,
@@ -64,8 +59,7 @@ function status(
             tag: 'missing',
             ...overrides.remote,
           },
-    plugin_dir_argument: overrides.plugin_dir_argument ?? '/work/hello_world',
-    plugin_dir_fill_in: overrides.plugin_dir_fill_in ?? null,
+    plugin_dir_argument: overrides.plugin_dir_argument === undefined ? '/work/hello_world' : overrides.plugin_dir_argument,
     workspace: overrides.workspace ?? null,
   }
 }
@@ -332,44 +326,26 @@ describe('publishFlow', () => {
 
   it('reports local git problems first and withholds the submission commit', () => {
     const flow = flowOf({
-      status: status({ repository: { head_pushed: false, push_command: 'git push origin main' } }),
+      status: status({ repository: { head_pushed: false, push_command: 'git push origin HEAD' } }),
       submission: approved(),
       task: null,
     })
     expect(flow.currentStepId).toBe('repository')
     expect(step(flow, 'repository').detail).toEqual({
       key: 'publishRepoUnpushed',
-      params: { command: 'git push origin main' },
+      params: { command: 'git push origin HEAD' },
     })
     expect(flow.pushedHead).toBeNull()
   })
 
-  it('names the value of a push placeholder in a sentence of its own', () => {
-    const repository = {
-      head_pushed: false,
-      push_command: 'git push origin "<branch>:<remote-branch>"',
-      push_fill_in: { placeholder: '<branch>:<remote-branch>', value: 'refs/heads/a%b:refs/heads/main' },
-    }
+  it('offers no command when the origin branch name cannot be quoted', () => {
+    // The server sends no command rather than a placeholder with the raw name.
+    const repository = { upstream: 'origin/a%PATH%&calc&', head_pushed: false, push_command: null }
     const flow = flowOf({ status: status({ repository }), submission: approved(), task: null })
     expect(step(flow, 'repository').detail).toEqual({
-      key: 'publishRepoUnpushed',
-      params: { command: 'git push origin "<branch>:<remote-branch>"' },
-      then: {
-        key: 'publishRepoPushFillIn',
-        params: { placeholder: '<branch>:<remote-branch>', value: 'refs/heads/a%b:refs/heads/main' },
-      },
+      key: 'publishRepoUpstreamUnsafe',
+      params: { upstream: 'origin/a%PATH%&calc&' },
     })
-  })
-
-  it('falls back to the command-free text when the server sends no push command', () => {
-    for (const repository of [
-      { head_pushed: false },
-      { upstream: null, head_pushed: null },
-      { upstream: 'fork/main', head_pushed: false },
-    ]) {
-      const flow = flowOf({ status: status({ repository }), submission: approved(), task: null })
-      expect(step(flow, 'repository').detail).toEqual({ key: 'publishRepoPushToOrigin' })
-    }
   })
 
   it('passes the full pushed HEAD to the submission', () => {
@@ -463,7 +439,7 @@ describe('publishFlow action blockers', () => {
   it('puts every local git problem the server gate refuses first, as hard', () => {
     const flow = flowOf({
       status: status({
-        repository: { head_pushed: false, push_command: 'git push origin refs/heads/main' },
+        repository: { head_pushed: false, push_command: 'git push origin HEAD' },
         remote: { verify: 'failure' },
       }),
       submission: submission(),
