@@ -768,7 +768,7 @@ class TaskAgentManager(
         finally:
             self._permissions.release_grant(grant)
 
-    def set_orchestrator_judge(self, judge: Callable[[list[dict[str, Any]]], Awaitable[str | None]] | None) -> None:
+    def set_orchestrator_judge(self, judge: Callable[..., Awaitable[str | None]] | None) -> None:
         """Set what asks the small model where a commission belongs (``LexicalDecisionModel.belongs``).
 
         Without one, a commission whose words neither name nor clearly

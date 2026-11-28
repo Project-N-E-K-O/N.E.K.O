@@ -112,6 +112,14 @@ async def _busy(
     return host, trees, workdir, one, scripts, seen
 
 
+def _just_asked(host: Any, session_id: str) -> None:
+    """The member made a request a moment ago: only a warm session is copied (owner decision D19).
+
+    (Its first request here is still under way, which counts as none yet.)
+    """
+    host.task_agents._last_request_at[session_id] = asyncio.get_running_loop().time()
+
+
 async def _filed(host: Any, text: str, project: str | None = "Shop site") -> Any:
     """A commission (of the shop, unless said otherwise) handed to a task agent without her; returns what ``_dispatch`` does of it.
 
@@ -1486,6 +1494,7 @@ async def test_it_is_looked_at_for_another_member_only_once_it_is_not_carried_on
         hosts, tmp_path, _links([*_report("links looked at")]), decision_llm=decisions
     )
     main = await _session_of(host, one.commission_id)
+    _just_asked(host, main.id)
 
     two = await _dispatch(host, APART)
 
@@ -1517,6 +1526,7 @@ async def test_nobody_is_asked_while_it_is_still_told_whether_it_is_a_side_quest
         return True
 
     manager.set_side_question_judge(slow)
+    _just_asked(host, main.id)
     two = await _dispatch(host, APART)
     await wait_until(asked.is_set, what="it being asked whether it is a side question")
     await asyncio.sleep(0.3)
