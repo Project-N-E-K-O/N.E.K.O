@@ -107,7 +107,7 @@ const messages: AuthoringMessages = {
   toolEnvironmentSource: 'As ferramentas do plugin são executadas a partir deste checkout do código-fonte do N.E.K.O.',
   toolEnvironmentReady: 'O ambiente de ferramentas do plugin está pronto.',
   toolEnvironmentPreparing: 'A preparar o ambiente de ferramentas do plugin…',
-  toolEnvironmentMissing: 'Primeira utilização: prepare o ambiente de ferramentas do plugin. Serão descarregados o uv, o Python e as dependências do plugin para os dados da aplicação.',
+  toolEnvironmentMissing: 'Primeiro uso: prepare o ambiente de ferramentas do plugin. O uv, o Python e as dependências do plugin serão baixados para os dados do aplicativo.',
   toolEnvironmentFailed: 'Falha ao preparar o ambiente de ferramentas do plugin: {error}',
   toolEnvironmentUnavailable: 'Este pacote do N.E.K.O não tem recursos de ferramentas de plugin compatíveis.',
   toolEnvironmentNotReady: 'O ambiente de ferramentas do plugin ainda não está pronto; prepare-o primeiro no passo «Preparar ferramentas».',

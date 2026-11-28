@@ -139,6 +139,28 @@ def test_a_venv_without_its_shared_runtime_is_not_ready(monkeypatch, tmp_path):
     assert tools.tool_environment_status().state == "missing"
 
 
+def test_shared_tools_prepared_elsewhere_read_as_preparing(monkeypatch, tmp_path):
+    # E.g. the dependency page downloads uv; preparing here then waits for it.
+    progress = {"phase": "downloading_uv", "downloaded_bytes": 1, "total_bytes": 2}
+    _packaged(monkeypatch, "preparing", progress=progress)
+    _resources(monkeypatch, tmp_path / "resources")
+
+    status = tools.tool_environment_status()
+    assert (status.state, status.tool_progress) == ("preparing", progress)
+
+
+async def test_preparing_joins_a_shared_preparation_started_elsewhere(monkeypatch, tmp_path):
+    _packaged(monkeypatch, "preparing")
+    _resources(monkeypatch, tmp_path / "resources")
+    layer = _FakeLayer(monkeypatch, tmp_path)
+
+    tools.start_tool_environment_preparation()
+    assert tools._preparation_task is not None
+    await tools._preparation_task
+    assert len(layer.runtime_calls) == 1
+    assert tools.tool_environment_status().state == "ready"
+
+
 def test_packaged_ready_uses_the_venv_with_the_shared_runtime_env(monkeypatch, tmp_path):
     _packaged(monkeypatch, "ready")
     resources = _resources(monkeypatch, tmp_path / "resources")

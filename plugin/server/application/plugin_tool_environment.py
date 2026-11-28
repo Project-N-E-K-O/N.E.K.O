@@ -262,6 +262,9 @@ def tool_environment_status() -> ToolEnvironmentStatus:
         return ToolEnvironmentStatus("ready", tools=tools)
     if running:
         return ToolEnvironmentStatus("preparing", tool_progress=progress, tools=tools)
+    if tools_state == "preparing":
+        # Another feature (or process) is preparing the shared uv / Python.
+        return ToolEnvironmentStatus("preparing", tool_progress=tools.get("progress"), tools=tools)
     if error is not None:
         return ToolEnvironmentStatus("failed", error[0], error[1], tools=tools)
     if tools_state == "unsupported":
@@ -397,7 +400,8 @@ async def _preparation_runner(cancel: threading.Event) -> None:
     except OSError as exc:
         error = (_redact(str(exc)), "environment_failed")
     except Exception as exc:
-        logger.exception("plugin tool environment preparation failed unexpectedly")
+        # The type only: the message can carry an authenticated index URL.
+        logger.error("plugin tool environment preparation failed unexpectedly: {}", type(exc).__name__)
         error = (_redact(str(exc)), "internal_error")
     finally:
         _set_progress(None)
@@ -408,10 +412,14 @@ async def _preparation_runner(cancel: threading.Event) -> None:
 
 
 def start_tool_environment_preparation() -> ToolEnvironmentStatus:
-    """Start one background preparation when the packaged environment is missing."""
+    """Start one background preparation when the packaged environment is missing.
+
+    Also while another feature prepares the shared uv / Python: this one
+    then waits for it and builds the virtualenv afterwards.
+    """
     global _preparation_task
     status = tool_environment_status()
-    if status.state in ("missing", "failed"):
+    if status.state in ("missing", "failed", "preparing"):
         with _state_lock:
             idle = _preparation_task is None or _preparation_task.done()
             if idle:

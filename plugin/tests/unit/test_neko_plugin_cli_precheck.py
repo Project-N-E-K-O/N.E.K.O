@@ -57,6 +57,12 @@ def _make_plugin_dir(tmp_path: Path, plugin_id: str = "pre_demo") -> Path:
     return plugin_dir
 
 
+@pytest.fixture(autouse=True)
+def _market_ruff_command(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A packaged N.E.K.O. sets this for its CLI children; the Market CI command is the default.
+    monkeypatch.delenv("NEKO_PLUGIN_UV", raising=False)
+
+
 def test_ruff_command_pins_version_and_target() -> None:
     command = ruff_command("some/dir")
     assert command[0] == "uvx"
