@@ -1461,6 +1461,74 @@ def test_in_place_refill_keeps_old_contents_with_a_new_mount(tmp_path, monkeypat
     assert len(kept) == 1 and (kept[0] / "oldpkg" / "mnt.dat").read_text() == "external"
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="directory-handle refill is POSIX only")
+def test_in_place_refill_warns_when_the_old_contents_can_not_be_removed(tmp_path, monkeypatch):
+    # The refill is complete by then: a leftover is not a failed install.
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
+
+    vendor = tmp_path / "vendor"
+    (vendor / "oldpkg").mkdir(parents=True)
+    staging = vendor / ".vendor.staging-0000abcd"
+    staging.mkdir()
+    (staging / "new.py").write_text("new")
+    identity = deps_cmd._vendor_target(vendor)
+    monkeypatch.setattr(deps_cmd, "_find_foreign_subdir", lambda root, junctions: None)
+    monkeypatch.setattr(deps_cmd, "_mounted_inside", lambda path: False)
+
+    def fail(*args, **kwargs):
+        raise PermissionError("denied")
+
+    monkeypatch.setattr(deps_cmd.shutil, "rmtree", fail)
+    lines = []
+
+    assert deps_cmd._refill_in_place(vendor, staging, identity, report=lines.append) == 0
+    assert (vendor / "new.py").read_text() == "new"
+    kept = [p for p in vendor.glob(".vendor.staging-*") if p != staging]
+    assert len(kept) == 1 and (kept[0] / "oldpkg").is_dir()
+    assert not (kept[0] / deps_cmd._REFILL_MARKER).exists()
+    assert any("[WARN] Could not remove the old contents" in line for line in lines)
+
+
+def test_plain_vendor_holds_the_lock_of_plugins_linking_to_it(tmp_path, monkeypatch, capsys):
+    # The swap replaces the whole directory: an in-place sync through a link
+    # to it must not run meanwhile, or the swap drops what it installed.
+    from plugin.neko_plugin_cli.commands import deps_cmd as sync_cmd
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
+
+    plugins = []
+    for name in ("owner", "linker"):
+        plugin_dir = tmp_path / name
+        plugin_dir.mkdir()
+        (plugin_dir / "pyproject.toml").write_text(
+            '[project]\nname = "x"\nversion = "1"\ndependencies = ["httpx"]\n', encoding="utf-8"
+        )
+        plugins.append(plugin_dir)
+    owner_vendor = plugins[0] / "vendor"
+    owner_vendor.mkdir()
+    link = plugins[1] / "vendor"
+    if sys.platform == "win32":
+        subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(owner_vendor)],
+                       check=True, capture_output=True)
+    else:
+        link.symlink_to(owner_vendor, target_is_directory=True)
+    monkeypatch.setattr(
+        sync_cmd, "resolve_plugin_dir_candidate", lambda plugin, defaults: Path(plugin)
+    )
+    nested = []
+
+    def install(command, **kwargs):
+        if not nested:
+            nested.append(
+                handle_sync(TestTransactionalDependencyInstall()._args(plugins[1], tmp_path))
+            )
+        return subprocess.CompletedProcess(command, 0, stdout="ok")
+
+    monkeypatch.setattr(deps_cmd.subprocess, "run", install)
+    assert handle_sync(TestTransactionalDependencyInstall()._args(plugins[0], tmp_path)) == 0
+    assert nested == [1]
+    assert "already in progress" in capsys.readouterr().err
+
+
 def test_unfinished_refill_trash_blocks_and_is_not_deleted(tmp_path, monkeypatch, capsys):
     # It holds the only copy of the old entries a failed refill moved.
     from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd

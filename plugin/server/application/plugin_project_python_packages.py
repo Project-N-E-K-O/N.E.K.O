@@ -291,10 +291,10 @@ def _log(task: _Task, line: str) -> None:
 
 def _redact(message: str, *, incomplete: bool = False) -> str:
     # Installation diagnostics can include an authenticated private index URL.
-    message = re.sub(r"(https?://)[^\s/@]+(?::[^\s/@]*)?@", r"\1[redacted]@", message)
+    message = re.sub(r"(https?://)[^\s/@]+(?::[^\s/@]*)?@", r"\1[redacted]@", message, flags=re.IGNORECASE)
     if incomplete:
         # A bounded pipe drain may end inside userinfo, before its final @.
-        message = re.sub(r"(https?://)[^\s]*$", r"\1[redacted]", message)
+        message = re.sub(r"(https?://)[^\s]*$", r"\1[redacted]", message, flags=re.IGNORECASE)
     return message
 
 

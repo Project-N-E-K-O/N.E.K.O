@@ -98,8 +98,9 @@ against the task's time budget, and waits for another N.E.K.O. process that is
 preparing the same tools. The task reports the layer's phases (waiting,
 downloading uv, checking uv, installing Python, checking Python) and, when it
 fails, the layer's error code. Opening the tab performs no downloads or
-version-probe subprocesses; it shows the layer's status (ready, missing,
-preparing, failed or unsupported).
+version-probe subprocesses. It reads the layer's status and shows a notice
+only while the tools still need preparing, are being prepared, failed or are
+unsupported; ready tools, and source checkouts, show no notice.
 
 In a packaged build, installer children run with the layer's environment:
 inherited `UV_*` variables and variables that redirect Python (`PYTHONPATH`,

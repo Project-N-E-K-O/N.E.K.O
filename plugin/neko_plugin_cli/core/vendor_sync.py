@@ -10,7 +10,7 @@ import subprocess
 import sys
 import time
 import uuid
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from collections.abc import Iterator
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -150,7 +150,7 @@ def sync_vendor(
     vendor_dir = plugin_dir / "vendor"
     staging_dir: Path | None = None
     try:
-        with dependency_lock(plugin_dir):
+        with dependency_lock(plugin_dir), ExitStack() as target_lock:
             # Holding the lock means no other sync of this plugin by this user
             # is running, so this user's staging dirs were left by killed runs.
             _remove_stale_staging(plugin_dir)
@@ -243,10 +243,7 @@ def sync_vendor(
                         file=sys.stderr,
                     )
                     return 1
-                target_lock = hashlib.sha256(_lock_identity(vendor_dir, target.stat)).hexdigest()
-                with portalocker.Lock(
-                    _lock_dir() / f"neko-plugin-sync-{target_lock}.lock", timeout=0
-                ):
+                with _vendor_target_lock(vendor_dir, target.stat):
                     exit_code = _sync_in_place(vendor_dir, external_deps, args, target)
                 if exit_code != 0:
                     return exit_code
@@ -273,6 +270,11 @@ def sync_vendor(
             # The vendor/ the swap will move aside; checked again right before
             # it, as another process may have replaced it during the install.
             vendor_before = vendor_dir.lstat() if vendor_dir.exists() else None
+            if vendor_before is not None:
+                # Another plugin's vendor/ may link here and refill it in
+                # place: hold the same target lock until the swap is done, or
+                # the swap would drop what that sync installed.
+                target_lock.enter_context(_vendor_target_lock(vendor_dir, vendor_before))
             copy_old = not args.clean and vendor_dir.is_dir()
             if copy_old and sys.platform.startswith("linux") and _linux_mount_points() is None:
                 # The copy would follow a same-filesystem bind mount that
@@ -336,6 +338,7 @@ def sync_vendor(
             _check_sync_revision(plugin_dir, args.expected_revision)
             if not _replace_vendor(vendor_dir, staging_dir, report=report):
                 return 1
+            target_lock.close()
             # A complete successful sync supersedes retained backups.
             _remove_retained_backups(plugin_dir)
     except portalocker.exceptions.LockException:
@@ -622,6 +625,8 @@ def _refill_in_place(
     after the check can no longer redirect the deletion. (Windows has no
     such calls; there the check runs right before the path-based deletion.)
     """
+    emit = _diagnostic_emitter(report)
+
     def changed() -> int:
         return _report_vendor_changed(vendor_dir, report)
 
@@ -680,13 +685,21 @@ def _refill_in_place(
         # has, so a later retarget of vendor/ can not point the check away.
         opened = _open_dir_path(fd)
         if opened is None:
-            print(
+            emit(
                 f"[WARN] Not removing the old contents moved to {vendor_dir / trash} yet: "
                 "mounts inside can not be checked through the open handle here.",
                 file=sys.stderr,
             )
         elif not _mounted_inside(Path(opened, trash)):
-            shutil.rmtree(trash, dir_fd=fd)
+            # The refill is complete: failing to delete the old contents
+            # leaves a leftover, not a failed install.
+            try:
+                shutil.rmtree(trash, dir_fd=fd)
+            except OSError as exc:
+                emit(
+                    f"[WARN] Could not remove the old contents moved to {vendor_dir / trash}: {exc}",
+                    file=sys.stderr,
+                )
         # Otherwise kept with a warning; the next in-place sync retries it.
     finally:
         os.close(fd)
@@ -913,6 +926,13 @@ def _lock_dir() -> Path:
     fallback.mkdir(exist_ok=True, mode=0o700)
     _make_private(fallback)
     return fallback
+
+
+def _vendor_target_lock(vendor_dir: Path, info: os.stat_result) -> portalocker.Lock:
+    """The lock every writer to one vendor/ directory holds, whichever
+    plugin's vendor/ (a plain directory or a link to it) names it."""
+    name = hashlib.sha256(_lock_identity(vendor_dir, info)).hexdigest()
+    return portalocker.Lock(_lock_dir() / f"neko-plugin-sync-{name}.lock", timeout=0)
 
 
 def _lock_identity(plugin_dir: Path, info: os.stat_result | None = None) -> bytes:

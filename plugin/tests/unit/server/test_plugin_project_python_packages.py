@@ -561,7 +561,11 @@ async def test_command_finishes_after_parent_exits_with_inherited_stdout(record,
     import time
 
     pidfile = tmp_path / "helper.pid"
-    helper = "import os,time,pathlib; pathlib.Path(" + repr(str(pidfile)) + ").write_text(str(os.getpid())); time.sleep(30)"
+    # Written to a temporary name and renamed: the file only appears once the PID is complete.
+    helper = (
+        "import os,time,pathlib; p=pathlib.Path(" + repr(str(pidfile)) + "); "
+        "t=p.with_suffix('.tmp'); t.write_text(str(os.getpid())); os.replace(t, p); time.sleep(30)"
+    )
     if continuous_output:
         helper = helper.replace("time.sleep(30)", "\nwhile True: print('helper',flush=True); time.sleep(0.001)")
     parent = (
@@ -656,6 +660,12 @@ async def test_command_omits_oversized_lines_without_exposing_credential_prefixe
 
 def test_incomplete_authentication_url_is_not_retained_at_pipe_cutoff():
     assert packages._redact("download https://user:secret", incomplete=True) == "download https://[redacted]"
+
+
+def test_redaction_ignores_the_url_scheme_case():
+    # URI schemes are case-insensitive; an upper-case one must not leak userinfo.
+    assert packages._redact("GET HTTPS://user:secret@host/simple") == "GET HTTPS://[redacted]@host/simple"
+    assert packages._redact("download Http://user:secret", incomplete=True) == "download Http://[redacted]"
 
 
 def test_installer_children_get_the_runtime_environment_only(record, monkeypatch, tmp_path):
