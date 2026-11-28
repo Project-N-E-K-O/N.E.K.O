@@ -75,8 +75,25 @@ def _calls_with_params(tree: ast.AST) -> Iterator[tuple[ast.Call, frozenset[str]
     """Every call in ``tree``, with the parameter names of the functions (and lambdas) it lies in.
 
     A parameter (a pytest fixture such as ``host``) shadows a module alias of the same name:
-    ``host.task_agents`` is then the fixture's manager, not the facade module.
+    ``host.task_agents`` is then the fixture's manager, not the facade module. An import of that
+    name in the function's own body (``from nekopower import host``) binds it to the module again
+    there, so it is not taken as shadowed in that function.
     """
+
+    def imported_in(body: list[ast.stmt]) -> set[str]:
+        """Names bound by imports in ``body``, not in the functions, lambdas or classes nested in it."""
+        bound: set[str] = set()
+        stack: list[ast.AST] = list(body)
+        while stack:
+            node = stack.pop()
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)):
+                continue
+            if isinstance(node, ast.Import):
+                bound.update(alias.asname or alias.name.split(".")[0] for alias in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                bound.update(alias.asname or alias.name for alias in node.names)
+            stack.extend(ast.iter_child_nodes(node))
+        return bound
 
     def visit(node: ast.AST, params: frozenset[str]) -> Iterator[tuple[ast.Call, frozenset[str]]]:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
@@ -99,8 +116,9 @@ def _calls_with_params(tree: ast.AST) -> Iterator[tuple[ast.Call, frozenset[str]
             ]
             for expr in outside:
                 yield from visit(expr, params)
-            inner = params | names
-            for stmt in node.body if isinstance(node.body, list) else [node.body]:
+            body = node.body if isinstance(node.body, list) else [node.body]
+            inner = frozenset((params | names) - imported_in(body))
+            for stmt in body:
                 yield from visit(stmt, inner)
             return
         if isinstance(node, ast.Call):
@@ -572,11 +590,21 @@ def test_harvester_does_not_take_a_fixture_named_like_the_host_module_for_it(tmp
         "def test_module(monkeypatch):\n"
         '    monkeypatch.setattr(host.task_agents, "_CAUGHT_UP_SECONDS", 0)\n'
         "def test_lambda(monkeypatch):\n"
-        '    (lambda host: monkeypatch.setattr(host.task_agents, "_IN_LAMBDA", 0))(None)\n',
+        '    (lambda host: monkeypatch.setattr(host.task_agents, "_IN_LAMBDA", 0))(None)\n'
+        "def test_imported_again(host, monkeypatch):\n"
+        "    from nekopower import host\n"
+        '    monkeypatch.setattr(host.task_agents, "_IMPORTED_AGAIN", 0)\n'
+        "def test_imported_in_a_nested_function_only(host, monkeypatch):\n"
+        "    def inner():\n"
+        "        from nekopower import host\n"
+        "        return host\n"
+        '    monkeypatch.setattr(host.task_agents, "_STILL_THE_FIXTURE", 0)\n',
         encoding="utf-8",
     )
     targets, _scanned = _harvest_facade_patch_targets(tmp_path, present=lambda attr: True)
-    assert set(targets) == {"_CAUGHT_UP_SECONDS"}
+    # A fixture parameter shadows the module; an import of it in the function's own body binds it
+    # back, and one in a nested function does not.
+    assert set(targets) == {"_CAUGHT_UP_SECONDS", "_IMPORTED_AGAIN"}
 
 
 def test_patch_routing_guard_covers_the_owner_module_helpers() -> None:
