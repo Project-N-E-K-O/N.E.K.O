@@ -49,7 +49,7 @@ from nekopower.runtime.loop.provider_events import (
     ToolCallEndEvent,
     ToolCallStartEvent,
 )
-from nekopower.runtime.loop.tool_history import repair_tool_history
+from nekopower.runtime.loop.tool_history import INTERRUPTED_TOOL_SKIPPED, repair_tool_history
 from nekopower.runtime.loop.tools import AgentTool, AgentToolResult
 from nekopower.runtime.loop.turns import AgentTurnContext, AgentTurnDecision, FinishTurn
 
@@ -486,7 +486,7 @@ async def _execute_tool_call(
         result = _error_result(block_reason or "Tool execution was blocked")
         is_error = True
     elif signal is not None and signal.is_cancelled():
-        result = _error_result("Operation aborted")
+        result = _error_result(INTERRUPTED_TOOL_SKIPPED)
         is_error = True
     else:
         tool = tools.get(call.name)

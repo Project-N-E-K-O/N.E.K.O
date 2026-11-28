@@ -130,7 +130,7 @@ class ModelConfig(_Strict):
     compact_at: int | None = Field(default=None, ge=1_000)
     max_output_tokens: int = Field(default=8_192, ge=256)
     request_timeout_seconds: float = Field(default=180.0, gt=0)
-    max_retries: int = Field(default=1, ge=0)
+    max_retries: int = Field(default=3, ge=0)
     supports_images: bool = False
     # ``extra_body`` given: sent as is. Otherwise ``auto_extra_body`` decides
     # between the provider default registered in config.providers and none.
@@ -199,6 +199,9 @@ class TaskAgentSpec(_Strict):
     disabled_tools: list[str] = Field(default_factory=list)
     # Tool name -> how many of its most recent image results stay in context.
     image_retention: dict[str, int] = Field(default_factory=dict)
+    # Tool name -> hysteresis high-water mark before batch-evicting older images
+    # down to ``image_retention`` (preserving prompt KV caches between evictions).
+    image_evict_at: dict[str, int] = Field(default_factory=dict)
     # Tool name -> pool. Tools of one pool are counted together: the pool as a
     # whole keeps that many image results (the largest number among its tools).
     image_pools: dict[str, str] = Field(default_factory=dict)

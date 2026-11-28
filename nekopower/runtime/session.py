@@ -37,9 +37,11 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import functools
+import hashlib
 import json
 import logging
 import os
+import re
 import sys
 import time
 from collections.abc import AsyncIterator, Callable
@@ -56,9 +58,12 @@ from nekopower.runtime.context import (
     Compaction,
     ContextManager,
     ContextPolicy,
+    Row,
     RowKind,
     SummaryCutShort,
+    SummaryUsedToolError,
     Transcript,
+    cap_parallel_batch_results,
     compact_ratio,
     estimate_tokens,
     kind_of,
@@ -81,7 +86,9 @@ from nekopower.runtime.loop.messages import (
     AgentMessage,
     AssistantMessage,
     CustomMessage,
+    ImageContent,
     ToolCall,
+    ToolResultMessage,
     Usage,
     UserMessage,
 )
@@ -108,10 +115,12 @@ from nekopower.runtime.loop.tool_history import repair_tool_history
 from nekopower.runtime.loop.tools import AgentTool, AgentToolResult
 from nekopower.runtime.loop.turns import AgentTurnContext, AgentTurnDecision
 from nekopower.runtime.model import (
+    WIRE_TEXT_PART_MAX_TOKENS,
     ContextOverflowError,
     LLMClientProvider,
     ModelRequestError,
     RequestRefusedError,
+    parse_combined_overflow,
     window_from_overflow,
 )
 from nekopower.runtime.permissions import make_permission_hook
@@ -158,8 +167,14 @@ RUNTIME_CONTEXT_INTERVAL_SECONDS = 1800.0
 # Pauses before the second and third attempt at appending one transcript entry.
 APPEND_RETRY_DELAYS: tuple[float, ...] = (0.2, 1.0)
 _TAIL_STEP_BYTES = 65536
-MAX_OUTPUT_CUT_OFF_NUDGES = 2
+MAX_OUTPUT_CUT_OFF_NUDGES = 3
+MAX_EMPTY_COMPLETION_NUDGES = 2
+MAX_INVALID_TOOL_NUDGES = 2
+MAX_TOTAL_RECOVERY_NUDGES = 4
 _INPUT_POLL_SECONDS = 0.1
+_REPLY_LANGUAGE_RE = re.compile(
+    r"questions with their options, in ([^,.\n]+), whatever language",
+)
 
 EventSink = protocol.EventSink
 
@@ -499,6 +514,18 @@ class TaskAgentSession(SessionInbox):
         self._context_due = True
         self._context_injected_at = 0.0
         self._output_nudges = 0
+        self._empty_nudges = 0
+        self._invalid_tool_nudges = 0
+        self._recovery_nudges = 0
+        self._turns_since_last_compaction = 0
+        self._rapid_compactions = 0
+        self._compaction_breaker_tripped = False
+        self._compaction_breaker_notified = False
+        self._turns_since_todo_write = 0
+        self._turns_since_todo_nudge = 0
+        self._last_image_hash: str | None = None
+        self._consecutive_image_count = 0
+        self._reply_language_hint: str | None = None
         self._repeat = RepeatToolGuard()
         self._system = ""
         # Every tool a call can be carried out by: those there are now, and a
@@ -762,6 +789,8 @@ class TaskAgentSession(SessionInbox):
             fixed_tokens=await self._fixed_tokens(),
             image_retention=dict(spec.image_retention),
             image_pools=dict(spec.image_pools),
+            image_evict_at=dict(spec.image_evict_at),
+            on_summary_overflow=self._learn_window,
         )
         if self._gateway is not None:
             self._gateway.compactions = self._compactions
@@ -1052,8 +1081,23 @@ class TaskAgentSession(SessionInbox):
                 # the user spoke in on its account.
                 self._not_human = [other for other in self._not_human if other is not message]
             else:
-                # Text from the user: it authorizes goal management for this run.
+                # Text from the user: it authorizes goal management for this run
+                # and resets the automatic-compaction circuit breaker and recovery nudges.
                 self._human_in_run = True
+                self._rapid_compactions = 0
+                self._compaction_breaker_tripped = False
+                self._compaction_breaker_notified = False
+                self._output_nudges = 0
+                self._empty_nudges = 0
+                self._invalid_tool_nudges = 0
+                self._recovery_nudges = 0
+                if opening:
+                    lang_match = _REPLY_LANGUAGE_RE.search(message.text)
+                    if lang_match is not None:
+                        detected_lang = lang_match.group(1).strip()
+                        if detected_lang and detected_lang != self._reply_language_hint:
+                            self._reply_language_hint = detected_lang
+                            self._context_due = True
                 gateway = self._gateway
                 if taken is not None and not opening and self._commission_tools and gateway.device_groups:
                     from nekopower.device_intent import classify_device_intent
@@ -1073,6 +1117,7 @@ class TaskAgentSession(SessionInbox):
             self._repeat.reset()
         elif isinstance(message, AssistantMessage):
             self._last_assistant = message
+            self._turns_since_last_compaction += 1
             if self._gateway is not None:
                 # The tool calls that follow were written in this reply.
                 self._gateway.next_reply()
@@ -1143,6 +1188,8 @@ class TaskAgentSession(SessionInbox):
                 yield AssistantErrorEvent(reason="aborted", error=stopped)
                 return
             await self._refresh_device_tools()
+            await self._spill_oversized_user_messages()
+            await self._cap_parallel_tool_batch()
             self._inject_runtime_context()
             failed_before, self._last_request_failed = self._last_request_failed, False
             long = failed_before and await self._size() > TASK_AGENT_UNSURE_REFUSAL_TOKENS
@@ -1163,9 +1210,27 @@ class TaskAgentSession(SessionInbox):
                     await self._fit(force=True)
                 finally:
                     self._window, self._max_output, self.context.policy = window, max_output, policy
+            elif self._compaction_breaker_tripped:
+                # Auto-compaction tripped its rapid-refill circuit breaker: keep
+                # running lightweight image retention and tool pruning without
+                # burning extra summary requests, and emit a diagnostic notice once.
+                await self._fit(force=False)
+                if not self._compaction_breaker_notified:
+                    self._compaction_breaker_notified = True
+                    diagnostic = CustomMessage(
+                        custom_type="notice:compaction_breaker",
+                        content=texts.AUTO_COMPACT_CIRCUIT_BREAKER_NOTICE.replace(
+                            "<<TOP_ITEMS>>", self._top_context_consumers()
+                        ),
+                        display=False,
+                    )
+                    self.harness.message_list.append(diagnostic)
+                    self._record(diagnostic)
             else:
                 await self._fit(force=False)
         retried = False
+        clamped_output = False
+        request_max_output: int | None = None
         # What the session was managed for before a window was assumed for
         # a retry (after a refusal that did not say it was about length),
         # to go back to when the retry does not go through.
@@ -1188,6 +1253,15 @@ class TaskAgentSession(SessionInbox):
                     # next to (more to tell, more tools): fitted again, which
                     # sums up further only if it no longer fits.
                     await self._fit(force=False)
+                if (
+                    self._context_due
+                    and self.harness.message_list
+                    and isinstance(self.harness.message_list[-1], ToolResultMessage)
+                ):
+                    # After mid-run compaction on tool turns, immediately refresh
+                    # runtime context (todos, active goal, reply language, time)
+                    # without displacing a trailing user prompt.
+                    self._inject_runtime_context()
                 # How much is about to be sent, as the conversation is measured.
                 sent = await self._size()
                 if (signal is None or not signal.is_cancelled()) and self.jobs.pending_notices:
@@ -1207,14 +1281,17 @@ class TaskAgentSession(SessionInbox):
                 try:
                     # Said only when it is less than the model is configured
                     # for, which is what a request asks for unless told otherwise.
-                    less = self._max_output < self.spec.model.max_output_tokens
+                    effective_max_output = (
+                        request_max_output if request_max_output is not None else self._max_output
+                    )
+                    less = request_max_output is not None or effective_max_output < self.spec.model.max_output_tokens
                     async for event in self._model.stream_response(
                         model=model,
                         system=self._system,
                         messages=history,
                         tools=self._wire_tools,
                         signal=signal,
-                        **({"max_tokens": self._max_output} if less else {}),
+                        **({"max_tokens": effective_max_output} if less else {}),
                     ):
                         if isinstance(event, AssistantStartEvent):
                             held = event
@@ -1263,9 +1340,27 @@ class TaskAgentSession(SessionInbox):
                         before = managed
                     await self._fit(force=True)
                 except ContextOverflowError as exc:
+                    # Before compacting or shrinking the session window, check
+                    # whether the provider only rejected input + max_tokens > limit.
+                    combined = parse_combined_overflow(str(exc)) if not clamped_output and not retried else None
+                    if combined is not None:
+                        input_tokens, limit = combined
+                        available = limit - input_tokens - 1_000
+                        if available >= 3_000:
+                            clamped_output = True
+                            request_max_output = min(self._max_output, available)
+                            logger.info(
+                                "session %s: combined input+output overflow (%d / %d); retrying once with max_tokens=%d",
+                                self.session_id,
+                                input_tokens,
+                                limit,
+                                request_max_output,
+                            )
+                            continue
                     # What the provider says of its window now stands in the
                     # place of one that was only assumed.
                     back()
+                    request_max_output = None
                     self._learn_window(str(exc), sent)
                     if retried:
                         failure = AssistantMessage(
@@ -1338,7 +1433,107 @@ class TaskAgentSession(SessionInbox):
             self._record(message)
         return bool(verdict.get("stop"))
 
-    async def _fit(self, *, force: bool, tight: bool | None = None, or_drop: bool = True, reserve_tokens: int = 0) -> None:
+    async def _spill_oversized_user_messages(self) -> None:
+        """Spill any oversized human text message to disk with a head/tail preview and anti-guess notice."""
+        rows = self.transcript.rows()
+        # Spill inputs that exceed either the single-part wire limit or the
+        # session's remaining input budget (threshold minus system prompt, tool
+        # schemas, and headroom) so small-window sessions never choke on a
+        # single oversized user message that compaction cannot shorten.
+        input_budget = max(512, self.context.policy.threshold - self.context.fixed_tokens - 256)
+        cap = min(WIRE_TEXT_PART_MAX_TOKENS, input_budget)
+        candidates = [
+            index
+            for index, row in enumerate(rows)
+            if isinstance(row.message, UserMessage)
+            and isinstance(row.message.content, str)
+            and len(row.message.content.encode("utf-8", errors="replace")) > cap
+        ]
+        if not candidates:
+            return
+
+        def _spill_batch() -> list[Row] | None:
+            from utils.tokenize import count_tokens, truncate_head_tail_tokens
+
+            out = list(rows)
+            changed = False
+            for index in candidates:
+                row = out[index]
+                message = row.message
+                assert isinstance(message, UserMessage) and isinstance(message.content, str)
+                raw = message.content
+                if count_tokens(raw) <= cap:
+                    continue
+                path = self.context.spill.save(f"user-{row.entry_id}", raw)
+                if path is None:
+                    # Never replace or hide user instructions when the full text
+                    # could not be saved to disk.
+                    continue
+                sample_notice = texts.user_input_spill_notice(len(raw.encode("utf-8", errors="replace")), str(path))
+                notice_tokens = count_tokens(sample_notice) + 32
+                preview_total = max(128, cap - notice_tokens)
+                preview_half = min(2_000, max(64, preview_total // 2))
+                kept = truncate_head_tail_tokens(raw, preview_half, preview_half, separator=texts.SPILL_GAP)
+                omitted = max(
+                    0,
+                    len(raw.encode("utf-8", errors="replace"))
+                    - len(kept.replace(texts.SPILL_GAP, "", 1).encode("utf-8", errors="replace")),
+                )
+                notice = texts.user_input_spill_notice(omitted, str(path))
+                out[index] = Row(
+                    row.entry_id,
+                    row.kind,
+                    message.model_copy(update={"content": f"{kept}\n\n{notice}"}),
+                )
+                changed = True
+            return out if changed else None
+
+        rewritten = await asyncio.to_thread(_spill_batch)
+        if rewritten is not None:
+            self.transcript.rewrite(rewritten)
+            self.context.invalidate()
+
+    async def _cap_parallel_tool_batch(self) -> None:
+        """Enforce a combined token budget on a parallel batch of fresh tool results."""
+        from config.nekopower_settings import TASK_AGENT_BATCH_TOOL_RESULT_MAX_TOKENS
+
+        rows = self.transcript.rows()
+        budget = min(TASK_AGENT_BATCH_TOOL_RESULT_MAX_TOKENS, max(1, self._window // 3))
+        rewritten = await asyncio.to_thread(
+            cap_parallel_batch_results,
+            rows,
+            budget=budget,
+            spill=self.context.spill,
+        )
+        if rewritten is not None:
+            self.transcript.rewrite(rewritten)
+            self.context.invalidate()
+
+    def _top_context_consumers(self, limit: int = 3) -> str:
+        """Return a short bullet list of the largest messages currently in context."""
+        scored: list[tuple[int, str]] = []
+        for row in self.transcript.rows():
+            tokens = estimate_tokens(row.message, self.context.policy.image_tokens)
+            if isinstance(row.message, ToolResultMessage):
+                label = f"tool `{row.message.tool_name}` ({row.message.tool_call_id})"
+            elif isinstance(row.message, AssistantMessage):
+                label = "assistant turn"
+            elif isinstance(row.message, UserMessage):
+                label = "summary checkpoint" if row.kind == "summary" else "user message"
+            else:
+                label = row.kind
+            scored.append((tokens, f"- {label}: ~{tokens} tokens"))
+        scored.sort(key=lambda item: item[0], reverse=True)
+        return "\n".join(line for _, line in scored[:limit]) or "- (no items)"
+
+    async def _fit(
+        self,
+        *,
+        force: bool,
+        tight: bool | None = None,
+        or_drop: bool = True,
+        reserve_tokens: int = 0,
+    ) -> None:
         # Each summary is saved the moment it is applied, not after fit()
         # returns: an abort during a later summary ends fit() with the earlier
         # one already in the conversation, and later entries refer to its id.
@@ -1351,6 +1546,7 @@ class TaskAgentSession(SessionInbox):
             pinned=self._pinned(),
             or_drop=or_drop,
             reserve_tokens=reserve_tokens,
+            summarize=self._compacting or not self._compaction_breaker_tripped,
         )
 
     def _pinned(self) -> tuple[str, ...]:
@@ -1388,6 +1584,11 @@ class TaskAgentSession(SessionInbox):
         return tuple(pinned)
 
     def _persist_compaction(self, compaction: Compaction) -> None:
+        from config.nekopower_settings import (
+            TASK_AGENT_AUTO_COMPACT_BREAKER_COUNT,
+            TASK_AGENT_AUTO_COMPACT_BREAKER_TURNS,
+        )
+
         self._recorder.link(
             CompactionEntry(
                 id=compaction.summary_row.entry_id,
@@ -1399,6 +1600,19 @@ class TaskAgentSession(SessionInbox):
             )
         )
         self._compactions += 1
+        if not self._compacting:
+            if self._compactions > 1 and self._turns_since_last_compaction < TASK_AGENT_AUTO_COMPACT_BREAKER_TURNS:
+                self._rapid_compactions += 1
+            else:
+                self._rapid_compactions = 1
+            self._turns_since_last_compaction = 0
+            if self._rapid_compactions >= TASK_AGENT_AUTO_COMPACT_BREAKER_COUNT:
+                self._compaction_breaker_tripped = True
+                logger.warning(
+                    "session %s: auto-compaction circuit breaker tripped after %d rapid compactions",
+                    self.session_id,
+                    self._rapid_compactions,
+                )
         if compaction.complete:
             self._device_fold_at = self._compactions
         self._compaction_entry_id = compaction.summary_row.entry_id
@@ -1430,6 +1644,12 @@ class TaskAgentSession(SessionInbox):
         await self._renew_snapshot(REASON_COMPACTED)
         self.context.fixed_tokens = await self._fixed_tokens()
         self.context.invalidate()
+        # Re-arm runtime context so todos, running jobs, active goal, and reply
+        # language are re-injected on the next turn after compaction.
+        self._context_due = True
+        self._last_image_hash = None
+        self._consecutive_image_count = 0
+        self._turns_since_todo_nudge = 0
         # Only now: stopped while the snapshot was written, the next run
         # does all of this again, and measures against what it sends.
         self._compaction_due = False
@@ -1492,18 +1712,33 @@ class TaskAgentSession(SessionInbox):
             )
         )
 
-    async def _summarize(self, messages: list[AgentMessage], max_tokens: int) -> tuple[str, Usage | None]:
-        request = [*messages, UserMessage(content=texts.COMPACTION_INSTRUCTION)]
+    async def _summarize(
+        self,
+        messages: list[AgentMessage],
+        max_tokens: int,
+        *,
+        no_tools: bool = False,
+        retry_note: str | None = None,
+    ) -> tuple[str, Usage | None]:
+        instruction = (
+            f"{texts.COMPACTION_INSTRUCTION}\n\n{retry_note}"
+            if retry_note
+            else texts.COMPACTION_INSTRUCTION
+        )
+        request = [*messages, UserMessage(content=instruction)]
         repaired = list(repair_tool_history(tuple(request)).messages)
         signal = self.harness.current_signal
         try:
             reply = await self._model.complete(
                 system=self._system,
                 messages=repaired,
-                # As the requests before it: what a provider cached of them is used.
-                tools=self._wire_tools,
+                # Keep the same tool list on the first attempt so provider prompt
+                # caches match; drop tools on the Tier-2 no-tools retry.
+                tools=[] if no_tools else self._wire_tools,
                 max_tokens=max_tokens,
                 signal=signal,
+                skip_cache_write=True,
+                strip_images=True,
             )
         except (ModelRequestError, RequestRefusedError, ContextOverflowError):
             if signal is not None and signal.is_cancelled():
@@ -1520,7 +1755,7 @@ class TaskAgentSession(SessionInbox):
             # What it wrote before that leads up to the call and sums
             # nothing up: a summary that failed, not one that was cut
             # short.
-            raise RuntimeError("the model called a tool instead of writing the summary")
+            raise SummaryUsedToolError("the model called a tool instead of writing the summary")
         if reply.stop_reason == "length":
             # Ended at its limit: the last sections are missing, or cut off.
             raise SummaryCutShort(reply.text)
@@ -1546,17 +1781,25 @@ class TaskAgentSession(SessionInbox):
             )
 
     def _inject_runtime_context(self) -> None:
-        """Append the time, running jobs and open todos as a message when due."""
+        """Append the time, active goal, reply language, running jobs and open todos as a message when due."""
         loop_time = asyncio.get_running_loop().time()
         if not self._context_due and (
             loop_time - self._context_injected_at < RUNTIME_CONTEXT_INTERVAL_SECONDS
         ):
             return
         now = self._clock()
+        goal = self.goals.current
+        active_goal = (
+            f"{goal.objective} (round {goal.rounds_started}/{goal.max_goal_rounds})"
+            if goal is not None and goal.phase == "active"
+            else None
+        )
         text = texts.runtime_context_notice(
             f"{now.strftime('%Y-%m-%d %H:%M %z')} ({now.strftime('%A')})",
             [f"{job.id} ({job.kind}: {bounded_label(job.label)})" for job in self.jobs.running() if not job.origin],
             [(item["status"], item["content"]) for item in self.todos.open_items()],
+            active_goal=active_goal,
+            reply_language=self._reply_language_hint,
         )
         message = CustomMessage(custom_type="notice:runtime_context", content=text, display=False)
         self.harness.message_list.append(message)
@@ -1574,28 +1817,134 @@ class TaskAgentSession(SessionInbox):
         # Managed results, including tool errors, were capped under their source receipt.
         if call.name not in self._managed_tools:
             result = await self.context.cap_tool_result(call.name, call.id, result)
+        if call.name == "todo_write" and not is_error:
+            self._turns_since_todo_write = 0
+            self._turns_since_todo_nudge = 0
+        for block in result.content:
+            if isinstance(block, ImageContent) and block.data:
+                digest = hashlib.sha1(
+                    block.data.encode("ascii", errors="replace"), usedforsecurity=False
+                ).hexdigest()
+                if digest == self._last_image_hash:
+                    self._consecutive_image_count += 1
+                else:
+                    self._last_image_hash = digest
+                    self._consecutive_image_count = 1
+                if self._consecutive_image_count >= 3 and self._consecutive_image_count % 3 == 0:
+                    self.deliver_notice("repeated_image", texts.REPEATED_IMAGE_REMINDER)
+                    break
         reminder = self._repeat.observe(call.name, call.arguments)
         if reminder is not None:
             self.deliver_notice("repeat_tool", reminder)
         return result, is_error
 
+    def _reset_recovery_nudges(self) -> None:
+        self._output_nudges = 0
+        self._empty_nudges = 0
+        self._invalid_tool_nudges = 0
+        self._recovery_nudges = 0
+
     def _finish_turn(
         self, turn: AgentTurnContext, signal: CancellationToken | None
     ) -> AgentTurnDecision | None:
+        from config.nekopower_settings import TASK_AGENT_TODO_NUDGE_TURNS
+
         message = turn.message
         cancelled = signal is not None and signal.is_cancelled()
+        self._turns_since_todo_write += 1
+        self._turns_since_todo_nudge += 1
+
         if message.stop_reason == "length" and not message.tool_calls and not cancelled:
-            if self._output_nudges < MAX_OUTPUT_CUT_OFF_NUDGES:
+            if (
+                self._output_nudges < MAX_OUTPUT_CUT_OFF_NUDGES
+                and self._recovery_nudges < MAX_TOTAL_RECOVERY_NUDGES
+            ):
                 self._output_nudges += 1
+                self._recovery_nudges += 1
+                dropped_tools = getattr(self._model, "last_dropped_truncated_tools", ())
+                if dropped_tools:
+                    nudge = texts.OUTPUT_CUT_OFF_TOOL_NUDGE.replace("<<TOOLS>>", ", ".join(dropped_tools))
+                elif not message.text.strip() and message.thinking_text.strip():
+                    nudge = texts.OUTPUT_CUT_OFF_THINKING_NUDGE
+                elif not self.spec.top_level:
+                    nudge = texts.OUTPUT_CUT_OFF_SUBAGENT_NUDGE
+                else:
+                    nudge = texts.OUTPUT_CUT_OFF_NUDGE
                 self.harness.steer_message(
                     CustomMessage(
                         custom_type="notice:output_cut_off",
-                        content=texts.OUTPUT_CUT_OFF_NUDGE,
+                        content=nudge,
                         display=False,
                     )
                 )
-        else:
-            self._output_nudges = 0
+            else:
+                # Exhausted recovery nudges: fail explicitly instead of silently
+                # reporting a truncated turn as completed.
+                message.stop_reason = "error"
+                message.error_message = (
+                    "the response hit the output token limit repeatedly and could not be completed"
+                )
+            return None
+
+        if message.stop_reason == "stop" and not message.tool_calls and not cancelled:
+            if getattr(self._model, "last_dropped_unnamed_tool_calls", False):
+                if (
+                    self._invalid_tool_nudges < MAX_INVALID_TOOL_NUDGES
+                    and self._recovery_nudges < MAX_TOTAL_RECOVERY_NUDGES
+                ):
+                    self._invalid_tool_nudges += 1
+                    self._recovery_nudges += 1
+                    self.harness.steer_message(
+                        CustomMessage(
+                            custom_type="notice:invalid_tool_turn",
+                            content=texts.INVALID_TOOL_TURN_NUDGE,
+                            display=False,
+                        )
+                    )
+                return None
+            if not message.text.strip():
+                after_tool = len(turn.messages) >= 2 and isinstance(turn.messages[-2], ToolResultMessage)
+                suspicious_empty = (
+                    bool(message.thinking_text.strip())
+                    or message.usage.output > 0
+                    or after_tool
+                )
+                if suspicious_empty:
+                    if (
+                        self._empty_nudges < MAX_EMPTY_COMPLETION_NUDGES
+                        and self._recovery_nudges < MAX_TOTAL_RECOVERY_NUDGES
+                    ):
+                        self._empty_nudges += 1
+                        self._recovery_nudges += 1
+                        self.harness.steer_message(
+                            CustomMessage(
+                                custom_type="notice:empty_completion",
+                                content=texts.EMPTY_COMPLETION_NUDGE,
+                                display=False,
+                            )
+                        )
+                    return None
+            # Normal non-empty stop completion is genuine progress: reset all
+            # recovery counters so later work gets a fresh budget.
+            self._reset_recovery_nudges()
+        elif not cancelled and (message.tool_calls or message.text.strip()):
+            self._reset_recovery_nudges()
+
+        if (
+            not cancelled
+            and message.tool_calls
+            and self.todos.open_items()
+            and self._turns_since_todo_write >= TASK_AGENT_TODO_NUDGE_TURNS
+            and self._turns_since_todo_nudge >= TASK_AGENT_TODO_NUDGE_TURNS
+        ):
+            self._turns_since_todo_nudge = 0
+            self.harness.steer_message(
+                CustomMessage(
+                    custom_type="notice:todo_reminder",
+                    content=texts.TODO_IDLE_NUDGE,
+                    display=False,
+                )
+            )
         return None
 
     # ------------------------------------------------------------------
@@ -1774,6 +2123,10 @@ class TaskAgentSession(SessionInbox):
             # Its entry is known once the run has taken it (``_record``).
             self._opening_message = message
             self._leave_behind()
+            if human:
+                lang_match = _REPLY_LANGUAGE_RE.search(text)
+                if lang_match is not None:
+                    self._reply_language_hint = lang_match.group(1).strip() or None
         self._begin_run(message)
 
     def _leave_behind(self) -> None:
@@ -1786,6 +2139,15 @@ class TaskAgentSession(SessionInbox):
         stand in the way of one of its own.
         """
         self.todos.clear()
+        self._last_image_hash = None
+        self._consecutive_image_count = 0
+        self._turns_since_todo_write = 0
+        self._turns_since_todo_nudge = 0
+        self._rapid_compactions = 0
+        self._compaction_breaker_tripped = False
+        self._compaction_breaker_notified = False
+        self._reset_recovery_nudges()
+        self._reply_language_hint = None
         if not self._goal_of_this_start:
             self.goals.drop()
             goal = self.spec.goal
@@ -1924,6 +2286,9 @@ class TaskAgentSession(SessionInbox):
             raise SessionError("a background command is still running")
         self._abort_requested = False
         self._compacting = True
+        self._rapid_compactions = 0
+        self._compaction_breaker_tripped = False
+        self._compaction_breaker_notified = False
         task = asyncio.ensure_future(self._compact())
         self._run_task = task
         task.add_done_callback(self._compact_never_ran)

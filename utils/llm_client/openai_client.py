@@ -278,6 +278,7 @@ class ChatOpenAI:
             overrides.pop("tool_choice", None)
         if stream:
             p["stream_options"] = {"include_usage": True}
+        skip_cache_write = bool(overrides.pop("skip_cache_write", False))
         # Anything else the caller passed (e.g. timeout, logit_bias) goes
         # straight through to the SDK call.
         p.update(overrides)
@@ -318,7 +319,11 @@ class ChatOpenAI:
         # and before the leak check (which transparently scans list-of-parts
         # content) so a promoted string still gets audited for placeholder leaks.
         if self.enable_cache_control:
-            p["messages"] = _inject_cache_control(p["messages"])
+            p["messages"] = _inject_cache_control(
+                p["messages"],
+                rolling_tail=True,
+                skip_cache_write=skip_cache_write,
+            )
 
         # Catch prompt-template leaks: literal {placeholder} that should have
         # been .format()-ed before reaching the wire. See

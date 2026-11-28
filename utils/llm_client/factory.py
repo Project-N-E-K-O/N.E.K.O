@@ -95,8 +95,14 @@ def create_chat_llm(
         cache_default_headers = cache_kw.pop("default_headers", None) or {}
         default_headers = dict(cache_default_headers)
         default_headers.update(dict(kw.pop("default_headers", {}) or {}))
+        merged_kw = {**cache_kw, **kw}
         if _is_kimi_code_anthropic_base_url(base_url):
             default_headers.setdefault("User-Agent", "claude-code/0.1.0")
+        else:
+            # Native Anthropic and custom Anthropic-protocol gateways default
+            # to explicit cache_control breakpoints (with 400 auto-fallback),
+            # while allowing callers to opt out explicitly.
+            merged_kw.setdefault("enable_cache_control", True)
         return ChatAnthropic(
             model=model,
             base_url=base_url,
@@ -111,8 +117,7 @@ def create_chat_llm(
             tools=tools,
             tool_choice=tool_choice,
             default_headers=default_headers or None,
-            **cache_kw,
-            **kw,
+            **merged_kw,
         )
 
     # Anthropic API uses x-api-key rather than a Bearer token; inject dedicated headers.
@@ -132,6 +137,7 @@ def create_chat_llm(
         # OpenAI SDK requires a nonempty api_key; use a placeholder (actual authentication uses x-api-key).
         _api_key = "anthropic-via-header"
 
+    merged_openai_kw = {**cache_kw, **kw}
     return ChatOpenAI(
         model=model,
         base_url=base_url,
@@ -145,8 +151,7 @@ def create_chat_llm(
         model_kwargs=model_kwargs,
         tools=tools,
         tool_choice=tool_choice,
-        **cache_kw,
-        **kw,
+        **merged_openai_kw,
     )
 
 

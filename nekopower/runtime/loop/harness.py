@@ -14,7 +14,12 @@ from dataclasses import dataclass, field
 from inspect import isawaitable
 from typing import Literal
 
-from nekopower.runtime.loop.events import AgentEvent, MessageEndEvent, MessageStartEvent
+from nekopower.runtime.loop.events import (
+    AgentEvent,
+    MessageEndEvent,
+    MessageStartEvent,
+    ToolExecutionStartEvent,
+)
 from nekopower.runtime.loop.loop import AfterToolCall, BeforeToolCall, run_agent_loop
 from nekopower.runtime.loop.messages import (
     AgentMessage,
@@ -24,6 +29,11 @@ from nekopower.runtime.loop.messages import (
     UserMessage,
 )
 from nekopower.runtime.loop.provider import ModelProvider
+from nekopower.runtime.loop.tool_history import (
+    INTERRUPTED_TOOL_RUNNING,
+    INTERRUPTED_TOOL_SKIPPED,
+    INTERRUPTED_TOOL_UNKNOWN,
+)
 from nekopower.runtime.loop.tools import AgentTool
 from nekopower.runtime.loop.turns import FinishTurn
 
@@ -173,12 +183,13 @@ class AgentHarness:
     ) -> AsyncIterator[AgentEvent]:
         signal = SimpleCancellationToken()
         self._current_signal = signal
+        started_call_ids: set[str] = set()
         try:
             # Repair dangling tool calls here, not in prompt()/continue_(),
             # so the synthetic results flow through events and reach push
             # subscribers (persistence) as well as the consumer.
             repaired_from = len(self._messages)
-            self._append_interrupted_tool_results()
+            self._append_interrupted_tool_results(text=INTERRUPTED_TOOL_UNKNOWN)
             repairs = self._messages[repaired_from:]
             async for event in run_agent_loop(
                 provider=self._config.provider,
@@ -198,12 +209,14 @@ class AgentHarness:
                 after_tool_call=self._config.after_tool_call,
                 finish_turn=self._config.finish_turn,
             ):
+                if isinstance(event, ToolExecutionStartEvent):
+                    started_call_ids.add(event.tool_call_id)
                 await self._notify(event)
                 yield event
         finally:
             if signal.is_cancelled():
                 repaired_from = len(self._messages)
-                self._append_interrupted_tool_results()
+                self._append_interrupted_tool_results(started_ids=started_call_ids)
                 # The consumer is usually gone here; push the repairs to
                 # subscribers. Listener errors are suppressed; cancellation
                 # itself is not.
@@ -242,12 +255,17 @@ class AgentHarness:
             return messages
         return (queue.popleft(),)
 
-    def append_interrupted_tool_results(self) -> int:
+    def append_interrupted_tool_results(self, *, text: str = INTERRUPTED_TOOL_RUNNING) -> int:
         before = len(self._messages)
-        self._append_interrupted_tool_results()
+        self._append_interrupted_tool_results(text=text)
         return len(self._messages) - before
 
-    def _append_interrupted_tool_results(self) -> None:
+    def _append_interrupted_tool_results(
+        self,
+        *,
+        text: str = INTERRUPTED_TOOL_RUNNING,
+        started_ids: set[str] | None = None,
+    ) -> None:
         returned_ids = {
             message.tool_call_id
             for message in self._messages
@@ -260,11 +278,17 @@ class AgentHarness:
                 if call.id in returned_ids:
                     continue
                 returned_ids.add(call.id)
+                if started_ids is None:
+                    repair_text = text
+                elif call.id in started_ids:
+                    repair_text = INTERRUPTED_TOOL_RUNNING
+                else:
+                    repair_text = INTERRUPTED_TOOL_SKIPPED
                 self._messages.append(
                     ToolResultMessage(
                         tool_call_id=call.id,
                         tool_name=call.name,
-                        content=[TextContent(text="Tool call interrupted by user")],
+                        content=[TextContent(text=repair_text)],
                         is_error=True,
                     )
                 )

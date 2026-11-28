@@ -954,9 +954,10 @@ class MessagingMixin:
         """Return what a session is told for the wake requests handed to it now, each thing in a frame of its own."""
         import secrets
 
-        from config.nekopower_settings import SESSION_NOTICE_WAIT_SECONDS
+        from config.nekopower_settings import SESSION_NOTICE_WAIT_SECONDS, WAKE_LATE_NOTICE_SECONDS
         from config.prompts import prompts_nekopower_sessions as words
 
+        now = self._ledger._clock()
         messages = await self._ledger.messages_of([wake.id for wake in wakes])
         parts: list[str] = []
         for wake in wakes:
@@ -964,6 +965,9 @@ class MessagingMixin:
             message = messages.get(wake.id)
             if wake.reason == "timer":
                 intro = words.WAKE_TIMER_NOTICE.format(set_at=_clock_time(wake.created_at), nonce=nonce)
+                late_seconds = float(now) - float(wake.due_at)
+                if late_seconds >= WAKE_LATE_NOTICE_SECONDS:
+                    intro += words.WAKE_TIMER_LATE_NOTE.format(minutes=max(1, round(late_seconds / 60.0)))
                 parts.append(words.frame(intro, wake.note, nonce))
             elif wake.reason == "notice_expiry" and message is not None:
                 other = await self._ledger.get_session(message.to_session)

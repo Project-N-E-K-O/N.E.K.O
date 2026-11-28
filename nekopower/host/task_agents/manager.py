@@ -1679,6 +1679,24 @@ class TaskAgentManager(
             runtime_name, runtime, fallback = await self._choose_runtime(
                 commission, model, begun_in, builtin_only=builtin_only
             )
+            # COMPACT-16: before resuming a long built-in transcript on a new
+            # model with a smaller context window, pre-compact once using the
+            # previous larger-window model (best-effort, fail-open).
+            if runtime_name == RUNTIME_BUILTIN and begun_in == RUNTIME_BUILTIN and not session.cleared_before:
+                precompacted = await self._maybe_precompact_for_model_switch(
+                    commission,
+                    kept,
+                    choice,
+                    model,
+                    workdir=home,
+                    session_path=session_path,
+                    template=template,
+                    still_active=receiving,
+                )
+                if precompacted:
+                    refreshed = await self._ledger.get_session(session.session_id)
+                    if refreshed is not None:
+                        kept = refreshed
             # Uninstall/replace must see this commission before gateway setup yields.
             session.runtime, session.runtime_name = runtime, runtime_name
             url = await self._gateway.start() if self._gateway is not None else None
@@ -2132,6 +2150,7 @@ class TaskAgentManager(
             # the task agent works included, and its screenshots are
             # limited too.
             image_retention, image_pools = self._image_retention(self._registry.builtins())
+        image_evict_at = self._image_evict_at(image_retention)
         # A task agent started by a task agent starts none itself, and
         # neither writes to sessions outside its team nor asks to be woken
         # (``_CHILD_DISABLED_TOOLS``).
@@ -2165,6 +2184,7 @@ class TaskAgentManager(
             disabled_tools=sorted(withheld),
             image_retention=image_retention,
             image_pools=image_pools,
+            image_evict_at=image_evict_at,
             gateway=gateway,
             limits=limits,
         )
@@ -2294,6 +2314,23 @@ class TaskAgentManager(
             # that calls the gateway by them.
             retention[CALL_TOOL] = TASK_AGENT_SCREENSHOTS_KEPT
         return retention, {name: SCREENSHOT_POOL for name in retention}
+
+    @staticmethod
+    def _image_evict_at(retention: dict[str, int]) -> dict[str, int]:
+        """Return hysteresis eviction trigger counts for each retained image tool.
+
+        When ``keep >= 2`` (default 3), older images stay byte-for-byte intact
+        until the pool reaches ``TASK_AGENT_SCREENSHOTS_EVICT_AT`` (default 7),
+        preserving KV prompt cache across intermediate steps before batch
+        evicting down to ``keep``. When ``keep <= 1``, evict immediately on the
+        next image so strict single-image configs keep their exact cap.
+        """
+        from config.nekopower_settings import TASK_AGENT_SCREENSHOTS_EVICT_AT
+
+        return {
+            name: max(keep + 1, TASK_AGENT_SCREENSHOTS_EVICT_AT) if keep >= 2 else keep + 1
+            for name, keep in retention.items()
+        }
 
     @asynccontextmanager
     async def _answer_delivery(self, session: _Session, parts: list[str]):
@@ -2498,6 +2535,7 @@ class TaskAgentManager(
         session = self._sessions.pop(commission_id, None)
         self._starting_workdirs.pop(commission_id, None)
         if session is not None:
+            session.first_output.set()
             self._close_answer_receipts(session)
         self._candidates.pop(commission_id, None)
         self._excerpts.pop(commission_id, None)
@@ -2667,6 +2705,7 @@ class TaskAgentManager(
             # its session (unless it already moved out of an old copy).
             self._cancel_control_calls(commission_id)
             if session is not None:
+                session.first_output.set()
                 self._close_answer_receipts(session)
             self._sessions.pop(commission_id, None)
             self._starting_workdirs.pop(commission_id, None)
@@ -2851,6 +2890,8 @@ class TaskAgentManager(
         if session is None:
             # Process-level messages, and events of sessions already released.
             return
+        if kind in ("text", "tool_start", "usage", "ended", "error"):
+            session.first_output.set()
         refused: list[int] = []
         refused_answer = None
         if kind == "ended":

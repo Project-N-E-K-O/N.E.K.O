@@ -265,9 +265,11 @@ async def test_cancelled_run_notifies_listeners_of_interrupted_tool_repair() -> 
     with pytest.raises(asyncio.CancelledError):
         await task
 
+    from nekopower.runtime.loop.tool_history import INTERRUPTED_TOOL_RUNNING
+
     repair = harness.messages[-1]
     assert isinstance(repair, ToolResultMessage)
-    assert repair.text == "Tool call interrupted by user"
+    assert repair.text == INTERRUPTED_TOOL_RUNNING
     repair_ends = [
         event
         for event in seen
@@ -308,11 +310,13 @@ def test_harness_repairs_interrupted_tool_calls() -> None:
         messages=[AssistantMessage(content=[TextContent(text="Reading"), call])],
     )
 
+    from nekopower.runtime.loop.tool_history import INTERRUPTED_TOOL_RUNNING
+
     assert harness.append_interrupted_tool_results() == 1
     repair = harness.messages[-1]
     assert isinstance(repair, ToolResultMessage)
     assert repair.is_error is True
-    assert repair.text == "Tool call interrupted by user"
+    assert repair.text == INTERRUPTED_TOOL_RUNNING
 
 
 async def test_entry_path_repair_is_pushed_to_listeners() -> None:

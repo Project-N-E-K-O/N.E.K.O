@@ -157,11 +157,18 @@ def test_provider_compatibility():
         print(f"  {status} {config['name']}: 缓存控制 = {actual}")
         assert actual == expected, f"{config['name']}: expected {expected}, got {actual}"
 
-    # Without a body-flag provider, all should be False; header behavior is unaffected.
-    assert all(
-        not get_cache_kwargs(c["base_url"])["enable_cache_control"]
-        for c in PROVIDER_CACHE_CONFIG.values()
-    ), "当前没有 provider 需要 body 级 flag，enable_cache_control 应全为 False"
+    # Only providers with requires_body_flag=True (e.g. Anthropic) should enable body-level cache_control.
+    body_flag_providers = [
+        name for name, c in PROVIDER_CACHE_CONFIG.items()
+        if get_cache_kwargs(c["base_url"])["enable_cache_control"]
+    ]
+    expected_body_flag = [
+        name for name, c in PROVIDER_CACHE_CONFIG.items() if c["requires_body_flag"]
+    ]
+    assert body_flag_providers == expected_body_flag, (
+        f"enable_cache_control 应仅对 requires_body_flag=True 的 provider 开启: "
+        f"got {body_flag_providers}, expected {expected_body_flag}"
+    )
 
 
 def test_min_cache_tokens_all_providers():
