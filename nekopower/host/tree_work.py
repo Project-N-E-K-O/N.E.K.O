@@ -1287,8 +1287,9 @@ class TreeWork:
         Asked before every model request of a run (``_cb_budget``):
         between two steps, with no tool of the run at work.
         """
-        # A landing is writing how its commission ends this moment, and this is a run its runtime
-        # began by itself meanwhile (nothing else of the host's begins one then): asked on once
+        # A landing is writing how its commission ends this moment (or the end of a run is, ``_end``'s
+        # ``hold``), and this is a run its runtime began by itself meanwhile (nothing else of the
+        # host's begins one then): asked on once
         # that is written, so that it changes nothing in a worktree on record as one to remove.
         commission_id = self._at_work_in(session_id)
         if commission_id in self._landing_ends:

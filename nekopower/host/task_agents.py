@@ -6472,8 +6472,9 @@ class TaskAgentManager(TreeWork):
         ``hold``: from that look until the change is written, what is said
         to the commission waits (``_nothing_more_said``), and goes by how
         it stands then. Said in between and sent on, it would start a run
-        that the end closes. Not for an end that is within such a hold
-        already (a landing's).
+        that the end closes. A landing's own ends are within its hold
+        already and are not given one; held again within it, it is let go
+        once both are through.
         """
         # Asked again where it cannot be read this moment: given up on at
         # once, a run that is over would leave its commission at work.
@@ -6880,8 +6881,9 @@ class TaskAgentManager(TreeWork):
             if session.closing or commission.status not in ("working", "waiting_user"):
                 return False
             if commission_id in self._landing_ends:
-                # What it changed is landed, and it is being put down as done this moment: whether
-                # more was said to it was looked at just before (``_landed_or_not``), and steered
+                # What it changed is landed (or its run is over, ``_end``'s ``hold``), and it is being
+                # put down as done this moment: whether more was said to it was looked at just before
+                # (``_landed_or_not``, ``unless``), and steered
                 # in now this would start a run of a commission that is done. Said to it as it
                 # stands once that is written (done, this is work of its own).
                 await self._landing_end_written(commission_id)
