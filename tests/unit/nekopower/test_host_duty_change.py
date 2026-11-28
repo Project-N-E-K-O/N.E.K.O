@@ -418,6 +418,14 @@ async def test_what_is_not_changed_and_why(hosts, tmp_path, monkeypatch):
     for session_id in (leader, child.id):
         with pytest.raises(ValueError, match="not_changeable"):
             await host.change_duty(session_id, "scout")
+    # Refused before the user is asked anything: a question about what is not done is no question to put.
+    reader = await ledger.create_session(lanlan_name="Lan", name="look", kind="child", parent_id=host.member, preset="scout")
+    commission, _created = await ledger.create(
+        lanlan_name="Lan", title="fix it", dispatch_text="fix it", source="dispatch", route="task_agent"
+    )
+    _no_question(host, monkeypatch)
+    with pytest.raises(ValueError, match="not_changeable"):
+        await host.task_agents.change_duty(reader.id, "worker", by="session", commission_id=commission.id)
     # The leader's is no preset a member is given, nor is a copy's; nor one that is not there.
     for preset in ("boss", "shadow", "no-such-preset", " "):
         with pytest.raises(ValueError, match="bad_preset"):
