@@ -292,6 +292,8 @@ class ProjectsMixin:
             project, known = self._project_to_change(directory)
             if not known:
                 return None
+            if workdir and self._workdir_clearing is not None and self._workdir_clearing(workdir):
+                raise _WorkdirClearing(workdir)
             changed = replace(project, workdir=workdir)
             self._put_project(directory, changed)
             if name != DEFAULT_PROJECT:
@@ -455,6 +457,17 @@ class ProjectsMixin:
             logger.warning("the file of a project brought back cannot be read; it is left as it is")
             restored = replace(project, status=PROJECT_ACTIVE, archived_at=None, archive_year=None, directory=target.name)
         else:
+            if current.workdir and self._workdir_clearing is not None and self._workdir_clearing(current.workdir):
+                try:
+                    _space_facade._move(target, source)
+                except OSError:
+                    logger.warning(
+                        "a restored project pointed at a workdir being cleared and could not be moved back; clearing its workdir reference",
+                        exc_info=True,
+                    )
+                    current = replace(current, workdir=None)
+                else:
+                    raise _WorkdirClearing(current.workdir)
             restored = replace(
                 current,
                 name=current.name if _known else project.name,

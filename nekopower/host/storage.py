@@ -45,6 +45,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import math
 import os
 import shutil
 import stat
@@ -403,7 +404,10 @@ def _confirmed_cutoff(
     from config.nekopower_settings import SPACE_UPKEEP_INTERVAL_SECONDS
 
     noted, seen_at = state.get(until_key), state.get(seen_key)
-    if any(isinstance(value, bool) or not isinstance(value, (int, float)) for value in (noted, seen_at)):
+    if any(
+        isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value)
+        for value in (noted, seen_at)
+    ):
         return None, True
     if seen_at > now:
         return None, True
@@ -457,16 +461,22 @@ class StorageSettingsStore:
         self._path_source = path
         self._lock = asyncio.Lock()
         self._kept: dict[str, Any] | None = None
+        self._kept_path: str | None = None
 
     def _path(self) -> Path:
         source = self._path_source
         return Path(source() if callable(source) else source)
 
-    def _read_disk(self) -> tuple[dict[str, Any], bool]:
+    @staticmethod
+    def _norm_path(path: Path) -> str:
+        return os.path.normcase(os.path.normpath(str(path)))
+
+    def _read_disk(self, path: Path | None = None) -> tuple[dict[str, Any], bool]:
         """Blocking: return ``(values, readable)``; ``readable`` is False on read/parse error."""
         found = _default_settings()
+        target_path = self._path() if path is None else path
         try:
-            raw = json.loads(self._path().read_text(encoding="utf-8"))
+            raw = json.loads(target_path.read_text(encoding="utf-8"))
         except FileNotFoundError:
             return found, True
         except (OSError, ValueError, RecursionError) as exc:
@@ -501,14 +511,22 @@ class StorageSettingsStore:
         settings with automatic cleanup disabled and does not cache them so
         subsequent calls re-read once the file recovers.
         """
-        if self._kept is not None:
+        current_path = self._path()
+        norm_path = self._norm_path(current_path)
+        if self._kept is not None and self._kept_path == norm_path:
             return dict(self._kept)
         async with self._lock:
-            if self._kept is not None:
+            current_path = self._path()
+            norm_path = self._norm_path(current_path)
+            if self._kept is not None and self._kept_path == norm_path:
                 return dict(self._kept)
-            values, readable = await asyncio.to_thread(self._read_disk)
+            values, readable = await asyncio.to_thread(self._read_disk, current_path)
             if readable:
                 self._kept = values
+                self._kept_path = norm_path
+            elif self._kept_path != norm_path:
+                self._kept = None
+                self._kept_path = None
             return dict(values)
 
     async def describe(self) -> dict[str, Any]:
@@ -557,8 +575,10 @@ class StorageSettingsStore:
         worktree_kept_days: int | None,
     ) -> dict[str, Any]:
         async with self._lock:
+            current_path = self._path()
+            norm_path = self._norm_path(current_path)
             # Always base saves on current on-disk contents; refuse to overwrite an unreadable file.
-            values, readable = await asyncio.to_thread(self._read_disk)
+            values, readable = await asyncio.to_thread(self._read_disk, current_path)
             if not readable:
                 raise OSError("storage settings file is unreadable")
             if auto_clean_work_dirs is not None:
@@ -569,14 +589,18 @@ class StorageSettingsStore:
                 values["auto_clean_worktrees"] = auto_clean_worktrees
             if worktree_kept_days is not None:
                 values["worktree_kept_days"] = int(worktree_kept_days)
-            await asyncio.to_thread(self._write, values, self._path())
+            await asyncio.to_thread(self._write, values, current_path)
             self._kept = values
+            self._kept_path = norm_path
             return dict(values)
 
     def allows_auto_clean(self, target: str, kept_days: int) -> bool:
         """Synchronously check whether the cached settings still allow auto-clean at ``kept_days``."""
         kept = self._kept
-        if kept is None:
+        kept_path = self._kept_path
+        if kept is None or kept_path is None:
+            return False
+        if self._norm_path(self._path()) != kept_path:
             return False
         if target == "work_dirs":
             return bool(kept.get("auto_clean_work_dirs")) and int(kept.get("work_dir_kept_days", -1)) == kept_days
@@ -830,11 +854,13 @@ class StorageManager:
                     active_sessions.add(sid)
                     if workdir:
                         live_workdirs.add(os.path.normcase(os.path.normpath(workdir)))
-            for comm_sid, comm_workdir in await self._active_commission_refs():
+            for comm_sid, comm_workdir, comm_session_workdir in await self._active_commission_refs():
                 if comm_sid:
                     active_sessions.add(comm_sid)
                 if comm_workdir:
                     live_workdirs.add(os.path.normcase(os.path.normpath(comm_workdir)))
+                if comm_session_workdir:
+                    live_workdirs.add(os.path.normcase(os.path.normpath(comm_session_workdir)))
             trees = await self._ledger.trees()
             for row in trees:
                 for backing in (row.repo_root, row.project_dir, row.path, row.workdir):
@@ -938,8 +964,8 @@ class StorageManager:
             ]
         )
 
-    async def _active_commission_refs(self) -> list[tuple[str | None, str | None]]:
-        """Return ``(session_id, workdir)`` for every active commission in the ledger without truncation."""
+    async def _active_commission_refs(self) -> list[tuple[str | None, str | None, str | None]]:
+        """Return ``(session_id, commission_workdir, session_workdir)`` for every active commission without truncation."""
         statuses = tuple(ACTIVE_STATUSES)
         placeholders = ",".join("?" for _ in statuses)
         return await self._ledger.run(
@@ -947,9 +973,12 @@ class StorageManager:
                 (
                     str(row["session_id"]) if row["session_id"] is not None else None,
                     str(row["workdir"]) if row["workdir"] is not None else None,
+                    str(row["session_workdir"]) if row["session_workdir"] is not None else None,
                 )
                 for row in conn.execute(
-                    f"SELECT session_id, workdir FROM commissions WHERE status IN ({placeholders})",
+                    "SELECT c.session_id, c.workdir, s.workdir AS session_workdir "
+                    "FROM commissions AS c LEFT JOIN sessions AS s ON s.id = c.session_id "
+                    f"WHERE c.status IN ({placeholders})",
                     statuses,
                 ).fetchall()
             ]
@@ -997,11 +1026,13 @@ class StorageManager:
                         active_sessions.add(sid)
                         if workdir:
                             live_workdirs.add(os.path.normcase(os.path.normpath(workdir)))
-            for comm_sid, comm_workdir in await self._active_commission_refs():
+            for comm_sid, comm_workdir, comm_session_workdir in await self._active_commission_refs():
                 if comm_sid:
                     active_sessions.add(comm_sid)
                 if comm_workdir:
                     live_workdirs.add(os.path.normcase(os.path.normpath(comm_workdir)))
+                if comm_session_workdir:
+                    live_workdirs.add(os.path.normcase(os.path.normpath(comm_session_workdir)))
             for row in await self._ledger.trees():
                 for backing in (row.repo_root, row.project_dir, row.path, row.workdir):
                     if backing:
@@ -1125,8 +1156,10 @@ class StorageManager:
                 wt_safety = _classify_path_safety(wt_path, wt_root)
                 if wt_safety == "ok":
                     stats = measure_dir(wt_path, item_deadline())
-                else:
+                elif wt_safety == "missing":
                     stats = DirStats(exists=False, bytes=0, whole=True, file_count=0, newest_mtime=None)
+                else:
+                    stats = DirStats(exists=False, bytes=0, whole=False, file_count=0, newest_mtime=None)
                 wt_whole = wt_whole and stats.whole
                 if stats.exists:
                     wt_total_bytes += stats.bytes
@@ -2241,7 +2274,7 @@ class StorageManager:
                 if outcome.get("removed"):
                     cleaned.append(tree_id)
                 else:
-                    deferred.append(tree_id)
+                    failed.append({"id": tree_id, "code": "not_removed"})
 
         return {"cleaned": cleaned, "deferred": deferred, "freed_bytes": freed_total, "failed": failed}
 

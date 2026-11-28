@@ -50,6 +50,7 @@ import dataclasses
 import logging
 import os
 import shutil
+import stat
 import time
 from pathlib import Path
 from collections.abc import AsyncIterator, Iterator
@@ -183,13 +184,53 @@ def _says_it_is(path: Path, name: str, repository: str | None) -> bool:
     return os.path.normcase(os.path.realpath(Path(*parts[:-3]))) == os.path.normcase(os.path.realpath(repository))
 
 
-def _repo_from_worktree_gitfile(path: Path) -> Path | None:
-    """Return the repository root named by a worktree's ``.git`` file, or None."""
+def _read_regular_gitfile(path: Path, max_bytes: int = 65536) -> str | None:
+    """Read a worktree's ``.git`` pointer file only if it is a regular non-link file within ``max_bytes``."""
+    gitfile = path / ".git"
     try:
-        said = (path / ".git").read_text(encoding="utf-8", errors="replace").strip()
+        lst = os.lstat(gitfile)
     except OSError:
         return None
-    if not said.startswith("gitdir:"):
+    if not stat.S_ISREG(lst.st_mode) or _is_link(gitfile):
+        return None
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+        | getattr(os, "O_BINARY", 0)
+    )
+    try:
+        fd = os.open(gitfile, flags)
+    except OSError:
+        return None
+    try:
+        fst = os.fstat(fd)
+        if not stat.S_ISREG(fst.st_mode):
+            return None
+        chunks: list[bytes] = []
+        total = 0
+        while total <= max_bytes:
+            chunk = os.read(fd, max_bytes + 1 - total)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+    except OSError:
+        return None
+    finally:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+    if total > max_bytes:
+        return None
+    return b"".join(chunks).decode("utf-8", errors="replace").strip()
+
+
+def _repo_from_worktree_gitfile(path: Path) -> Path | None:
+    """Return the repository root named by a worktree's ``.git`` file, or None."""
+    said = _read_regular_gitfile(path)
+    if not said or not said.startswith("gitdir:"):
         return None
     pointed = Path(said[len("gitdir:") :].strip())
     if not pointed.is_absolute():
@@ -1063,9 +1104,23 @@ class TreeWork:
             if len(await self._ledger.trees(project=project, states=_SHOWN_STATES)) >= settings.WORKTREES_PER_PROJECT:
                 return None, "too_many", f"the project has {settings.WORKTREES_PER_PROJECT} worktrees already"
             # (One of this commission that the user sees to personally keeps its name.)
-            taken = {row.id for row in await self._ledger.trees(commission_id=commission.id)}
+            taken = {
+                os.path.normcase(item)
+                for item in (
+                    *(row.id for row in await self._ledger.trees(commission_id=commission.id)),
+                    *self._trees_in_hand,
+                    *self._trees_mine,
+                    *self._tree_of.values(),
+                )
+            }
             base = commission.id[:12]
-            name = worktree_name(next(item for item in (base, *(f"{base}-{n}" for n in range(2, 100))) if item not in taken))
+            name = worktree_name(
+                next(
+                    item
+                    for item in (base, *(f"{base}-{n}" for n in range(2, 100)))
+                    if os.path.normcase(item) not in taken
+                )
+            )
             path = self._paths.worktree_dir(name)
             try:
                 row = await self._ledger.add_tree(
@@ -2724,6 +2779,19 @@ class TreeWork:
             except OSError:
                 return False
 
+        def _stat_target() -> os.stat_result | None:
+            try:
+                return os.lstat(target)
+            except OSError:
+                return None
+
+        def _same_target_dir(expected: os.stat_result | None, current: os.stat_result | None) -> bool:
+            if expected is None or current is None or not stat.S_ISDIR(current.st_mode):
+                return False
+            if expected.st_ino and current.st_ino:
+                return os.path.samestat(expected, current)
+            return expected.st_dev == current.st_dev and expected.st_ctime_ns == current.st_ctime_ns
+
         async with self._tree_room:
             if self._trees_making > 0 or self._trees_looking > 0:
                 raise ValueError("busy")
@@ -2745,6 +2813,33 @@ class TreeWork:
                 return {"removed": True, "freed_bytes": 0}
             if safety != "ok":
                 raise ValueError("unsafe_path")
+            initial_stat = await asyncio.to_thread(_stat_target)
+            if initial_stat is None:
+                return {"removed": True, "freed_bytes": 0}
+
+            async def _target_state() -> str:
+                for active_id in (*self._trees_mine, *self._tree_of.values()):
+                    if os.path.normcase(active_id) == norm_name or await asyncio.to_thread(
+                        _same_fs_entry, target, self._paths.worktree_dir(active_id)
+                    ):
+                        return "changed"
+                for row in await self._ledger.trees():
+                    if os.path.normcase(row.id) == norm_name or await asyncio.to_thread(
+                        _same_fs_entry, target, Path(row.path)
+                    ):
+                        return "changed"
+
+                def _check_fs() -> str:
+                    if not os.path.lexists(target):
+                        return "missing"
+                    if _classify_path_safety(target, base) != "ok":
+                        return "changed"
+                    if not _same_target_dir(initial_stat, _stat_target()):
+                        return "changed"
+                    return "same"
+
+                return await asyncio.to_thread(_check_fs)
+
             hold_workdir_fn = getattr(self, "hold_workdir", None)
             release_workdir_fn = getattr(self, "release_workdir", None)
             workdir_hold: str | None = None
@@ -2761,6 +2856,11 @@ class TreeWork:
                 git_attempted = False
                 repo_root = await asyncio.to_thread(_repo_from_worktree_gitfile, target)
                 if repo_root is not None and await asyncio.to_thread(repo_root.is_dir):
+                    state_before_git = await _target_state()
+                    if state_before_git == "missing":
+                        return {"removed": True, "freed_bytes": est_bytes}
+                    if state_before_git != "same":
+                        raise ValueError("busy")
                     git_attempted = True
                     try:
                         handle = await self.worktrees.open(repo_root, target)
@@ -2770,8 +2870,11 @@ class TreeWork:
                     except (WorktreeError, ValueError, OSError):
                         # Git unregistration unavailable; fall back to direct removal below.
                         pass
-                if not await asyncio.to_thread(lambda: os.path.lexists(target)):
+                state_before_rm = await _target_state()
+                if state_before_rm == "missing":
                     return {"removed": True, "freed_bytes": est_bytes}
+                if state_before_rm != "same":
+                    raise ValueError("busy")
                 git_freed = 0
                 if git_attempted and pre_stats.whole:
                     mid_stats = await asyncio.to_thread(measure_dir, target, time.monotonic() + 0.25)
@@ -2816,7 +2919,14 @@ class TreeWork:
         removed: list[str] = []
         kept: list[str] = []
         homes: dict[str, tuple[str, str | None]] = {}
-        pending_expired = await self._read_pending_expired_trees()
+        try:
+            pending_expired = await self._read_pending_expired_trees(raise_on_error=True)
+        except OSError:
+            logger.warning(
+                "pending expired worktree markers could not be read; deferring worktree reconciliation",
+                exc_info=True,
+            )
+            return {"removed": removed, "kept": kept}
         seen_tree_ids: set[str] = set()
         for row in await self._ledger.trees():
             seen_tree_ids.add(row.id)
@@ -2830,7 +2940,7 @@ class TreeWork:
                     if row.id in pending_expired:
                         self._trees_in_hand.add(row.id)
                         try:
-                            live_marker = (await self._read_pending_expired_trees()).get(row.id)
+                            live_marker = (await self._read_pending_expired_trees(raise_on_error=True)).get(row.id)
                             if live_marker is not None:
                                 await self._cancel_expired_commission(row, live_marker)
                                 await self._clear_pending_expired_trees((row.id,), expected={row.id: live_marker})
@@ -2852,20 +2962,27 @@ class TreeWork:
             if row.id in pending_expired and row.state in TREE_STATES_LEFT:
                 self._trees_in_hand.add(row.id)
                 try:
-                    marker = (await self._read_pending_expired_trees()).get(row.id)
+                    marker = (await self._read_pending_expired_trees(raise_on_error=True)).get(row.id)
                     if marker is None:
                         kept.append(row.id)
                         continue
                     gone = await self._tree_is_gone(row)
-                    if marker == "expiring" and not gone:
-                        # Interrupted before deletion completed (aborted freshness check or
-                        # partial removal): clear the transient intent while still holding
-                        # _trees_in_hand so no concurrent expiry attempt can race with clearing,
-                        # and keep the row intact so intact worktrees stay landable and partial
-                        # ones retry via upkeep.
-                        await self._clear_pending_expired_trees((row.id,), expected={row.id: marker})
-                        kept.append(row.id)
-                        continue
+                    if not gone:
+                        if marker == "expiring":
+                            # Interrupted before deletion completed (aborted freshness check or
+                            # partial removal): clear the transient intent while still holding
+                            # _trees_in_hand so no concurrent expiry attempt can race with clearing,
+                            # and keep the row intact so intact worktrees stay landable and partial
+                            # ones retry via upkeep.
+                            await self._clear_pending_expired_trees((row.id,), expected={row.id: marker})
+                            kept.append(row.id)
+                            continue
+                        if marker == "removed":
+                            # The directory reappeared (e.g. restored from backup) or could not be
+                            # confirmed absent before settlement ran: keep both the ledger row and
+                            # recovery marker rather than settling it as removed and dropping the row.
+                            kept.append(row.id)
+                            continue
                     outcome_kind = "removed" if marker == "expiring" else marker
                     if gone:
                         repo_root = row.repo_root or row.project_dir

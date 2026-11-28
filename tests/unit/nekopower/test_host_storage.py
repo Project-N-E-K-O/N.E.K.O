@@ -2934,6 +2934,9 @@ async def test_round12_partial_clean_and_lifecycle_guards(tmp_path: Path, monkey
             if os.path.basename(str(p)) == "b_locked.txt":
                 raise PermissionError("locked")
             real_unlink(p, *args, **kwargs)
+            # Explicitly advance parent dir mtime past clock.now cutoff so the test cannot
+            # pass accidentally when wall-clock time is earlier than clock.now.
+            os.utime(wdir, (clock.now, clock.now))
 
         with monkeypatch.context() as mp:
             mp.setattr(os, "unlink", fail_b_locked)
@@ -2943,6 +2946,7 @@ async def test_round12_partial_clean_and_lifecycle_guards(tmp_path: Path, monkey
         assert out1 == "not_removed"
         assert not (wdir / "a_gone.txt").exists()
         assert (wdir / "b_locked.txt").exists()
+        assert abs(wdir.stat().st_mtime - old_ts) < 2.0
         # Next upkeep retries immediately (not misclassified as "recent").
         out2, _ = await host.storage._clean_one_work_dir(
             "session", DEFAULT_PROJECT, ws.id, until=clock.now - 14 * DAY, skip_project_referenced=True
@@ -3295,7 +3299,7 @@ async def test_round14_expiry_cancellation_recovery_and_edge_guards(tmp_path: Pa
         assert res_ro == {"expired": False, "reason": "state_unwritable"}
         assert wt_abort.exists()
 
-        # 4. Partial orphan worktree cleanup reports freed_bytes even when deferred, and explicit 0 is preserved.
+        # 4. Partial orphan worktree cleanup reports freed_bytes and failed=not_removed (never deferred), and preserves 0.
         orph1 = host1.paths.worktree_dir("orphpart1")
         orph1.mkdir(parents=True)
         (orph1 / "a.bin").write_bytes(b"a" * 300)
@@ -3311,7 +3315,8 @@ async def test_round14_expiry_cancellation_recovery_and_edge_guards(tmp_path: Pa
         with monkeypatch.context() as mp:
             mp.setattr(host1.task_agents, "remove_orphan_worktree", fake_remove_orphan)
             res_orph = await host1.clean_worktrees(["orphpart1", "orphzero1"])
-        assert res_orph["deferred"] == ["orphpart1"]
+        assert res_orph["deferred"] == []
+        assert res_orph["failed"] == [{"id": "orphpart1", "code": "not_removed"}]
         assert res_orph["cleaned"] == ["orphzero1"]
         assert res_orph["freed_bytes"] == 123
 
@@ -3702,5 +3707,287 @@ async def test_round16_codex_and_greptile_fixes(tmp_path: Path, monkeypatch: pyt
         persisted = await host.task_agents._read_pending_expired_trees()
         assert persisted.get("keep_other") == "expiring"
         assert "new_tree" not in persisted
+    finally:
+        await host.shutdown()
+
+
+async def test_round19_review_fixes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Verify Round 19 review fixes: NaN/inf cutoff guard, root-switch settings cache,
+    active-commission session workdir protection, unsafe worktree bytes_whole, mid-restore
+    workdir edit rollback, orphan cleanup vs _make_tree_now reservation & identity checks,
+    bounded regular .git reader, strict reconcile pending-expiry read & restored-dir guard,
+    and _schedule_idle_compact waiting for transcript-preserving file holds.
+    """
+    import asyncio
+    import json
+    import shutil
+
+    from nekopower.host import space as space_facade
+    from nekopower.host.storage import _confirmed_cutoff
+    from nekopower.host.tree_work import _repo_from_worktree_gitfile
+    from nekopower.host.worktrees import Probe, Worktree
+
+    # 1. _confirmed_cutoff rejects NaN and infinite values.
+    for bad in (float("nan"), float("inf"), float("-inf")):
+        assert _confirmed_cutoff({"u": bad, "s": 100.0}, 10000.0, 5000.0, until_key="u", seen_key="s") == (None, True)
+        assert _confirmed_cutoff({"u": 500.0, "s": bad}, 10000.0, 5000.0, until_key="u", seen_key="s") == (None, True)
+
+    # 2. StorageSettingsStore binds cache to current storage.json path across data-root switches.
+    root_a = tmp_path / "root_a"
+    root_b = tmp_path / "root_b"
+    root_a.mkdir()
+    root_b.mkdir()
+    (root_a / "storage.json").write_text('{"auto_clean_work_dirs": true, "work_dir_kept_days": 7}', encoding="utf-8")
+    (root_b / "storage.json").write_text('{"auto_clean_work_dirs": false, "work_dir_kept_days": 30}', encoding="utf-8")
+    active_root = [root_a]
+    store = StorageSettingsStore(lambda: active_root[0] / "storage.json")
+    vals_a = await store.get()
+    assert vals_a["auto_clean_work_dirs"] is True
+    assert store.allows_auto_clean("work_dirs", 7) is True
+    active_root[0] = root_b
+    assert store.allows_auto_clean("work_dirs", 7) is False
+    vals_b = await store.get()
+    assert vals_b["auto_clean_work_dirs"] is False
+    assert store.allows_auto_clean("work_dirs", 30) is False
+
+    # 3. _repo_from_worktree_gitfile rejects directories, symlinks, and oversized .git files.
+    wt_dir = tmp_path / "gitfile_check"
+    wt_dir.mkdir()
+    (wt_dir / ".git").mkdir()
+    assert _repo_from_worktree_gitfile(wt_dir) is None
+    (wt_dir / ".git").rmdir()
+    (wt_dir / ".git").write_bytes(b"gitdir: " + b"x" * 70000)
+    assert _repo_from_worktree_gitfile(wt_dir) is None
+    fake_repo = tmp_path / "real_repo"
+    (wt_dir / ".git").write_text(f"gitdir: {fake_repo}/.git/worktrees/wt1\n", encoding="utf-8")
+    assert _repo_from_worktree_gitfile(wt_dir) == fake_repo
+
+    host = make_host(tmp_path)
+    try:
+        # 4. Active blocked commission protects its session's workdir even when commission.workdir is None.
+        outer_s = await host.ledger.create_session(name="outer", lanlan_name="Lan", project="nest")
+        outer_work = host.paths.work_dir(outer_s.id, "nest")
+        nested_sub = outer_work / "sub"
+        nested_sub.mkdir(parents=True)
+        (nested_sub / "keep.txt").write_text("alive", encoding="utf-8")
+        await host.ledger.update_session(outer_s.id, status="idle", workdir=str(outer_work))
+        blocked_s = await host.ledger.create_session(name="inner", lanlan_name="Lan", project="nest")
+        await host.ledger.update_session(blocked_s.id, status="idle", workdir=str(nested_sub))
+        blocked_c, _ = await host.ledger.create(
+            dispatch_text="waiting",
+            title="waiting",
+            lanlan_name="Lan",
+            source="dispatch",
+            route="task_agent",
+            project="nest",
+            session_id=blocked_s.id,
+            workdir=None,
+        )
+        await host.ledger.transition(blocked_c.id, "blocked")
+        clean_res = await host.clean_work_dirs([f"session:nest/{outer_s.id}"])
+        assert clean_res["cleaned"] == []
+        assert clean_res["failed"] == [{"id": f"session:nest/{outer_s.id}", "code": "in_use"}]
+        assert (nested_sub / "keep.txt").exists()
+
+        # 5. Unreadable/unsafe tracked worktree reports bytes_whole=False and can_clean=False in overview.
+        outside_wt = tmp_path / "escaped_wt"
+        outside_wt.mkdir()
+        await host.ledger.add_tree(
+            id="unsafe01",
+            session_id=None,
+            commission_id=None,
+            lanlan_name="Lan",
+            project="nest",
+            project_dir=str(tmp_path),
+            repo_root=str(tmp_path),
+            path=str(outside_wt),
+            workdir=str(outside_wt),
+            token="tok-u",
+            state="kept",
+        )
+        ov_u = await host.storage_overview()
+        u_item = next(item for item in ov_u["worktrees"] if item["id"] == "unsafe01")
+        assert u_item["exists"] is False
+        assert u_item["bytes_whole"] is False
+        assert u_item["can_clean"] is False
+
+        # 6. _restore() rolls back move and waits if project.json mutates to clearing workdir B before _move().
+        dir_a = tmp_path / "wd_a"
+        dir_b = tmp_path / "wd_b"
+        dir_a.mkdir()
+        dir_b.mkdir()
+        await host.space.touch_project("raceproj", workdir=str(dir_a), count=False)
+        assert await host.space.archive_project("raceproj") is not None
+
+        hold_b = host.task_agents.hold_workdir(dir_b)
+        assert hold_b is not None
+        orig_move = space_facade._move
+        mutated = [False]
+
+        def mutate_then_move(src: Path, dst: Path) -> None:
+            if not mutated[0] and dst.name == "raceproj":
+                mutated[0] = True
+                pfile = src / "project.json"
+                data = json.loads(pfile.read_text(encoding="utf-8"))
+                data["workdir"] = str(dir_b)
+                pfile.write_text(json.dumps(data), encoding="utf-8")
+            orig_move(src, dst)
+
+        with monkeypatch.context() as mp:
+            mp.setattr(space_facade, "_move", mutate_then_move)
+            revive_task = asyncio.create_task(host.space.open_project("raceproj"))
+            await asyncio.sleep(0.08)
+            # Rolled back to archive while dir_b is clearing; active dir must not exist yet.
+            assert mutated[0] is True
+            assert not revive_task.done()
+            assert not host.paths.space().project_dir("raceproj").exists()
+            host.task_agents.release_workdir(hold_b)
+            revived = await asyncio.wait_for(revive_task, timeout=2.0)
+        assert revived is not None
+        assert revived.workdir == str(dir_b)
+        assert host.paths.space().project_dir("raceproj").is_dir()
+
+        # 7. _reconcile_trees_now aborts on strict read_state OSError and preserves restored dir on "removed" marker.
+        gone_wt = host.paths.worktree_dir("recon_err1")
+        await host.ledger.add_tree(
+            id="recon_err1",
+            session_id=None,
+            commission_id=None,
+            lanlan_name="Lan",
+            project="nest",
+            project_dir=str(tmp_path),
+            repo_root=str(tmp_path),
+            path=str(gone_wt),
+            workdir=str(gone_wt),
+            token="tok-r1",
+            state="kept",
+        )
+
+        async def fail_read_state() -> dict[str, Any]:
+            raise OSError("state unavailable")
+
+        with monkeypatch.context() as mp:
+            mp.setattr(host.space, "read_state", fail_read_state)
+            await host.task_agents._reconcile_trees_now()
+        assert await host.ledger.get_tree("recon_err1") is not None
+
+        restored_wt = host.paths.worktree_dir("recon_rest1")
+        restored_wt.mkdir(parents=True)
+        await host.ledger.add_tree(
+            id="recon_rest1",
+            session_id=None,
+            commission_id=None,
+            lanlan_name="Lan",
+            project="nest",
+            project_dir=str(tmp_path),
+            repo_root=str(tmp_path),
+            path=str(restored_wt),
+            workdir=str(restored_wt),
+            token="tok-r2",
+            state="kept",
+        )
+        assert await host.task_agents._record_pending_expired_tree("recon_rest1", "removed") is True
+        await host.task_agents._reconcile_trees_now()
+        assert await host.ledger.get_tree("recon_rest1") is not None
+        assert (await host.task_agents._read_pending_expired_trees()).get("recon_rest1") == "removed"
+
+        # 8. Orphan cleanup aborts with busy if the target directory is replaced mid-flight,
+        #    and _make_tree_now skips names currently reserved in _trees_in_hand.
+        orph_swap = host.paths.worktree_dir("orphswap1")
+        orph_swap.mkdir(parents=True)
+        (orph_swap / "old.txt").write_text("old", encoding="utf-8")
+        import nekopower.host.storage as storage_mod
+
+        real_measure = storage_mod.measure_dir
+        swapped = [False]
+
+        def swap_during_measure(path: Path, deadline: float, **kwargs: Any) -> Any:
+            res = real_measure(path, deadline, **kwargs)
+            if not swapped[0] and path == orph_swap:
+                swapped[0] = True
+                shutil.rmtree(orph_swap)
+                orph_swap.mkdir()
+                (orph_swap / "fresh.txt").write_text("fresh", encoding="utf-8")
+            return res
+
+        with monkeypatch.context() as mp:
+            mp.setattr(storage_mod, "measure_dir", swap_during_measure)
+            with pytest.raises(ValueError, match="busy"):
+                await host.task_agents.remove_orphan_worktree("orphswap1")
+        assert (orph_swap / "fresh.txt").exists()
+
+        res_s = await host.ledger.create_session(name="res-s", lanlan_name="Lan", project="nest", workdir=str(tmp_path))
+        res_c, _ = await host.ledger.create(
+            dispatch_text="res-c",
+            title="res-c",
+            lanlan_name="Lan",
+            source="dispatch",
+            route="task_agent",
+            project="nest",
+            session_id=res_s.id,
+        )
+        base_name = res_c.id[:12]
+        host.task_agents._trees_in_hand.add(base_name)
+        try:
+            async def fake_probe(_home: Any) -> Probe:
+                return Probe(reason=None, repo_root=tmp_path, subpath="")
+
+            async def fake_create(_home: Any, wt_path: Path) -> Worktree:
+                wt_path.mkdir(parents=True, exist_ok=True)
+                return Worktree(id=wt_path.name, repo_root=tmp_path, path=wt_path, subpath="", start="abc", token="t-res")
+
+            with monkeypatch.context() as mp:
+                mp.setattr(host.task_agents.worktrees, "probe", fake_probe)
+                mp.setattr(host.task_agents.worktrees, "create", fake_create)
+                made_row, err_code, _detail = await host.task_agents._make_tree_now(res_c, res_s, str(tmp_path))
+            assert err_code == ""
+            assert made_row is not None
+            assert made_row.id == f"{base_name}-2"
+        finally:
+            host.task_agents._trees_in_hand.discard(base_name)
+
+        # 9. _schedule_idle_compact waits for transcript-preserving hold_files(drop_idle_timer=False),
+        #    and aborts on transcript-dropping hold_files(drop_idle_timer=True).
+        ic_s = await host.ledger.create_session(name="ic-wait", lanlan_name="Lan", project="nest")
+        gate = asyncio.Event()
+        entered = asyncio.Event()
+
+        async def slow_wanted(_sid: str) -> bool:
+            entered.set()
+            await gate.wait()
+            return True
+
+        async def fast_after(_sid: str) -> float:
+            return 60.0
+
+        async def fast_model(_sid: str) -> str:
+            return "test://model"
+
+        with monkeypatch.context() as mp:
+            mp.setattr(host.task_agents, "_idle_compact_wanted", slow_wanted)
+            mp.setattr(host.task_agents, "_idle_after", fast_after)
+            mp.setattr(host.task_agents, "_task_model_key", fast_model)
+            sched_task = asyncio.create_task(host.task_agents._schedule_idle_compact(ic_s.id))
+            await entered.wait()
+            assert host.task_agents.hold_files(ic_s.id, drop_idle_timer=False) is True
+            gate.set()
+            await asyncio.sleep(0.05)
+            assert not sched_task.done()
+            assert ic_s.id not in host.task_agents._idle_timers
+            host.task_agents.release_files(ic_s.id)
+            await asyncio.wait_for(sched_task, timeout=2.0)
+            assert ic_s.id in host.task_agents._idle_timers
+            host.task_agents._drop_idle_timer(ic_s.id)
+
+            # Now with drop_idle_timer=True (transcript deletion): timer must NOT be set.
+            gate.clear()
+            entered.clear()
+            sched_task2 = asyncio.create_task(host.task_agents._schedule_idle_compact(ic_s.id))
+            await entered.wait()
+            assert host.task_agents.hold_files(ic_s.id, drop_idle_timer=True) is True
+            gate.set()
+            await asyncio.wait_for(sched_task2, timeout=2.0)
+            host.task_agents.release_files(ic_s.id)
+            assert ic_s.id not in host.task_agents._idle_timers
     finally:
         await host.shutdown()

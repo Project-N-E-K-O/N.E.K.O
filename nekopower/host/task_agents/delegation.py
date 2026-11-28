@@ -584,9 +584,17 @@ class DelegationMixin:
             return False
         self._clearing[session_id] = asyncio.Event()
         if drop_idle_timer:
+            self._clearing_drops_transcript.add(session_id)
             # Not summed up later either: there is nothing left to sum up.
             self._drop_idle_timer(session_id)
         return True
+
+    def _in_use_excluding_clearing(self, session_id: str) -> bool:
+        """Whether anything other than a ``hold_files`` clearing lock currently uses ``session_id``."""
+        if session_id in self._held_by or session_id in self._compacting or session_id in self._copying_from:
+            return True
+        in_hand = (*self._sessions, *self._queue, *self._taking_up, *self._requeueing)
+        return any(self._session_of.get(commission_id) == session_id for commission_id in in_hand)
 
     def _in_use(self, session_id: str) -> bool:
         """Whether something is at work in a session or on its way into it, or the host has claimed it for itself.
@@ -596,12 +604,7 @@ class DelegationMixin:
         or a commission that is worked on in it has a place, waits for
         one, or is being taken up again.
         """
-        if session_id in self._held_by or session_id in self._clearing or session_id in self._compacting:
-            return True
-        if session_id in self._copying_from:
-            return True
-        in_hand = (*self._sessions, *self._queue, *self._taking_up, *self._requeueing)
-        return any(self._session_of.get(commission_id) == session_id for commission_id in in_hand)
+        return session_id in self._clearing or self._in_use_excluding_clearing(session_id)
 
     def _in_use_session_ids(self) -> set[str]:
         """Return every session id currently considered in use in memory."""
@@ -614,6 +617,7 @@ class DelegationMixin:
 
     def release_files(self, session_id: str) -> None:
         """Give back what ``hold_files`` claimed; a start that waited goes on."""
+        self._clearing_drops_transcript.discard(session_id)
         clearing = self._clearing.pop(session_id, None)
         if clearing is not None:
             clearing.set()

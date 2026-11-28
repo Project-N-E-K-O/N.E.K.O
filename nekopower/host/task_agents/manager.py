@@ -274,6 +274,7 @@ class TaskAgentManager(
         # (``hold_files``); a commission is started in one of them once that
         # is done.
         self._clearing: dict[str, asyncio.Event] = {}
+        self._clearing_drops_transcript: set[str] = set()
         # Working directories currently being removed (``hold_workdir``), and
         # working directories already claimed by starting/running commissions
         # so directory cleanup and ``_start`` cannot overlap on the same path.
@@ -334,6 +335,7 @@ class TaskAgentManager(
         # Idle sessions that are to be summed up, each with the timer that
         # says when; those being summed up right now, each with its task.
         self._idle_timers: dict[str, asyncio.TimerHandle] = {}
+        self._idle_schedule_gen: dict[str, int] = {}
         self._compacting: dict[str, asyncio.Task[Any]] = {}
         # How many times in a row the host asked a session to sum itself up
         # and got no whole summary (``TASK_AGENT_IDLE_COMPACT_MAX_FAILURES``).
