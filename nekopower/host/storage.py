@@ -51,7 +51,7 @@ import shutil
 import stat
 import sys
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -183,13 +183,52 @@ def _same_path(first: str | Path | None, second: str | Path | None) -> bool:
     return os.path.normcase(os.path.normpath(str(first))) == os.path.normcase(os.path.normpath(str(second)))
 
 
+def _path_aliases(path: str | Path | None) -> tuple[str, ...]:
+    """Blocking: return normalized lexical and filesystem-resolved forms of ``path``."""
+    if not path:
+        return ()
+    raw = str(path)
+    lex = os.path.normcase(os.path.normpath(raw))
+    try:
+        real = os.path.normcase(os.path.realpath(raw))
+    except OSError:
+        return (lex,)
+    return (lex,) if real == lex else (lex, real)
+
+
 def _path_is_or_inside(child: str | Path | None, parent: str | Path | None) -> bool:
-    """Return whether ``child`` equals ``parent`` or lies inside it (normalized, no disk follow)."""
+    """Return whether ``child`` equals ``parent`` or lies inside it (lexical or resolved aliases)."""
     if not child or not parent:
         return False
-    c = os.path.normcase(os.path.normpath(str(child)))
-    p = os.path.normcase(os.path.normpath(str(parent)))
-    return c == p or c.startswith(p + os.sep)
+    c_lex = os.path.normcase(os.path.normpath(str(child)))
+    p_lex = os.path.normcase(os.path.normpath(str(parent)))
+    p_lex_prefix = p_lex if p_lex.endswith(os.sep) else p_lex + os.sep
+    if c_lex == p_lex or c_lex.startswith(p_lex_prefix):
+        return True
+    child_forms = _path_aliases(child)
+    parent_forms = _path_aliases(parent)
+    for c in child_forms:
+        for p in parent_forms:
+            p_prefix = p if p.endswith(os.sep) else p + os.sep
+            if c == p or c.startswith(p_prefix):
+                return True
+    return False
+
+
+def _any_path_is_or_inside(children: Iterable[str | Path | None], parent: str | Path | None) -> bool:
+    """Blocking: return whether any path in ``children`` equals or lies inside ``parent`` (lexical or resolved)."""
+    parent_forms = _path_aliases(parent)
+    if not parent_forms:
+        return False
+    parent_prefixes = tuple((p, p if p.endswith(os.sep) else p + os.sep) for p in parent_forms)
+    for child in children:
+        if not child:
+            continue
+        for c in _path_aliases(child):
+            for p, p_prefix in parent_prefixes:
+                if c == p or c.startswith(p_prefix):
+                    return True
+    return False
 
 
 @dataclass(frozen=True, slots=True)
@@ -274,25 +313,34 @@ def _clear_readonly(fs_path: str) -> None:
         os.chmod(fs_path, stat.S_IWRITE | stat.S_IREAD | stat.S_IEXEC)
 
 
-def remove_dir_safely(target: Path, allowed_root: Path) -> tuple[bool, int]:
+def remove_dir_safely(
+    target: Path,
+    allowed_root: Path,
+    *,
+    should_abort: Callable[[], bool] | None = None,
+) -> tuple[bool, int]:
     """Blocking: recursively remove ``target`` inside ``allowed_root`` without following links.
 
     Returns ``(removed, freed_bytes)``. ``removed`` is True when ``target`` no
     longer exists on disk; False when some entry could not be deleted (e.g.
-    held open by another process on Windows). Raises ``ValueError`` when
-    ``target`` is a link or lies outside ``allowed_root``.
+    held open by another process on Windows) or ``should_abort()`` fired.
+    Raises ``ValueError`` when ``target`` is a link or lies outside ``allowed_root``.
     """
     safety = _classify_path_safety(target, allowed_root)
     if safety == "missing":
         return True, 0
     if safety != "ok":
         raise ValueError("unsafe_path")
+    if should_abort is not None and should_abort():
+        return False, 0
 
     freed = 0
     failed = False
 
     stack: list[tuple[Path, bool]] = [(target, False)]
     while stack:
+        if should_abort is not None and should_abort():
+            return False, freed
         directory, visited = stack.pop()
         fs_dir = _fs(directory)
         if visited:
@@ -321,6 +369,8 @@ def remove_dir_safely(target: Path, allowed_root: Path) -> tuple[bool, int]:
             continue
         stack.append((directory, True))
         for entry in items:
+            if should_abort is not None and should_abort():
+                return False, freed
             child = directory / entry.name
             fs_child = _fs(child)
             try:
@@ -586,9 +636,11 @@ class StorageSettingsStore:
         async with self._lock:
             current_path = self._path()
             norm_path = self._norm_path(current_path)
-            # Always base saves on current on-disk contents; refuse to overwrite an unreadable file.
+            # Always base saves on current on-disk contents; refuse to overwrite an unreadable file
+            # and invalidate any previously cached settings for this path so auto-clean fails closed.
             values, readable = await asyncio.to_thread(self._read_disk, current_path)
             if not readable:
+                self._kept = None
                 raise OSError("storage settings file is unreadable")
             if auto_clean_work_dirs is not None:
                 values["auto_clean_work_dirs"] = auto_clean_work_dirs
@@ -669,16 +721,20 @@ class _SessionWorkdirIndex:
         if project is not None:
             self._by_project.setdefault(project, set()).add(sid)
         if workdir:
-            cur = os.path.normcase(os.path.normpath(workdir))
-            while True:
-                self._by_prefix.setdefault(cur, set()).add(sid)
-                parent = os.path.dirname(cur)
-                if not parent or parent == cur:
-                    break
-                cur = parent
+            for form in _path_aliases(workdir):
+                cur = form
+                while True:
+                    self._by_prefix.setdefault(cur, set()).add(sid)
+                    parent = os.path.dirname(cur)
+                    if not parent or parent == cur:
+                        break
+                    cur = parent
 
-    def matching_workdir(self, norm_target: str) -> set[str]:
-        return set(self._by_prefix.get(norm_target, ()))
+    def matching_workdir(self, norm_target: str | Path) -> set[str]:
+        found: set[str] = set()
+        for form in _path_aliases(norm_target):
+            found.update(self._by_prefix.get(form, ()))
+        return found
 
     def matching_project(self, project: str) -> set[str]:
         return set(self._by_project.get(project, ()))
@@ -877,9 +933,11 @@ class StorageManager:
         else:
             trees = []
 
-        for starting_wd in getattr(self._task_agents, "_starting_workdirs", {}).values():
-            if starting_wd:
-                live_workdirs.add(os.path.normcase(os.path.normpath(starting_wd)))
+        for starting_entry in getattr(self._task_agents, "_starting_workdirs", {}).values():
+            starting_list = starting_entry if isinstance(starting_entry, tuple) else (starting_entry,)
+            for starting_wd in starting_list:
+                if starting_wd:
+                    live_workdirs.add(os.path.normcase(os.path.normpath(starting_wd)))
 
         projects_by_name, maybe_proj_workdirs, projects_readable = await self._read_projects_checked(
             include_archived=True
@@ -929,8 +987,12 @@ class StorageManager:
                 ).fetchall()
             ]
         )
-        for rowid, sid, project, workdir in rows:
-            index.add(rowid, sid, project, workdir)
+        if rows:
+            def _populate() -> None:
+                for rowid, sid, project, workdir in rows:
+                    index.add(rowid, sid, project, workdir)
+
+            await asyncio.to_thread(_populate)
 
     async def _descendant_forks(self, session_id: str) -> list[Any]:
         """Return every descendant fork of ``session_id`` across arbitrary fork depth."""
@@ -1045,9 +1107,11 @@ class StorageManager:
                 for backing in (row.repo_root, row.project_dir, row.path, row.workdir):
                     if backing:
                         live_workdirs.add(os.path.normcase(os.path.normpath(backing)))
-        for starting_wd in getattr(self._task_agents, "_starting_workdirs", {}).values():
-            if starting_wd:
-                live_workdirs.add(os.path.normcase(os.path.normpath(starting_wd)))
+        for starting_entry in getattr(self._task_agents, "_starting_workdirs", {}).values():
+            starting_list = starting_entry if isinstance(starting_entry, tuple) else (starting_entry,)
+            for starting_wd in starting_list:
+                if starting_wd:
+                    live_workdirs.add(os.path.normcase(os.path.normpath(starting_wd)))
         _projects, active_project_workdirs, _readable = await self._read_projects_checked(
             include_archived=False, under_write_lock=synchronize_projects
         )
@@ -2061,7 +2125,9 @@ class StorageManager:
                     if await asyncio.to_thread(self._paths.ledger_db().is_file):
                         idx = session_index if session_index is not None else _SessionWorkdirIndex()
                         await self._refresh_session_index(idx)
-                        to_hold = idx.matching_project(project) | idx.matching_workdir(norm_target)
+                        to_hold = idx.matching_project(project) | await asyncio.to_thread(
+                            idx.matching_workdir, norm_target
+                        )
                         for sid in sorted(to_hold):
                             if not self._task_agents.hold_files(sid, drop_idle_timer=False):
                                 return "in_use", 0
@@ -2072,11 +2138,11 @@ class StorageManager:
                         exclude_session_ids=frozenset(held_sids),
                         synchronize_projects=skip_project_referenced,
                     )
-                    if any(_path_is_or_inside(wd, norm_target) for wd in live_workdirs):
+                    if await asyncio.to_thread(_any_path_is_or_inside, live_workdirs, norm_target):
                         return "in_use", 0
                     if skip_project_referenced and (
                         active_project_workdirs is None
-                        or any(_path_is_or_inside(pwd, norm_target) for pwd in active_project_workdirs)
+                        or await asyncio.to_thread(_any_path_is_or_inside, active_project_workdirs, norm_target)
                     ):
                         return "in_use", 0
                     safety = await asyncio.to_thread(_classify_path_safety, target, ta_root)
@@ -2084,10 +2150,18 @@ class StorageManager:
                         return "not_found", 0
                     if safety != "ok":
                         return "unsafe_path", 0
+                    is_vetoed = getattr(self._task_agents, "is_workdir_clear_vetoed", None)
+                    veto_check = (lambda: bool(is_vetoed(target))) if callable(is_vetoed) else None
+                    if veto_check is not None and await asyncio.to_thread(veto_check):
+                        return "in_use", 0
                     try:
-                        removed, freed = await to_thread_through_cancellation(remove_dir_safely, target, ta_root)
+                        removed, freed = await to_thread_through_cancellation(
+                            lambda: remove_dir_safely(target, ta_root, should_abort=veto_check)
+                        )
                     except ValueError:
                         return "unsafe_path", 0
+                    if not removed and veto_check is not None and await asyncio.to_thread(veto_check):
+                        return "in_use", freed
                     return ("cleaned" if removed else "not_removed"), freed
                 finally:
                     for sid in held_sids:
@@ -2112,7 +2186,9 @@ class StorageManager:
                 idx = session_index if session_index is not None else _SessionWorkdirIndex()
                 await self._refresh_session_index(idx)
                 descendants = await self._descendant_forks(session_id)
-                extra_sids: set[str] = {copy.id for copy in descendants} | idx.matching_workdir(norm_target)
+                extra_sids: set[str] = {copy.id for copy in descendants} | await asyncio.to_thread(
+                    idx.matching_workdir, norm_target
+                )
                 for sid in sorted(extra_sids - {session_id}):
                     if not self._task_agents.hold_files(sid, drop_idle_timer=False):
                         return "in_use", 0
@@ -2145,11 +2221,11 @@ class StorageManager:
                 exclude_session_ids=frozenset(held_sids),
                 synchronize_projects=skip_project_referenced,
             )
-            if any(_path_is_or_inside(wd, norm_target) for wd in live_workdirs):
+            if await asyncio.to_thread(_any_path_is_or_inside, live_workdirs, norm_target):
                 return "in_use", 0
             if skip_project_referenced and (
                 active_project_workdirs is None
-                or any(_path_is_or_inside(pwd, norm_target) for pwd in active_project_workdirs)
+                or await asyncio.to_thread(_any_path_is_or_inside, active_project_workdirs, norm_target)
             ):
                 return "in_use", 0
             safety = await asyncio.to_thread(_classify_path_safety, target, ta_root)
@@ -2173,8 +2249,13 @@ class StorageManager:
                     ):
                         return "policy_changed", 0
 
+            is_vetoed = getattr(self._task_agents, "is_workdir_clear_vetoed", None)
+            veto_check = (lambda: bool(is_vetoed(target))) if callable(is_vetoed) else None
+
             def _verify_and_remove() -> tuple[str, int]:
                 saved_times: list[tuple[str, tuple[int, int], frozenset[str]]] = []
+                if veto_check is not None and veto_check():
+                    return "in_use", 0
                 if until is not None:
                     from config.nekopower_settings import STORAGE_AUTO_CLEAN_SCAN_SECONDS
                     from nekopower.host.worktrees import _snapshot_dir_times
@@ -2193,11 +2274,15 @@ class StorageManager:
                         "work_dirs", expected_kept_days
                     ):
                         return "policy_changed", 0
-                removed, freed = remove_dir_safely(target, ta_root)
+                if veto_check is not None and veto_check():
+                    return "in_use", 0
+                removed, freed = remove_dir_safely(target, ta_root, should_abort=veto_check)
                 if not removed and saved_times and os.path.lexists(_fs(target)):
                     from nekopower.host.worktrees import _restore_surviving_dir_times
 
                     _restore_surviving_dir_times(saved_times)
+                if not removed and veto_check is not None and veto_check():
+                    return "in_use", freed
                 return ("cleaned" if removed else "not_removed"), freed
 
             try:

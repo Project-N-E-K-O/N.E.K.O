@@ -263,6 +263,8 @@ class NekoPowerHost:
         self.space.set_workdir_guard(
             self.task_agents.is_workdir_clearing,
             self.task_agents.wait_workdir_clear,
+            any_clearing=self.task_agents.any_workdir_clearing,
+            veto_clear=self.task_agents.veto_workdir_clear,
         )
         # Hands sessions what waits for them: a note another session wrote,
         # a time a task agent set for itself. Started by the first call that

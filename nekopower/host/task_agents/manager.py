@@ -26,6 +26,7 @@ import contextlib
 import dataclasses
 import json
 import sqlite3
+import threading
 import uuid
 from collections import deque
 from collections.abc import Awaitable, Callable, Iterable
@@ -278,9 +279,11 @@ class TaskAgentManager(
         # Working directories currently being removed (``hold_workdir``), and
         # working directories already claimed by starting/running commissions
         # so directory cleanup and ``_start`` cannot overlap on the same path.
-        self._clearing_workdirs: dict[str, asyncio.Event] = {}
+        self._clearing_workdirs: dict[str, tuple[tuple[str, ...], asyncio.Event]] = {}
         self._clearing_workdirs_snapshot: tuple[str, ...] = ()
-        self._starting_workdirs: dict[str, str] = {}
+        self._clearing_veto_lock = threading.Lock()
+        self._clearing_workdirs_vetoed: set[str] = set()
+        self._starting_workdirs: dict[str, tuple[str, ...]] = {}
         # Commissions whose next start has its first model request counted
         # already: counted before they were woken, so that one whose quota
         # is used up is left to rest instead of failing on the way up.

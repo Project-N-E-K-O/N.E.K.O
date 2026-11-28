@@ -438,12 +438,16 @@ class ProjectsMixin:
             # A project of the name is there already: that one is used, and
             # the archived one stays where it is.
             return self._project_from(target)
-        disk_data, _readable = self._project_data(source)
+        disk_data, readable = self._project_data(source)
         disk_workdir = (
             str(disk_data["workdir"])
             if isinstance(disk_data, dict) and isinstance(disk_data.get("workdir"), str) and disk_data["workdir"]
             else None
         )
+        if not readable and self._any_workdir_clearing is not None:
+            clearing_any = self._any_workdir_clearing()
+            if clearing_any is not None:
+                raise _WorkdirClearing(clearing_any)
         for candidate in (project.workdir, disk_workdir):
             if candidate and self._workdir_clearing is not None and self._workdir_clearing(candidate):
                 raise _WorkdirClearing(candidate)
@@ -453,10 +457,25 @@ class ProjectsMixin:
             # As its file has it now, not as it was listed a while ago.
             current, _known = self._project_to_change(target)
         except OSError:
-            # Its record cannot be read: it is back, and its file as it was.
-            logger.warning("the file of a project brought back cannot be read; it is left as it is")
+            clearing_any = self._any_workdir_clearing() if self._any_workdir_clearing is not None else None
+            if clearing_any is not None:
+                try:
+                    _space_facade._move(target, source)
+                except OSError:
+                    if self._veto_workdir_clear is not None:
+                        self._veto_workdir_clear(None)
+                    logger.warning(
+                        "the file of a project brought back cannot be read while cleanup is active and could not be moved back; vetoing active cleanup",
+                        exc_info=True,
+                    )
+                else:
+                    raise _WorkdirClearing(clearing_any)
+            else:
+                # Its record cannot be read: it is back, and its file as it was.
+                logger.warning("the file of a project brought back cannot be read; it is left as it is")
             restored = replace(project, status=PROJECT_ACTIVE, archived_at=None, archive_year=None, directory=target.name)
         else:
+            rollback_failed_workdir: str | None = None
             if current.workdir and self._workdir_clearing is not None and self._workdir_clearing(current.workdir):
                 try:
                     _space_facade._move(target, source)
@@ -465,6 +484,7 @@ class ProjectsMixin:
                         "a restored project pointed at a workdir being cleared and could not be moved back; clearing its workdir reference",
                         exc_info=True,
                     )
+                    rollback_failed_workdir = current.workdir
                     current = replace(current, workdir=None)
                 else:
                     raise _WorkdirClearing(current.workdir)
@@ -478,7 +498,12 @@ class ProjectsMixin:
                 directory=target.name,
                 pending_archive=None,
             )
-            self._put_project(target, restored)
+            try:
+                self._put_project(target, restored)
+            except OSError:
+                if rollback_failed_workdir is not None and self._veto_workdir_clear is not None:
+                    self._veto_workdir_clear(rollback_failed_workdir)
+                raise
         try:
             line, link = self._project_line(restored)
             # Whichever of its files the line of the archived project points

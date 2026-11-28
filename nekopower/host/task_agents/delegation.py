@@ -623,6 +623,17 @@ class DelegationMixin:
             clearing.set()
 
     @staticmethod
+    def _path_aliases(workdir: Any) -> tuple[str, ...]:
+        """Return normalized lexical and filesystem-resolved forms of ``workdir``."""
+        raw = str(workdir)
+        lex = os.path.normcase(os.path.normpath(raw))
+        try:
+            real = os.path.normcase(os.path.realpath(raw))
+        except OSError:
+            return (lex,)
+        return (lex,) if real == lex else (lex, real)
+
+    @staticmethod
     def _dirs_overlap(a: str, b: str) -> bool:
         """Return whether two normalized directory paths are equal or nested inside each other."""
         if a == b:
@@ -631,38 +642,80 @@ class DelegationMixin:
         pb = b if b.endswith(os.sep) else b + os.sep
         return a.startswith(pb) or b.startswith(pa)
 
+    def _aliases_overlap_any(self, aliases: tuple[str, ...], others: Any) -> bool:
+        return any(self._dirs_overlap(a, other) for a in aliases for other in others)
+
     def hold_workdir(self, workdir: Any) -> str | None:
         """Claim a working directory for removal. Returns the hold key, or None if overlapping work is active."""
-        norm = os.path.normcase(os.path.normpath(str(workdir)))
-        if any(self._dirs_overlap(norm, held) for held in self._clearing_workdirs):
-            return None
-        if any(self._dirs_overlap(norm, active) for active in self._starting_workdirs.values()):
-            return None
-        self._clearing_workdirs[norm] = asyncio.Event()
-        self._clearing_workdirs_snapshot = tuple(self._clearing_workdirs)
-        return norm
+        aliases = self._path_aliases(workdir)
+        key = aliases[0]
+        for held_aliases, _event in self._clearing_workdirs.values():
+            if self._aliases_overlap_any(aliases, held_aliases):
+                return None
+        for active in self._starting_workdirs.values():
+            active_aliases = active if isinstance(active, tuple) else (active,)
+            if self._aliases_overlap_any(aliases, active_aliases):
+                return None
+        with self._clearing_veto_lock:
+            for alias in aliases:
+                self._clearing_workdirs_vetoed.discard(alias)
+        self._clearing_workdirs[key] = (aliases, asyncio.Event())
+        self._clearing_workdirs_snapshot = tuple(
+            alias for entry_aliases, _ in self._clearing_workdirs.values() for alias in entry_aliases
+        )
+        return key
 
     def release_workdir(self, key: str) -> None:
         """Release a working-directory hold claimed via ``hold_workdir``."""
-        ev = self._clearing_workdirs.pop(key, None)
-        self._clearing_workdirs_snapshot = tuple(self._clearing_workdirs)
-        if ev is not None:
+        removed = self._clearing_workdirs.pop(key, None)
+        self._clearing_workdirs_snapshot = tuple(
+            alias for entry_aliases, _ in self._clearing_workdirs.values() for alias in entry_aliases
+        )
+        if removed is not None:
+            aliases, ev = removed
+            with self._clearing_veto_lock:
+                for alias in aliases:
+                    self._clearing_workdirs_vetoed.discard(alias)
             ev.set()
+
+    def any_workdir_clearing(self) -> str | None:
+        """Thread-safely return one currently held workdir path if any cleanup is active, else None."""
+        snapshot = self._clearing_workdirs_snapshot
+        return snapshot[0] if snapshot else None
+
+    def veto_workdir_clear(self, workdir: Any | None = None) -> None:
+        """Thread-safely veto active workdir cleanup matching ``workdir`` (or all active holds when None)."""
+        targets = self._clearing_workdirs_snapshot if workdir is None else self._path_aliases(workdir)
+        if not targets:
+            return
+        with self._clearing_veto_lock:
+            self._clearing_workdirs_vetoed.update(targets)
+
+    def is_workdir_clear_vetoed(self, workdir: Any) -> bool:
+        """Thread-safely return whether cleanup of ``workdir`` has been vetoed."""
+        aliases = self._path_aliases(workdir)
+        with self._clearing_veto_lock:
+            vetoed = tuple(self._clearing_workdirs_vetoed)
+        return bool(vetoed) and self._aliases_overlap_any(aliases, vetoed)
 
     def is_workdir_clearing(self, workdir: Any) -> bool:
         """Thread-safely report whether an overlapping directory is currently held for removal."""
         snapshot = self._clearing_workdirs_snapshot
         if not snapshot:
             return False
-        norm = os.path.normcase(os.path.normpath(str(workdir)))
-        return any(self._dirs_overlap(norm, held) for held in snapshot)
+        aliases = self._path_aliases(workdir)
+        return self._aliases_overlap_any(aliases, snapshot)
 
     async def wait_workdir_clear(self, workdir: Any) -> None:
         """Wait until no cleanup holds a directory overlapping ``workdir``."""
-        norm = os.path.normcase(os.path.normpath(str(workdir)))
+        aliases = await asyncio.to_thread(self._path_aliases, workdir)
         while True:
             ev = next(
-                (event for held, event in self._clearing_workdirs.items() if self._dirs_overlap(norm, held)),
+                (
+                    event
+                    for held_aliases, event in self._clearing_workdirs.values()
+                    if self._aliases_overlap_any(aliases, held_aliases)
+                ),
                 None,
             )
             if ev is None:
@@ -671,15 +724,19 @@ class DelegationMixin:
 
     async def _claim_workdir_for_start(self, commission_id: str, workdir: Any) -> bool:
         """Claim ``workdir`` for a starting commission, waiting if an overlapping directory is being cleared."""
-        norm = os.path.normcase(os.path.normpath(str(workdir)))
+        aliases = await asyncio.to_thread(self._path_aliases, workdir)
         ev = next(
-            (event for held, event in self._clearing_workdirs.items() if self._dirs_overlap(norm, held)),
+            (
+                event
+                for held_aliases, event in self._clearing_workdirs.values()
+                if self._aliases_overlap_any(aliases, held_aliases)
+            ),
             None,
         )
         if ev is not None:
             await ev.wait()
             return False
-        self._starting_workdirs[commission_id] = norm
+        self._starting_workdirs[commission_id] = aliases
         return True
 
     def hold_session(self, commission_id: str) -> bool:
