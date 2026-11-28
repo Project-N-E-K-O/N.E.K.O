@@ -2619,7 +2619,14 @@ async def test_a_session_whose_preset_was_changed_and_changed_back_is_not_summed
     hosts, tmp_path
 ):
     manager = _manager(tmp_path, _default_slots())
-    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM([_report()]), manager)
+    asks: list[Any] = []
+
+    def pick(spec: Any) -> Any:
+        llm = ScriptedLLM([_report()])
+        asks.append(llm)
+        return llm
+
+    host = _host(hosts, tmp_path, pick, manager)
     agents = host.task_agents
     member = (await host.open_session("Lan", "Shop site", preset="scout"))["session_id"]
 
@@ -2664,6 +2671,20 @@ async def test_a_session_whose_preset_was_changed_and_changed_back_is_not_summed
         assert (await host.ledger.get_session(member)).model_was == ran_on
         await host.abort(receipt.commission_id, reason="test")
         await let_go(host)
+    assert (await host.ledger.get_session(member)).model_was == ran_on and await agents._idle_model(member) is None
+
+    # Nor did a run that took its first message and failed before it asked its model anything.
+    from nekopower.runtime.session import TaskAgentSession
+
+    def fails(self: Any) -> None:
+        raise RuntimeError("no context for this run")
+
+    with pytest.MonkeyPatch.context() as patched:
+        patched.setattr(TaskAgentSession, "_inject_runtime_context", fails)
+        await wait_status(host, (await _dispatch(host, "look at the links of the shop site")).commission_id, "failed")
+        await let_go(host)
+    # (Its model was asked nothing.)
+    assert asks[-1].requests == []
     assert (await host.ledger.get_session(member)).model_was == ran_on and await agents._idle_model(member) is None
 
     # Started there, it is where it last ran.
