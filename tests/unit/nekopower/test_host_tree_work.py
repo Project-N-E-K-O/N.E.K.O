@@ -1610,7 +1610,7 @@ def test_conflict_markers_are_found_wherever_they_are_in_a_file(tmp_path, monkey
 def _stand_ins(number: int, home: Path) -> tuple[Any, Any]:
     """A commission and its session, as far as making a worktree looks at them."""
     commission = types.SimpleNamespace(id=str(number) * 32, lanlan_name="Lan", project="Site")
-    kept = types.SimpleNamespace(id=f"s{number}", project="Site", workdir=str(home))
+    kept = types.SimpleNamespace(id=f"s{number}", project="Site", workdir=str(home), seat="tree")
     return commission, kept
 
 
@@ -3855,3 +3855,23 @@ async def test_a_member_that_has_a_worktree_for_its_commission_is_no_longer_one_
     assert await manager._works_in_tree(member)
     go.set()
     await wait_status(host, two.commission_id, "done")
+
+
+async def test_a_start_that_read_a_members_seat_before_it_was_made_one_that_only_reads_makes_no_worktree(hosts, tmp_path):
+    host, trees, workdir, one, two, _members = await _two_members(hosts, tmp_path, [_report("links repaired")])
+    host.release.set()
+    await wait_status(host, one.commission_id, "done")
+    await wait_status(host, two.commission_id, "done")
+    # The member as a start of it read it: one that changes files, in a worktree of its own.
+    as_read = await _session_of(host, two.commission_id)
+    assert as_read.seat == "tree" and await host.ledger.trees() == []
+    made_before = trees.creates
+
+    changed = await host.change_duty(as_read.id, "scout")
+
+    assert (changed["preset"], changed["seat"]) == ("scout", "")
+    # What that start goes on to do: no worktree is put on record for it, nor made.
+    commission = await host.ledger.get(two.commission_id)
+    made, why, _detail = await host.task_agents._make_tree(commission, as_read, str(workdir))
+    assert (made, why) == (None, "seat_changed")
+    assert await host.ledger.trees() == [] and trees.creates == made_before

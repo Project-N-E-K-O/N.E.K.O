@@ -629,6 +629,64 @@ async def test_one_with_work_in_a_worktree_that_is_not_landed_is_not_made_one_th
     assert (await host.change_duty(host.member, "scout"))["changed"]
 
 
+async def test_no_worktree_is_made_for_a_member_once_it_was_given_a_preset_that_cannot_change_files(hosts, tmp_path):
+    from nekopower.host.ledger import SeatChanged
+
+    host = await _shop(hosts, tmp_path, ScriptedLLM([]))
+    ledger = host.ledger
+    second = (await host.open_member("Lan", "Shop site", preset="general"))["session_id"]
+    assert (await ledger.get_session(second)).seat == "tree"
+
+    def tree(name: str) -> dict[str, Any]:
+        path = host.paths.worktrees_dir() / name
+        return {
+            "id": name, "session_id": second, "project": "Shop site", "project_dir": str(host.workdir),
+            "path": str(path), "workdir": str(path),
+        }
+
+    # A start of it that read its seat a while ago puts a worktree on record first: it is not
+    # given a preset that could not land what is worked on in there. Looked for as the preset
+    # is written, whatever was seen a moment before.
+    await ledger.add_tree(seat="tree", **tree("first"))
+    with pytest.raises(ValueError, match="tree_not_landed"):
+        await ledger.change_preset(second, "scout", by="user", seat="", without_trees=True)
+    with pytest.raises(ValueError, match="tree_not_landed"):
+        await host.change_duty(second, "scout")
+    # Also where it was put on record after the host looked for one, and before the preset is written.
+    listed = ledger.trees
+
+    async def none_yet(**wanted: Any) -> list[Any]:
+        return [] if wanted.get("session_id") == second else await listed(**wanted)
+
+    with pytest.MonkeyPatch.context() as patched:
+        patched.setattr(ledger, "trees", none_yet)
+        with pytest.raises(ValueError, match="tree_not_landed"):
+            await host.change_duty(second, "scout")
+    kept = await ledger.get_session(second)
+    assert (kept.preset, kept.seat) == ("general", "tree")
+    await ledger.drop_tree("first")
+
+    # Given that preset first, whatever it could do before (here its own cannot be read):
+    # the start that read its seat before finds it has that seat no more, and makes none.
+    manager = host.task_agents
+    template_of = manager._template_of
+
+    async def unreadable(session: Any) -> Any:
+        if session.preset == "general" and session.id == second:
+            raise RuntimeError("the preset 'general' cannot be used")
+        return await template_of(session)
+
+    with pytest.MonkeyPatch.context() as patched:
+        patched.setattr(manager, "_template_of", unreadable)
+        changed = await host.change_duty(second, "scout")
+    assert (changed["preset"], changed["seat"]) == ("scout", "")
+    with pytest.raises(SeatChanged):
+        await ledger.add_tree(seat="tree", **tree("second"))
+    assert await ledger.trees(session_id=second) == []
+    # (One that is made for no seat in particular, as what an earlier process left is put on record, is.)
+    await ledger.add_tree(**tree("found"))
+
+
 # ---------------------------------------------------------------------------
 # What it costs
 # ---------------------------------------------------------------------------

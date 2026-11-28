@@ -720,6 +720,10 @@ _SESSION_UPDATABLE: frozenset[str] = (
 _PRESET_NAME_MAX = 64
 
 
+class SeatChanged(ValueError):
+    """A git worktree is not put on record: the session it was to be made for has another seat by now."""
+
+
 def _card_author(name: str, by: Any) -> str:
     """Return who wrote a line of a card, as it is given; raises for one that cannot have written that line."""
     if by not in CARD_AUTHORS:
@@ -2606,12 +2610,18 @@ class Ledger:
         """Whether a project has a git worktree that holds work not landed in its directory yet (``TREE_STATES_PENDING``)."""
         return await self.run(lambda conn: self._trees_pending(conn, project))
 
-    async def add_tree(self, **values: Any) -> Tree:
+    async def add_tree(self, *, seat: str | None = None, **values: Any) -> Tree:
         """Put a git worktree on record and return its row; raises for one whose id is on record already.
 
         ``values`` are columns of ``Tree``; ``id``, ``project_dir``,
         ``path`` and ``workdir`` are needed, the state is ``making``
-        unless one is given.
+        unless one is given. With ``seat``, only for a session that
+        still has that seat (``SeatChanged`` otherwise), looked at in the
+        transaction that writes the row: whoever makes a worktree for a
+        session read its seat a while before, and a session given a
+        preset that cannot change files meanwhile (``change_preset``,
+        which looks for its worktrees in a transaction of its own) is
+        to have none made after that.
         """
         unknown = set(values) - set(_TREE_COLUMNS)
         if unknown:
@@ -2631,6 +2641,11 @@ class Ledger:
             row.update(values)
             if row["state"] not in TREE_STATES:
                 raise ValueError(f"unknown state of a worktree {row['state']!r}")
+            if seat is not None:
+                # (One that is not on record has no seat to have lost.)
+                whose = conn.execute("SELECT seat FROM sessions WHERE id = ?", (row["session_id"],)).fetchone()
+                if whose is not None and whose["seat"] != seat:
+                    raise SeatChanged(f"the session a worktree is made for has no longer the seat {seat!r}")
             row["conflicts"] = json.dumps([str(item) for item in row["conflicts"]], ensure_ascii=False)
             columns = ", ".join(_TREE_COLUMNS)
             marks = ", ".join("?" for _ in _TREE_COLUMNS)
@@ -2717,7 +2732,8 @@ class Ledger:
         )
 
     async def change_preset(
-        self, session_id: str, preset: str, *, by: str, was: str | None = None, seat: str | None = None
+        self, session_id: str, preset: str, *, by: str, was: str | None = None, seat: str | None = None,
+        without_trees: bool = False,
     ) -> tuple[Session | None, str, str | None]:
         """Change the preset of a session and put the change on record.
 
@@ -2730,7 +2746,12 @@ class Ledger:
         ``was`` is given and is not the preset it has by now (whoever
         asks looked at the session a while before, and what it found
         allowed is of that preset). ``seat`` is written with it when
-        given. ``by`` says who changes it (``PRESET_CHANGERS``).
+        given. ``by`` says who changes it (``PRESET_CHANGERS``). With
+        ``without_trees``, raises ``ValueError("tree_not_landed")`` while
+        a git worktree of the session holds work that is not landed
+        (``TREE_STATES_PENDING``, one that is being made included):
+        looked for in this transaction, so that none is put on record
+        between a look and the write (``add_tree`` with ``seat``).
 
         What its task agent was last started under
         (``Session.preset_told``) is not written here: a start that is
@@ -2764,6 +2785,13 @@ class Ledger:
                 raise ValueError("changed_meanwhile")
             if current.preset == preset:
                 return current, current.preset, None
+            if without_trees:
+                marks = ", ".join("?" for _ in TREE_STATES_PENDING)
+                if conn.execute(
+                    f"SELECT 1 FROM worktrees WHERE session_id = ? AND state IN ({marks}) LIMIT 1",
+                    (session_id, *sorted(TREE_STATES_PENDING)),
+                ).fetchone():
+                    raise ValueError("tree_not_landed")
             changes: dict[str, Any] = {"preset": preset}
             if seat is not None:
                 changes["seat"] = seat

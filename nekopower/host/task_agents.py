@@ -2444,7 +2444,8 @@ class TaskAgentManager(TreeWork):
         narrows = before and not after.changes_files
         # Whatever it can do as it stands: one whose preset cannot be read just now (its
         # template was removed, or is wrong) may have a worktree all the same, from before.
-        if not after.changes_files and await self._ledger.trees(session_id=kept.id, states=sorted(TREE_STATES_PENDING)):
+        reads = not after.changes_files
+        if reads and await self._ledger.trees(session_id=kept.id, states=sorted(TREE_STATES_PENDING)):
             raise ValueError("tree_not_landed")
         if widens and by != "user":
             if not commission_id:
@@ -2457,11 +2458,17 @@ class TaskAgentManager(TreeWork):
             if not decision.allow:
                 raise PermissionError(PRESET_CHANGE_NOT_ALLOWED.format(reason=decision.reason or "declined"))
         seat = None
-        if kept.kind == "line" and kept.seat != "own" and (widens or narrows):
+        if kept.kind == "line" and kept.seat != "own" and (widens or narrows or (reads and kept.seat == "tree")):
             # (Before it is written: it is not yet one of those the project's directory is worked in by.)
+            # One that cannot change files has no worktrees made for it, whatever it could do before:
+            # a start of it that is under way, and read its seat before this, makes none after it
+            # (``Ledger.add_tree``).
             in_project = bool(kept.project) and kept.project != DEFAULT_PROJECT
             seat = await self.seat_of_new_member(str(kept.project)) if widens and in_project else ""
-        changed, was, _on = await self._ledger.change_preset(kept.id, preset, by=by, was=kept.preset, seat=seat)
+        # (Its worktrees are looked for once more as it is written: one may have been made since.)
+        changed, was, _on = await self._ledger.change_preset(
+            kept.id, preset, by=by, was=kept.preset, seat=seat, without_trees=reads
+        )
         if changed is None:
             raise LookupError(session_id)
         # Whether it changes files in its project is looked at again: one that does no more is

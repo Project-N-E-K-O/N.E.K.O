@@ -55,7 +55,7 @@ from pathlib import Path
 from collections.abc import AsyncIterator, Iterator
 from typing import Any
 
-from nekopower.host.ledger import ENDED_STATUSES, TREE_STATES, TREE_STATES_LEFT, Commission, Session, Tree
+from nekopower.host.ledger import ENDED_STATUSES, TREE_STATES, TREE_STATES_LEFT, Commission, SeatChanged, Session, Tree
 from nekopower.host.permissions import OPEN_SESSION
 
 logger = logging.getLogger(__name__)
@@ -817,7 +817,13 @@ class TreeWork:
                     project_dir=home,
                     path=str(path),
                     workdir=str(path / probe.subpath) if probe.subpath else str(path),
+                    # Only while it is still to have one: read a while ago, and it may have been
+                    # given a preset that cannot change files since (``change_duty``), which
+                    # found no worktree of it then and is to find none later.
+                    seat=kept.seat,
                 )
+            except SeatChanged as exc:
+                return None, "seat_changed", str(exc)
             except ValueError as exc:
                 return None, "name_taken", str(exc)
             self._trees_mine.add(row.id)
