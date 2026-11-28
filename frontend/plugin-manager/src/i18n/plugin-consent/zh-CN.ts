@@ -139,6 +139,11 @@ const messages: PluginConsentMessages = {
       },
     },
     notices: {
+      scan: {
+        pending: "扫描还在进行，结果出来后这里会自动更新。",
+        failed: "扫描没有完成，下面只有插件声明的内容，扫描结果暂时看不到。",
+        partial: "扫描没能读完全部代码，下面的扫描结果可能不完整。",
+      },
       incomplete: "不完整",
       manifestUnavailable: "插件的声明暂时读不到，下面的对账不完整，请稍后再看。",
       manifestUnusable: "插件的 plugin.toml 读到了但不能用，这里当作没有声明，按扫描推断显示。",

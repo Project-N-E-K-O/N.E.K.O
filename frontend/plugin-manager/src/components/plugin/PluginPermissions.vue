@@ -1,6 +1,6 @@
 <template>
   <section class="perm-tab">
-    <PluginLegacyConsentBanner :plugin-id="pluginId" />
+    <PluginLegacyConsentBanner :plugin-id="pluginId" @changed="load" />
     <div v-if="loading && !panel" class="perm-tab__state">{{ t('pluginConsent.tab.loading') }}</div>
     <div v-else-if="!panel" class="perm-tab__state">
       {{ t('pluginConsent.tab.loadFailed') }}
@@ -201,7 +201,7 @@
 
         <div class="perm-foot">
           <p class="perm-safe">{{ t('pluginConsent.tab.safe') }}</p>
-          <div v-if="spotFiles.length || panel.blind_spots.not_analyzed_files" class="perm-spots" data-test="blind-spots">
+          <div v-if="showSpots" class="perm-spots" data-test="blind-spots">
             <div class="perm-spots__title">
               <strong v-if="spotFiles.length">⚠ {{ t('pluginConsent.tab.blindSpots.title', { n: spotFiles.length }) }}</strong>
               <strong v-else data-test="blind-spots-none">{{ t('pluginConsent.tab.blindSpots.none') }}</strong>
@@ -271,7 +271,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, defineComponent, h, onMounted, reactive, ref } from 'vue'
+import { computed, defineComponent, h, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import type { PropType } from 'vue'
 import { useI18n } from 'vue-i18n'
 import dayjs from 'dayjs'
@@ -300,14 +300,22 @@ import {
   decisionErrorKey,
   enforcementTag,
   firstUse,
+  grantCondition,
   incomplete,
   partialBlock,
+  permissionsToml,
   reconcileMark,
   relativeDay,
   scanFiles,
+  scanNotice,
+  scanPending,
   showsCondition,
   tierSections,
   usageLine,
+  validCatalog,
+  validHistory,
+  validPanel,
+  validPending,
 } from '@/utils/permissionTab'
 
 const props = defineProps<{ pluginId: string }>()
@@ -344,7 +352,22 @@ async function optional<T>(request: Promise<T>): Promise<T | null> {
   }
 }
 
+/** While the scan is queued or running, the panel is read again this often. */
+const SCAN_POLL_MS = 5000
+let loadSeq = 0
+/** Saves in flight: a load answered meanwhile may predate them. */
+let saving = 0
+let pollTimer: ReturnType<typeof setTimeout> | null = null
+let unmounted = false
+
+function stopPolling() {
+  if (pollTimer !== null) clearTimeout(pollTimer)
+  pollTimer = null
+}
+
 async function load() {
+  const seq = ++loadSeq
+  stopPolling()
   loading.value = true
   try {
     const [nextPanel, nextCatalog, nextAudit, nextPending] = await Promise.all([
@@ -353,15 +376,22 @@ async function load() {
       optional(getPermissionAuditHistory(props.pluginId)),
       optional(getPendingPermissions()),
     ])
-    panel.value = nextPanel
-    catalog.value = nextCatalog
-    audit.value = nextAudit
-    pending.value = nextPending
+    // A later load (or a save) owns the view now.
+    if (seq !== loadSeq || unmounted || saving > 0) return
+    panel.value = validPanel(nextPanel) ? nextPanel : null
+    catalog.value = validCatalog(nextCatalog) ? nextCatalog : null
+    audit.value = validHistory(nextAudit) ? nextAudit : null
+    pending.value = validPending(nextPending) ? nextPending : null
+    if (panel.value && scanPending(panel.value)) pollTimer = setTimeout(load, SCAN_POLL_MS)
   } finally {
-    loading.value = false
+    if (seq === loadSeq) loading.value = false
   }
 }
 onMounted(load)
+onBeforeUnmount(() => {
+  unmounted = true
+  stopPolling()
+})
 
 function label(permission: string) {
   const key = capabilityMessageKey(permission, 'title')
@@ -416,6 +446,8 @@ const notices = computed(() => {
     out.push({ key: 'notice-unavailable', text: t('pluginConsent.tab.notices.manifestUnavailable') })
   if (p.manifest === 'unusable')
     out.push({ key: 'notice-unusable', text: t('pluginConsent.tab.notices.manifestUnusable') })
+  const scan = scanNotice(p)
+  if (scan) out.push({ key: `notice-scan-${scan}`, text: t(`pluginConsent.tab.notices.scan.${scan}`) })
   if (p.grants_reset)
     out.push({
       key: 'notice-reset',
@@ -426,19 +458,14 @@ const notices = computed(() => {
   return out
 })
 
-const manifestText = computed(() => {
-  const table = panel.value?.developer.manifest_permissions
-  if (!table) return ''
-  const lines: string[] = []
-  for (const [level, items] of Object.entries(table)) {
-    if (!items || typeof items !== 'object') continue
-    lines.push(`[permissions.${level}]`)
-    for (const [id, value] of Object.entries(items as Record<string, unknown>)) {
-      lines.push(`"${id}" = ${JSON.stringify(value)}`)
-    }
-    lines.push('')
-  }
-  return lines.join('\n').trim()
+const manifestText = computed(() => permissionsToml(panel.value?.developer.manifest_permissions ?? null))
+/** Shown once the scan answered, also to say that nothing was hard to see. */
+const showSpots = computed(() => {
+  const p = panel.value
+  if (!p) return false
+  const status = p.analysis.status
+  // A partial scan has no "nothing found" to report, only what it found.
+  return status === 'completed' || spotFiles.value.length > 0 || p.blind_spots.not_analyzed_files > 0
 })
 
 const devLocations = computed(() => {
@@ -477,23 +504,43 @@ function toggleRow(permission: string) {
 function toggleAll() {
   const open = !allExpanded.value
   for (const row of scannedRows.value) {
-    if (open) expanded.add(row.permission)
-    else expanded.delete(row.permission)
+    if (open) {
+      expanded.add(row.permission)
+      // A folded tier would hide what was just expanded.
+      openTiers.add(row.tier)
+    } else {
+      // Tiers the user opened stay open.
+      expanded.delete(row.permission)
+    }
   }
 }
 
 async function save(row: PanelRow, run: () => Promise<PermissionPanel>) {
   busy.value = row.permission
+  // A load still on its way, or one a timer starts now, would put the old answer back.
+  loadSeq++
+  saving++
+  stopPolling()
+  loading.value = false
   try {
-    panel.value = await run()
+    const next = await run()
+    if (validPanel(next)) panel.value = next
+    // Uses while undecided count from the last answer: they change with it.
+    const nextPending = await optional(getPendingPermissions())
+    pending.value = validPending(nextPending) ? nextPending : pending.value
   } catch (error) {
     ElMessage.error(t(decisionErrorKey(error)))
   } finally {
+    saving--
     busy.value = null
+    // Keep following a scan that is still running, also after a failed save.
+    if (!unmounted && saving === 0 && pollTimer === null && panel.value && scanPending(panel.value)) {
+      pollTimer = setTimeout(load, SCAN_POLL_MS)
+    }
   }
 }
 function decide(row: PanelRow, state: 'granted' | 'denied', condition?: PermissionCondition) {
-  const keep = state === 'granted' ? (condition ?? row.condition ?? 'in_use') : 'in_use'
+  const keep = state === 'granted' ? grantCondition(row, condition) : 'in_use'
   return save(row, () => decidePermission(props.pluginId, row.permission, state, keep))
 }
 function toggle(row: PanelRow, on: boolean) {

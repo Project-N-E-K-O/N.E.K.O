@@ -140,6 +140,11 @@ const messages: PluginConsentMessages = {
       },
     },
     notices: {
+      scan: {
+        pending: "스캔이 아직 진행 중입니다. 끝나면 이 페이지가 자동으로 업데이트됩니다.",
+        failed: "스캔이 완료되지 않았습니다. 플러그인이 선언한 내용만 표시되며 스캔 결과는 아직 볼 수 없습니다.",
+        partial: "스캔이 코드를 모두 읽지 못해 아래 스캔 결과가 불완전할 수 있습니다.",
+      },
       incomplete: "불완전",
       manifestUnavailable: "지금은 플러그인 선언을 읽을 수 없어 아래 대조가 불완전합니다. 잠시 후 다시 확인하세요.",
       manifestUnusable: "플러그인의 plugin.toml을 읽었지만 사용할 수 없습니다. 선언이 없는 것으로 보고 스캔 결과로 추정해 표시합니다.",

@@ -23,7 +23,15 @@ const pluginStore = vi.hoisted(() => ({
 }))
 vi.mock('@/api/pluginPermissions', () => api)
 // The earlier plugin-wide consent line has its own tests.
-vi.mock('./PluginLegacyConsentBanner.vue', () => ({ default: { render: () => null } }))
+vi.mock('./PluginLegacyConsentBanner.vue', async () => {
+  const { defineComponent, h } = await import('vue')
+  return {
+    default: defineComponent({
+      emits: ['changed'],
+      setup: (_, { emit }) => () => h('button', { 'data-test': 'banner-changed', onClick: () => emit('changed') }),
+    }),
+  }
+})
 vi.mock('@/stores/plugin', () => ({ usePluginStore: () => pluginStore }))
 vi.mock('@/i18n', () => ({
   i18n: { global: { t: (key: string) => key } },
@@ -37,6 +45,8 @@ vi.mock('vue-i18n', () => ({
   }),
 }))
 
+/** Noon of a local calendar day, so the date reads the same in every time zone. */
+const localDay = (year: number, month: number, day: number) => new Date(year, month - 1, day, 12).toISOString()
 const MEMORY = 'plugin_sdk.main_agent.memory:read'
 const PUSH = 'plugin_sdk.main_agent.messages:push'
 const NET = 'system.network:connect'
@@ -258,7 +268,7 @@ describe('PluginPermissions tab', () => {
 
   it('writes "unused since X" when the history covers less than 30 days', async () => {
     serve(panel({ rows: [row({ state: 'undecided' })] }), {
-      history: { since: null, covers_30d: false, last_use_since: '2026-11-20T00:00:00Z', last_use_covers_30d: false },
+      history: { since: null, covers_30d: false, last_use_since: localDay(2026, 11, 20), last_use_covers_30d: false },
     })
     const root = await mount()
     const line = q(root, `usage-${NET}`)!
@@ -304,7 +314,7 @@ describe('PluginPermissions tab', () => {
   })
 
   it('shows a source reset with its date', async () => {
-    serve(panel({ grants_reset: { at: '2026-11-25T08:00:00Z', reason: 'source_changed' } }))
+    serve(panel({ grants_reset: { at: localDay(2026, 11, 25), reason: 'source_changed' } }))
     const root = await mount()
     expect(q(root, 'notice-reset')!.textContent).toContain('"date":"2026-11-25"')
   })
@@ -363,6 +373,166 @@ describe('PluginPermissions tab', () => {
       blind_spots: { files: [{ file: 'a.py', count: 1, types: { code_exec: 1 }, high_risk: false }], counted: 1, not_analyzed_files: 0 },
     }))
     expect(q(await mount(), 'blind-spots-none')).toBeNull()
+  })
+
+  it('grants a required item "any time", since it shows no condition control', async () => {
+    const required = row({ state: 'undecided', condition: null, declared: { ...row().declared!, level: 'require' } })
+    serve(panel({ rows: [required] }))
+    api.decidePermission.mockResolvedValue(panel({ rows: [required] }))
+    const root = await mount()
+    q(root, `switch-${NET}`)!.dispatchEvent(new Event('change'))
+    await flush()
+    expect(api.decidePermission).toHaveBeenCalledWith('demo', NET, 'granted', 'anytime')
+  })
+
+  it('loads again after the plugin-wide consent changed', async () => {
+    serve(panel())
+    const root = await mount()
+    expect(api.getPermissionPanel).toHaveBeenCalledTimes(1)
+    q(root, 'banner-changed')!.click()
+    await flush()
+    expect(api.getPermissionPanel).toHaveBeenCalledTimes(2)
+  })
+
+  it('loads again while the scan is queued, and stops once it finished', async () => {
+    vi.useFakeTimers()
+    try {
+      serve(panel({ analysis: { ...panel().analysis, status: 'queued' } }))
+      api.getPermissionPanel
+        .mockReset()
+        .mockResolvedValueOnce(panel({ analysis: { ...panel().analysis, status: 'queued' } }))
+        .mockResolvedValue(panel())
+      const root = await mount()
+      expect(q(root, 'notice-scan-pending')).not.toBeNull()
+      await vi.advanceTimersByTimeAsync(5000)
+      await flush()
+      expect(api.getPermissionPanel).toHaveBeenCalledTimes(2)
+      expect(q(root, 'notice-scan-pending')).toBeNull()
+      await vi.advanceTimersByTimeAsync(20000)
+      expect(api.getPermissionPanel).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not let a load answered during a save overwrite it, and keeps polling after a failed save', async () => {
+    vi.useFakeTimers()
+    try {
+      const queued = (state: 'granted' | 'undecided') =>
+        panel({ analysis: { ...panel().analysis, status: 'running' }, rows: [row({ state, condition: null })] })
+      serve(queued('undecided'))
+      const root = await mount()
+      let finishSave: (value: PermissionPanel) => void = () => {}
+      api.decidePermission.mockImplementation(() => new Promise((resolve) => { finishSave = resolve }))
+      q(root, `switch-${NET}`)!.dispatchEvent(new Event('change'))
+      await flush()
+      // The poll timer was stopped by the save: nothing loads meanwhile.
+      await vi.advanceTimersByTimeAsync(6000)
+      expect(api.getPermissionPanel).toHaveBeenCalledTimes(1)
+      finishSave(queued('granted'))
+      await flush()
+      expect((q(root, `switch-${NET}`) as HTMLInputElement).checked).toBe(true)
+
+      api.decidePermission.mockRejectedValue(new Error('x'))
+      q(root, `switch-${NET}`)!.dispatchEvent(new Event('change'))
+      await flush()
+      await vi.advanceTimersByTimeAsync(5000)
+      await flush()
+      expect(api.getPermissionPanel).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not say "no blind spot files" after a partial scan', async () => {
+    serve(panel({ analysis: { ...panel().analysis, status: 'partial' } }))
+    const root = await mount()
+    expect(q(root, 'notice-scan-partial')).not.toBeNull()
+    expect(q(root, 'blind-spots-none')).toBeNull()
+  })
+
+  it('says when the scan failed and does not claim there are no blind spots', async () => {
+    serve(panel({ analysis: { ...panel().analysis, status: 'failed' } }))
+    const root = await mount()
+    expect(q(root, 'notice-scan-failed')).not.toBeNull()
+    expect(q(root, 'blind-spots')).toBeNull()
+  })
+
+  it('says there are no blind spot files after a finished scan with nothing to count', async () => {
+    serve(panel())
+    const root = await mount()
+    expect(q(root, 'blind-spots-none')).not.toBeNull()
+    expect(q(root, 'notice-scan-partial')).toBeNull()
+  })
+
+  it('reads the uses while undecided again after a decision', async () => {
+    serve(panel({ rows: [row({ state: 'undecided', condition: null })] }), {
+      pending: {
+        incomplete: [],
+        first_use: [{ plugin_id: 'demo', permission: NET, at: localDay(2026, 11, 27), count: 4, count_is_lower_bound: false }],
+      },
+    })
+    const root = await mount()
+    expect(q(root, `first-use-${NET}`)).not.toBeNull()
+    api.getPendingPermissions.mockResolvedValue({ first_use: [], incomplete: [] })
+    api.decidePermission.mockResolvedValue(panel({ rows: [row({ state: 'undecided', condition: null })] }))
+    q(root, `switch-${NET}`)!.dispatchEvent(new Event('change'))
+    await flush()
+    expect(q(root, `first-use-${NET}`)).toBeNull()
+  })
+
+  it('opens a folded tier when everything is expanded and keeps it open when collapsed', async () => {
+    serve(panel({
+      rows: [row({ permission: 'plugin_sdk.models:invoke', tier: 'low' })],
+      tiers: [
+        { tier: 'high', count: 0, collapsed: false },
+        { tier: 'medium', count: 0, collapsed: false },
+        { tier: 'low', count: 1, collapsed: true },
+      ],
+    }))
+    const root = await mount()
+    q(root, 'expand-all')!.click()
+    await flush()
+    expect(q(root, 'row-plugin_sdk.models:invoke')).not.toBeNull()
+    expect(q(root, 'scan-files')).not.toBeNull()
+    q(root, 'expand-all')!.click()
+    await flush()
+    expect(q(root, 'scan-files')).toBeNull()
+    expect(q(root, 'row-plugin_sdk.models:invoke')).not.toBeNull()
+  })
+
+  it('treats a response of another shape as not loaded', async () => {
+    serve(panel())
+    api.getPermissionPanel.mockResolvedValue({})
+    api.getPermissionCatalog.mockResolvedValue({})
+    api.getPermissionAuditHistory.mockResolvedValue({})
+    api.getPendingPermissions.mockResolvedValue({})
+    const root = await mount()
+    expect(root.textContent).toContain('pluginConsent.tab.loadFailed')
+  })
+
+  it('stays usable when only the optional sources answer with another shape', async () => {
+    serve(panel({ rows: [row({ permission: MEMORY, state: 'undecided' })] }))
+    api.getPermissionCatalog.mockResolvedValue({})
+    api.getPermissionAuditHistory.mockResolvedValue({})
+    api.getPendingPermissions.mockResolvedValue({})
+    const root = await mount()
+    expect(q(root, `row-${MEMORY}`)).not.toBeNull()
+  })
+
+  it('shows the manifest table as TOML', async () => {
+    serve(panel({
+      developer: {
+        findings: {},
+        blind_spots: [],
+        not_analyzed: [],
+        manifest_permissions: { require: { [NET]: { reason: 'fetch', hosts: ['a.example'] } } },
+      },
+    }))
+    const root = await mount()
+    expect(root.querySelector('.perm-dev__toml')!.textContent).toBe(
+      '[permissions.require]\n"system.network:connect" = { reason = "fetch", hosts = ["a.example"] }',
+    )
   })
 
   it('folds a tier the server marks collapsed until clicked', async () => {

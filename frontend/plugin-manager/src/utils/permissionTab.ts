@@ -8,6 +8,7 @@
 import { isAxiosError } from 'axios'
 import type {
   ManifestStatus,
+  PermissionCondition,
   PanelRow,
   PermissionCatalog,
   PermissionPanel,
@@ -19,7 +20,6 @@ import { readErrorCode } from '@/utils/request'
 import { permissionErrorKey } from '@/utils/pluginPermissionErrors'
 
 export const LISTED_TIERS: RiskTier[] = ['high', 'medium', 'low']
-const DAY_MS = 24 * 60 * 60 * 1000
 
 /** A plugin.toml that was read but cannot be used counts as no declaration. */
 export function declarationUsable(manifest: ManifestStatus): boolean {
@@ -76,6 +76,17 @@ export function partialBlock(catalog: PermissionCatalog | null, permission: stri
 export function enforcementTag(row: PanelRow): 'notEnforcedNotTracked' | 'recordOnly' | null {
   if (row.enforced) return null
   return row.usage_tracked ? 'recordOnly' : 'notEnforcedNotTracked'
+}
+
+/**
+ * The condition to grant with. A required item has no "when it may" control:
+ * it is granted "any time" when the server allows it (the declaration covers
+ * background use), so background use is not left off with no way to turn it on.
+ */
+export function grantCondition(row: PanelRow, chosen?: PermissionCondition): PermissionCondition {
+  if (chosen) return chosen
+  if (row.declared?.level === 'require' && row.anytime_allowed === true) return 'anytime'
+  return row.condition ?? 'in_use'
 }
 
 /** "When it may": granted, not required (a required item covers it). */
@@ -149,13 +160,15 @@ export function incomplete(panel: PermissionPanel, pending: PendingPermissions |
   return panel.manifest === 'unavailable' || Boolean(pending?.incomplete.includes(panel.plugin_id))
 }
 
-/** "Today 14:02", "Yesterday 21:17", else the date. */
+/** "Today 14:02", "Yesterday 21:17", else the date. Days start at local midnight. */
 export function relativeDay(value: string, now: Date = new Date()): 'today' | 'yesterday' | null {
   const at = new Date(value)
   if (Number.isNaN(at.getTime())) return null
-  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()
-  if (at.getTime() >= start && at.getTime() < start + DAY_MS) return 'today'
-  if (at.getTime() >= start - DAY_MS && at.getTime() < start) return 'yesterday'
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+  const tomorrow = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1)
+  const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1)
+  if (at >= today && at < tomorrow) return 'today'
+  if (at >= yesterday && at < today) return 'yesterday'
   return null
 }
 
@@ -198,4 +211,72 @@ export function decisionErrorKey(error: unknown): string {
     if (known) return known
   }
   return 'pluginConsent.saveFailed'
+}
+
+/** Scan-wide state when it is not a finished scan: rows alone cannot tell. */
+export function scanNotice(panel: PermissionPanel): 'pending' | 'failed' | 'partial' | null {
+  const status = panel.analysis.status
+  if (status === 'completed') return null
+  if (status === 'partial') return 'partial'
+  // ``unavailable``: no current report yet, one is being made (as the consent views read it).
+  if (status === 'queued' || status === 'running' || status === 'unavailable') return 'pending'
+  return 'failed'
+}
+
+/** Whether a scan is still to come, so the panel is loaded again. */
+export function scanPending(panel: PermissionPanel): boolean {
+  return scanNotice(panel) === 'pending'
+}
+
+const BARE_KEY = /^[A-Za-z0-9_-]+$/
+
+function tomlKey(key: string): string {
+  return BARE_KEY.test(key) ? key : JSON.stringify(key)
+}
+
+function tomlValue(value: unknown): string {
+  if (typeof value === 'string') return JSON.stringify(value)
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value)
+  if (Array.isArray(value)) return `[${value.map(tomlValue).join(', ')}]`
+  if (value && typeof value === 'object') {
+    const items = Object.entries(value as Record<string, unknown>)
+      .filter(([, item]) => item !== null && item !== undefined)
+      .map(([key, item]) => `${tomlKey(key)} = ${tomlValue(item)}`)
+    return items.length ? `{ ${items.join(', ')} }` : '{}'
+  }
+  return '""'
+}
+
+/** The manifest's [permissions] table written back as TOML. */
+export function permissionsToml(table: Record<string, unknown> | null): string {
+  if (!table) return ''
+  const blocks: string[] = []
+  for (const [level, items] of Object.entries(table)) {
+    if (!items || typeof items !== 'object' || Array.isArray(items)) continue
+    const lines = [`[permissions.${tomlKey(level)}]`]
+    for (const [id, value] of Object.entries(items as Record<string, unknown>)) {
+      lines.push(`${tomlKey(id)} = ${tomlValue(value)}`)
+    }
+    blocks.push(lines.join('\n'))
+  }
+  return blocks.join('\n\n')
+}
+
+const isObject = (value: unknown): value is Record<string, unknown> =>
+  Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+
+/** Responses of another shape (an older or a stub server) count as missing. */
+export function validPanel(value: unknown): value is PermissionPanel {
+  return isObject(value) && Array.isArray(value.rows) && Array.isArray(value.tiers)
+    && isObject(value.counts) && isObject(value.analysis) && isObject(value.source)
+    && isObject(value.blind_spots) && isObject(value.developer)
+}
+export function validCatalog(value: unknown): value is PermissionCatalog {
+  return isObject(value) && Array.isArray(value.privacy_groups)
+}
+export function validPending(value: unknown): value is PendingPermissions {
+  return isObject(value) && Array.isArray(value.first_use) && Array.isArray(value.incomplete)
+}
+export function validHistory(value: unknown): value is { history: UsageHistory; lost_at: string | null } {
+  return isObject(value) && isObject(value.history)
 }

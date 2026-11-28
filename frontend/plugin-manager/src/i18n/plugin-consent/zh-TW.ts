@@ -139,6 +139,11 @@ const messages: PluginConsentMessages = {
       },
     },
     notices: {
+      scan: {
+        pending: "掃描還在進行，結果出來後這裡會自動更新。",
+        failed: "掃描沒有完成，下面只有外掛聲明的內容，掃描結果暫時看不到。",
+        partial: "掃描沒能讀完全部程式碼，下面的掃描結果可能不完整。",
+      },
       incomplete: "不完整",
       manifestUnavailable: "外掛的聲明暫時讀不到，下面的對帳不完整，請稍後再看。",
       manifestUnusable: "外掛的 plugin.toml 讀到了但不能用，這裡當作沒有聲明，依掃描推斷顯示。",

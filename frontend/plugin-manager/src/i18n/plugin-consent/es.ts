@@ -140,6 +140,11 @@ const messages: PluginConsentMessages = {
       },
     },
     notices: {
+      scan: {
+        pending: "El análisis aún está en curso. Esta página se actualiza cuando termine.",
+        failed: "El análisis no terminó. Solo se muestra lo que declara el plugin; los resultados del análisis no están disponibles.",
+        partial: "El análisis no pudo leer todo el código, así que los resultados de abajo pueden estar incompletos.",
+      },
       incomplete: "Incompleto",
       manifestUnavailable: "Ahora no se puede leer la declaración del plugin, así que la comparación de abajo está incompleta. Vuelve a mirar más tarde.",
       manifestUnusable: "Se leyó el plugin.toml del plugin, pero no se puede usar. Se trata como si no hubiera declaración y los elementos se deducen del análisis.",

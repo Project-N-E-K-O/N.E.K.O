@@ -142,6 +142,11 @@ const messages = {
       },
     },
     notices: {
+      scan: {
+        pending: "The scan is still running. This page updates when it finishes.",
+        failed: "The scan did not complete. Only what the plugin declares is shown; scan results are not available.",
+        partial: "The scan could not read all of the code, so the scan results below may be incomplete.",
+      },
       incomplete: "Incomplete",
       manifestUnavailable: "The plugin's declaration cannot be read right now, so the comparison below is incomplete. Please check again later.",
       manifestUnusable: "The plugin's plugin.toml was read but cannot be used. It is treated as having no declaration, and items are inferred from the scan.",

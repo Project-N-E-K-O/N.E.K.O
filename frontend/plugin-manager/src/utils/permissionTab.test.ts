@@ -7,6 +7,10 @@ import {
   conditionLock,
   controlSide,
   decisionErrorKey,
+  grantCondition,
+  permissionsToml,
+  scanNotice,
+  validPanel,
   enforcementTag,
   firstUse,
   incomplete,
@@ -257,5 +261,57 @@ describe('decisionErrorKey', () => {
   it('falls back to the generic save failure', () => {
     expect(decisionErrorKey(failure(500, 'SOMETHING_ELSE'))).toBe('pluginConsent.saveFailed')
     expect(decisionErrorKey(new Error('x'))).toBe('pluginConsent.saveFailed')
+  })
+})
+
+describe('grantCondition', () => {
+  it('grants a required item any time when the server allows it', () => {
+    const required = row({ declared: { ...row().declared!, level: 'require' }, condition: null })
+    expect(grantCondition(required)).toBe('anytime')
+    expect(grantCondition({ ...required, anytime_allowed: false })).toBe('in_use')
+    expect(grantCondition(required, 'in_use')).toBe('in_use')
+  })
+
+  it('keeps the current condition of an optional item', () => {
+    expect(grantCondition(row({ condition: null }))).toBe('in_use')
+    expect(grantCondition(row({ condition: 'anytime' }))).toBe('anytime')
+  })
+})
+
+describe('scan-wide state', () => {
+  it.each([
+    ['completed', null],
+    ['partial', 'partial'],
+    ['queued', 'pending'],
+    ['running', 'pending'],
+    ['failed', 'failed'],
+    ['unavailable', 'pending'],
+    [null, 'failed'],
+  ])('%s -> %s', (status, notice) => {
+    expect(scanNotice(panel({ analysis: { ...panel().analysis, status } }))).toBe(notice)
+  })
+})
+
+describe('permissionsToml', () => {
+  it('writes valid TOML inline tables, quoting keys that need it', () => {
+    expect(
+      permissionsToml({
+        require: { 'system.network:connect': { reason: 'say "hi"', hosts: ['a', 'b'], background: false } },
+        ask: { 'plugin_sdk.models:invoke': {} },
+        broken: 'not a table',
+      }),
+    ).toBe(
+      '[permissions.require]\n"system.network:connect" = { reason = "say \\"hi\\"", hosts = ["a", "b"], background = false }\n\n'
+        + '[permissions.ask]\n"plugin_sdk.models:invoke" = {}',
+    )
+    expect(permissionsToml(null)).toBe('')
+  })
+})
+
+describe('validPanel', () => {
+  it('rejects responses of another shape', () => {
+    expect(validPanel({})).toBe(false)
+    expect(validPanel(null)).toBe(false)
+    expect(validPanel(panel())).toBe(true)
   })
 })
