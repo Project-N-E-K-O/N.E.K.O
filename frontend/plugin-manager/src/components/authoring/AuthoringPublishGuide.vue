@@ -18,6 +18,7 @@
             :key="`c${index}`"
             :label="item.label ? fill(item.label) : undefined"
             :command="fill(item.command)"
+            :note="fillInNote(item.fillIn)"
           />
           <p v-if="section.links?.length" class="authoring-guide__links">
             <a
@@ -39,7 +40,7 @@ import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Reading } from '@element-plus/icons-vue'
 import AuthoringGuideCommand from '@/components/authoring/AuthoringGuideCommand.vue'
-import { fillGuide, publishGuide, type GuideParams } from '@/components/authoring/publishGuide'
+import { fillGuide, publishGuide, type GuideFillInId, type GuideParams } from '@/components/authoring/publishGuide'
 import type { PublishPageId } from '@/components/authoring/publishFlow'
 import { openExternalUrl } from '@/utils/openExternal'
 
@@ -52,6 +53,13 @@ const { locale } = useI18n()
 const guide = computed(() => publishGuide(locale.value))
 const page = computed(() => guide.value.pages[props.pageId])
 const fill = (text: string) => fillGuide(text, props.params)
+/** Names the value of a placeholder the command shows, apart from the copied command. */
+function fillInNote(id: GuideFillInId | undefined) {
+  const fillIn = id ? props.params.fillIns?.[id] : undefined
+  return fillIn
+    ? guide.value.labels.fillIn.replace('{placeholder}', fillIn.placeholder).replace('{value}', () => fillIn.value)
+    : undefined
+}
 </script>
 
 <style scoped>

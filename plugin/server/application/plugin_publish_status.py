@@ -102,11 +102,16 @@ def push_hint(state: RepoState) -> PushHint | None:
     return _push_hint(state.branch)
 
 
+def _fill_in(placeholder: str, value: str | None) -> dict[str, str] | None:
+    return {"placeholder": placeholder.strip('"'), "value": value} if value is not None else None
+
+
 def repository_status(state: RepoState) -> dict[str, object]:
     """``state`` plus the quoted commands the publish page shows for it.
 
-    A placeholder's value travels in its own field, never inside a command:
-    a value that cannot be quoted for the user's shell would run when pasted.
+    A placeholder's value travels in its own ``*_fill_in`` field, never inside
+    a command: a value that cannot be quoted for the user's shell would run
+    when pasted.
     """
     from plugin.neko_plugin_cli.commands.release_cmd import (
         _BRANCH_PLACEHOLDER,
@@ -116,16 +121,17 @@ def repository_status(state: RepoState) -> dict[str, object]:
 
     due = push_hint(state)
     first_push = _push_hint(state.branch) if state.branch else None
+    branch_argument = _shell_argument(state.branch, _BRANCH_PLACEHOLDER) if state.branch else None
     return {
         **asdict(state),
         "push_command": due.command if due else None,
-        "push_fill_in": (
-            {"placeholder": due.placeholder.strip('"'), "value": due.fill_in}
-            if due and due.fill_in is not None
-            else None
+        "push_fill_in": _fill_in(due.placeholder, due.fill_in) if due else None,
+        "branch_argument": branch_argument,
+        "branch_fill_in": (
+            _fill_in(_BRANCH_PLACEHOLDER, state.branch) if branch_argument == _BRANCH_PLACEHOLDER else None
         ),
-        "branch_argument": _shell_argument(state.branch, _BRANCH_PLACEHOLDER) if state.branch else None,
         "set_upstream_command": first_push.command if first_push else None,
+        "set_upstream_fill_in": _fill_in(first_push.placeholder, first_push.fill_in) if first_push else None,
     }
 
 

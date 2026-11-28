@@ -325,6 +325,10 @@ const guideParams = computed<GuideParams>(() => ({
   // project has a repository.
   branch: status.value?.repository.branch_argument ?? 'main',
   firstPush: status.value?.repository.set_upstream_command ?? 'git push -u origin refs/heads/main',
+  fillIns: {
+    branch: status.value?.repository.branch_fill_in ?? undefined,
+    firstPush: status.value?.repository.set_upstream_fill_in ?? undefined,
+  },
   pluginId: status.value?.plugin_id,
   dir: props.sourceDir,
 }))

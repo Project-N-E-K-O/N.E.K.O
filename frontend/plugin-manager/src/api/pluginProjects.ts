@@ -137,8 +137,12 @@ export interface PublishRepositoryState {
   push_fill_in: { placeholder: string; value: string } | null
   /** The branch quoted as one shell argument (`git init -b`), or a placeholder. */
   branch_argument: string | null
+  /** What the placeholder of `branch_argument` stands for. */
+  branch_fill_in: { placeholder: string; value: string } | null
   /** `git push -u origin <branch>` quoted like `push_command`, whether or not a push is due. */
   set_upstream_command: string | null
+  /** What the placeholder of `set_upstream_command` stands for. */
+  set_upstream_fill_in: { placeholder: string; value: string } | null
   /** Same definition as the CLI publish gate. */
   worktree_clean: boolean | null
   /** The first changed paths when the worktree is not clean. */

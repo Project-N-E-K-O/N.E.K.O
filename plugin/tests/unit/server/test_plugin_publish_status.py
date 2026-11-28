@@ -71,4 +71,6 @@ def test_fresh_is_passed_through_to_the_remote_read(monkeypatch, tmp_path):
     assert result["repository"]["push_command"] == "git push -u origin refs/heads/main"
     assert result["repository"]["push_fill_in"] is None
     assert result["repository"]["branch_argument"] == "main"
+    assert result["repository"]["branch_fill_in"] is None
+    assert result["repository"]["set_upstream_fill_in"] is None
     assert result["repository"]["set_upstream_command"] == "git push -u origin refs/heads/main"

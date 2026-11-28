@@ -16,6 +16,8 @@ export interface GuideCommand {
   /** What the command does, shown above it. */
   label?: string
   command: string
+  /** The value whose placeholder the command may show, named below it then. */
+  fillIn?: GuideFillInId
 }
 
 export interface GuideSection {
@@ -57,20 +59,32 @@ export interface PublishGuide {
     copyFailed: string
     howToInstall: string
     afterInstall: string
+    /** Below a command that shows a placeholder: `{placeholder}`, `{value}`. */
+    fillIn: string
   }
   pages: Record<PublishPageId, PageGuide>
   tools: Record<ToolId, ToolGuide>
 }
 
+export type GuideFillInId = 'branch' | 'firstPush'
+
+export interface GuideFillIn {
+  placeholder: string
+  value: string
+}
+
 export type GuideParams = Partial<
   Record<'repo' | 'tag' | 'version' | 'branch' | 'firstPush' | 'pluginId' | 'dir', string>
->
+> & {
+  /** What a placeholder in `{branch}` or `{firstPush}` stands for; shown as text, never pasted. */
+  fillIns?: Partial<Record<GuideFillInId, GuideFillIn>>
+}
 
 /** Fill `{name}` placeholders; an unknown or empty value keeps a readable placeholder. */
 export function fillGuide(text: string, params: GuideParams): string {
   return text.replace(/\{(\w+)\}/g, (whole, name: string) => {
-    const value = params[name as keyof GuideParams]
-    return value ? value : whole.replace(/[{}]/g, '').replace(/^/, '<').replace(/$/, '>')
+    const value = params[name as Exclude<keyof GuideParams, 'fillIns'>]
+    return typeof value === 'string' && value ? value : whole.replace(/[{}]/g, '').replace(/^/, '<').replace(/$/, '>')
   })
 }
 

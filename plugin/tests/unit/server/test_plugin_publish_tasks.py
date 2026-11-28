@@ -555,7 +555,9 @@ def test_the_status_keeps_an_unquotable_branch_out_of_the_push_command(monkeypat
     assert repository["push_command"] == 'git push origin "<branch>"'
     assert repository["push_fill_in"] == {"placeholder": "<branch>", "value": f"refs/heads/{branch}"}
     assert repository["branch_argument"] == '"<branch>"'
+    assert repository["branch_fill_in"] == {"placeholder": "<branch>", "value": branch}
     assert repository["set_upstream_command"] == 'git push -u origin "<branch>"'
+    assert repository["set_upstream_fill_in"] == {"placeholder": "<branch>", "value": f"refs/heads/{branch}"}
     for field in ("push_command", "branch_argument", "set_upstream_command"):
         assert "calc" not in repository[field]
 
@@ -571,6 +573,8 @@ def test_the_status_quotes_the_branch_for_the_publish_guide():
     assert repository["push_fill_in"] is None
     assert repository["branch_argument"] == "'feat;$(x)'"
     assert repository["set_upstream_command"] == "git push -u origin 'refs/heads/feat;$(x)'"
+    assert repository["branch_fill_in"] is None
+    assert repository["set_upstream_fill_in"] is None
     assert repository_status(RepoState(**{**_READY, "branch": None, "detached": True}))["branch_argument"] is None
 
 

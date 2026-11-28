@@ -169,7 +169,9 @@ function publishStatus(overrides: {
       push_command: null,
       push_fill_in: null,
       branch_argument: 'main',
+      branch_fill_in: null,
       set_upstream_command: 'git push -u origin refs/heads/main',
+      set_upstream_fill_in: null,
       worktree_clean: true,
       dirty_paths: [],
       tag_exists: false,
@@ -1074,6 +1076,36 @@ describe('authoring workbench backed by the server project list', () => {
     expect(commands.join('\n')).toContain("git push -u origin 'refs/heads/feat;$(x)'")
     expect(page('repository').querySelector('.authoring-guide')!.textContent).not.toContain('origin feat;$(x)')
     expect(container.querySelector('.authoring-publish')!.textContent).not.toMatch(/\{firstPush\}/)
+    expect(page('repository').querySelector('.authoring-guide-command__note')).toBeNull()
+  })
+
+  it('names what a guide placeholder stands for below the command, not in it', async () => {
+    api.route.query = { project: 'p1' }
+    api.listPluginProjects.mockResolvedValue([listed])
+    api.getPluginProjectPublishStatus.mockResolvedValue(
+      publishStatus({
+        repository: {
+          branch: 'feat%PATH%&calc&',
+          branch_argument: '"<branch>"',
+          branch_fill_in: { placeholder: '<branch>', value: 'feat%PATH%&calc&' },
+          set_upstream_command: 'git push -u origin "<branch>"',
+          set_upstream_fill_in: { placeholder: '<branch>', value: 'refs/heads/feat%PATH%&calc&' },
+        },
+      })
+    )
+    const container = await mount()
+    await openPublish(container)
+    const figures = [...page('repository').querySelectorAll('.authoring-guide-command')]
+    const byCommand = (command: string) => figures.find((node) => node.querySelector('code')!.textContent === command)!
+    expect(byCommand('git init -b "<branch>"').querySelector('.authoring-guide-command__note')!.textContent).toBe(
+      'Replace <branch> with: feat%PATH%&calc&'
+    )
+    expect(byCommand('git push -u origin "<branch>"').querySelector('.authoring-guide-command__note')!.textContent).toBe(
+      'Replace <branch> with: refs/heads/feat%PATH%&calc&'
+    )
+    for (const node of page('repository').querySelectorAll('.authoring-guide-command code')) {
+      expect(node.textContent).not.toContain('calc')
+    }
   })
 
   it('opens the page a blocker dialog points to', async () => {
