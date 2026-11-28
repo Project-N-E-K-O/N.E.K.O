@@ -2836,23 +2836,12 @@ class AsrRuntimeMixin:
                 await asyncio.to_thread(self._read_asr_slot_override)
             ) is not None
         except Exception:
-            # Unknown is not "unset": a configured slot may exist, so do not
-            # pick a route that could send audio to the Core's provider.
-            if not core_start_is_current():
-                return
-            self._visual_route_mode = "independent"
-            self._sync_realtime_visual_delivery_mode("independent")
-            await self._fail_closed_voice_route(
-                "asr_slot_unreadable",
-                operation_generation=operation_generation,
-                still_current=core_start_is_current,
-                status=AsrStatusEvent(
-                    code="ASR_INDEPENDENT_FAILED",
-                    provider=core_type or "unknown",
-                    session_epoch=session_epoch,
-                ),
-            )
-            return
+            # Unknown is not "unset": a configured slot may exist, so treat it
+            # as active and never pick the native route. The provider
+            # resolver owns what may run while the config is unreadable (only
+            # a route that keeps the audio on this machine) and fails the
+            # start otherwise.
+            asr_slot_active = True
         if not core_start_is_current():
             return
         try:

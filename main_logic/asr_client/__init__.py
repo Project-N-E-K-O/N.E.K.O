@@ -192,19 +192,59 @@ class _AsrSelection:
     )
 
 
+class AsrConfigUnreadable(RuntimeError):
+    """The core config could not be read, so the ASR route cannot be decided."""
+
+
 def _read_core_config() -> dict:
-    """The core config snapshot; read errors propagate."""
+    """The core config snapshot behind every ASR route decision.
+
+    The only way this package reads the core config, and strict: a missing
+    file means defaults, but a damaged, unreadable or non-object file raises
+    :class:`AsrConfigUnreadable`. ``get_core_config()`` cannot tell on its
+    own -- it logs those errors and returns the defaults, in which the
+    speech-recognition slot is off, so a configured slot would be bypassed.
+    The file is checked through the locked snapshot read, so an in-process
+    writer's ``os.replace`` cannot make the check fail spuriously.
+    """
 
     from utils.config_manager import get_config_manager
+    from utils.config_manager.json_update import load_json_config_snapshot
 
-    return get_config_manager().get_core_config() or {}
-
-
-def _load_core_config() -> dict:
+    manager = get_config_manager()
     try:
-        return _read_core_config()
-    except Exception:
-        return {}
+        load_json_config_snapshot(manager, "core_config.json")
+        return manager.get_core_config() or {}
+    except Exception as exc:
+        raise AsrConfigUnreadable("ASR_INVALID_CONFIG: core config unreadable") from exc
+
+
+def _runs_locally(provider_key: str) -> bool:
+    meta = _ASR_PROVIDER_REGISTRY.get(provider_key)
+    return bool(meta is not None and meta.runs_locally)
+
+
+def _local_selection_or_raise(
+    route: _AsrCoreRoute,
+    provider_preference: str | None,
+    *,
+    ignore_route_capability: bool = False,
+) -> _AsrSelection:
+    """The route to use when the core config cannot be read.
+
+    The slot is unknown then, so only a route that keeps the audio on this
+    machine may run: the user's explicit local preference. Anything else
+    raises :class:`AsrConfigUnreadable` and the caller fails closed.
+    """
+
+    selection = _resolve_user_selected_provider(
+        route,
+        provider_preference,
+        ignore_route_capability=ignore_route_capability,
+    )
+    if selection is not None and _runs_locally(selection.provider_key):
+        return selection
+    raise AsrConfigUnreadable("ASR_INVALID_CONFIG: core config unreadable")
 
 
 def _is_explicit_intl_region(user_region: str) -> bool:
@@ -265,8 +305,9 @@ def get_asr_slot_override() -> AsrSlotEndpoint | None:
     """The active speech-recognition slot, if it overrides the Core's ASR.
 
     Reads the core config from disk: call via ``asyncio.to_thread`` from async
-    code. A read failure propagates: "could not read the slot" must not look
-    like "no slot", or a configured slot would be bypassed silently.
+    code. Raises :class:`AsrConfigUnreadable` when the config cannot be read:
+    "could not read the slot" must not look like "no slot", or a configured
+    slot would be bypassed silently.
     """
 
     return _resolve_asr_slot(_read_core_config())
@@ -400,7 +441,10 @@ def _resolve_asr_selection(
             _api_key=api_key or "",
         )
 
-    core_config = _load_core_config()
+    try:
+        core_config = _read_core_config()
+    except AsrConfigUnreadable:
+        return _local_selection_or_raise(route, provider_preference)
     slot_selection = _resolve_slot_selection(core_config)
     if slot_selection is not None:
         return slot_selection
@@ -525,7 +569,7 @@ def _get_asr_worker(
     # ConfigManager owns the only permitted provider-specific credential
     # fallback: a matching Core may supply CORE_API_KEY through its matching
     # ASSIST_API_KEY_* slot. No audio/TTS/other-provider key is consulted here.
-    resolved_core_config = _load_core_config() if core_config is None else core_config
+    resolved_core_config = _read_core_config() if core_config is None else core_config
     credential_field = (
         "SONIOX_API_KEY" if provider_key == "soniox" else route.credential_field
     )
@@ -666,7 +710,7 @@ def _resolve_core_follow_selection(core_type: str) -> _AsrSelection:
     if route is None:
         raise RuntimeError(f"ASR_UNKNOWN_CORE: {core_key or '<empty>'}")
     endpointing_mode = route.default_endpointing_mode
-    core_config = _load_core_config()
+    core_config = _read_core_config()
     worker_fn, api_key_override, provider_key = _get_asr_worker(
         core_key,
         endpointing_mode,

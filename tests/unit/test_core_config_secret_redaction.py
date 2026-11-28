@@ -998,3 +998,58 @@ def test_get_reports_the_asr_slot_and_its_availability(
     assert response["asrSlotActive"] is True
     assert response["asrSlotProvider"] == "custom"
     assert response["asrSlotAvailability"] == availability
+
+
+def _model_slot_types():
+    from main_routers.config_router.core_config import CORE_CONFIG_MODEL_TYPES
+
+    return list(CORE_CONFIG_MODEL_TYPES)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("model_type", _model_slot_types())
+def test_core_switch_keeps_a_key_book_entry_an_active_slot_reads(
+    config_manager, core_config_router, model_type
+):
+    # Core qwen -> gemini while assist is openai. Without the slot, the qwen
+    # entry would be treated as stale and overwritten with the Core key; any
+    # active per-feature slot on qwen (ASR, image, conversation...) still
+    # reads it, so it must survive. Covers slot types added later too.
+    _write_core_config(config_manager, {
+        "coreApi": "qwen", "assistApi": "openai", "coreApiKey": "sk-core-qwen",
+        "assistApiKeyQwen": "sk-slot-qwen", "assistApiKeyGemini": "sk-gemini",
+        "assistApiKeyOpenai": "sk-openai",
+        "enableCustomApi": True, f"{model_type}ModelProvider": "qwen",
+    })
+    result = asyncio.run(core_config_router.update_core_config(_FakeRequest({
+        "coreApi": "gemini", "assistApi": "openai",
+        "coreApiKey": core_config_router.CORE_CONFIG_SECRET_SENTINEL,
+        "enableCustomApi": True,
+    })))
+    assert result["success"] is True, result
+    saved = config_manager.load_json_config("core_config.json", {})
+    assert saved["coreApi"] == "gemini"
+    assert saved["assistApiKeyQwen"] == "sk-slot-qwen"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("enable_custom_api", [False, True])
+def test_core_switch_still_replaces_an_entry_nothing_else_reads(
+    config_manager, core_config_router, enable_custom_api
+):
+    # Existing rule: with no other reader the old Core's entry is stale. A
+    # slot only counts while per-feature models are on.
+    _write_core_config(config_manager, {
+        "coreApi": "qwen", "assistApi": "openai", "coreApiKey": "sk-core-qwen",
+        "assistApiKeyQwen": "sk-stale-qwen", "assistApiKeyGemini": "sk-gemini",
+        "assistApiKeyOpenai": "sk-openai",
+        "enableCustomApi": enable_custom_api,
+        "asrModelProvider": "qwen" if not enable_custom_api else "openai",
+    })
+    result = asyncio.run(core_config_router.update_core_config(_FakeRequest({
+        "coreApi": "gemini", "assistApi": "openai",
+        "coreApiKey": core_config_router.CORE_CONFIG_SECRET_SENTINEL,
+        "enableCustomApi": enable_custom_api,
+    })))
+    assert result["success"] is True, result
+    assert config_manager.load_json_config("core_config.json", {})["assistApiKeyQwen"] == "sk-core-qwen"

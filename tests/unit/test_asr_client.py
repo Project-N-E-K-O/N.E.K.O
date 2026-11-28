@@ -158,7 +158,7 @@ def test_public_exports_are_frozen():
 def test_routes_fail_synchronously_without_dummy(monkeypatch):
     monkeypatch.delenv("ASR_PROVIDER", raising=False)
     monkeypatch.delenv("SONIOX_API_KEY", raising=False)
-    monkeypatch.setattr(asr_client, "_load_core_config", lambda: {})
+    monkeypatch.setattr(asr_client, "_read_core_config", lambda: {})
     callback = AsyncMock()
 
     with pytest.raises(RuntimeError, match="ASR_UNKNOWN_CORE"):
@@ -297,7 +297,7 @@ def test_phase3_selection_prefers_soniox_only_for_explicit_intl_region(
     monkeypatch.delenv("SONIOX_REGION", raising=False)
     monkeypatch.setattr(
         asr_client,
-        "_load_core_config",
+        "_read_core_config",
         lambda: {"SONIOX_API_KEY": "configured", "SONIOX_REGION": "eu"},
         raising=False,
     )
@@ -320,7 +320,7 @@ def test_phase3_selection_does_not_treat_key_as_region(monkeypatch):
     monkeypatch.delenv("ASR_USER_REGION", raising=False)
     monkeypatch.setattr(
         asr_client,
-        "_load_core_config",
+        "_read_core_config",
         lambda: {"SONIOX_API_KEY": "configured"},
         raising=False,
     )
@@ -338,7 +338,7 @@ def test_openai_core_resolves_to_provider_endpointing_without_smart_turn(
     monkeypatch.delenv("ASR_USER_REGION", raising=False)
     monkeypatch.setattr(
         asr_client,
-        "_load_core_config",
+        "_read_core_config",
         lambda: {"ASSIST_API_KEY_OPENAI": "openai-key"},
         raising=False,
     )
@@ -363,7 +363,7 @@ def test_step_core_resolves_to_provider_endpointing_without_smart_turn(
     monkeypatch.delenv("ASR_USER_REGION", raising=False)
     monkeypatch.setattr(
         asr_client,
-        "_load_core_config",
+        "_read_core_config",
         lambda: {"ASSIST_API_KEY_STEP": "step-key"},
         raising=False,
     )
@@ -392,7 +392,7 @@ def test_soniox_selection_captures_environment_credential_once(monkeypatch):
             return "us"
         return default
 
-    monkeypatch.setattr(asr_client, "_load_core_config", lambda: {})
+    monkeypatch.setattr(asr_client, "_read_core_config", lambda: {})
     monkeypatch.setattr(asr_client.os, "getenv", fake_getenv)
 
     selection = asr_client._resolve_asr_selection("gemini", user_region="intl")
@@ -448,7 +448,7 @@ def test_builder_uses_resolved_snapshot_without_rereading_routing_config(
     monkeypatch.delenv("SONIOX_API_KEY", raising=False)
     monkeypatch.setattr(
         asr_client,
-        "_load_core_config",
+        "_read_core_config",
         lambda: {"ASSIST_API_KEY_QWEN": "snapshot-key"},
     )
     selection = asr_client._resolve_asr_selection("qwen")
@@ -456,7 +456,7 @@ def test_builder_uses_resolved_snapshot_without_rereading_routing_config(
     assert "snapshot-key" not in repr(selection)
     monkeypatch.setattr(
         asr_client,
-        "_load_core_config",
+        "_read_core_config",
         lambda: (_ for _ in ()).throw(AssertionError("config reread")),
     )
     monkeypatch.setattr(
@@ -520,7 +520,7 @@ def test_builder_maps_user_language_onto_session_config(monkeypatch):
     monkeypatch.delenv("SONIOX_API_KEY", raising=False)
     monkeypatch.setattr(
         asr_client,
-        "_load_core_config",
+        "_read_core_config",
         lambda: {"ASSIST_API_KEY_OPENAI": "openai-key"},
     )
     selection = asr_client._resolve_asr_selection("openai")
@@ -641,7 +641,7 @@ def test_core_follow_selection_ignores_soniox_and_dev_routing(monkeypatch):
     monkeypatch.setenv("SONIOX_REGION", "eu")
     monkeypatch.setattr(
         asr_client,
-        "_load_core_config",
+        "_read_core_config",
         lambda: {
             "SONIOX_API_KEY": "soniox-key",
             "ASSIST_API_KEY_GEMINI": "gemini-key",
@@ -762,6 +762,10 @@ def test_phase2_factory_resolves_credentials_and_qwen_region(monkeypatch):
     import utils.config_manager as config_manager
 
     class FakeConfigManager:
+        # The ASR route read checks the raw file first (strict read).
+        def load_json_config(self, filename, default_value=None):
+            return {}
+
         def get_core_config(self):
             return {
                 "ASSIST_API_KEY_QWEN": "qwen-cn-key",
@@ -816,6 +820,9 @@ def test_phase2_factory_resolves_credentials_and_qwen_region(monkeypatch):
         asr_client._get_asr_worker("openai", "manual")
 
     class MissingOpenAIConfigManager:
+        def load_json_config(self, filename, default_value=None):
+            return {}
+
         def get_core_config(self):
             return {"ASSIST_API_KEY_QWEN": "another-provider-key"}
 
@@ -832,6 +839,9 @@ def test_phase2_factory_resolves_credentials_and_qwen_region(monkeypatch):
         asr_client._get_asr_worker("grok", "provider")
 
     class AudioOnlyConfigManager:
+        def load_json_config(self, filename, default_value=None):
+            return {}
+
         def get_core_config(self):
             return {
                 "AUDIO_API_KEY": "audio-key",

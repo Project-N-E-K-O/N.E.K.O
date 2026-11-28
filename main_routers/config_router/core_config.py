@@ -578,10 +578,35 @@ async def update_core_config(request: Request):
                 else {}
             )
 
+            def _key_book_field_used_by_a_model_slot(field):
+                """Whether an active per-feature slot reads ``field``.
+
+                Every slot type in CORE_CONFIG_MODEL_TYPES counts (the ASR
+                slot, image, conversation...), with this save's values over
+                the stored ones, so a slot type added later is covered too.
+                """
+                custom_api_on = (
+                    data['enableCustomApi'] if 'enableCustomApi' in data
+                    else core_cfg.get('enableCustomApi', False)
+                )
+                if str(custom_api_on).strip().lower() not in {'1', 'true', 'yes', 'on'}:
+                    return False
+                for model_type in CORE_CONFIG_MODEL_TYPES:
+                    provider_field = f'{model_type}ModelProvider'
+                    provider = data.get(provider_field, core_cfg.get(provider_field))
+                    if not isinstance(provider, str) or not provider.strip():
+                        continue
+                    if get_core_config_provider_api_key_field(
+                        provider.strip(), api_key_registry,
+                    ) == field:
+                        return True
+                return False
+
             # Preserve the old core provider's authoritative key in its Key
             # Book slot before coreApiKey is repointed.  A distinct non-empty
-            # key remains authoritative only when that provider stays selected
-            # as assist; otherwise the old slot is stale and must be replaced.
+            # key remains authoritative while another feature still reads it
+            # (the assist provider, or an active per-feature model slot);
+            # otherwise the old slot is stale and must be replaced.
             if provider_changed and stored_core_api != 'free' and stored_core_api_key:
                 old_provider_field = get_core_config_provider_api_key_field(
                     stored_core_api,
@@ -592,10 +617,14 @@ async def update_core_config(request: Request):
                     if old_provider_field
                     else ''
                 )
+                old_key_still_read_elsewhere = (
+                    effective_assist_api == stored_core_api
+                    or _key_book_field_used_by_a_model_slot(old_provider_field)
+                )
                 if (
                     old_provider_field
                     and (
-                        effective_assist_api != stored_core_api
+                        not old_key_still_read_elsewhere
                         or not old_provider_key
                     )
                 ):

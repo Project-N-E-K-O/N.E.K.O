@@ -538,11 +538,12 @@ async def test_asr_slot_starts_with_defaults_when_preferences_are_unreadable(
     assert runtime._asr_route_mode != "native"
 
 
-async def test_unreadable_asr_slot_fails_closed_instead_of_choosing_native(
+async def test_unreadable_asr_slot_is_treated_as_active_never_native(
     monkeypatch,
 ) -> None:
     # A slot read failure is "unknown", not "no slot": the free Core must not
-    # quietly send audio to the native route.
+    # quietly use the native route. The start goes to the provider resolver,
+    # which admits only a route that keeps the audio on this machine.
     runtime = _Runtime()
     runtime.core_api_type = "free"
     runtime.asr_slot_override = OSError("core config unreadable")
@@ -551,12 +552,16 @@ async def test_unreadable_asr_slot_fails_closed_instead_of_choosing_native(
         "aload_global_conversation_settings",
         AsyncMock(return_value={"independentAsrEnabled": False}),
     )
-    start_mock = AsyncMock()
+    start_mock = AsyncMock(
+        return_value=AsrStartResult(
+            status=AsrStartStatus.FAILED,
+            failure_code="ASR_START_STALE",
+        )
+    )
     monkeypatch.setattr(runtime._asr_runtime, "start", start_mock)
     runtime.set_independent_asr_handshake(False)
 
     await runtime._start_independent_asr_if_enabled("audio")
 
+    start_mock.assert_awaited_once()
     assert runtime._asr_route_mode != "native"
-    start_mock.assert_not_awaited()
-    assert "ASR_INDEPENDENT_FAILED" in runtime.send_status.await_args.args[0]

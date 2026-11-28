@@ -186,17 +186,24 @@ def normalize_custom_asr_url(raw_url: object) -> str:
     ``http://host:8081`` -> ``http://host:8081/v1/audio/transcriptions``;
     ``http://host:8081/v1`` -> ``.../v1/audio/transcriptions``; a URL that
     already ends in ``/audio/transcriptions`` is kept. Anything that is not an
-    absolute http(s) URL returns ``""``.
+    absolute http(s) URL with a host name and a valid port returns ``""``.
+
+    The single validity check for the slot's URL: saving, slot resolution,
+    the connectivity test and the model list all go through it.
     """
 
     url = str(raw_url or "").strip()
-    if not url:
+    if not url or any(char.isspace() for char in url):
         return ""
     try:
         parts = urllib.parse.urlsplit(url)
+        # .port raises ValueError for a non-numeric or out-of-range port.
+        port = parts.port
     except ValueError:
         return ""
-    if parts.scheme.lower() not in ("http", "https") or not parts.netloc:
+    if parts.scheme.lower() not in ("http", "https") or not parts.hostname:
+        return ""
+    if port == 0:
         return ""
     path = parts.path.rstrip("/")
     if path.lower().endswith(_TRANSCRIPTIONS_PATH):

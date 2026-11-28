@@ -105,7 +105,6 @@ def core_config(monkeypatch):
     for name in ("ASR_PROVIDER", "ASR_USER_REGION", "SONIOX_API_KEY", "SONIOX_REGION"):
         monkeypatch.delenv(name, raising=False)
     config: dict[str, Any] = {}
-    monkeypatch.setattr(asr_client, "_load_core_config", lambda: dict(config))
     monkeypatch.setattr(asr_client, "_read_core_config", lambda: dict(config))
     return config
 
@@ -130,6 +129,18 @@ def core_config(monkeypatch):
         ("lan-box:8081", ""),
         ("ftp://lan-box/v1", ""),
         ("ws://lan-box:8081/v1", ""),
+        ("http://localhost:8081", "http://localhost:8081/v1/audio/transcriptions"),
+        ("http://[::1]:8081", "http://[::1]:8081/v1/audio/transcriptions"),
+        ("https://asr.example/v1?tenant=a", "https://asr.example/v1/audio/transcriptions?tenant=a"),
+        # A URL must name a host and, if it has a port, a valid one.
+        ("http://:8081", ""),
+        ("http://user@:8081", ""),
+        ("http:///v1", ""),
+        ("http://lan-box:0", ""),
+        ("http://lan-box:99999", ""),
+        ("http://lan-box:abc", ""),
+        ("http://[::1", ""),
+        ("http://lan box:8081", ""),
     ],
 )
 def test_custom_url_accepts_base_or_full_path(raw, expected) -> None:
@@ -351,6 +362,109 @@ def test_vendor_slot_without_key_fails_closed_instead_of_following_the_core(core
 def test_unset_slot_keeps_the_core_route(core_config) -> None:
     core_config.update(_slot_config(asrModelProvider="follow_core", ASSIST_API_KEY_QWEN="q"))
     assert asr_client._resolve_asr_selection("qwen").provider_key == "qwen"
+
+
+# --------------------------------------------------------------------------
+# Unreadable core config: the slot is unknown, so no audio may leave this
+# machine. These pin the rule for every Core and every entry point.
+
+
+def _broken_read() -> dict:
+    raise asr_client.AsrConfigUnreadable("ASR_INVALID_CONFIG: core config unreadable")
+
+
+def test_only_faster_whisper_is_declared_local() -> None:
+    # Adding a local provider must be a deliberate, reviewed change.
+    local = {key for key, meta in ASR_PROVIDER_REGISTRY.items() if meta.runs_locally}
+    assert local == {"faster_whisper"}
+
+
+@pytest.mark.parametrize("core_type", sorted(asr_client._CORE_ASR_ROUTES))
+@pytest.mark.parametrize("preference", [None, "faster_whisper"])
+def test_unreadable_config_never_selects_a_remote_route(monkeypatch, core_type, preference) -> None:
+    for name in ("ASR_PROVIDER", "ASR_USER_REGION", "SONIOX_API_KEY", "SONIOX_REGION"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(asr_client, "_read_core_config", _broken_read)
+
+    try:
+        selection = asr_client._resolve_asr_selection(core_type, provider_preference=preference)
+    except asr_client.AsrConfigUnreadable:
+        pass
+    else:
+        assert ASR_PROVIDER_REGISTRY[selection.provider_key].runs_locally, selection.provider_key
+
+    try:
+        transcriber = offline.resolve_offline_transcriber(core_type, provider_preference=preference)
+    except offline.AsrOfflineError as exc:
+        assert exc.code in {"ASR_INVALID_CONFIG", "ASR_DEPENDENCY_MISSING"}, exc.code
+    else:
+        assert ASR_PROVIDER_REGISTRY[transcriber.provider_key].runs_locally
+
+    with pytest.raises(asr_client.AsrConfigUnreadable):
+        asr_client.get_asr_slot_override()
+
+
+def test_unreadable_config_still_allows_the_local_preference(monkeypatch) -> None:
+    monkeypatch.delenv("ASR_PROVIDER", raising=False)
+    monkeypatch.setattr(asr_client, "_read_core_config", _broken_read)
+    selection = asr_client._resolve_asr_selection("qwen", provider_preference="faster_whisper")
+    assert selection.provider_key == "faster_whisper"
+    with pytest.raises(asr_client.AsrConfigUnreadable):
+        asr_client._resolve_asr_selection("qwen")
+
+
+def test_asr_client_reads_the_core_config_only_through_the_strict_reader() -> None:
+    # Any other reader would reintroduce a path where "could not read" looks
+    # like "no slot".
+    import ast
+    from pathlib import Path
+
+    package = Path(asr_client.__file__).parent
+    offenders = []
+    for path in package.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for func in ast.walk(tree):
+            if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for node in ast.walk(func):
+                if (
+                    isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "get_core_config"
+                    and func.name != "_read_core_config"
+                ):
+                    offenders.append(f"{path.name}:{func.name}")
+    assert offenders == []
+    assert not hasattr(asr_client, "_load_core_config")
+
+
+@pytest.mark.parametrize(
+    ("content", "unreadable"),
+    [
+        (None, False),  # no file: defaults are legitimate
+        ('{"enableCustomApi": true}', False),
+        ('{"enableCustomApi": tru', True),
+        ("[1, 2]", True),
+    ],
+)
+def test_strict_reader_rejects_a_damaged_file(config_manager, content, unreadable) -> None:
+    path = config_manager.config_dir / "core_config.json"
+    if content is None:
+        path.unlink(missing_ok=True)
+        project_copy = config_manager.project_config_dir / "core_config.json"
+        if project_copy.exists():
+            pytest.skip("a bundled core_config.json stands in for a missing file")
+    else:
+        path.write_text(content, encoding="utf-8")
+    config_manager._core_config_cache = None
+    if unreadable:
+        # get_core_config alone hides the damage behind defaults...
+        assert config_manager.get_core_config()["ENABLE_CUSTOM_API"] is False
+        # ...the ASR reader must not.
+        with pytest.raises(asr_client.AsrConfigUnreadable):
+            asr_client._read_core_config()
+    else:
+        assert isinstance(asr_client._read_core_config(), dict)
 
 
 async def _noop_async(*_args: Any) -> None:

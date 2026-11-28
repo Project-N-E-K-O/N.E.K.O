@@ -820,7 +820,7 @@ def core_config(monkeypatch):
     for name in ("ASR_PROVIDER", "ASR_USER_REGION", "SONIOX_API_KEY", "SONIOX_REGION"):
         monkeypatch.delenv(name, raising=False)
     config: dict[str, Any] = {}
-    monkeypatch.setattr(asr_client, "_load_core_config", lambda: dict(config))
+    monkeypatch.setattr(asr_client, "_read_core_config", lambda: dict(config))
     return config
 
 

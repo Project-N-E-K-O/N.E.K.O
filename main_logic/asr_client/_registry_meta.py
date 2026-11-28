@@ -143,6 +143,12 @@ class AsrProviderMeta:
     # ``independentAsrProviderPreference`` conversation setting. Everything
     # else is reached through ``CORE_ASR_ROUTES``.
     user_selectable: bool = False
+    # Audio never leaves this machine. The one property that lets a route run
+    # while the core config cannot be read: the speech-recognition slot is
+    # then unknown, and only a local route cannot send audio somewhere the
+    # user did not choose. Declared explicitly, never inferred from
+    # ``requires_credential`` or ``user_selectable``.
+    runs_locally: bool = False
     # Import name of an optional package the worker needs. Selection probes it
     # with ``importlib.util.find_spec`` (no import) and reports
     # ``MISSING_DEPENDENCY`` instead of starting a worker that cannot run.
@@ -165,6 +171,8 @@ class AsrProviderMeta:
         return AsrProviderAvailability.BLOCKED_BACKEND
 
     def __post_init__(self) -> None:
+        if self.runs_locally and self.requires_credential:
+            raise ValueError("a local provider cannot require a cloud credential")
         if self.category == "segmented_request" and self.max_segment_ms is None:
             raise ValueError("segmented providers require max_segment_ms")
         if self.max_segment_ms is not None and self.max_segment_ms <= 0:
@@ -437,6 +445,7 @@ ASR_PROVIDER_REGISTRY: dict[str, AsrProviderMeta] = {
         provider_warmup_timeout_ms=900_000,
         requires_credential=False,
         user_selectable=True,
+        runs_locally=True,
         optional_dependency="faster_whisper",
         # Model loading is bounded by provider_warmup_timeout_ms; the timeout
         # here covers queueing on the shared decoder plus decoding.
