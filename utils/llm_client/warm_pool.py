@@ -126,7 +126,13 @@ async def get_warm_chat_llm(
 
 
 async def close_warm_chat_llms() -> None:
-    """Close and forget every pooled client of the running event loop."""
+    """Close and forget every pooled chat and shared LLM HTTP client of the running loop."""
+    from .http_pool import aclose_shared_llm_http_clients
+
     pool = _pools.pop(asyncio.get_running_loop(), None)
-    for llm in list((pool or {}).values()):
-        await _close_quietly(llm)
+    clients = list((pool or {}).values())
+    await asyncio.gather(
+        *(_close_quietly(llm) for llm in clients),
+        aclose_shared_llm_http_clients(),
+        return_exceptions=True,
+    )

@@ -31,10 +31,13 @@ preserving the caller's ``read`` ceiling.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import inspect
+import os
 import time
 import weakref
 from typing import Any, TypeVar
+from urllib.parse import urlparse
 
 import httpx
 
@@ -290,3 +293,46 @@ def install_stale_connection_retry(
                 max_elapsed_seconds=max_elapsed_seconds,
             )
     return client
+
+
+_PROXY_ENV_KEYS: tuple[str, ...] = (
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+    "no_proxy",
+)
+
+
+def http_origin_key(url: str | None) -> tuple[str, str, int | None]:
+    """Extract a normalized ``(scheme, host, port)`` tuple for HTTP pool keying."""
+    raw = str(url or "").strip()
+    if not raw:
+        return ("", "", None)
+    parsed = urlparse(raw if "://" in raw else f"//{raw}")
+    scheme = (parsed.scheme or "").lower()
+    host = (parsed.hostname or "").lower()
+    try:
+        port = parsed.port
+    except ValueError:
+        port = None
+    if port is None:
+        if scheme == "https":
+            port = 443
+        elif scheme == "http":
+            port = 80
+    return (scheme, host, port)
+
+
+def proxy_env_fingerprint() -> tuple[str, ...]:
+    """Snapshot proxy environment variables so pooled clients never cross proxy configs."""
+    return tuple(os.environ.get(name, "") for name in _PROXY_ENV_KEYS)
+
+
+def credential_fingerprint(*parts: str | None) -> str:
+    """Hash credential components for pool isolation without retaining raw secrets."""
+    joined = "\x00".join(str(part or "") for part in parts)
+    return hashlib.sha256(joined.encode("utf-8")).hexdigest()[:16]

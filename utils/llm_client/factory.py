@@ -117,20 +117,18 @@ def create_chat_llm(
 
     # Anthropic API uses x-api-key rather than a Bearer token; inject dedicated headers.
     _api_key = api_key
+    cache_default_headers = cache_kw.pop("default_headers", None) or {}
+    caller_default_headers = kw.pop("default_headers", None) or {}
+    merged_headers = {**cache_default_headers, **caller_default_headers}
     if base_url and "api.anthropic.com" in base_url:
-        anthropic_headers = {
+        merged_headers.update({
             "x-api-key": api_key or "",
             "anthropic-version": "2023-06-01",
-        }
-        # Merge default_headers from cache_kw / kw / anthropic to avoid duplicate keywords.
-        merged_headers = {
-            **cache_kw.pop("default_headers", {}),
-            **kw.pop("default_headers", {}),
-            **anthropic_headers,
-        }
-        kw["default_headers"] = merged_headers
+        })
         # OpenAI SDK requires a nonempty api_key; use a placeholder (actual authentication uses x-api-key).
         _api_key = "anthropic-via-header"
+    if merged_headers:
+        kw["default_headers"] = merged_headers
 
     return ChatOpenAI(
         model=model,
@@ -159,6 +157,7 @@ create_chat_llm._original_impl = create_chat_llm
 async def create_chat_llm_async(*args: Any, **kwargs: Any) -> "ChatOpenAI | ChatAnthropic":
     """Create a chat client without blocking the running event loop."""
     from utils import llm_client as _facade
+    from .http_pool import reset_active_shared_http_pool_loop, set_active_shared_http_pool_loop
 
     loop = asyncio.get_running_loop()
     factory = create_chat_llm
@@ -166,7 +165,11 @@ async def create_chat_llm_async(*args: Any, **kwargs: Any) -> "ChatOpenAI | Chat
     original = getattr(facade_factory, "__dict__", {}).get("_original_impl")
     if original is None or factory is original:
         factory = facade_factory
-    task = asyncio.create_task(asyncio.to_thread(factory, *args, **kwargs))
+    token = set_active_shared_http_pool_loop(loop)
+    try:
+        task = asyncio.create_task(asyncio.to_thread(factory, *args, **kwargs))
+    finally:
+        reset_active_shared_http_pool_loop(token)
     try:
         return await asyncio.shield(task)
     except asyncio.CancelledError:

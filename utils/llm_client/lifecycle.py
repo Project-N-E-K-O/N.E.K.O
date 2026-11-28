@@ -98,21 +98,23 @@ def _close_async_openai_client_from_sync_best_effort(aclient: AsyncOpenAI) -> No
         return
     _schedule_async_openai_client_close_best_effort(aclient, loop=loop)
 
-def _close_chat_openai_clients_best_effort(client: OpenAI, aclient: AsyncOpenAI) -> None:
+def _close_chat_openai_clients_best_effort(client: OpenAI, aclient: AsyncOpenAI | None) -> None:
     try:
         client.close()
     except Exception:
         # Destructors/finalizers must never raise during GC or interpreter shutdown.
         pass
-    _schedule_async_openai_client_close_best_effort(aclient)
+    if aclient is not None:
+        _schedule_async_openai_client_close_best_effort(aclient)
 
-def _close_chat_clients_best_effort(client: Any, aclient: Any) -> None:
+def _close_chat_clients_best_effort(client: Any, aclient: Any | None) -> None:
     try:
         client.close()
     except Exception:
         # Generic provider cleanup is intentionally best-effort during shutdown.
         pass
-    _schedule_async_openai_client_close_best_effort(aclient)
+    if aclient is not None:
+        _schedule_async_openai_client_close_best_effort(aclient)
 
 def set_active_character(master_name: str, lanlan_name: str) -> "contextvars.Token":
     """Set ``(master_name, lanlan_name)`` on the active async context so

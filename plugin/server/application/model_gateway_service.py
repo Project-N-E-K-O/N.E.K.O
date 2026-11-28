@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import weakref
+from collections import OrderedDict
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 
@@ -130,24 +132,134 @@ def _prepare(
 
 
 class ModelGatewayService:
+    POOL_MAX_CLIENTS = 16
+
     def __init__(self, client_factory: Callable[[ModelSlot], httpx.AsyncClient] | None = None):
+        self._custom_client_factory = client_factory
         self._client_factory = client_factory or self._make_client
+        # Loop-scoped warm HTTP clients used when no custom factory is injected.
+        self._pools: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, OrderedDict[tuple, httpx.AsyncClient]]" = (
+            weakref.WeakKeyDictionary()
+        )
         # OpenAI-compatible endpoints that rejected injected stream_options.
         self._stream_options_unsupported: set[str] = set()
 
     @staticmethod
     def _make_client(slot: ModelSlot) -> httpx.AsyncClient:
+        from utils.http.pool_utils import (
+            DEFAULT_HTTP_KEEPALIVE_EXPIRY_SECONDS,
+            build_split_http_timeout,
+            install_stale_connection_retry,
+        )
+
         httpx = load_httpx()
         # HTTP-level inactivity guard. A total request deadline is owned by the
         # execution policy, not by httpx's connect/read/write/pool timeouts.
-        return httpx.AsyncClient(timeout=slot.timeout_seconds, follow_redirects=False)
+        timeout = build_split_http_timeout(slot.timeout_seconds)
+        client = httpx.AsyncClient(
+            timeout=timeout if timeout is not None else slot.timeout_seconds,
+            follow_redirects=False,
+            limits=httpx.Limits(keepalive_expiry=DEFAULT_HTTP_KEEPALIVE_EXPIRY_SECONDS),
+        )
+        return install_stale_connection_retry(client, label="Plugin Model Gateway HTTP")
+
+    @staticmethod
+    def _make_pooled_client() -> httpx.AsyncClient:
+        from utils.http.pool_utils import (
+            DEFAULT_HTTP_KEEPALIVE_EXPIRY_SECONDS,
+            install_stale_connection_retry,
+        )
+
+        httpx = load_httpx()
+        client = httpx.AsyncClient(
+            follow_redirects=False,
+            limits=httpx.Limits(keepalive_expiry=DEFAULT_HTTP_KEEPALIVE_EXPIRY_SECONDS),
+        )
+        return install_stale_connection_retry(client, label="Plugin Model Gateway HTTP")
+
+    @staticmethod
+    async def _close_client_quietly(client: httpx.AsyncClient) -> None:
+        try:
+            await client.aclose()
+        except Exception:
+            # Best-effort teardown of evicted or shutting-down pooled clients.
+            pass
+
+    async def _get_pooled_client(self, slot: ModelSlot) -> httpx.AsyncClient:
+        from utils.http.pool_utils import (
+            credential_fingerprint,
+            http_origin_key,
+            proxy_env_fingerprint,
+        )
+
+        loop = asyncio.get_running_loop()
+        key = (
+            http_origin_key(slot.base_url),
+            slot.protocol,
+            credential_fingerprint(slot.api_key),
+            proxy_env_fingerprint(),
+        )
+        pool = self._pools.get(loop)
+        if pool is not None:
+            existing = pool.get(key)
+            if existing is not None:
+                if not getattr(existing, "is_closed", False):
+                    pool.move_to_end(key)
+                    return existing
+                pool.pop(key, None)
+
+        made = await asyncio.to_thread(self._make_pooled_client)
+        pool = self._pools.get(loop)
+        if pool is None:
+            pool = OrderedDict()
+            self._pools[loop] = pool
+        raced = pool.get(key)
+        if raced is not None and not getattr(raced, "is_closed", False):
+            pool.move_to_end(key)
+            await self._close_client_quietly(made)
+            return raced
+        pool[key] = made
+        while len(pool) > self.POOL_MAX_CLIENTS:
+            # Dropped without force-closing: an in-flight call may still use it.
+            pool.popitem(last=False)
+        return made
+
+    async def aclose(self) -> None:
+        """Concurrently close every pooled upstream HTTP client on the running loop."""
+        pool = self._pools.pop(asyncio.get_running_loop(), None)
+        clients = list((pool or {}).values())
+        if not clients:
+            return
+        await asyncio.gather(
+            *(self._close_client_quietly(client) for client in clients),
+            return_exceptions=True,
+        )
 
     @asynccontextmanager
     async def _request(self, slot: ModelSlot, payload: bytes, headers: dict, observation: AttemptObservation | None = None):
-        client = self._client_factory(slot)
+        use_pool = (
+            self._custom_client_factory is None
+            and self._client_factory == self._make_client
+        )
+        if use_pool:
+            from utils.http.pool_utils import build_split_http_timeout
+
+            client = await self._get_pooled_client(slot)
+            owns_client = False
+            request_timeout = build_split_http_timeout(slot.timeout_seconds)
+            request = client.build_request(
+                "POST",
+                _endpoint(slot),
+                content=payload,
+                headers=headers,
+                timeout=request_timeout if request_timeout is not None else slot.timeout_seconds,
+            )
+        else:
+            client = self._client_factory(slot)
+            owns_client = True
+            request = client.build_request("POST", _endpoint(slot), content=payload, headers=headers)
         response = None
         try:
-            request = client.build_request("POST", _endpoint(slot), content=payload, headers=headers)
             if observation is not None:
                 observation.upstream_started = True
             response = await client.send(request, stream=True, follow_redirects=False)
@@ -163,7 +275,8 @@ class ModelGatewayService:
                     if response is not None:
                         await response.aclose()
                 finally:
-                    await client.aclose()
+                    if owns_client:
+                        await client.aclose()
 
     async def complete(
         self, slot: ModelSlot, body: object, *, observation: AttemptObservation | None = None,

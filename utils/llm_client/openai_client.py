@@ -134,6 +134,7 @@ class ChatOpenAI:
         tools: list[dict] | None = None,
         tool_choice: str | dict | None = None,
         keepalive_expiry: float | None = None,
+        use_shared_http_pool: bool = True,
         **_kwargs: Any,
     ):
         """``keepalive_expiry`` keeps idle connections open that many seconds
@@ -165,6 +166,11 @@ class ChatOpenAI:
             build_split_http_timeout,
             install_stale_connection_retry,
         )
+        from .http_pool import (
+            SHARED_LLM_HTTP_POOL_KEEPALIVE_SECONDS,
+            get_active_shared_http_pool_loop,
+            get_shared_async_http_client,
+        )
 
         _api_key = "sk-placeholder" if api_key is None else api_key
         _timeout = build_split_http_timeout(timeout)
@@ -190,13 +196,53 @@ class ChatOpenAI:
                 max_keepalive_connections=DEFAULT_CONNECTION_LIMITS.max_keepalive_connections,
                 keepalive_expiry=keepalive_expiry,
             )
-        async_http = DefaultAsyncHttpxClient(**http_kw)
+
+        self._borrowed_async_http = False
+        self._closed = False
+        async_http = None
+        pool_loop = (
+            get_active_shared_http_pool_loop()
+            if (keepalive_expiry is None and use_shared_http_pool)
+            else None
+        )
+        if pool_loop is not None:
+            def _make_shared_async_http():
+                import httpx
+                from openai import DEFAULT_CONNECTION_LIMITS
+
+                return DefaultAsyncHttpxClient(
+                    verify=ssl_context,
+                    limits=httpx.Limits(
+                        max_connections=DEFAULT_CONNECTION_LIMITS.max_connections,
+                        max_keepalive_connections=DEFAULT_CONNECTION_LIMITS.max_keepalive_connections,
+                        keepalive_expiry=SHARED_LLM_HTTP_POOL_KEEPALIVE_SECONDS,
+                    ),
+                )
+
+            async_http = get_shared_async_http_client(
+                pool_loop,
+                family="openai",
+                base_url=base_url,
+                api_key=_api_key,
+                default_headers=client_kw["default_headers"],
+                ssl_context=ssl_context,
+                make_client=_make_shared_async_http,
+                label="LLM HTTP",
+            )
+            if async_http is not None:
+                self._borrowed_async_http = True
+
+        if async_http is None:
+            async_http = DefaultAsyncHttpxClient(**http_kw)
+            # Only opt pooled/warm clients (explicit keepalive_expiry) into
+            # stale-connection retry; one-shot cold clients keep pre-PR semantics.
+            if keepalive_expiry is not None:
+                async_http = install_stale_connection_retry(async_http, label="LLM HTTP")
+
         sync_http = DefaultHttpxClient(**http_kw)
-        # Only opt pooled/warm clients (explicit keepalive_expiry) into
-        # stale-connection retry; one-shot cold clients keep pre-PR semantics.
         if keepalive_expiry is not None:
-            async_http = install_stale_connection_retry(async_http, label="LLM HTTP")
             sync_http = install_stale_connection_retry(sync_http, label="LLM HTTP")
+
         client_kw["http_client"] = async_http
         self._aclient = AsyncOpenAI(**client_kw)
         client_kw["http_client"] = sync_http
@@ -205,7 +251,7 @@ class ChatOpenAI:
             self,
             _close_chat_openai_clients_best_effort,
             self._client,
-            self._aclient,
+            None if self._borrowed_async_http else self._aclient,
         )
 
     def _is_anthropic(self) -> bool:
@@ -278,7 +324,14 @@ class ChatOpenAI:
             overrides.pop("tool_choice", None)
         if stream:
             p["stream_options"] = {"include_usage": True}
-        # Anything else the caller passed (e.g. timeout, logit_bias) goes
+        if "timeout" in overrides:
+            from utils.http.pool_utils import build_split_http_timeout
+
+            raw_timeout = overrides.pop("timeout")
+            split_timeout = build_split_http_timeout(raw_timeout)
+            if split_timeout is not None:
+                p["timeout"] = split_timeout
+        # Anything else the caller passed (e.g. logit_bias) goes
         # straight through to the SDK call.
         p.update(overrides)
 
@@ -364,12 +417,17 @@ class ChatOpenAI:
             pass
         return p
 
+    def _ensure_not_closed(self) -> None:
+        if getattr(self, "_closed", False):
+            raise RuntimeError("Cannot send a request, as the client has been closed.")
+
     # --- sync / async invoke ---
 
     async def ainvoke(self, messages: Any, **overrides: Any) -> LLMResponse:
         """``overrides`` (e.g. ``max_completion_tokens=1100``) flow through
         ``_params()`` so concurrent callers on the same client don't
         clobber each other's budgets. See ``ainvoke_raw`` for details."""
+        self._ensure_not_closed()
         resp = await self._aclient.chat.completions.create(**self._params(messages, **overrides))
         # Defensive read: some upstreams (e.g. free-agent-model) return valid nonempty choices
         # with message=None; direct .message.content would crash with NoneType.
@@ -413,6 +471,7 @@ class ChatOpenAI:
         ``max_completion_tokens`` / ``max_tokens`` / ``extra_body`` / SDK
         kwargs like ``timeout`` without touching ``self.*`` — required when
         a single client is shared across concurrent code paths."""
+        self._ensure_not_closed()
         return await self._aclient.chat.completions.create(
             **self._params(messages, **overrides)
         )
@@ -436,6 +495,7 @@ class ChatOpenAI:
           calling ``astream`` again.
         - terminal usage chunk
         """
+        self._ensure_not_closed()
         stream = await self._aclient.chat.completions.create(
             **self._params(messages, stream=True, **overrides)
         )
@@ -574,6 +634,7 @@ class ChatOpenAI:
 
         Each entry carries ``id`` and, when the endpoint reports one, ``name``.
         """
+        self._ensure_not_closed()
         models: list[dict[str, str]] = []
         async for item in self._aclient.models.list():
             extra = getattr(item, "model_extra", None) or {}
@@ -590,6 +651,8 @@ class ChatOpenAI:
     @property
     def is_closed(self) -> bool:
         """Whether the underlying async SDK client has been closed."""
+        if getattr(self, "_closed", False):
+            return True
         checker = getattr(self._aclient, "is_closed", None)
         if callable(checker):
             return bool(checker())
@@ -597,14 +660,18 @@ class ChatOpenAI:
 
     async def aclose(self) -> None:
         """Close underlying httpx clients (async path)."""
-        await self._aclient.close()
+        self._closed = True
+        if not getattr(self, "_borrowed_async_http", False):
+            await self._aclient.close()
         self._client.close()
         self._client_finalizer.detach()
 
     def close(self) -> None:
         """Close underlying httpx clients (sync path)."""
+        self._closed = True
         self._client.close()
-        _close_async_openai_client_from_sync_best_effort(self._aclient)
+        if not getattr(self, "_borrowed_async_http", False):
+            _close_async_openai_client_from_sync_best_effort(self._aclient)
         self._client_finalizer.detach()
 
     async def __aenter__(self):
