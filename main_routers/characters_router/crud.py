@@ -179,6 +179,61 @@ def ensure_current_catgirl_switch_revision(current_catgirl: str) -> int:
     return _catgirl_switch_revision
 
 
+def current_catgirl_snapshot_generation() -> int:
+    return int(getattr(character_config_mutation_lock, 'generation', 0))
+
+
+async def read_current_catgirl_snapshot(read, name_from):
+    """Read config paired with committed identity and the mutation generation that produced it."""
+    lock = character_config_mutation_lock
+    data = None
+    saw_newer_publication = False
+    last_generation = getattr(lock, 'generation', 0)
+    for _ in range(3):
+        before = _catgirl_switch_revision
+        generation = getattr(lock, 'generation', 0)
+        started_locked = lock.locked()
+        data = await read()
+        after = _catgirl_switch_revision
+        generation_after = getattr(lock, 'generation', 0)
+        ended_locked = lock.locked()
+        crossed_mutation = (
+            started_locked
+            or ended_locked
+            or generation != generation_after
+        )
+        # If another writer is still active, its current generation is the one
+        # page_config must wait on. If it already settled, waiting on the older
+        # generation returns immediately by design.
+        last_generation = generation_after if ended_locked else generation
+        if after and before != after:
+            saw_newer_publication = True
+            continue
+        if crossed_mutation:
+            if after:
+                return data, _catgirl_switch_revision_target, after, last_generation
+            # A fresh process has no committed revision yet. Never let a read
+            # taken through a provisional rename/delete publish that temporary
+            # name merely to bootstrap revision 1.
+            continue
+        name = name_from(data)
+        if saw_newer_publication and after and name != _catgirl_switch_revision_target:
+            return data, _catgirl_switch_revision_target, after, last_generation
+        return data, name, ensure_current_catgirl_switch_revision(name), last_generation
+
+    return None, _catgirl_switch_revision_target, _catgirl_switch_revision, last_generation
+
+
+async def wait_for_current_catgirl_snapshot_settlement(expected_generation: int | None = None):
+    try:
+        await asyncio.wait_for(
+            character_config_mutation_lock.wait_for_release(expected_generation),
+            timeout=30,
+        )
+    except asyncio.TimeoutError:
+        pass
+
+
 def _get_new_catgirl_default_voice_id() -> str:
     """Late-bound alias of ``utils.api_config_loader.get_new_character_default_voice_id``.
 

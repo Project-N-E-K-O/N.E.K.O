@@ -270,6 +270,107 @@
         return !/^\/chat(?:_full)?(?:\/|$)/.test(window.location.pathname || '');
     }
 
+    // Rollback restores config, not necessarily its renderer. Keep weak evidence of the
+    // original mounted object: a timed-out attempt may have already mounted a different mesh.
+    let rolledBackRenderer = null;
+    const abandonedColdRenderers = new WeakSet();
+    let rolledBackPngtuberName = null;
+    let committedRenderer = null;
+    function getMountedRenderer(type) {
+        if (type === 'vrm') return window.vrmManager?.currentModel?.vrm;
+        if (type === 'mmd') return window.mmdManager?.currentModel?.mesh;
+        if (type === 'live2d') return window.live2dManager?.getCurrentModel?.() || window.live2dManager?.currentModel;
+        return null;
+    }
+
+    function configuredRenderer(config) {
+        const type = String(config?.model_type || '').trim().toLowerCase();
+        return type === 'live3d' ? String(config.live3d_sub_type || '').trim().toLowerCase() : type;
+    }
+    function ownsLocalRenderer() {
+        return supportsLocalModelRuntime() && !window.NekoAvatarFloatingBoot?.shouldSkipUserModelBoot?.();
+    }
+
+    function rolledBackRendererNeedsRecovery(name) {
+        const mounted = getMountedRenderer(configuredRenderer(window.lanlan_config));
+        if (abandonedColdRenderers.has(mounted)) return true;
+        return rolledBackRenderer?.name === name ? !rolledBackRenderer.original.has(mounted) : null;
+    }
+
+    function confirmRestoredRenderer(name, type, mounted) {
+        const config = window.lanlan_config;
+        if (rolledBackRenderer?.name === name && !S.isSwitchingCatgirl && config?.lanlan_name === name
+            && configuredRenderer(config) === type && mounted && getMountedRenderer(type) === mounted) {
+            rolledBackRenderer = null;
+        }
+    }
+
+    function needsCurrentCharacterRecovery(name, { fromSnapshot = false, switchRevision = 0 } = {}) {
+        const config = window.lanlan_config;
+        if (!name || config?.lanlan_name !== name) return false;
+        // connectWebSocket owns /ws/<encoded character>. A failed late model load can roll
+        // back the name without rolling back that connection. Ignore absent/closing sockets
+        // and other transports whose URL does not prove a character mismatch.
+        const socket = S.socket;
+        if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
+            const route = /^wss?:\/\/[^/]+\/ws\/([^/?#]*)(?:[?#].*)?$/i.exec(socket.url || '');
+            if (route) {
+                try { if (decodeURIComponent(route[1]) !== name) return true; } catch (_) { /* unknown owner */ }
+            }
+        }
+        if (!ownsLocalRenderer()) return false;
+        const bootstrap = window.__nekoPageModelConfigPending;
+        const failedBootstrap = window.__nekoPageModelConfigFailed;
+        // The current identity may be known while full desktop model config
+        // failed. Let a real receipt recover it through the normal attempt even
+        // after the pending bootstrap gate has been released.
+        if (!fromSnapshot && (
+            (bootstrap?.failed && bootstrap.name === name
+                && (!bootstrap.revision || switchRevision >= bootstrap.revision))
+            || (failedBootstrap?.name === name
+                && (!failedBootstrap.revision || switchRevision >= failedBootstrap.revision))
+        )) return true;
+        const renderer = configuredRenderer(config);
+        const mounted = getMountedRenderer(renderer);
+        if (renderer === 'pngtuber' && rolledBackPngtuberName === name) return true;
+        const rolledBackNeedsRecovery = rolledBackRendererNeedsRecovery(name);
+        if (rolledBackNeedsRecovery !== null) return rolledBackNeedsRecovery;
+        // A cold snapshot supplies the original boot's path. Only a previously
+        // committed VRM that has genuinely gone missing needs the switch loader
+        // for a same-name HTTP snapshot after that original boot was superseded.
+        const hadCommittedVrm = committedRenderer?.name === name && committedRenderer.type === 'vrm';
+        return (!fromSnapshot || hadCommittedVrm) && renderer === 'vrm' && !mounted
+            && !window.vrmManager?._isLoadingModel && !window.isVRMStartupFor?.(name);
+    }
+
+    function hasOtherCommittedPageModel(name) {
+        const owner = committedRenderer;
+        if (!owner || owner.name === name || !ownsLocalRenderer()) return false;
+        const mounted = getMountedRenderer(owner.type);
+        return !!mounted && !mounted.destroyed && owner.objects.has(mounted);
+    }
+
+    function hasCommittedPageModel(name, revision, { olderThan = false, pinnedPreview = false } = {}) {
+        const config = window.lanlan_config;
+        const committedRevision = committedRenderer?.revision || 0;
+        const projectedZero = pinnedPreview && revision === 0;
+        const revisionMatches = olderThan
+            ? committedRevision > 0 && committedRevision < revision
+            : committedRevision === revision && (projectedZero || config?.switch_revision === revision);
+        if ((!revision && !projectedZero) || !revisionMatches
+            || config?.lanlan_name !== name || committedRenderer?.name !== name
+            || (S.isSwitchingCatgirl && S._currentSwitchAttemptId !== committedRenderer.attemptId)) return false;
+        const type = configuredRenderer(config);
+        const mounted = getMountedRenderer(type);
+        return type === committedRenderer.type && !!mounted && !mounted.destroyed
+            && committedRenderer.objects.has(mounted)
+            && !needsCurrentCharacterRecovery(name, { fromSnapshot: true });
+    }
+
+    function weakRendererSet(model) {
+        return new WeakSet(model && typeof model === 'object' ? [model] : []);
+    }
+
     function emitAssistantSpeechCancel(source) {
         // 文本可能已进入下一回合；角色切换先取消实际仍在播放的语音。
         var turnId = S.assistantSpeechActiveTurnId || S.assistantTurnId || null;
@@ -325,6 +426,7 @@
      *
      * @param {string} newCatgirl - Name of the new character
      * @param {string} oldCatgirl - Name of the previous character
+     * @returns {Promise<boolean>} Whether this target was applied (not merely queued).
      */
     async function handleCatgirlSwitch(newCatgirl, oldCatgirl, options = {}) {
         const forceReload = !!options.forceReload;
@@ -391,10 +493,8 @@
 
         // forceReload bypasses same-name dedupe, never backend commit order.
         if (switchRevision) {
-            const pageRevision = Number.isSafeInteger(window.lanlan_config?.switch_revision)
-                && window.lanlan_config.switch_revision > 0
-                ? window.lanlan_config.switch_revision
-                : 0;
+            const observed = window.getPageSwitchRevision?.() ?? window.lanlan_config?.switch_revision;
+            const pageRevision = Number.isSafeInteger(observed) && observed > 0 ? observed : 0;
             const stateRevision = Number.isSafeInteger(S._latestCatgirlSwitchRevision)
                 ? S._latestCatgirlSwitchRevision
                 : 0;
@@ -429,43 +529,26 @@
             } else {
                 console.log('[猫娘切换] 正在切换中且 newCatgirl 为空，忽略');
             }
-            return;
+            return false;
         }
-        if (!newCatgirl) {
-            console.log('[猫娘切换] newCatgirl为空，返回');
-            return;
-        }
+        if (!newCatgirl) return false;
 
-        // 角色名相同并不总等于“已经完成切换”。目标角色加载失败时 catch 会恢复
-        // previousLanlanConfig，但 VRM 清理发生在更早阶段：此时 lanlan_name 已回到旧角色，
-        // currentModel 却可能已经是 null。随后后端真正切回该角色的事件若只按名字去重，
-        // 就会永久留下空白桌宠。仅在当前配置明确要求 VRM 且实例缺失时把同名事件视为
-        // recovery，而不是 duplicate；正常 BC + WS 双通道重复事件仍保持原去重行为。
-        const currentModelType = String(window.lanlan_config?.model_type || '').trim().toLowerCase();
-        const currentLive3dSubType = String(window.lanlan_config?.live3d_sub_type || '').trim().toLowerCase();
-        const currentConfigWantsVrm = currentModelType === 'vrm'
-            || (currentModelType === 'live3d' && currentLive3dSubType === 'vrm');
-        const sameCurrentCharacterMissingVrm = !!(
-            supportsLocalModelRuntime()
-            && window.lanlan_config
-            && window.lanlan_config.lanlan_name === newCatgirl
-            && currentConfigWantsVrm
-            && !window.vrmManager?.currentModel?.vrm
-        );
-
-        // 已是当前角色：BroadcastChannel 兜底 + WebSocket 后端通知会让同一次切换在两条
-        // 通道各到一份。BC 先到的话 handleCatgirlSwitch 跑完 lanlan_name 已是 newCatgirl，
-        // 接踵而至的 WS 事件参数还是 (newCatgirl, 上一次的 oldCatgirl)，原本只 newCatgirl
-        // !== oldCatgirl 的 dedupe 拦不住，会重新清 chat / 关 socket / 重连 / 重加载模型。
-        // app-interpage 的 BC handler 已加同样守护作为外层防御，这里在源头再加一道，
-        // 让所有调用方（不光 BC/WS handler）自动受益。
-        if (!forceReload && window.lanlan_config && window.lanlan_config.lanlan_name === newCatgirl) {
-            if (!sameCurrentCharacterMissingVrm) {
-                console.log('[猫娘切换] 已经是当前角色', newCatgirl, '，跳过重复事件（BC + WS 双通道收到同一切换）');
-                return;
+        const currentConfig = window.lanlan_config;
+        if (!forceReload && currentConfig?.lanlan_name === newCatgirl && !needsCurrentCharacterRecovery(newCatgirl, { switchRevision })) {
+            const bootstrap = window.__nekoPageModelConfigPending;
+            if (switchRevision && bootstrap?.name === newCatgirl && !bootstrap.failed && ownsLocalRenderer()) {
+                // A healthy read still owns boot. Remember only the confirmed
+                // identity stamp in case that single read later proves stalled.
+                bootstrap.receipt = { oldCatgirl, switchRevision };
             }
-            console.warn('[猫娘切换] 角色名已是', newCatgirl, '但 VRM 实例缺失，执行一致性恢复');
+            return true;
         }
+        const renderer = configuredRenderer(currentConfig);
+        const localModelPage = ownsLocalRenderer();
+        let coldTarget = null;
+        let pngtuberHiddenByAttempt = false;
+        let previousRenderer = rolledBackRenderer?.name === currentConfig?.lanlan_name ? rolledBackRenderer : null;
+        // The backend's old and new names can match even if our last attempt rolled back.
         // 确认切换到不同角色后，清空上一任的搜歌任务
         window.invalidatePendingMusicSearch();
         S.isSwitchingCatgirl = true;
@@ -483,10 +566,19 @@
             live3d_sub_type: (window.lanlan_config && window.lanlan_config.live3d_sub_type) || '',
         };
         const restorePreviousLanlanConfig = () => {
+            rolledBackRenderer = previousRenderer;
+            if (coldTarget) {
+                const occupant = getMountedRenderer(coldTarget.type);
+                if (!occupant || coldTarget.before.has(occupant)) rolledBackRenderer = null;
+                else if (!previousRenderer) abandonedColdRenderers.add(occupant);
+            }
             if (window.lanlan_config) {
                 window.lanlan_config.lanlan_name = previousLanlanConfig.lanlan_name;
                 window.lanlan_config.model_type = previousLanlanConfig.model_type;
                 window.lanlan_config.live3d_sub_type = previousLanlanConfig.live3d_sub_type;
+            }
+            if (pngtuberHiddenByAttempt && configuredRenderer(previousLanlanConfig) === 'pngtuber') {
+                rolledBackPngtuberName = previousLanlanConfig.lanlan_name;
             }
             window.appChatAvatarState?.rollbackCharacterSwitch(myAttemptId);
         };
@@ -688,9 +780,14 @@
                 S._currentSwitchAttemptId = null;
                 const pendingSwitch = S._pendingCatgirlSwitch;
                 S._pendingCatgirlSwitch = null;
+                const pendingRevision = Number(pendingSwitch?.switchRevision) || 0;
+                const committedRevision = Number(switchRevision) || 0;
+                const pendingHasNewerRevision = pendingRevision > 0
+                    && (!committedRevision || pendingRevision > committedRevision);
                 const pendingAlreadySatisfied = !!(
                     switchAlreadyCompleted
                     && pendingSwitch?.newCatgirl === newCatgirl
+                    && !pendingHasNewerRevision
                 );
                 if (pendingSwitch?.newCatgirl && !pendingAlreadySatisfied) {
                     Promise.resolve().then(() => handleCatgirlSwitch(
@@ -815,6 +912,16 @@
             }
 
             // 2. 清理旧模型资源（温和清理，保留基础设施）
+
+            // Capture at teardown: cold boot may have completed during the config read. If A is
+            // still cold, only remember a failed attempt that actually installed a different model.
+            if (!previousRenderer && localModelPage) {
+                const mounted = getMountedRenderer(renderer);
+                if (['live2d', 'mmd', 'vrm'].includes(renderer)) {
+                    previousRenderer = { name: previousLanlanConfig.lanlan_name, original: weakRendererSet(mounted) };
+                }
+                if (!mounted) coldTarget = { type: effectiveModelType, before: weakRendererSet(getMountedRenderer(effectiveModelType)) };
+            }
 
             // 清理 VRM 资源（参考 index.html 的清理逻辑）
             try {
@@ -1021,6 +1128,9 @@
             }
 
             try {
+                if (renderer === 'pngtuber' && previousLanlanConfig.lanlan_name) {
+                    pngtuberHiddenByAttempt = true;
+                }
                 if (window.pngtuberManager && typeof window.pngtuberManager.hide === 'function') {
                     window.pngtuberManager.hide();
                 }
@@ -1371,8 +1481,10 @@
                     modelUrl = '/static/vrm/sister1.0.vrm';
                 }
 
+                // Preserve HTTP(S) before treating a colon as a drive marker.
+                const remoteModelUrl = /^https?:\/\//i.test(modelUrl);
                 // 处理 Windows 路径：提取文件名并转换为 Web 路径
-                if (modelUrl.includes('\\') || modelUrl.includes(':')) {
+                if (!remoteModelUrl && (modelUrl.includes('\\') || modelUrl.includes(':'))) {
                     const filename = modelUrl.split(/[\\/]/).pop();
                     if (filename && filename !== 'undefined' && filename !== 'null' && !filename.includes('undefined')) {
                         modelUrl = `/user_vrm/${filename}`;
@@ -1380,7 +1492,7 @@
                         console.error('[猫娘切换] Windows 路径提取的文件名无效，使用默认模型:', filename);
                         modelUrl = '/static/vrm/sister1.0.vrm';
                     }
-                } else if (!modelUrl.startsWith('http') && !modelUrl.startsWith('/')) {
+                } else if (!remoteModelUrl && !modelUrl.startsWith('http') && !modelUrl.startsWith('/')) {
                     // 相对路径，添加 /user_vrm/ 前缀
                     // 再次验证 modelUrl 的有效性
                     if (modelUrl !== 'undefined' && modelUrl !== 'null' && !modelUrl.includes('undefined')) {
@@ -1389,15 +1501,14 @@
                         console.error('[猫娘切换] 相对路径无效，使用默认模型:', modelUrl);
                         modelUrl = '/static/vrm/sister1.0.vrm';
                     }
-                } else {
+                } else if (!remoteModelUrl) {
                     // 确保路径格式正确（统一使用正斜杠）
                     modelUrl = modelUrl.replace(/\\/g, '/');
                 }
 
                 // 最终验证：确保 modelUrl 不包含 "undefined" 或 "null"
                 if (typeof modelUrl !== 'string' ||
-                    modelUrl.includes('undefined') ||
-                    modelUrl.includes('null') ||
+                    (!remoteModelUrl && (modelUrl.includes('undefined') || modelUrl.includes('null'))) ||
                     modelUrl.trim() === '') {
                     console.error('[猫娘切换] 路径转换后仍包含无效值，使用默认模型:', modelUrl);
                     modelUrl = '/static/vrm/sister1.0.vrm';
@@ -2087,6 +2198,44 @@
             // newCatgirl，剩下的只是 unlockAchievement 等无关副作用 await。从这里开始 watchdog
             // 触发应识别为"已完成"跳过回滚（避免破坏成功状态）。
             switchHasCommitted = true;
+            // IPC can publish the receipt high-water before this handler starts.
+            // Reflect the actual committed revision without lowering a newer receipt.
+            if (window.lanlan_config && switchRevision > (window.lanlan_config.switch_revision || 0)) {
+                window.lanlan_config.switch_revision = switchRevision;
+            }
+            rolledBackRenderer = null;
+            rolledBackPngtuberName = null;
+            const mountedType = configuredRenderer(window.lanlan_config);
+            const mounted = getMountedRenderer(mountedType);
+            // Publish the mounted path at the actual commit, never from a retired startup.
+            if (mountedType === 'mmd' && mounted && window.mmdManager.currentModel?.url) {
+                window.mmdModel = window.mmdManager.currentModel.url;
+            } else if (localModelPage && mountedType === 'vrm' && mounted && window.vrmManager.currentModel?.url) {
+                window.vrmModel = window.vrmManager.currentModel.url;
+            }
+            committedRenderer = mounted
+                ? { name: newCatgirl, revision: switchRevision || 0, attemptId: myAttemptId, type: mountedType, objects: weakRendererSet(mounted) }
+                : null;
+            const bootstrap = window.__nekoPageModelConfigPending;
+            const queued = S._pendingCatgirlSwitch;
+            // A mounted pinned preview has finished boot even if a different
+            // role is queued. Readiness waits separately for that successor.
+            const finishedPinnedPreview = !switchRevision && mounted && bootstrap?.pinned
+                && bootstrap.name === newCatgirl && queued?.newCatgirl !== newCatgirl;
+            const canRetireBoot = finishedPinnedPreview || !queued
+                || (queued.newCatgirl === newCatgirl && !(queued.switchRevision > switchRevision));
+            if (bootstrap && canRetireBoot
+                && (!bootstrap.revision || !switchRevision || switchRevision >= bootstrap.revision)
+                && (bootstrap.name === newCatgirl || (!bootstrap.pinned && switchRevision))) {
+                window.__nekoPageModelConfigPending = null;
+                bootstrap.retire?.();
+            }
+            const failedBootstrap = window.__nekoPageModelConfigFailed;
+            if (failedBootstrap?.name === newCatgirl
+                && (!failedBootstrap.revision || !switchRevision || switchRevision >= failedBootstrap.revision)) {
+                window.__nekoPageModelConfigFailed = null;
+            }
+            window.reconcilePendingIpcAvatar?.(newCatgirl, switchRevision);
             window.appChatAvatarState?.commitCharacterSwitch(myAttemptId, {
                 uid: catgirlConfig._reserved?.character_uid || '',
                 name: newCatgirl
@@ -2262,9 +2411,14 @@
                 S._currentSwitchAttemptId = null;
                 const pendingSwitch = S._pendingCatgirlSwitch;
                 S._pendingCatgirlSwitch = null;
+                const pendingRevision = Number(pendingSwitch?.switchRevision) || 0;
+                const committedRevision = Number(switchRevision) || 0;
+                const pendingHasNewerRevision = pendingRevision > 0
+                    && (!committedRevision || pendingRevision > committedRevision);
                 const pendingAlreadySatisfied = !!(
                     switchHasCommitted
                     && pendingSwitch?.newCatgirl === newCatgirl
+                    && !pendingHasNewerRevision
                 );
                 if (pendingSwitch?.newCatgirl && !pendingAlreadySatisfied) {
                     // A failed attempt may roll the name back to the pending target after
@@ -2301,12 +2455,19 @@
                 window.pngtuberManager._goodbyeClicked = false;
             }
         }
+        return switchHasCommitted && window.lanlan_config?.lanlan_name === newCatgirl
+            && (!switchRevision || switchRevision >= (S._latestCatgirlSwitchRevision || 0));
     }
 
     // ======================================================================
     // Public API
     // ======================================================================
     mod.handleCatgirlSwitch = handleCatgirlSwitch;
+    mod.needsCurrentCharacterRecovery = needsCurrentCharacterRecovery;
+    mod.rolledBackRendererNeedsRecovery = rolledBackRendererNeedsRecovery;
+    mod.confirmRestoredRenderer = confirmRestoredRenderer;
+    mod.hasCommittedPageModel = hasCommittedPageModel;
+    mod.hasOtherCommittedPageModel = hasOtherCommittedPageModel;
 
     // Backward-compatible window global so app.js call-sites work unchanged
     window.handleCatgirlSwitch = handleCatgirlSwitch;

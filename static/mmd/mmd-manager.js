@@ -266,8 +266,11 @@ class MMDManager {
                 throw new Error('MMDAnimation 未初始化');
             }
         }
-        const clip = await this.animationModule.loadAnimation(vmdPath, options);
-        this.currentAnimationUrl = vmdPath;
+        const model = this.currentModel, animation = this.animationModule;
+        const clip = await animation.loadAnimation(vmdPath, options);
+        if (clip && !this._isDisposed && this.currentModel === model && this.animationModule === animation) {
+            this.currentAnimationUrl = vmdPath;
+        }
         return clip;
     }
 

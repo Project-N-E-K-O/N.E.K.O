@@ -422,8 +422,18 @@ window.addEventListener('vrm-modules-ready', () => {
     }
 });
 
+// A startup load can wait for config before VRMManager has a load token.
+// Let same-character receipts recognize that phase, and yield to a later switch.
+let ownsVRMStartup = null;
+window.isVRMStartupFor = name => !!name && !!ownsVRMStartup?.(name);
+
 // 自动初始化函数
 async function initVRMModel() {
+    return initVRMModelWithPathRetries(2);
+}
+
+async function initVRMModelWithPathRetries(pathRetries, previousOwner = null) {
+    let retryStartup;
     // 防止重复进入：使用共享锁，避免与 checkAndLoadVRM 并发
     if (window._isVRMLoading) {
         return;
@@ -432,6 +442,41 @@ async function initVRMModel() {
     try {
         // 标记开始（共享锁）- 放在 try 块内确保 finally 能正确释放
         window._isVRMLoading = true;
+        let startupName = window.lanlan_config?.lanlan_name || '';
+        const initialAttempt = window.appState?._switchAttemptCounter || 0;
+        let startupManager, loadToken, selectedRenderer, sameRevisionPathRefresh;
+        let loadStarted = false;
+        const rendererType = () => {
+            const config = window.lanlan_config;
+            const type = String(config?.model_type || '').trim().toLowerCase();
+            return type === 'live3d' ? String(config?.live3d_sub_type || '').trim().toLowerCase() : type;
+        };
+        const stillOwnsStartup = () => {
+            if ((startupName && startupName !== window.lanlan_config?.lanlan_name)
+                || (startupManager && window.vrmManager !== startupManager)
+                || (selectedRenderer !== undefined && selectedRenderer !== rendererType())) return false;
+            if (sameRevisionPathRefresh) {
+                // A different accepted revision/attempt supersedes this path-only refresh.
+                if (window.lanlan_config?.switch_revision !== sameRevisionPathRefresh.revision
+                    || window.appState?._switchAttemptCounter !== sameRevisionPathRefresh.attempt) return false;
+                if (!loadStarted) return true;
+            }
+            if (loadStarted) return startupManager._activeLoadToken === loadToken;
+            // A saved-path retry is still the same startup until its next load
+            // claims a token. An intervening failed attempt isn't a takeover.
+            if (previousOwner) return previousOwner();
+            return (window.appState?._switchAttemptCounter || 0) === initialAttempt || (startupName
+                && (!window.vrmManager?.currentModel?.vrm
+                    || window.appCharacter?.needsCurrentCharacterRecovery?.(startupName, { fromSnapshot: true })));
+        };
+        const stillOwnsStartupNow = () => !window.appState?.isSwitchingCatgirl && stillOwnsStartup();
+        const ownsStartupAfterSwitchSettlement = async (deadline = Date.now() + 46000) => {
+            while (window.appState?.isSwitchingCatgirl && Date.now() < deadline) {
+                await new Promise(resolve => setTimeout(resolve, 50));
+            }
+            return stillOwnsStartupNow();
+        };
+        ownsVRMStartup = name => name === (startupName || window.lanlan_config?.lanlan_name) && stillOwnsStartupNow();
         if (window.__nekoStorageLocationStartupBarrier && typeof window.__nekoStorageLocationStartupBarrier.then === 'function') {
             await window.__nekoStorageLocationStartupBarrier;
         }
@@ -448,8 +493,35 @@ async function initVRMModel() {
         if (window.pageConfigReady && typeof window.pageConfigReady.then === 'function') {
             await window.pageConfigReady;
         }
-        // 在此处同步后端路径配置 
+        const resolvedStartupName = window.lanlan_config?.lanlan_name || '';
+        const mounted = window.vrmManager?.currentModel;
+        const revision = window.lanlan_config?.switch_revision;
+        const configuredPath = window.vrmModel;
+        if (rendererType() === 'vrm' && mounted?.url && typeof configuredPath === 'string'
+            && configuredPath.trim() && !['undefined', 'null'].includes(configuredPath)
+            && window.appCharacter?.hasCommittedPageModel?.(resolvedStartupName, revision)) {
+            const url = window.convertVRMModelPath(configuredPath);
+            const escaped = /^\/(?:user_vrm|static\/vrm|workshop)\//.test(url)
+                ? url.split('/').map(encodeURIComponent).join('/') : url;
+            if (mounted.url !== url && mounted.url !== escaped) {
+                sameRevisionPathRefresh = { revision, attempt: window.appState?._switchAttemptCounter };
+                startupName ||= resolvedStartupName;
+            }
+        }
+        if (!startupName && resolvedStartupName) {
+            const resolvedModelType = (window.lanlan_config?.model_type || '').toLowerCase();
+            const resolvedLive3DSubType = (window.lanlan_config?.live3d_sub_type || '').toLowerCase();
+            const resolvedIsVRM = resolvedModelType === 'vrm'
+                || (resolvedModelType === 'live3d' && resolvedLive3DSubType === 'vrm');
+            if (resolvedIsVRM && !window.vrmManager?.currentModel?.vrm && !window.vrmManager?._isLoadingModel) {
+                startupName = resolvedStartupName;
+            }
+        }
+        if (window.__nekoPageModelConfigPending || !await ownsStartupAfterSwitchSettlement()) return;
+        startupName ||= resolvedStartupName;
+        // 在此处同步后端路径配置
         await fetchVRMConfig();
+        if (!await ownsStartupAfterSwitchSettlement()) return;
 
         // 主动去服务器拉取最新的角色详情（包含光照）
         try {
@@ -465,6 +537,7 @@ async function initVRMModel() {
                         console.error('[VRM Init] JSON 解析失败:', parseError);
                         throw new Error('角色数据格式错误');
                     }
+                    if (!await ownsStartupAfterSwitchSettlement()) return;
                     // 提取当前角色的数据
                     const charData = data['猫娘']?.[currentName];
                     if (charData) {
@@ -494,6 +567,7 @@ async function initVRMModel() {
                 console.warn('[VRM Init] 网络请求失败，将使用默认设置:', e);
             }
         }
+        if (!await ownsStartupAfterSwitchSettlement()) return;
         // 2. 获取并确定模型路径
         // 如果是模型管理页面，不自动加载模型，直接返回
         if (isModelManagerPage()) {
@@ -513,6 +587,23 @@ async function initVRMModel() {
         }
 
         // 安全获取 window.vrmModel，处理各种边界情况（包括字符串 "undefined" 和 "null"）
+        selectedRenderer = rendererType();
+        const configuredPathAtSelection = window.vrmModel;
+        const retryIfPathChanged = () => {
+            if (window.vrmModel === configuredPathAtSelection) return false;
+            if (pathRetries > 0) {
+                retryStartup = async () => {
+                    const deadline = Date.now() + 46000;
+                    while (window.appState?.isSwitchingCatgirl && Date.now() < deadline) {
+                        await ownsStartupAfterSwitchSettlement(deadline);
+                    }
+                    if (stillOwnsStartupNow() && window.vrmModel !== configuredPathAtSelection) {
+                        await initVRMModelWithPathRetries(pathRetries - 1, stillOwnsStartup);
+                    }
+                };
+            }
+            return true;
+        };
         let targetModelPath = null;
         if (window.vrmModel !== undefined && window.vrmModel !== null) {
             const rawValue = window.vrmModel;
@@ -545,6 +636,14 @@ async function initVRMModel() {
                 targetModelPath.includes('null') ||
                 targetModelPath.trim() === ''
             ))) {
+            const failedBoot = window.__nekoPageModelConfigFailed;
+            if (failedBoot?.name && failedBoot.name === startupName) {
+                // The page bootstrap exhausted its authoritative config reads.
+                // Release its ownership gate so receipts/self-heal can recover,
+                // but do not replace an unknown configured asset with the sample
+                // VRM while authority is unavailable.
+                return;
+            }
             // 获取当前是否应该处于 VRM 模式
             const isVRMMode = window.lanlan_config && window.lanlan_config.model_type === 'vrm';
 
@@ -617,15 +716,41 @@ async function initVRMModel() {
 
         // 初始化 Three.js 场景，传入光照配置（如果存在）
         const lightingConfig = window.lanlan_config?.lighting || null;
-        await window.vrmManager.initThreeJS('vrm-canvas', 'vrm-container', lightingConfig);
-
-        // 使用统一的路径转换工具函数
+        startupManager = window.vrmManager;
+        await startupManager.initThreeJS('vrm-canvas', 'vrm-container', lightingConfig);
+        const deadline = Date.now() + 46000;
+        if (!await ownsStartupAfterSwitchSettlement(deadline)) return;
         const modelUrl = window.convertVRMModelPath(targetModelPath);
 
+        // A switch can start between the async check and this turn. Do not
+        // steal its load token; resume the still-current cold boot on rollback.
+        while (!stillOwnsStartupNow()) {
+            if (!window.appState?.isSwitchingCatgirl || Date.now() >= deadline
+                || !await ownsStartupAfterSwitchSettlement(deadline)) return;
+        }
+        if (retryIfPathChanged()) return;
 
         // 朝向会自动检测并保存（在vrm-core.js的loadModel中处理）
         // 如果模型背对屏幕，会自动翻转180度并保存，下次加载时直接应用
-        await window.vrmManager.loadModel(modelUrl);
+        const loading = startupManager.loadModel(modelUrl);
+        loadToken = startupManager._activeLoadToken;
+        loadStarted = true;
+        let failed = false, loadError;
+        try { await loading; }
+        catch (error) { failed = true; loadError = error; }
+        // A same-revision asset save can arrive during the actual download,
+        // not just during Three.js initialization. Never confirm the old path.
+        const postLoadDeadline = Date.now() + 46000;
+        if (!await ownsStartupAfterSwitchSettlement(postLoadDeadline)) return;
+        // A takeover can start as this await resumes. If it rolls back without
+        // replacing the load token, this boot still owns path reconciliation.
+        while (!stillOwnsStartupNow()) {
+            if (!window.appState?.isSwitchingCatgirl || Date.now() >= postLoadDeadline
+                || !await ownsStartupAfterSwitchSettlement(postLoadDeadline)) return;
+        }
+        if (retryIfPathChanged()) return;
+        if (failed) throw loadError;
+        window.appCharacter?.confirmRestoredRenderer?.(startupName, 'vrm', startupManager.currentModel?.vrm);
 
         // 启动主页面待机动作轮换（loadModel 已播放第一个，这里只调度后续切换）
         _startVrmIdleRotation(window.lanlan_config?.vrmIdleAnimations);
@@ -638,7 +763,7 @@ async function initVRMModel() {
         const outlineScale = window.lanlan_config?.lighting?.outlineWidthScale;
         requestAnimationFrame(() => {
             // 防止竞态条件：验证模型是否仍然是同一个
-            if (window.vrmManager?.currentModel !== currentModelRef) {
+            if (!stillOwnsStartupNow() || startupManager.currentModel !== currentModelRef) {
                 console.debug('[VRM Outline] 模型已切换，跳过描边设置应用');
                 return;
             }
@@ -651,7 +776,9 @@ async function initVRMModel() {
         console.error('[VRM Init] 错误详情:', error.stack);
     } finally {
         // 无论成功还是失败，包括所有早期返回，最后都释放锁（共享锁）
+        ownsVRMStartup = null;
         window._isVRMLoading = false;
+        if (retryStartup) Promise.resolve().then(retryStartup);
     }
 }
 
@@ -781,7 +908,7 @@ window.forceUnlockVRM = function () {
 // 手动触发主页VRM模型检查的函数
 window.checkAndLoadVRM = async function () {
     // 角色卡导出页不自动加载
-    if (window._cardExportPage) return;
+    if (window._cardExportPage || window.__nekoPageModelConfigPending) return;
     // 使用共享锁，避免与 initVRMModel 并发
     if (window._isVRMLoading) return;
     window._isVRMLoading = true;

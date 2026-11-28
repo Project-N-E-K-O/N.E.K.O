@@ -29,13 +29,17 @@ def test_card_drop_character_reference_retries_independently_of_avatar_cache():
     assert "scheduleCharacterReferenceSync('avatar-sync');" in source
     assert (
         "if (hasUsableCachedPreview()) {\n"
-        "            scheduleCharacterReferenceSync(reason || 'cached-preview');"
+        "            if (!cachedPreview.displayOnly) "
+        "scheduleCharacterReferenceSync(reason || 'cached-preview');\n"
+        "            return;"
     ) in source
     assert (
         "if (cachedPreview && cachedPreview.dataUrl && cachedPreview.cacheKey === newCacheKey) {\n"
         "            // 不同猫娘可能复用同一模型/cache key；即使头像无需重抓，也要把当前名称\n"
         "            // 和缓存预览重新同步到 card-drop 角色快照。该函数内部也会安排参考图同步。\n"
-        "            syncAvatarToCardDrop(cachedPreview.dataUrl);"
+        "            if (!cachedPreview.displayOnly) "
+        "syncAvatarToCardDrop(cachedPreview.dataUrl);\n"
+        "            return;"
     ) in source
     assert "scheduleCharacterReferenceSync(reason || 'cached-avatar-model-loaded');" not in source
     assert "captureCharacterReferenceDataUrl().then(function (characterReferenceDataUrl)" not in source

@@ -48,6 +48,11 @@ function fixture(t) {
         };
         w.fetch = async url => {
             if (url === '/api/music/domains') return { ok: true, json: async () => ({ domains: [] }) };
+            // Legacy IPC only verifies the identity against the cheap paired snapshot;
+            // it still does not load the full HTTP page configuration.
+            if (injected && url === '/api/characters/current_catgirl') {
+                return { ok: true, json: async () => ({ current_catgirl: name, switch_revision: 602 }) };
+            }
             fetches.push(url);
             assert.equal(url, '/api/config/page_config', 'this fixture must exercise the production configuration request');
             resolveConfigStarted();

@@ -255,7 +255,7 @@
         let cachedToken = '';
         let initialTokenPromise = null;
         let refreshPromise = null;
-        let warnedMissingPageConfig = false;
+        let readReadyOnce = false;
 
         function resolveLanlanNameParam() {
             try {
@@ -267,86 +267,91 @@
             }
         }
 
-        // 重取 token 的请求上限：挂住时到点取消，refreshPromise 才会清掉、之后的 refreshToken 另发新请求
-        // （否则所有调用方都一直拿到同一个永远不落定的 promise）。首屏读初始 token 不受影响
-        const TOKEN_REFRESH_TIMEOUT_MS = 10000;
+        const TOKEN_REQUEST_TIMEOUT_MS = 10000;
+        const INITIAL_TOKEN_READY_WAIT_MS = 3000;
 
-        async function fetchPageConfigToken(timeoutMs) {
-            const controller = timeoutMs && typeof AbortController === 'function' ? new AbortController() : null;
-            const timer = controller ? setTimeout(function () { controller.abort(); }, timeoutMs) : null;
-            try {
-                const response = await fetch(PAGE_CONFIG_URL + resolveLanlanNameParam(), {
-                    cache: 'no-store',
-                    signal: controller ? controller.signal : undefined,
-                });
-                if (!response.ok) {
+        async function fetchPageConfigToken() {
+            const controller = typeof AbortController === 'function' ? new AbortController() : null;
+            let timer;
+            const deadline = new Promise(resolve => {
+                timer = setTimeout(() => {
+                    resolve('');
+                    controller?.abort();
+                }, TOKEN_REQUEST_TIMEOUT_MS);
+            });
+            const request = (async () => {
+                try {
+                    const response = await fetch(PAGE_CONFIG_URL + resolveLanlanNameParam(), {
+                        cache: 'no-store',
+                        signal: controller?.signal,
+                    });
+                    return response.ok ? extractAutostartCsrfToken(await response.json()) : '';
+                } catch (_) {
                     return '';
                 }
-                const data = await response.json();
-                return extractAutostartCsrfToken(data);
+            })();
+            try {
+                return await Promise.race([request, deadline]);
+            } finally {
+                clearTimeout(timer);
+            }
+        }
+
+        async function readReadyToken() {
+            const ready = window.pageConfigReady;
+            if (!ready || typeof ready.then !== 'function') {
+                console.warn(
+                    '[LocalMutationSecurity] window.pageConfigReady missing; '
+                    + 'will refetch /api/config/page_config for CSRF token.'
+                );
+                return '';
+            }
+            let timer;
+            try {
+                // Model startup may stay pending through unrelated recovery.
+                return extractAutostartCsrfToken(await Promise.race([ready, new Promise(resolve => {
+                    timer = setTimeout(resolve, INITIAL_TOKEN_READY_WAIT_MS);
+                })]));
             } catch (_) {
                 return '';
             } finally {
-                if (timer) clearTimeout(timer);
+                if (timer !== undefined) clearTimeout(timer);
             }
         }
 
         function readInitialToken() {
-            if (initialTokenPromise) {
-                return initialTokenPromise;
-            }
-            initialTokenPromise = (async function () {
-                const ready = window.pageConfigReady;
-                if (ready && typeof ready.then === 'function') {
-                    try {
-                        const data = await ready;
-                        const token = extractAutostartCsrfToken(data);
-                        if (token) {
-                            cachedToken = token;
-                            return token;
-                        }
-                    } catch (_) {
-                        // fall through to explicit refetch below
+            if (!initialTokenPromise) {
+                initialTokenPromise = (async () => {
+                    if (!readReadyOnce) {
+                        readReadyOnce = true;
+                        const initial = await readReadyToken();
+                        // An explicit refresh can win while the page snapshot is pending.
+                        if (refreshPromise) return refreshPromise;
+                        if (!cachedToken && initial) cachedToken = initial;
                     }
-                } else if (!warnedMissingPageConfig) {
-                    warnedMissingPageConfig = true;
-                    console.warn(
-                        '[LocalMutationSecurity] window.pageConfigReady missing; '
-                        + 'will refetch /api/config/page_config for CSRF token.'
-                    );
-                }
-                // pageConfigReady yielded nothing usable — try a direct fetch.
-                const token = await fetchPageConfigToken();
-                if (token) {
-                    cachedToken = token;
-                }
-                return cachedToken;
-            })();
+                    return cachedToken || refreshToken();
+                })().finally(() => {
+                    // Only the valid token is cached; failed reads are retryable.
+                    initialTokenPromise = null;
+                });
+            }
             return initialTokenPromise;
         }
 
         async function getToken() {
-            if (cachedToken) {
-                return cachedToken;
-            }
-            return readInitialToken();
+            return refreshPromise || cachedToken || readInitialToken();
         }
 
         async function refreshToken() {
-            if (refreshPromise) {
-                return refreshPromise;
-            }
-            refreshPromise = (async function () {
-                try {
-                    const token = await fetchPageConfigToken(TOKEN_REFRESH_TIMEOUT_MS);
-                    if (token) {
-                        cachedToken = token;
-                    }
+            if (!refreshPromise) {
+                // Initial fallback and explicit refresh share the same direct read.
+                refreshPromise = fetchPageConfigToken().then(token => {
+                    if (token) cachedToken = token;
                     return cachedToken;
-                } finally {
+                }).finally(() => {
                     refreshPromise = null;
-                }
-            })();
+                });
+            }
             return refreshPromise;
         }
 

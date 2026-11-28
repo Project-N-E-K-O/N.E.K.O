@@ -772,6 +772,12 @@
         }
     }
 
+    function publishPreview(preview) {
+        if (preview.displayOnly) return;
+        saveToStorage(preview);
+        syncAvatarToCardDrop(preview.dataUrl);
+    }
+
     function applyPreviewResult(result, cacheKey, captureRevision) {
         if (
             !cacheKey ||
@@ -788,8 +794,7 @@
             modelType: result.modelType || getCurrentModelType(),
             capturedAt: Date.now()
         };
-        saveToStorage(cachedPreview);
-        syncAvatarToCardDrop(cachedPreview.dataUrl);
+        publishPreview(cachedPreview);
 
         setPreviewImage(cachedPreview.dataUrl);
         setPreviewStatus(
@@ -1368,7 +1373,8 @@
         activeCaptureCardVisible = showCard;
         const cacheKey = getCurrentModelCacheKey();
         const captureRevision = cardDropModelRevision;
-        const prevCachedPreview = cachedPreview ? Object.assign({}, cachedPreview) : null;
+        const previewAtCaptureStart = cachedPreview;
+        const prevCachedPreview = previewAtCaptureStart ? Object.assign({}, previewAtCaptureStart) : null;
         if (showCard) {
             setPreviewVisible(true, trigger);
         }
@@ -1457,6 +1463,10 @@
             }
         } catch (error) {
             if (token !== activeCaptureToken) return;
+            // A fallback request may fail after IPC filled this same popup.
+            // The model cache key alone can be shared by different characters.
+            if (!manualCrop && cachedPreview !== previewAtCaptureStart
+                && cachedPreview?.ownsIpcIdentity?.() && hasUsableCachedPreview()) return;
 
             if (showCard || activeCaptureCardVisible) {
                 setPreviewImage('');
@@ -1492,7 +1502,7 @@
             return;
         }
         if (hasUsableCachedPreview()) {
-            scheduleCharacterReferenceSync(reason || 'cached-preview');
+            if (!cachedPreview.displayOnly) scheduleCharacterReferenceSync(reason || 'cached-preview');
             return;
         }
         if (lastScheduledCacheKey === cacheKey && isCapturing) {
@@ -1528,7 +1538,7 @@
         if (cachedPreview && cachedPreview.dataUrl && cachedPreview.cacheKey === newCacheKey) {
             // 不同猫娘可能复用同一模型/cache key；即使头像无需重抓，也要把当前名称
             // 和缓存预览重新同步到 card-drop 角色快照。该函数内部也会安排参考图同步。
-            syncAvatarToCardDrop(cachedPreview.dataUrl);
+            if (!cachedPreview.displayOnly) syncAvatarToCardDrop(cachedPreview.dataUrl);
             return;
         }
         // 头像捕获失败或尚未完成时，也先同步已知角色名，避免社区卡片流程
@@ -1677,11 +1687,10 @@
         //   3) 都没有，则进入等待态。
         var stored = loadFromStorage();
         if (cachedPreview && cachedPreview.dataUrl) {
-            // 保留内存缓存；刷新 cacheKey 并补写一次 localStorage
-            // （加载时 lanlan_config.lanlan_name 可能尚未就绪，保存会静默失败）。
+            // Refresh the cache key once the model configuration is ready.
+            // A display-only IPC portrait must stay in memory after init too.
             cachedPreview.cacheKey = getCurrentModelCacheKey();
-            saveToStorage(cachedPreview);
-            syncAvatarToCardDrop(cachedPreview.dataUrl);
+            publishPreview(cachedPreview);
             setPreviewImage(cachedPreview.dataUrl);
             setPreviewStatus(
                 translateLabel('chat.avatarPreviewReady', '头像已更新') + ' · ' + normalizeModelLabel(cachedPreview.modelType)
@@ -1841,21 +1850,27 @@
      * @param {string} dataUrl - base64 data URL
      * @param {string} [modelType] - 'live2d' | 'vrm' | 'mmd' | 'pngtuber'
      */
-    mod.setExternalAvatar = function setExternalAvatar(dataUrl, modelType) {
+    mod.setExternalAvatar = function setExternalAvatar(dataUrl, modelType, { displayOnly = false, isCurrentIdentity } = {}) {
         externalAvatarDataUrl = dataUrl || '';
         externalAvatarModelType = modelType || '';
 
         // 把 IPC 注入的头像合并进 cachedPreview，让 renderAvatarPreview 的快路径直接命中，
         // 避免弹窗打开时再发一次 IPC（可能超时 → 用户看到失败态）。
         if (externalAvatarDataUrl) {
+            const { lanlan_name: name, switch_revision: revision } = window.lanlan_config || {};
             cachedPreview = {
+                ownsIpcIdentity: isCurrentIdentity || (() => {
+                    const current = window.lanlan_config;
+                    return !!name && current?.lanlan_name === name && current.switch_revision === revision;
+                }),
                 cacheKey: getCurrentModelCacheKey(),
                 dataUrl: externalAvatarDataUrl,
                 modelType: externalAvatarModelType || getCurrentModelType(),
-                capturedAt: Date.now()
+                capturedAt: Date.now(),
+                // Bootstrap and live relays both feed standalone chat followers.
+                displayOnly: displayOnly || isCardDropIdentityFollowerWindow(),
             };
-            saveToStorage(cachedPreview);
-            syncAvatarToCardDrop(cachedPreview.dataUrl);
+            publishPreview(cachedPreview);
         }
 
         // 如果弹窗已打开且本地没有本窗口可采集的模型，就直接把 IPC 数据显示出来。
@@ -1915,12 +1930,7 @@
     mod.getCustomEditState = function () { return window.appChatAvatarEditor.getState(); };
 
     window.appChatAvatar = mod;
-
-    // 消费 IPC 暂存的头像数据（neko:config-injected 可能在本脚本加载前触发）
-    if (window.__nekoPendingAvatar) {
-        mod.setExternalAvatar(window.__nekoPendingAvatar.dataUrl, window.__nekoPendingAvatar.modelType);
-        delete window.__nekoPendingAvatar;
-    }
+    window.restorePendingIpcAvatar?.();
     if (window.__nekoPendingTutorialChatIdentity) {
         if (window.__nekoPendingTutorialChatIdentity.active) {
             mod.setTutorialAvatarOverride(

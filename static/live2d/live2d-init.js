@@ -57,6 +57,7 @@ function _nekoAwaitWithTimeout(thenable, ms) {
 // 仅对"本应显示 Live2D"的会话自愈；pngtuber/vrm/mmd 的空 cubism4Model 是正常态。
 function _nekoShouldSelfHealLive2D() {
     try {
+        if (window.__nekoPageModelConfigPending) return false;
         if (window.NekoAvatarFloatingBoot && typeof window.NekoAvatarFloatingBoot.shouldSkipUserModelBoot === 'function'
             && window.NekoAvatarFloatingBoot.shouldSkipUserModelBoot()) {
             return false;
@@ -67,7 +68,7 @@ function _nekoShouldSelfHealLive2D() {
         const mt = (window.lanlan_config && window.lanlan_config.model_type || '').toLowerCase();
         const sub = (window.lanlan_config && window.lanlan_config.live3d_sub_type || '').toLowerCase();
         if (mt === 'pngtuber' || mt === 'vrm') return false;
-        if (mt === 'live3d' && sub === 'mmd') return false;
+        if (mt === 'live3d' && (sub === 'mmd' || sub === 'vrm')) return false;
         if ((window.vrmManager && window.vrmManager.currentModel) || (window.mmdManager && window.mmdManager.currentModel)) return false;
         return true;
     } catch (_) {
@@ -75,9 +76,22 @@ function _nekoShouldSelfHealLive2D() {
     }
 }
 
+function getMountedLive2D() {
+    const model = window.live2dManager?.getCurrentModel?.() || window.live2dManager?.currentModel;
+    return model && !model.destroyed ? model : null;
+}
+
+function hasMountedLive2D() {
+    return !!getMountedLive2D();
+}
+
+function configuredInitialLive2DPath() {
+    return typeof cubism4Model !== 'undefined' ? cubism4Model : (window.cubism4Model || '');
+}
+
 // 模型路径缺失时：有界地重新拉取 page_config 并重试初始化（解决瞬时后端未就绪 / 配置迟到）。
 function scheduleLive2DConfigRetry(reason) {
-    if (_nekoLive2DModelLoadedOnce) return;
+    if (_nekoLive2DModelLoadedOnce || hasMountedLive2D()) return;
     if (!_nekoShouldSelfHealLive2D()) return;
     // 去重：已有重取在排队/进行中就不再叠加新计时器（修复多个看门狗 + 空路径分支堆叠 timer，
     // 以及在下方 reloadPageConfig await 窗口内被并发 timer 双消耗预算的问题，PR #1920 review）。
@@ -93,7 +107,7 @@ function scheduleLive2DConfigRetry(reason) {
     console.log('[Live2D Init] 模型路径缺失，安排配置重取自愈，原因:', reason);
     setTimeout(async () => {
         try {
-            if (_nekoLive2DModelLoadedOnce || !_nekoShouldSelfHealLive2D()) return;
+            if (_nekoLive2DModelLoadedOnce || hasMountedLive2D() || !_nekoShouldSelfHealLive2D()) return;
             // 正在初始化中（可能是首次正常慢加载）：本轮不消耗预算、不打扰；
             // 若该次初始化最终因空路径失败，会从 early-return 分支再次安排重试。
             if (_nekoLive2DInitInFlight) return;
@@ -110,7 +124,8 @@ function scheduleLive2DConfigRetry(reason) {
                 }
             }
             // 哨兵可能等待很久：解析后重新校验是否仍应自愈（其间可能已切到 vrm/pngtuber/模型管理等）。
-            if (_nekoLive2DModelLoadedOnce || _nekoLive2DInitInFlight || !_nekoShouldSelfHealLive2D()) return;
+            if (_nekoLive2DModelLoadedOnce || _nekoLive2DInitInFlight || hasMountedLive2D()
+                || !_nekoShouldSelfHealLive2D()) return;
             _nekoLive2DConfigRetryCount += 1;
             try {
                 if (typeof window.reloadPageConfig === 'function') {
@@ -119,8 +134,11 @@ function scheduleLive2DConfigRetry(reason) {
             } catch (error) {
                 console.warn('[Live2D Init] 自愈重取配置失败:', error);
             }
-            if (_nekoLive2DModelLoadedOnce || _nekoLive2DInitInFlight) return;
-            initLive2DModel();
+            // A refreshed snapshot may have handed a new character to the switch loader.
+            // Do not start a competing bootstrap while it is pending or after it mounted.
+            if (_nekoLive2DModelLoadedOnce || _nekoLive2DInitInFlight
+                || window.appState?.isSwitchingCatgirl || !_nekoShouldSelfHealLive2D()) return;
+            if (!hasMountedLive2D()) initLive2DModel();
         } finally {
             // 计时器跑完即解除去重位；若初始化仍失败，会从空路径分支再排下一轮（受预算上限约束）。
             _nekoLive2DRetryPending = false;
@@ -484,24 +502,28 @@ async function cleanupVRMResources() {
 }
 
 // 自动初始化函数（重入保护包装；真正逻辑在 _initLive2DModelInner）
-async function initLive2DModel() {
+async function runLive2DInitialization(replacement = null) {
     if (_nekoLive2DInitInFlight) {
         console.log('[Live2D Init] 初始化进行中，跳过本次重入调用');
         return;
     }
     _nekoLive2DInitInFlight = true;
     try {
-        await _initLive2DModelInner();
+        await _initLive2DModelInner(replacement);
     } finally {
         _nekoLive2DInitInFlight = false;
     }
 }
 
+function initLive2DModel() {
+    return runLive2DInitialization();
+}
+
 window.initLive2DModel = initLive2DModel;
 
 // 自动初始化函数（延迟执行，等待 cubism4Model 设置）
-async function _initLive2DModelInner() {
-    const _preInitModelPath = (typeof cubism4Model !== 'undefined' ? cubism4Model : (window.cubism4Model || ''));
+async function _initLive2DModelInner(replacement) {
+    const _preInitModelPath = configuredInitialLive2DPath();
     // 存储位置启动哨兵必须始终等待——不设超时、不因已知路径而跳过：它是用户存储/迁移决定的门，
     // 抢跑会让头像/主界面用错或未批准的存储位置（PR #1920 review P1）。已解析则瞬时返回；
     // 若用户迟迟不决定（或哨兵真卡死），保持等待与 startPageConfigLoad 一致，也比抢跑安全。
@@ -563,9 +585,37 @@ async function _initLive2DModelInner() {
     if (!_preInitModelPath && window.pageConfigReady && typeof window.pageConfigReady.then === 'function') {
         await _nekoAwaitWithTimeout(window.pageConfigReady, NEKO_LIVE2D_AWAIT_TIMEOUT_MS);
     }
+    const recoveringSkippedTutorialBoot = window.NekoAvatarFloatingBoot?.wasUserModelBootSkipped?.() === true;
+    if (window.__nekoPageModelConfigPending || window.appState?.isSwitchingCatgirl
+        || (!_preInitModelPath && hasMountedLive2D() && !recoveringSkippedTutorialBoot)) return;
 
     // 获取模型路径
-    const targetModelPath = (typeof cubism4Model !== 'undefined' ? cubism4Model : (window.cubism4Model || ''));
+    const targetModelPath = configuredInitialLive2DPath();
+    const startupName = window.lanlan_config?.lanlan_name || '';
+    const stillOwnsMountedReplacement = () => replacement?.manager === window.live2dManager
+        && replacement?.mounted === getMountedLive2D()
+        && replacement?.name === startupName && replacement?.path === targetModelPath
+        && window.live2dManager._lastLoadedModelPath === replacement.previousPath;
+    if (replacement && !stillOwnsMountedReplacement()) return;
+    const stillOwnsInitialLive2DStartup = () => {
+        if (isModelManagerPage) return true;
+        const currentPath = configuredInitialLive2DPath();
+        return !window.appState?.isSwitchingCatgirl
+            && (window.lanlan_config?.lanlan_name || '') === startupName
+            // switch_revision is a receipt high-water mark, not proof that a
+            // successor renderer committed. A failed takeover may raise it
+            // while leaving this same name/path authoritative.
+            && (window.lanlan_config?.model_type || 'live2d').toLowerCase() === 'live2d'
+            && currentPath === targetModelPath
+            && (!hasMountedLive2D() || recoveringSkippedTutorialBoot || stillOwnsMountedReplacement());
+    };
+    const ownsInitialLive2DStartupAfterSwitchSettlement = async () => {
+        const deadline = Date.now() + 46000;
+        while (window.appState?.isSwitchingCatgirl && Date.now() < deadline) {
+            await new Promise(resolve => setTimeout(resolve, 50));
+        }
+        return stillOwnsInitialLive2DStartup();
+    };
 
     // 如果当前为 Live3D+MMD 模式，跳过 Live2D 初始化
     const modelManagerAvatarType = window.location.pathname.includes('model_manager')
@@ -803,10 +853,19 @@ async function _initLive2DModelInner() {
 
         // 只有在非模型管理界面且有模型路径时才自动加载模型
         if (!isModelManagerPage && targetModelPath) {
+            // Preferences/display restoration above can take long enough for a
+            // committed character switch to mount its successor. Never let the
+            // old startup call become the newest load merely because it resumed
+            // later.
+            if (!await ownsInitialLive2DStartupAfterSwitchSettlement()) {
+                console.log('[Live2D Init] 初始加载已被角色切换或新配置取代，跳过旧模型:', targetModelPath);
+                return;
+            }
             // 加载模型（使用事件驱动方式，在常驻表情应用完成后应用参数）
             await window.live2dManager.loadModel(targetModelPath, {
                 preferences: modelPreferences,
                 isMobile: typeof window.isMobileWidth === 'function' ? window.isMobileWidth() : (window.innerWidth <= 768),
+                ...(stillOwnsMountedReplacement() ? { preservePreviousUntilLoaded: true, skipCloseWindows: true } : {}),
                 // 在常驻表情应用完成后应用参数（事件驱动，替代不可靠的 setTimeout）
                 onResidentExpressionApplied: (model) => {
                     const effectiveParameters = window.live2dManager.effectiveModelParameters;
@@ -840,6 +899,7 @@ async function _initLive2DModelInner() {
         window.LanLan1.live2dModel = window.live2dManager.getCurrentModel();
         window.LanLan1.currentModel = window.live2dManager.getCurrentModel();
         window.LanLan1.emotionMapping = window.live2dManager.getEmotionMapping();
+        window.appCharacter?.confirmRestoredRenderer?.(startupName, 'live2d', window.LanLan1.currentModel);
 
         // 设置页面卸载时的自动清理（确保资源正确释放）
         revealInitialLive2DModelWhenUiReady('initial-live2d-load');
@@ -869,25 +929,43 @@ async function _initLive2DModelInner() {
     }
 }
 
-// 自动初始化（如果存在 cubism4Model 变量）；如果 pageConfigReady 存在，等待它完成；否则立即执行
-if (window.pageConfigReady && typeof window.pageConfigReady.then === 'function') {
-    window.pageConfigReady.then(() => {
+// An earlier live switch may own the mounted model even when index.js
+// had not yet installed pageConfigReady at script evaluation time.
+function startInitialLive2DModel(acceptedPageConfig) {
+    const mounted = getMountedLive2D();
+    if (!mounted) {
         initLive2DModel();
-    }).catch(() => {
-        // 即使配置加载失败，也尝试初始化（可能使用默认模型）
-        initLive2DModel();
-    });
-} else {
-    // 如果没有 pageConfigReady，检查 cubism4Model 是否已设置
-    const targetModelPath = (typeof cubism4Model !== 'undefined' ? cubism4Model : (window.cubism4Model || ''));
-    if (targetModelPath) {
-        initLive2DModel();
-    } else {
-        // 如果还没有设置，等待一下再检查
-        setTimeout(() => {
-            initLive2DModel();
-        }, 1000);
+        return;
     }
+    const manager = window.live2dManager;
+    const path = configuredInitialLive2DPath();
+    const previousPath = manager?._lastLoadedModelPath;
+    // Presence is not ownership when the accepted startup wants another asset.
+    // Bind replacement to this exact mount so a later switch cannot be undone.
+    if (acceptedPageConfig === true && path && previousPath && previousPath !== path) {
+        runLive2DInitialization({manager, mounted, name: window.lanlan_config?.lanlan_name || '', path, previousPath});
+    }
+}
+
+function scheduleInitialLive2DModel() {
+    if (window.pageConfigReady && typeof window.pageConfigReady.then === 'function') {
+        window.pageConfigReady.then(startInitialLive2DModel, startInitialLive2DModel);
+    } else {
+        const targetModelPath = configuredInitialLive2DPath();
+        if (targetModelPath) {
+            startInitialLive2DModel();
+        } else {
+            setTimeout(startInitialLive2DModel, 1000);
+        }
+    }
+}
+
+// index.html loads this script before index.js. Observe the original readiness
+// promise after scripts finish, not a separate 1s/5s boot that can exit early.
+if (!window.pageConfigReady && document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', scheduleInitialLive2DModel, { once: true });
+} else {
+    scheduleInitialLive2DModel();
 }
 
 // 启动看门狗：独立于上面的 await 链路运行——即便 initLive2DModel 卡在哨兵 / pageConfigReady，
