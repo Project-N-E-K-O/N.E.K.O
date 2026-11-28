@@ -31,8 +31,6 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Literal
 
-import portalocker
-
 from plugin.logging_config import get_logger
 from plugin.neko_plugin_cli.core.lint import UV_EXECUTABLE_ENV
 from plugin.neko_plugin_cli.tool_resources import plugin_tool_resources_dir
@@ -263,7 +261,7 @@ def tool_environment_status() -> ToolEnvironmentStatus:
     if running:
         return ToolEnvironmentStatus("preparing", tool_progress=progress, tools=tools)
     if tools_state == "preparing":
-        # Another feature (or process) is preparing the shared uv / Python.
+        # Another feature (the dependency page, say) is preparing the shared uv / Python.
         return ToolEnvironmentStatus("preparing", tool_progress=tools.get("progress"), tools=tools)
     if error is not None:
         return ToolEnvironmentStatus("failed", error[0], error[1], tools=tools)
@@ -362,24 +360,18 @@ async def _build(resources: ToolResources, runtime: ToolRuntime, deadline: float
 async def _prepare_environment(
     resources: ToolResources, runtime: ToolRuntime, cancel: threading.Event, deadline: float,
 ) -> None:
-    """Build the virtualenv once across processes; the lock is polled so
-    cancellation and the deadline stay responsive."""
-    root = resources.environment_root
-    root.parent.mkdir(parents=True, exist_ok=True)
-    lock = portalocker.Lock(root.with_name(root.name + ".lock"), timeout=0)
-    while not resources.is_ready(runtime.python):
-        _check(cancel, deadline)
-        try:
-            lock.acquire()
-        except portalocker.exceptions.LockException:
-            await asyncio.sleep(0.25)
-            continue
-        try:
-            if not resources.is_ready(runtime.python):
-                _set_progress({"phase": "creating_environment", "downloaded_bytes": None, "total_bytes": None})
-                await _build(resources, runtime, deadline)
-        finally:
-            lock.release()
+    """Build the virtualenv unless it is already there.
+
+    A packaged build runs one N.E.K.O. instance, and within it the single
+    preparation task (start_tool_environment_preparation) serializes builds,
+    so no cross-process lock is taken here.
+    """
+    if resources.is_ready(runtime.python):
+        return
+    _check(cancel, deadline)
+    resources.environment_root.parent.mkdir(parents=True, exist_ok=True)
+    _set_progress({"phase": "creating_environment", "downloaded_bytes": None, "total_bytes": None})
+    await _build(resources, runtime, deadline)
 
 
 async def _preparation_runner(cancel: threading.Event) -> None:

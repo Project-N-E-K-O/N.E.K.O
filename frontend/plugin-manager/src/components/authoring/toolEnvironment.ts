@@ -8,8 +8,8 @@ export const toolEnvironmentReady = (state: Toolchain['tool_environment']) =>
 
 type Translate = (key: string, params?: Record<string, string | number>) => string
 
-const PHASE_KEYS: Record<ToolEnvironmentProgress['phase'], AuthoringMessageKey> = {
-  waiting: 'toolWaiting',
+// A phase not listed here (one the server added later) shows the generic text.
+const PHASE_KEYS: Partial<Record<string, AuthoringMessageKey>> = {
   downloading_uv: 'toolDownloadingUv',
   checking_uv: 'toolCheckingUv',
   installing_python: 'toolInstallingPython',
@@ -18,7 +18,7 @@ const PHASE_KEYS: Record<ToolEnvironmentProgress['phase'], AuthoringMessageKey> 
 }
 
 // Codes with their own text; the others (internal_error, environment_failed,
-// canceled) show the server's detail instead.
+// canceled, busy) show the server's detail instead.
 const ERROR_KEYS: Partial<Record<string, AuthoringMessageKey>> = {
   unsupported_platform: 'toolErrorUnsupportedPlatform',
   download_failed: 'toolErrorDownloadFailed',
@@ -26,7 +26,6 @@ const ERROR_KEYS: Partial<Record<string, AuthoringMessageKey>> = {
   python_install_failed: 'toolErrorPythonInstallFailed',
   python_mismatch: 'toolErrorPythonMismatch',
   timeout: 'toolErrorTimeout',
-  busy: 'toolErrorBusy',
   resources_unavailable: 'toolEnvironmentUnavailable',
 }
 
@@ -38,7 +37,8 @@ export function toolErrorKey(code: string | null | undefined): AuthoringMessageK
 const megabytes = (bytes: number) => (bytes / (1024 * 1024)).toFixed(1)
 
 export function toolProgressText(progress: ToolEnvironmentProgress, t: Translate): string {
-  const label = t(`authoring.${PHASE_KEYS[progress.phase] ?? 'toolEnvironmentPreparing'}`)
+  const key = Object.hasOwn(PHASE_KEYS, progress.phase) ? PHASE_KEYS[progress.phase] : undefined
+  const label = t(`authoring.${key ?? 'toolEnvironmentPreparing'}`)
   if (progress.phase !== 'downloading_uv' || !progress.downloaded_bytes) return label
   const size = progress.total_bytes
     ? t('authoring.toolBytes', {

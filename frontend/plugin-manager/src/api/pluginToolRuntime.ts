@@ -1,8 +1,10 @@
 /** Types of the shared plugin tool layer (plugin/server/infrastructure/plugin_tool_runtime.py). */
 
-/** Mirrors plugin_tool_runtime.ProgressPhase. */
-export type ToolProgressPhase =
-  'waiting' | 'downloading_uv' | 'checking_uv' | 'installing_python' | 'checking_python'
+/**
+ * The phases of plugin_tool_runtime.ProgressPhase this page has text for.
+ * Any other phase the server sends reads as the generic "preparing".
+ */
+export type ToolProgressPhase = 'downloading_uv' | 'checking_uv' | 'installing_python' | 'checking_python'
 /** Mirrors plugin_tool_runtime.ErrorCode. */
 export type ToolErrorCode =
   | 'unsupported_platform'
