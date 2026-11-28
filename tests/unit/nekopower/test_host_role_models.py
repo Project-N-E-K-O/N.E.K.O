@@ -2641,7 +2641,7 @@ CAPPED_TEMPLATE = '---\nname: capped\ndescription: When a few requests are enoug
 
 
 @pytest.mark.parametrize(
-    ("preset", "only_built_in"), [("scout", False), ("general", False), ("boss", True), ("capped", True)]
+    ("preset", "only_built_in"), [("scout", False), ("general", False), ("boss", False), ("capped", True)]
 )
 async def test_which_new_sessions_are_opened_in_the_built_in_runtime_whatever_else_would_be_chosen(
     hosts, tmp_path, preset, only_built_in
@@ -2663,6 +2663,6 @@ async def test_which_new_sessions_are_opened_in_the_built_in_runtime_whatever_el
     await wait_status(host, (await _dispatch(host, "look at the header of the shop site")).commission_id, "done")
 
     # A preset that withholds tools is held to in dsh by what its session is told, and is opened
-    # wherever another would be. The leader of a project is not, nor one whose requests are capped
-    # (the host cannot count them in dsh).
+    # wherever another would be, the leader of a project too. Not one whose requests are capped:
+    # the host cannot count them in dsh.
     assert chosen and chosen[0] is only_built_in

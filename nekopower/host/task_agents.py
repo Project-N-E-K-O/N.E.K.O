@@ -3872,11 +3872,11 @@ class TaskAgentManager(TreeWork):
             # (its role, and that the tools dsh has of its own are not used: ``preset_notes``)
             # and by the tools of the host's it is opened without; the tools dsh has of its
             # own the host cannot keep from it. So such a session is opened wherever any
-            # other would be, and one begun in dsh goes on there. Two stay with the built-in
-            # runtime, where they are not begun in dsh already: the leader of a project
-            # (never run in dsh, with the tools it hands work out by), and a session whose
-            # preset caps its requests, which the host cannot count in dsh.
-            builtin_only = (kept.kind == "project" or template.max_requests is not None) and begun_in != RUNTIME_DSH
+            # other would be, the leader of a project included (it hands work out by the
+            # host's tools, which dsh is served), and one begun in dsh goes on there. Only a
+            # session whose preset caps its requests stays with the built-in runtime, where
+            # it is not begun in dsh already: the host cannot count requests in dsh.
+            builtin_only = template.max_requests is not None and begun_in != RUNTIME_DSH
             if not choice.agent:
                 # A model the user set for the preset is used in the
                 # built-in runtime only, for now: dsh starts its processes

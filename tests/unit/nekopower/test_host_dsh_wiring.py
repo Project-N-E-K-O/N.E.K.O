@@ -36,7 +36,7 @@ from nekopower.dsh import DshUnavailable
 from nekopower.host.paths import DSH_SESSION_NAME, TRANSCRIPT_NAME
 from nekopower.host.runtimes import RUNTIME_BUILTIN, RUNTIME_DSH
 from nekopower.host.task_agents import _Handed, _Unsaid, _begun_in, _has_transcript
-from tests.unit.nekopower.fakes import ScriptedLLM, call, finish
+from tests.unit.nekopower.fakes import ScriptedLLM, call, finish, say
 from tests.unit.nekopower.host_fakes import (
     FakeDecisionLLM,
     make_host,
@@ -1356,3 +1356,29 @@ async def test_stock_job_list_uses_the_other_tool_policy(tmp_path, mode, choice,
                 assert "no background jobs" in message["content"].lower()
         finally:
             await host.shutdown()
+
+
+async def test_the_leader_of_a_project_is_opened_in_dsh_too_and_hands_its_commission_over_from_there(hosts, tmp_path):
+    leader = ScriptedLLM(
+        [
+            [call("hand_over", {"description": "fixes the pages", "brief": "Fix the header."}), finish("tool_calls")],
+            [say("handed over"), finish("stop")],
+        ]
+    )
+    member = ScriptedLLM([_report("ready", "header fixed")])
+    host = _host(
+        hosts, tmp_path, lambda spec: leader if "hand_over" not in spec.disabled_tools else member, Installation()
+    )
+    await host.permission_store.set_mode("open_session", "allow")
+    led = await host.open_session("Lan", "Shop site", preset="boss")
+
+    done = await wait_status(host, await _dispatch(host, "fix the header of the shop site"), "done")
+
+    # It went through the leader, which was opened where any session would be, and on to a member.
+    (handed,) = [event.payload for event in await host.ledger.events(done.id) if event.type == "handed_over"]
+    assert handed["from"] == led["session_id"] and done.session_id == handed["to"] and done.result_summary == "header fixed"
+    assert (await host.ledger.get_session(led["session_id"])).runtime == RUNTIME_DSH
+    assert host.fake.builtin.created == []
+    # Told there, with what opens the commission, which of dsh's own tools a leader is without.
+    told = json.dumps(leader.requests[0])
+    assert "This runtime still offers you tools of its own that write or edit files or run commands; as lead" in told
