@@ -142,6 +142,11 @@ from nekopower import TASK_CONTROL_TOOLS  # noqa: F401
 # (_FORK_REMOVE_RETRY_SECONDS, _SERVICE_CLOSE_POLL_SECONDS, _SERVICE_CLOSE_SECONDS, _SERVICE_HANDOVER_SECONDS, _SHUTDOWN_START_WAIT_SECONDS, _begun_in, _lies_in) is therefore read late via ``_task_agents_facade.<attr>``
 # in ``manager`` and the mixins. When adding a new facade patch target in
 # tests, route its read points through ``_task_agents_facade`` the same way.
+# That includes ``types`` itself: its helpers call one another by their bare
+# names (``_begun_in`` and ``_has_transcript`` call ``_in_dsh``), so a patch
+# on the facade of one of those would not reach the others. The contract test
+# (``test_task_agents_package_contracts.py``) checks ``types`` as well and
+# fails on such a read once its symbol becomes a patch target.
 from .types import (  # noqa: F401
     logger,
     LEAD_NAME,
