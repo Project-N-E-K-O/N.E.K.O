@@ -184,6 +184,11 @@ class TaskAgentSpec(_Strict):
     idle_compaction: bool = False
     # A fresh snapshot without the workspace brief should be retried on the next opening.
     workspace_brief_unavailable: bool = False
+    # What the head of the session's requests is for, by a name of the host's
+    # (the session's preset): the system prompt and the tool definitions kept
+    # with a session that were put together for another are put together anew
+    # as it is opened. Empty says nothing, and what is kept is used as it is.
+    head_of: str = ""
     # False for a task agent started by another task agent: such a session cannot
     # manage goals on the strength of the messages it receives.
     top_level: bool = True

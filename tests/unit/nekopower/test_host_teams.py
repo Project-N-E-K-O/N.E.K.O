@@ -236,6 +236,51 @@ async def test_a_team_the_user_does_not_allow_is_not_started(hosts, tmp_path, ho
     assert await _events(host, receipt.commission_id, "team_formed") == []
 
 
+@pytest.mark.parametrize(("answer", "refused"), [("once", False), ("deny", True)])
+async def test_a_team_is_asked_about_ahead_of_the_call_where_the_runtime_asks_first_and_not_again(
+    hosts, tmp_path, answer, refused
+):
+    go = asyncio.Event()
+
+    async def wait() -> None:
+        await go.wait()
+
+    lead = ScriptedLLM([[wait, *END]])
+    host, trees, workdir = await _shop(hosts, tmp_path, _by_role(lead, _team_scripts(go)), allow=False)
+    asked: list[Any] = []
+
+    async def asker(commission_id: str, ask: Any) -> str:
+        asked.append((commission_id, ask.category, ask.detail.get("tool"), ask.detail.get("count")))
+        return answer
+
+    host.permissions.set_asker(asker)
+    receipt = await _dispatch(host, TEAM)
+    await wait_status(host, receipt.commission_id, "working")
+    await wait_until(lambda: receipt.commission_id in host.task_agents.running, what="the session")
+    agents = host.task_agents
+    leader = (await host.ledger.get(receipt.commission_id)).session_id
+    parts = {"parts": PARTS[:1]}
+
+    # What dsh asks before it calls the tool (it gives a call less than a minute): the user is
+    # asked what the call would ask, and nobody is started by it.
+    reply = await agents._cb_permission(
+        receipt.commission_id, {"tool": "start_team", "category": "host_tool", "arguments": parts}
+    )
+    assert reply["allow"] is True and asked == [(receipt.commission_id, "open_session", "start_team", 1)]
+    assert await host.ledger.select(parent_id=receipt.commission_id) == [] and trees.made == []
+
+    if refused:
+        with pytest.raises(RuntimeError, match="did not allow task agents that change files"):
+            await agents._cb_start_team(leader, parts)
+        assert await host.ledger.select(parent_id=receipt.commission_id) == []
+    else:
+        await agents._cb_start_team(leader, parts)
+        assert len(await host.ledger.select(parent_id=receipt.commission_id)) == 1
+    # Asked once, ahead of the call.
+    assert len(asked) == 1
+    await host.abort(receipt.commission_id)
+
+
 async def test_new_work_said_while_the_user_is_asked_about_a_team_is_not_taken_for_the_answer(hosts, tmp_path):
     lead = TeamLead(PARTS)
     members = _team_scripts()

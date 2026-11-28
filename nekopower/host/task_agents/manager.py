@@ -90,6 +90,7 @@ from .types import (
     _shows_work_taken,
     _shows_run_at_work,
     default_runtime_factory,
+    preset_notes,
 )
 from .idle_compact import IdleCompactMixin
 from .billing_usage import BillingUsageMixin
@@ -263,6 +264,9 @@ class TaskAgentManager(
         # made (``_rule_on_host_tool``): the queries it was for, the refusal
         # or None, and until when it waits for the call (event loop time).
         self._search_rulings: dict[str, tuple[tuple[str, ...], PermissionDecision, float]] = {}
+        # The same for what a leader in dsh is about to open (``_may_open``): what the user
+        # was asked, what was decided, and until when it waits for the call.
+        self._open_rulings: dict[str, tuple[dict[str, Any], PermissionDecision, float]] = {}
         # Commissions whose review is being written down right now
         # (``hold_session``); a start of one of them waits for that.
         self._held: dict[str, asyncio.Event] = {}
@@ -813,9 +817,9 @@ class TaskAgentManager(
         Its name, the runtime, and, when the commission was to run in dsh
         and runs in the built-in runtime instead, why. With
         ``builtin_only`` it is the built-in runtime and dsh is not asked:
-        for a session whose preset withholds tools, which only the
-        built-in runtime keeps from it (``Template.needs_builtin``). That
-        is where such a session belongs, so no reason is given for it.
+        for a session whose preset caps its requests, which the host
+        cannot count in dsh. That is where such a session belongs, so no
+        reason is given for it.
         """
         if builtin_only:
             if self._pump is None:
@@ -1475,8 +1479,25 @@ class TaskAgentManager(
                 spec = spec.model_copy(update={"instructions": f"{spec.instructions}\n\n{brief}"})
             await runtime.start(spec)
             session.opened_in_runtime = True
+            if kept.model_was and choice.ident:
+                # Its row says it is sent to another model than its task agent last ran on (its
+                # preset was changed): it has run there once an event shows a run of this start
+                # at work (``_note_ran_on``), not by the runtime having taken the command. A
+                # start that is refused after this, whose first message is never sent, or whose
+                # run fails before its first request, sent nothing of its conversation there.
+                session.started_on = choice.ident
+            if not told_as and last_as != now_as:
+                # Nothing to tell it: what it is opened as is on record from here on, whatever
+                # becomes of this start, for the next start to tell a change by; also one made
+                # while this start was under way, which read the preset before it. (With
+                # something to tell, once the session took the message that says it: a start
+                # that is stopped or refused before that tells it with the next one.)
+                session.started_as = now_as
+                await self._note_started_as(session)
             return True
 
+        # Read where the session's template is, below; "" until then.
+        now_as = last_as = told_as = ""
         # The sentence this start was given is the user's from the outset:
         # a failure while it is set up keeps it too.
         session.carried = [prompt] if prompt is not None else []
@@ -1522,14 +1543,30 @@ class TaskAgentManager(
             config = choice.config
             if not config or not config.get("model"):
                 raise RuntimeError("no model is configured for task agents")
+            chosen_as = kept.preset
             await self._use_project(commission)
             kept = await self._ledger.get_session(session.session_id)
             if kept is None:
                 raise RuntimeError("the session of the commission is not on record")
+            if kept.preset != chosen_as:
+                # Given another preset since its model was read, and with it the model of that
+                # one (``change_duty``): this start opens it as what is on this row, below, and
+                # sends it where this row says, not where the preset it had was sent.
+                choice = await self.session_model(kept)
+                config = choice.config
+                if not config or not config.get("model"):
+                    raise RuntimeError("no model is configured for task agents")
             session.cleared_before = kept.status == "cleared"
             # What the session may do and is told of its role. One whose
             # preset cannot be used fails here, with the reason.
             template = await self._template_of(kept)
+            # What this start opens it as is the preset read here, whatever it is changed to
+            # while the start is under way: the runtime is told (``head_of``), and puts the head
+            # of its requests together anew where the one it kept was made for another. Where
+            # its task agent last knew itself as another (``preset_told``), it is told of the
+            # change with the first message (``duty_note`` below), once.
+            now_as, last_as = kept.preset, kept.preset_told
+            told_as = last_as if last_as and last_as != now_as else ""
             if (
                 kept.kind == "fork"
                 and kept.forked_from
@@ -1579,7 +1616,15 @@ class TaskAgentManager(
             opened = opened_at is not None
             at_it = opened and await self._ledger.opened_last(session.session_id) == commission.id
 
-            builtin_only = template.needs_builtin
+            # A preset that withholds tools is held to in dsh by what its session is told
+            # (its role, and that the tools dsh has of its own are not used: ``preset_notes``)
+            # and by the tools of the host's it is opened without; the tools dsh has of its
+            # own the host cannot keep from it. So such a session is opened wherever any
+            # other would be, the leader of a project included (it hands work out by the
+            # host's tools, which dsh is served), and one begun in dsh goes on there. Only a
+            # session whose preset caps its requests stays with the built-in runtime, where
+            # it is not begun in dsh already: the host cannot count requests in dsh.
+            builtin_only = template.max_requests is not None and begun_in != RUNTIME_DSH
             if not choice.agent:
                 # A model the user set for the preset is used in the
                 # built-in runtime only, for now: dsh starts its processes
@@ -1703,7 +1748,7 @@ class TaskAgentManager(
             # opening brief can reserve a call against the new run.
             spec = await self._spec(
                 commission, kept, model, workdir=workdir, session_dir=session_path, gateway=gateway_spec,
-                template=template,
+                template=template, head_of=now_as,
             )
             session.changes_files = not _CHANGING_TOOLS <= set(spec.disabled_tools)
             if session.changes_files and kept.kind == "child" and kept.parent_id and tree is None:
@@ -1808,7 +1853,16 @@ class TaskAgentManager(
                 # built-in runtime finds nothing "above", and is told what
                 # came of the other instead.
                 said = anew if not here else back_at_it if opened else onward
-                parts = [*([said] if opens else []), *carried, *([prompt] if prompt is not None else [])]
+                parts = [
+                    *preset_notes(
+                        told_as, now_as, template, in_dsh=runtime_name == RUNTIME_DSH,
+                        # Whether what was said under the other preset is in the conversation
+                        # that takes this message (not removed since, nor in the other runtime).
+                        above=here and not session.cleared_before, opens=opens,
+                    ),
+                    *([said] if opens else []), *carried,
+                    *([prompt] if prompt is not None else []),
+                ]
                 # Keep answer envelopes intact until the runtime is ready to receive them.
                 return [*parts, *notes], opens
 
@@ -1934,6 +1988,11 @@ class TaskAgentManager(
                         continue
                     said_first = opens and not opened and commission.source not in ("session", "ask")
                     nobody = not said_first and all(isinstance(piece, (_Handed, _Unsaid, _Found)) for piece in session.carried)
+                    if told_as:
+                        # On record as started under this preset once the session took the
+                        # message, which tells it of the change (``_note_opened``).
+                        session.started_as, session.started_as_with = now_as, session.sent + 1
+                    # (Not sent, the start fails and nothing of it is taken: it is told with the next.)
                     await self._send_text(runtime, session, "prompt", render(text), opening=opens, wakes=riding, human=not nobody)
                 break
             session.ready = True
@@ -2002,7 +2061,7 @@ class TaskAgentManager(
 
     async def _spec(
         self, commission: Commission, kept: Session, model: Any, *, workdir: str, session_dir: str, gateway: Any,
-        idle_compaction: bool = False, template: Any = None,
+        idle_compaction: bool = False, template: Any = None, head_of: str = "",
     ) -> Any:
         """Return what a runtime is given to open a session with, for the commission that is worked on in it.
 
@@ -2010,7 +2069,10 @@ class TaskAgentManager(
         looked up here when it is not given): the tools it withholds are
         withheld besides those below, its sessions make no more requests
         in one run than it allows, and what it says of the role is in the
-        instructions.
+        instructions. ``head_of`` is the preset this start opens it as:
+        where the system prompt and the tool definitions the runtime kept
+        were put together for another, it puts them together anew. Left
+        out for a copy, which is opened with what it was copied with.
 
         ``kept`` is the session as the ledger has it. One that was made
         from another by copying what was said in it is opened without the
@@ -2061,6 +2123,7 @@ class TaskAgentManager(
                 commission, with_gateway=gateway is not None, template=template, roster=roster
             ),
             idle_compaction=idle_compaction,
+            head_of="" if kept.kind == "fork" else head_of,
             top_level=commission.parent_id is None,
             disabled_tools=sorted(withheld),
             image_retention=image_retention,
@@ -2405,6 +2468,7 @@ class TaskAgentManager(
         self._forks_said.pop(commission_id, None)
         self._handed_said.pop(commission_id, None)
         self._drop_search_ruling(commission_id)
+        self._open_rulings.pop(commission_id, None)
         if self._gateway is not None:
             self._gateway.revoke(commission_id)
         session_id = session.session_id if session is not None else self._session_of.get(commission_id)
@@ -2789,6 +2853,10 @@ class TaskAgentManager(
             if session.session_id in self._copy_news and session.carries_on_for is None:
                 # News from copies held for it while it waited, or rested.
                 self._news_of_copies(session.session_id)
+            # Its model answered, or was asked: its conversation went where this start sent it.
+            # (Not by its opening being in its transcript, which a run that fails before its
+            # first request leaves there too: ``_note_opened``.)
+            await self._note_ran_on(session)
         if kind == "usage":
             # Counted whether or not it can be noted among the commission's
             # events (a request with no text in front of it is the first
@@ -2872,6 +2940,7 @@ class TaskAgentManager(
         that is taken up again is then not told a second time what it is;
         one whose start failed before that is.
         """
+        await self._note_started_as(session)
         if not session.opening_sent:
             return
         session.opening_sent = False
@@ -2902,6 +2971,50 @@ class TaskAgentManager(
             except Exception:  # noqa: BLE001 - told again with the next commission, which does little harm
                 logger.warning("noting that a leader was told what came of a commission it handed over failed", exc_info=True)
         self._handed_said.pop(session.commission_id, None)
+
+    async def _note_started_as(self, session: _Session) -> None:
+        """Put on record which preset a session's task agent was started under, where a start has that to say.
+
+        The preset the start opened it as (``Session.preset_told``):
+        what the next start tells a change by. Where the first message
+        of the start tells the task agent of a change, this is called
+        once the session is seen to have taken that message
+        (``_note_opened``), so that a message that never reached it is
+        said again. Not written, it is noted with the next event of the
+        session; never, the task agent is told of the change once more.
+        """
+        preset = session.started_as
+        if preset is None:
+            return
+        session.started_as = None
+        try:
+            await self._ledger.preset_was_told(session.session_id, preset)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - noted with the next event, or told once more with the next start
+            session.started_as = preset
+            logger.warning("noting the preset a session was started under failed", exc_info=True)
+
+    async def _note_ran_on(self, session: _Session) -> None:
+        """Put on record that a session's task agent ran on the model this start sent it to, where a start has that to say.
+
+        Called once an event shows a run of the start at work
+        (``_Session.started_on``, ``_shows_run_at_work``): its model
+        was asked, so its conversation went there. Not written, it is noted with the next such
+        event; never, the session is not summed up while idle until a
+        start says so (``_idle_model``).
+        """
+        ident = session.started_on
+        if ident is None:
+            return
+        session.started_on = None
+        try:
+            await self._ledger.model_ran(session.session_id, ident)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - noted with the next event; until then it is not summed up while idle
+            session.started_on = ident
+            logger.warning("noting the model a session was started on failed", exc_info=True)
 
     def _summary(self, text: str) -> str:
         from config.nekopower_settings import TASK_AGENT_RESULT_SUMMARY_MAX_TOKENS

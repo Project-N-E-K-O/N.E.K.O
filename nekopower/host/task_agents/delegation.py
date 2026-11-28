@@ -24,7 +24,7 @@ import asyncio
 from typing import Any
 
 from nekopower.host.ledger import Commission, Session
-from nekopower.host.permissions import OPEN_SESSION
+from nekopower.host.permissions import OPEN_SESSION, PermissionDecision
 from .types import (
     logger,
     LEAD_NAME,
@@ -61,7 +61,28 @@ class DelegationMixin:
             return lead
         return next((member for member in members if member.name == name), None)
 
-    async def _cb_hand_over(self, session_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    async def _may_open(
+        self, commission_id: str, detail: dict[str, Any], *, ahead: bool = False
+    ) -> PermissionDecision:
+        """Return whether another task agent that changes files may be opened for a commission (``OPEN_SESSION``).
+
+        ``ahead`` of the call that opens it (``_rule_on_host_tool``), what
+        is decided is kept for that call, which is answered by it where it
+        asks about the same and does not ask again; kept as long as what
+        the gateway rules on ahead of a call is, and for one call.
+        """
+        from config.nekopower_settings import GATEWAY_CLEARED_CALL_SECONDS
+
+        ruled = self._open_rulings.pop(commission_id, None)
+        if not ahead and ruled is not None and ruled[0] == detail and asyncio.get_running_loop().time() < ruled[2]:
+            return ruled[1]
+        decision = await self._permissions.check(commission_id, OPEN_SESSION, detail=detail)
+        if ahead and commission_id in self._sessions:
+            until = asyncio.get_running_loop().time() + GATEWAY_CLEARED_CALL_SECONDS
+            self._open_rulings[commission_id] = (detail, decision, until)
+        return decision
+
+    async def _cb_hand_over(self, session_id: str, payload: dict[str, Any], *, ahead: bool = False) -> dict[str, Any]:
         """Hand the commission a leader is at over to a member of its project (the ``hand_over`` tool).
 
         To a member that is named, or to a new one of the preset named (a
@@ -71,6 +92,9 @@ class DelegationMixin:
         here: the session is marked, and once its run is over it is
         closed and the commission goes on in the other one
         (``_handed_over``), which reports to her as any task agent does.
+
+        ``ahead`` of the call (``_rule_on_host_tool``) the user is asked
+        what the call would ask, and nothing is made or marked.
         """
         from config.prompts import prompts_nekopower_brain as texts
 
@@ -80,11 +104,13 @@ class DelegationMixin:
             raise RuntimeError(texts.HAND_OVER_TWICE)
         self._handing_claims.add(commission_id)
         try:
-            return await self._hand_over(session_id, commission_id, payload)
+            return await self._hand_over(session_id, commission_id, payload, ahead=ahead)
         finally:
             self._handing_claims.discard(commission_id)
 
-    async def _hand_over(self, session_id: str, commission_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    async def _hand_over(
+        self, session_id: str, commission_id: str, payload: dict[str, Any], *, ahead: bool = False
+    ) -> dict[str, Any]:
         """Do what ``_cb_hand_over`` says, for the one call that is let in for a commission at a time."""
         from config.nekopower_settings import HAND_OVER_BRIEF_MAX_TOKENS
         from config.prompts import prompts_nekopower_brain as texts
@@ -163,7 +189,7 @@ class DelegationMixin:
                 if seat == "tree" and await self.tree_possible(leader.project, leader.workdir):
                     # Said in what is asked: it changes files in a copy of its own, merged back when it is done.
                     detail["tree"] = True
-                decision = await self._permissions.check(commission_id, OPEN_SESSION, detail=detail)
+                decision = await self._may_open(commission_id, detail, ahead=ahead)
                 if not decision.allow:
                     raise RuntimeError(texts.HAND_OVER_NOT_ALLOWED.format(reason=decision.reason or "declined"))
                 # The user may have taken a while: looked at once more.
@@ -173,6 +199,8 @@ class DelegationMixin:
                     raise RuntimeError("the commission is not at work any more; nothing is handed over")
                 if live.handing_over is not None:
                     raise RuntimeError(texts.HAND_OVER_TWICE)
+            if ahead:
+                return {}
             target = await self._ledger.create_session(
                 name=await self._ledger.member_name(
                     leader.lanlan_name, leader.project, f"{leader.project}/{model_name(preset)}"
@@ -190,6 +218,9 @@ class DelegationMixin:
             changes = bool(template.changes_files)
             # The model it is sent to, by its preset: the leader's unless the user set another.
             await self.settle_model(target)
+        if ahead:
+            # To a member that is there: nothing is asked.
+            return {}
         if self._sessions.get(commission_id) is not live or live.closing or live.handing_over is not None:
             # It went while the member was looked for or made (stopped, say): nothing is marked,
             # and nothing awaited between this look and the mark. (A member made for it stays, idle.)

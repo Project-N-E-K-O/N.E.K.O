@@ -52,6 +52,16 @@ class IdleCompactMixin:
         is summed up for it: it is looked up when the time comes.)
         """
         kept = await self._ledger.get_session(session_id)
+        if kept is not None and kept.preset_told and kept.preset_told != kept.preset:
+            # Given another preset since its task agent last started, and with it the model it
+            # is sent to from its next start (``change_duty``): what is on record is
+            # where it goes next, not where it last ran. Nothing of it goes there until the
+            # user goes on with it, as below.
+            return None
+        if kept is not None and kept.model_was and kept.model_was != kept.model_ident:
+            # The same where the preset it has is the one it was told of: given another and
+            # then this one again, with what this one is sent to set to another model meanwhile.
+            return None
         choice = await self.session_model(kept, record=False) if kept is not None else await self._new_session_model()
         config = choice.config
         if kept is not None and kept.model_ident and choice.ident != kept.model_ident:
@@ -435,6 +445,10 @@ class IdleCompactMixin:
             if not await self._ledger.begin_compacting(session_id):
                 return False
             model = await self._model_of(config)
+            # What the session may do, as when it is started for a commission: its token for
+            # the gateway calls nothing where its preset is without the tool that calls, and
+            # is not left to the list of its tools to see to.
+            template = await self._template_of(kept)
             gateway_spec = None
             if self._gateway is not None:
                 # Make gateway tools available for the summary request. The next
@@ -442,11 +456,14 @@ class IdleCompactMixin:
                 url = await self._gateway.start()
                 gateway_spec = GatewaySpec(
                     url=url,
-                    token=self._gateway.issue(grant, candidate_plugin_ids=(), supports_images=model.supports_images),
+                    token=self._gateway.issue(
+                        grant, candidate_plugin_ids=(), supports_images=model.supports_images,
+                        reads_only=kept.kind == "fork" or template.calls_nothing,
+                    ),
                 )
             spec = await self._spec(
                 commission, kept, model, workdir=workdir, session_dir=session_path, gateway=gateway_spec,
-                idle_compaction=True,
+                idle_compaction=True, template=template,
             )
             runtime = self._runtimes.builtin()
             if self._pump is None:

@@ -272,6 +272,18 @@ class _Session:
     # The message that opens the commission was sent to the session, and no
     # event has yet shown that the session took it.
     opening_sent: bool = False
+    # The preset this start opened the session as, where the first message
+    # tells the task agent that its preset was changed and no event has yet
+    # shown that the session took it: on record as what it was started
+    # under once one does (``_note_started_as``). None otherwise.
+    started_as: str | None = None
+    # Which of the texts sent to the session tells it so, by its number.
+    started_as_with: int = 0
+    # The model this start sends the session to (its ``model_ident``), where its row kept
+    # that its task agent last ran on another (``Session.model_was``) and no event has yet
+    # shown a run of this start at work: on record as where it ran once one does
+    # (``_note_ran_on``). None otherwise.
+    started_on: str | None = None
     # Output permissions of commands still represented in this session’s job registry.
     job_sources: dict[str, tuple[Callable[[], bool], Callable[[], Awaitable[bool]]]] = field(default_factory=dict)
     # Text increments and tool output waiting to be written as one event row.
@@ -574,6 +586,11 @@ def _withdraw(session: _Session, serial: Any) -> list[int]:
         for key in [key for key, value in session.numbered.items() if value == number]:
             del session.numbered[key]
     wakes = session.handed.pop(number, None) or []
+    if session.started_as is not None and number == session.started_as_with:
+        # The text that tells it of a change of its preset is the one it did not get: it is
+        # not taken to know of it by whatever is taken under that number next, and is told
+        # with its next start.
+        session.started_as = None
     told = session.copies_told.pop(number, None)
     if told:
         session.copies_dropped.extend(told)
@@ -654,6 +671,75 @@ class _Found(str):
     It is no answer from another session (``_Unsaid``): it goes the way any
     text of the commission goes.
     """
+
+
+def preset_change_note(was: str, now: str, template: Any, *, in_dsh: bool) -> str:
+    """Return what a session is told of a change of its preset, with the first message of the start after it.
+
+    In the built-in runtime its system prompt and its tools are the new
+    preset's by then, and it is told so. In dsh the system prompt is the
+    process's, and what a session is told of its role came with its
+    first message: it is told the new role here, and, where its preset
+    is without tools that write files or run commands, that it does not
+    use the ones dsh still offers it (the host cannot keep those from a
+    session there, and it stays in the runtime it was begun in).
+    """
+    from config.prompts import prompts_nekopower_presets as presets
+    from nekopower.host.templates import model_name
+
+    names = {"was": model_name(was), "now": model_name(now)}
+    if not in_dsh:
+        return presets.PRESET_CHANGED.format(**names)
+    said = presets.PRESET_CHANGED_IN_DSH.format(role=template.body or presets.PRESET_CHANGED_NO_ROLE, **names)
+    kept_off = preset_keeps_off_in_dsh(now, template)
+    return f"{said} {kept_off}" if kept_off else said
+
+
+def preset_notes(was: str, now: str, template: Any, *, in_dsh: bool, above: bool, opens: bool) -> list[str]:
+    """Return what the first message of a start says of the session's preset, before anything else; empty for nothing.
+
+    A change of it (``was``: what its task agent last knew itself as,
+    empty when that is what it has), where what was said under the
+    other preset is ``above`` in the conversation that takes the
+    message: a session that holds none of it begins as what it is.
+    And in dsh, with every commission that is opened there (``opens``),
+    that the tools dsh has of its own which the preset is without are
+    not used: nothing but being told holds a session to that there, a
+    template may have come to withhold them since the session's first
+    message, and dsh sums its conversations up by itself. (Said once
+    where the change is told, which says it as well.)
+    """
+    if was and above:
+        return [preset_change_note(was, now, template, in_dsh=in_dsh)]
+    if in_dsh and opens:
+        kept_off = preset_keeps_off_in_dsh(now, template)
+        return [kept_off] if kept_off else []
+    return []
+
+
+def preset_keeps_off_in_dsh(preset: str, template: Any) -> str:
+    """Return what a session in dsh is told of the tools dsh has of its own that its preset is without; empty for none.
+
+    Tools that write or edit files and tools that run commands: the
+    host cannot keep them from a session in dsh, so a session of a
+    preset that is without them is told not to use them, after what it
+    is told of its role (which says it has none).
+    """
+    from config.prompts import prompts_nekopower_presets as presets
+    from nekopower.host.templates import model_name
+
+    withheld = template.withheld()
+    kept_off = [
+        words
+        for tools, words in (
+            (("write", "edit"), presets.PRESET_IN_DSH_FILES),
+            (("bash", "pwsh"), presets.PRESET_IN_DSH_COMMANDS),
+        )
+        if set(tools) <= withheld
+    ]
+    if not kept_off:
+        return ""
+    return presets.PRESET_IN_DSH_KEEPS_OFF.format(what=" or ".join(kept_off), now=model_name(preset))
 
 
 def _shows_work_taken(event: dict[str, Any], sent: int) -> bool:
