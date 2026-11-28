@@ -1123,43 +1123,7 @@ export default {
     cancelSuccess: '已傳送取消請求'
   },
   pythonDependencies: {
-    title: '安裝執行依賴',
-    introduction: '「{name}」需要先安裝以下 Python 依賴才能啟動。它們會從套件下載來源下載到外掛目錄。',
-    columns: {
-      name: '套件名稱',
-      version: '版本',
-      size: '大小'
-    },
-    total: '共 {count} 個，約 {size}',
-    totalPartial: '共 {count} 個，已知部分約 {size}，部分套件大小未知',
-    sizeUnknown: '未知',
-    installAndStart: '安裝並啟動',
-    failedTitle: '依賴沒有安裝成功，外掛暫時無法啟動。',
-    details: '技術細節',
-    phases: {
-      planning: '正在讀取依賴清單…',
-      tools: '正在準備安裝工具（首次使用需要下載）…',
-      installing: '正在下載並安裝依賴…',
-      finishing: '正在完成安裝…'
-    },
-    backgroundHint: '關閉此視窗不會中斷安裝，安裝完成後再次點擊「啟動」即可。',
-    startBlocked: '此外掛的執行依賴還沒有安裝，請單獨點擊它的「啟動」按鈕來安裝。',
-    errors: {
-      tools_failed: '安裝工具準備失敗，請檢查網路後重試。',
-      lock_invalid: '外掛的依賴鎖定檔無法讀取，請聯絡外掛作者。',
-      network: '連不上套件下載來源，請檢查網路後重試。',
-      not_on_index: '部分依賴在目前的下載來源中找不到，請聯絡外掛作者。',
-      no_wheel: '部分依賴沒有適合本機的安裝套件，請聯絡外掛作者。',
-      hash_mismatch: '下載的檔案沒有通過校驗，可能是網路或下載來源異常，請稍後重試。',
-      unpinned_source: '外掛的依賴包含本機或 Git 來源，無法自動安裝，請聯絡外掛作者。',
-      lock_changed: '外掛在安裝期間被更新了，請重試。',
-      lock_mismatch: '外掛的依賴鎖定檔和它宣告的依賴對不上，請聯絡外掛作者。',
-      install_failed: '依賴安裝失敗，請重試。',
-      not_applicable: '此外掛不需要在這裡安裝依賴。',
-      canceled: '安裝已取消。',
-      busy: '外掛正在進行其他操作，請稍後重試。',
-      internal_error: '安裝時發生意外錯誤，請重試。'
-    }
+    startBlocked: '此外掛的執行依賴還沒有安裝，請單獨點擊它的「啟動」按鈕來安裝。'
   },
   status: {
     sourceMissing: '原始碼目錄無法使用',

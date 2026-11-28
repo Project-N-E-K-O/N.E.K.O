@@ -60,7 +60,7 @@
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { useI18n } from 'vue-i18n'
+import { usePythonDependenciesI18n } from '@/composables/usePythonDependenciesI18n'
 import { Loading } from '@element-plus/icons-vue'
 import {
   getPythonDependencies,
@@ -73,7 +73,7 @@ const props = defineProps<{ request: DependencyInstallRequest }>()
 // The deferred wrapper's close listener must not fall through to ElDialog; close() owns it.
 defineEmits(['close'])
 const request = computed(() => props.request)
-const { t } = useI18n()
+const { t } = usePythonDependenciesI18n()
 const store = usePluginDependencyInstall()
 const status = ref<PythonDependencyStatus | null>(null)
 const submitting = ref(false)

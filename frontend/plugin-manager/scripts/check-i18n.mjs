@@ -28,6 +28,9 @@ const jiti = createJiti(import.meta.url, { interopDefault: true })
 const { configEditorMessages } = await jiti.import(
   resolve(__dirname, '../src/i18n/config-editor.ts')
 )
+const { pythonDependencyMessages } = await jiti.import(
+  resolve(__dirname, '../src/i18n/python-dependencies.ts')
+)
 
 /**
  * Compute the placeholder set for a string value.
@@ -77,6 +80,7 @@ async function loadLocale(name) {
     return {
       ...messages,
       plugins: { ...messages.plugins, configUi: configEditorMessages[name] },
+      pythonDependencies: { ...messages.pythonDependencies, ...pythonDependencyMessages[name] },
     }
   } catch (err) {
     throw new Error(`failed to import locale '${name}': ${err.message}`)

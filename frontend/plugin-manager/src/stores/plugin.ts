@@ -3,7 +3,7 @@ import { usePluginConsentState } from '@/stores/pluginConsentState'
  * 插件状态管理
  */
 import { defineStore } from 'pinia'
-import { ref, computed } from 'vue'
+import { ref, computed, reactive } from 'vue'
 import type { AxiosError } from 'axios'
 import { readErrorCode } from '@/utils/request'
 import {
@@ -83,7 +83,8 @@ export const usePluginStore = defineStore('plugin', () => {
   // was requested is over (the dependencies got installed and it started),
   // even if it arrives later or a metadata refresh failed; one requested
   // after it still shows.
-  const lastRunningTicket = new Map<string, number>()
+  // Reactive: a late running that only records its ticket must still recompute the list.
+  const lastRunningTicket = reactive(new Map<string, number>())
   function noteRuntimeStatus(pluginId: string, data: PluginStatusData | undefined, statusTicket: number) {
     if (runtimeStatus(data) === 'running') {
       lastRunningTicket.set(pluginId, Math.max(statusTicket, lastRunningTicket.get(pluginId) ?? 0))

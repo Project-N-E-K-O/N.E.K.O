@@ -11,8 +11,8 @@ const api = vi.hoisted(() => ({
   requestPythonDependencyInstall: vi.fn(),
 }))
 vi.mock('@/api/plugins', () => api)
-vi.mock('vue-i18n', () => ({
-  useI18n: () => ({ t: (key: string, values?: Record<string, unknown>) => (values ? `${key} ${JSON.stringify(values)}` : key) }),
+vi.mock('@/composables/usePythonDependenciesI18n', () => ({
+  usePythonDependenciesI18n: () => ({ t: (key: string, values?: Record<string, unknown>) => (values ? `${key} ${JSON.stringify(values)}` : key) }),
 }))
 vi.mock('@element-plus/icons-vue', () => ({ Loading: defineComponent({ setup: () => () => h('i') }) }))
 

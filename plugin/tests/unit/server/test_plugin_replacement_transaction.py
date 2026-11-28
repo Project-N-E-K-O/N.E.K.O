@@ -1394,3 +1394,47 @@ async def test_running_plugin_upgraded_with_the_same_lock_restarts(
 
     assert started == ["demo"]
     assert (target / "vendor" / "dependency.txt").is_file()
+
+
+@pytest.mark.asyncio
+async def test_carried_vendor_satisfies_the_restart_gate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With declared dependencies, the restart is allowed only because the vendor/ was carried over first."""
+    from plugin.neko_plugin_cli.core import uv_lock_install as lock_install
+
+    started: list[str] = []
+
+    async def running(_plugin_id: str) -> bool:
+        return True
+
+    async def start(plugin_id: str) -> None:
+        started.append(plugin_id)
+
+    monkeypatch.setattr(replace_transaction, "_plugin_is_running", running)
+    monkeypatch.setattr(replace_transaction, "_start_plugin", start)
+    pyproject = '[project]\nname = "demo"\nversion = "1"\ndependencies = ["demo-lib==1"]\n'
+    target = tmp_path / "plugins" / "demo"
+    dist = target / "vendor" / "demo_lib-1.dist-info"
+    dist.mkdir(parents=True)
+    (dist / "METADATA").write_text("Metadata-Version: 2.1\nName: demo-lib\nVersion: 1\n", encoding="utf-8")
+    (target / "plugin.toml").write_text(OLD_PLUGIN_MANIFEST, encoding="utf-8")
+    (target / "pyproject.toml").write_text(pyproject, encoding="utf-8")
+    (target / "uv.lock").write_text(_LOCK_TEXT, encoding="utf-8")
+    lock_install.write_lock_marker(target / "vendor", lock_install.lock_sha256(target))
+
+    async def install_new() -> dict[str, object]:
+        target.mkdir()
+        (target / "plugin.toml").write_text(NEW_PLUGIN_MANIFEST, encoding="utf-8")
+        (target / "pyproject.toml").write_text(pyproject, encoding="utf-8")
+        (target / "uv.lock").write_text(_LOCK_TEXT, encoding="utf-8")
+        return {"installed": True}
+
+    result = await replace_plugin(
+        layout=resolve_plugin_layout("demo", target, storage_root=tmp_path / "state"),
+        install_new=install_new,
+        validate_channel_specific=_async_none,
+    )
+
+    assert result.restarted is True and started == ["demo"]
+    assert (target / "vendor" / "demo_lib-1.dist-info" / "METADATA").is_file()

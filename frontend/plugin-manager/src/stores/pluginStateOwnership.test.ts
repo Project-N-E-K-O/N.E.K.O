@@ -365,10 +365,13 @@ describe('plugin state ownership and registry cache invalidation', () => {
     const running = store.fetchPluginStatus('demo')  // requested first...
     vi.mocked(getPluginStatus).mockResolvedValueOnce(runtime('stopped'))
     await store.fetchPluginStatus('demo')  // ...the later stop answers first
+    // The list is read (and its computed cached) before the late running lands.
+    expect(store.pluginSummariesWithStatus.find((item) => item.id === 'demo')?.status).toBe('dependencies_pending')
     resolveRunning(runtime('running'))
     await running
 
     expectVisibleStatus(store, 'stopped')
+    expect(store.pluginSummariesWithStatus.find((item) => item.id === 'demo')?.status).toBe('stopped')
   })
 
   it('retains readable runtime state after a failed refresh', async () => {
