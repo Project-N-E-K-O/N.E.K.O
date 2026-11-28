@@ -1375,6 +1375,8 @@ async def save_model_parameters(model_name: str, request: Request):
             return JSONResponse(status_code=400, content={"success": False, "error": "参数格式错误"})
         
         # Save parameters.json; an existing entry whose real path leaves the model folder is refused.
+        if model_name == 'mao_pro' and url_prefix == '/static':
+            parameters = {key: value for key, value in parameters.items() if not key.startswith('ParamOutfit')}
         parameters_file = os.path.join(model_dir, 'parameters.json')
         if os.path.lexists(parameters_file) and not _is_inside_model_dir(os.path.realpath(model_dir), parameters_file):
             return JSONResponse(status_code=403, content={"success": False, "error": "参数文件不在模型目录内"})

@@ -1,4 +1,18 @@
 {
+    "wardrobe": {
+        "title": "옷장",
+        "hat": "모자",
+        "color": "후드티 색상",
+        "print": "무늬",
+        "plain": "무지",
+        "dots": "물방울",
+        "stars": "별",
+        "save": "저장",
+        "clear": "착장 초기화",
+        "saved": "저장됨",
+        "loadError": "착장을 불러올 수 없습니다",
+        "saveError": "착장을 저장할 수 없습니다"
+    },
     "chatAvatar": {
         "custom": {
             "upload": "이미지 업로드",

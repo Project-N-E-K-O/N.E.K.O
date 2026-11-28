@@ -1,4 +1,18 @@
 {
+    "wardrobe": {
+        "title": "クローゼット",
+        "hat": "帽子",
+        "color": "パーカーの色",
+        "print": "柄",
+        "plain": "無地",
+        "dots": "水玉",
+        "stars": "星",
+        "save": "保存",
+        "clear": "着替えを解除",
+        "saved": "保存しました",
+        "loadError": "着替えを読み込めませんでした",
+        "saveError": "着替えを保存できませんでした"
+    },
     "chatAvatar": {
         "custom": {
             "upload": "画像をアップロード",

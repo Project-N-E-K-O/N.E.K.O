@@ -1,0 +1,16 @@
+#live2d-wardrobe {
+    position: fixed;
+    z-index: 1000;
+    inset-inline-start: 1rem;
+    bottom: 1rem;
+    padding: .5rem .8rem;
+    border-radius: .7rem;
+    background: #faf9f7;
+    color: #272934;
+    box-shadow: 0 2px 8px #0002;
+    pointer-events: auto;
+}
+#live2d-wardrobe summary { cursor: pointer; }
+#live2d-wardrobe fieldset { border: 0; margin: .5rem 0 0; padding: 0; }
+#live2d-wardrobe label { display: flex; align-items: center; justify-content: space-between; gap: .75rem; margin-bottom: .5rem; }
+#live2d-wardrobe output { display: block; }

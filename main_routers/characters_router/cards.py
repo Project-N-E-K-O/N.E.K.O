@@ -80,6 +80,7 @@ from utils.frontend_utils import (
     is_valid_live2d_model_name as _is_valid_live2d_model_name,
 )
 from utils.cloudsave_runtime import MaintenanceModeError
+from utils.config_manager.reserved_schema import portable_live2d_outfit
 from utils.character_memory import (
     asave_characters_with_recent_activation,
     character_config_mutation_lock,
@@ -424,6 +425,9 @@ async def _save_character_card_serialized(data: dict):
                 _sync_catgirl_field_order(catgirl_data)
 
         # Preserve system identity when updating same-named cards; new cards cannot import packaged identities.
+        outfit = portable_live2d_outfit(previous_catgirl_data if not is_new_character else chara_data)
+        if outfit is not None:
+            set_reserved(catgirl_data, 'avatar', 'live2d', 'outfit', outfit)
         previous_character_id = get_reserved(
             previous_catgirl_data,
             "character_id",
@@ -1227,6 +1231,12 @@ async def import_character_card(
                 imported_card_character_data,
                 pngtuber_rel_map,
             )
+
+            # Keep portable choices even if this installation lacks the catalog.
+            # Settings-only cards have no avatar payload. Never import atlas paths.
+            outfit = portable_live2d_outfit(imported_card_character_data)
+            if outfit is not None:
+                set_reserved(character_data, 'avatar', 'live2d', 'outfit', outfit)
 
             # Add the character to characters.json
             if '猫娘' not in characters:

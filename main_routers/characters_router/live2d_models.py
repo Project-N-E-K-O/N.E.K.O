@@ -26,6 +26,8 @@ import asyncio
 import re
 import os
 import math
+from typing import Literal
+from pydantic import BaseModel, ConfigDict, Field, StrictBool
 from urllib.parse import unquote, urlparse
 from fastapi import Request
 from fastapi.responses import JSONResponse
@@ -1120,6 +1122,62 @@ async def update_catgirl_l2d(name: str, request: Request):
             'success': False,
             'error': str(e)
         })
+
+
+class Live2DOutfit(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    version: Literal[1]
+    wardrobe: Literal["mao-hoodie-v1"]
+    hat: StrictBool
+    color: str = Field(pattern=r"^#[0-9a-fA-F]{6}$")
+    print: Literal["plain", "dots", "stars"]
+
+
+class Live2DOutfitUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    model_ref: str
+    outfit: Live2DOutfit | None
+
+
+def _outfit_model_ref(character):
+    return get_reserved(character, 'avatar', 'live2d', 'model_path', default='', legacy_keys=('live2d',))
+
+
+def _has_mao_wardrobe(character):
+    source = get_reserved(character, 'avatar', 'asset_source', default='')
+    return (_get_persisted_avatar_model_type(character) == 'live2d'
+            and source in ('', 'builtin')
+            and _outfit_model_ref(character) in ('mao_pro', 'mao_pro/mao_pro.model3.json',
+                                                 '/static/mao_pro/mao_pro.model3.json'))
+
+
+@router.get('/catgirl/{name}/live2d_outfit')
+async def get_live2d_outfit(name: str):
+    characters = await get_config_manager().aload_characters()
+    character = characters.get('猫娘', {}).get(name)
+    if character is None:
+        return JSONResponse({'error': 'character_not_found'}, status_code=404)
+    return {
+        'wardrobe': 'mao-hoodie-v1' if _has_mao_wardrobe(character) else None,
+        'model_ref': _outfit_model_ref(character),
+        'outfit': get_reserved(character, 'avatar', 'live2d', 'outfit'),
+    }
+
+
+@router.put('/catgirl/{name}/live2d_outfit')
+async def save_live2d_outfit(name: str, data: Live2DOutfitUpdate):
+    manager = get_config_manager()
+    async with character_config_mutation_lock:
+        characters = await manager.aload_characters()
+        character = characters.get('猫娘', {}).get(name)
+        if character is None:
+            return JSONResponse({'error': 'character_not_found'}, status_code=404)
+        if (not _has_mao_wardrobe(character)
+                or _outfit_model_ref(character) != data.model_ref):
+            return JSONResponse({'error': 'model_changed'}, status_code=409)
+        set_reserved(character, 'avatar', 'live2d', 'outfit', data.outfit.model_dump() if data.outfit else None)
+        await await_retirement(manager.asave_characters(characters))
+    return {'success': True}
 
 
 @router.patch('/catgirl/{name}/touch_set')

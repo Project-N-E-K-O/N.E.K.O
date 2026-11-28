@@ -6,6 +6,173 @@
 // 仅供旧 setMouth(value) 调用方兼容；显式语音 owner 在句中静默时仍控制开合。
 const LIPSYNC_OVERRIDE_THRESHOLD = 0.001;
 
+const live2dOutfits = new WeakMap();
+const wardrobeParameterCores = new WeakSet();
+
+function isLive2DOutfitParameter(core, id) {
+    return wardrobeParameterCores.has(core) && String(id).startsWith('ParamOutfit');
+}
+
+function getLive2DOutfit(model) {
+    let outfit = live2dOutfits.get(model);
+    if (!outfit) {
+        outfit = { parameters: [], parts: [], restoreColors: [], atlases: new Map() };
+        live2dOutfits.set(model, outfit);
+        model.once('destroy', releaseLive2DOutfit);
+    }
+    return outfit;
+}
+
+function setLive2DOutfitAtlas(model, outfit, index, texture) {
+    const previous = outfit.atlases.get(index);
+    const original = previous?.original || model.textures[index];
+    if (texture) {
+        outfit.atlases.set(index, { original, texture });
+    } else {
+        outfit.atlases.delete(index);
+    }
+    model.textures[index] = texture || original;
+    // Only replacement textures are owned by the wardrobe.
+    previous?.texture.destroy(true);
+}
+
+function releaseLive2DOutfit() {
+    const outfit = live2dOutfits.get(this);
+    if (!outfit) return;
+    live2dOutfits.delete(this);
+    this.off('destroy', releaseLive2DOutfit);
+    for (const restore of outfit.restoreColors.reverse()) restore();
+    for (const index of outfit.atlases.keys()) {
+        setLive2DOutfitAtlas(this, outfit, index, null);
+    }
+}
+
+function resolveLive2DOutfitEntry(id, index, count) {
+    // Cubism may allocate virtual indices for unknown IDs.
+    if (!Number.isInteger(index) || index < 0 || index >= count) {
+        throw new RangeError(`Unknown wardrobe ID: ${id}`);
+    }
+    return index;
+}
+
+// Replace the complete set of overrides for this model instance.
+Live2DManager.prototype.setOutfitOverrides = function(model, { parameters = {}, partOpacity = {}, colors = [] } = {}) {
+    const core = model?.internalModel?.coreModel;
+    if (!model || model !== this.currentModel || model.destroyed
+        || typeof core?.getDrawableParentPartIndex !== 'function') {
+        return false;
+    }
+    const resolvePart = id => resolveLive2DOutfitEntry(id, core.getPartIndex(id), core.getPartCount());
+    const isUnitValue = value => Number.isFinite(value) && value >= 0 && value <= 1;
+    const parameterEntries = Object.entries(parameters).map(([id, value]) => {
+        if (!id.startsWith('ParamOutfit') || !Number.isFinite(value)
+            || window.LIPSYNC_PARAMS?.includes(id) || this._isEyeBlinkParamId(id)) {
+            throw new RangeError(`Invalid wardrobe parameter: ${id}`);
+        }
+        const index = resolveLive2DOutfitEntry(id, core.getParameterIndex(id), core.getParameterCount());
+        if (core.getParameterDefaultValueByIndex(index) !== 0) throw new RangeError(`Expected an unselected default: ${id}`);
+        return { index, value };
+    });
+    const partEntries = Object.entries(partOpacity).map(([id, value]) => {
+        if (!isUnitValue(value)) throw new TypeError(`Invalid part opacity: ${id}`);
+        return { index: resolvePart(id), value };
+    });
+    const colorEntries = colors.map(({ partId, drawableId, mode = 'multiply', rgba }) => {
+        if (Boolean(partId) === Boolean(drawableId) || !['multiply', 'screen'].includes(mode)
+            || !Array.isArray(rgba) || rgba.length !== 4 || Array.from(rgba).some(value => !isUnitValue(value))) {
+            throw new TypeError('Invalid wardrobe color');
+        }
+        const count = core.getDrawableCount();
+        let indices;
+        if (partId) {
+            const partIndex = resolvePart(partId);
+            indices = [];
+            for (let index = 0; index < count; index++) {
+                if (core.getDrawableParentPartIndex(index) === partIndex) indices.push(index);
+            }
+        } else {
+            indices = [resolveLive2DOutfitEntry(drawableId, core.getDrawableIndex(drawableId), count)];
+        }
+        return { channel: mode === 'multiply' ? 'Multiply' : 'Screen', indices, rgba };
+    });
+
+    const outfit = getLive2DOutfit(model);
+    if (parameterEntries.length) wardrobeParameterCores.add(core);
+    for (const restore of outfit.restoreColors.reverse()) restore();
+    outfit.restoreColors = [];
+    outfit.parameters = parameterEntries;
+    outfit.parts = partEntries;
+    for (const { channel, indices, rgba } of colorEntries) {
+        const flag = `OverwriteFlagForDrawable${channel}Colors`;
+        for (const index of indices) {
+            const wasOverwritten = core[`get${flag}`](index);
+            const { R, G, B, A } = core[`get${channel}Color`](index);
+            const setColor = core[`set${channel}ColorByRGBA`].bind(core, index);
+            const setFlag = core[`set${flag}`].bind(core, index);
+            outfit.restoreColors.push(() => {
+                setColor(R, G, B, A);
+                setFlag(wasOverwritten);
+            });
+            setColor(...rgba);
+            setFlag(true);
+        }
+    }
+    return true;
+};
+
+// Pass null to restore the original texture at this atlas index.
+Live2DManager.prototype.setOutfitTexture = function(model, index, canvas) {
+    if (!model || model !== this.currentModel || model.destroyed) return false;
+    const original = live2dOutfits.get(model)?.atlases.get(index)?.original || model.textures?.[index];
+    if (!Number.isInteger(index) || !original?.valid) {
+        throw new RangeError(`Invalid atlas index: ${index}`);
+    }
+    if (canvas !== null && (!(canvas instanceof HTMLCanvasElement)
+        || canvas.width !== original.baseTexture.realWidth || canvas.height !== original.baseTexture.realHeight)) {
+        throw new TypeError('Replacement atlas dimensions must match the source');
+    }
+    const outfit = getLive2DOutfit(model);
+    let texture = null;
+    if (canvas !== null) {
+        const { scaleMode, mipmap, wrapMode, alphaMode, resolution } = original.baseTexture;
+        texture = new PIXI.Texture(new PIXI.BaseTexture(canvas, { scaleMode, mipmap, wrapMode, alphaMode, resolution }));
+    }
+    setLive2DOutfitAtlas(model, outfit, index, texture);
+    return true;
+};
+
+Live2DManager.prototype.clearOutfit = function(model) {
+    if (!model || model !== this.currentModel || model.destroyed) return false;
+    const outfit = live2dOutfits.get(model);
+    if (outfit) {
+        releaseLive2DOutfit.call(model);
+    }
+    return true;
+};
+
+function updateLive2DOutfit(manager, model, core, update) {
+    const outfit = live2dOutfits.get(model);
+    if (!outfit || (!outfit.parameters.length && !outfit.parts.length)) {
+        manager._applyTemporaryPoseOverride?.(core);
+        update();
+        return;
+    }
+    for (const entry of outfit.parameters) {
+        core.setParameterValueByIndex(entry.index, entry.value);
+    }
+    for (const entry of outfit.parts) {
+        entry.beforeFrame = core.getPartOpacityByIndex(entry.index);
+        core.setPartOpacityByIndex(entry.index, entry.value);
+    }
+    try {
+        manager._applyTemporaryPoseOverride?.(core);
+        update();
+    } finally {
+        // Cubism reloads the parameters. Part opacity has no equivalent snapshot.
+        for (const { index, beforeFrame } of outfit.parts) core.setPartOpacityByIndex(index, beforeFrame);
+    }
+}
+
 // Bundled pixi-live2d-display MotionPriority enum. Keep this local instead of
 // reading window.PIXI.live2d.MotionPriority, which is not a stable runtime path.
 const LIVE2D_MOTION_PRIORITY = Object.freeze({
@@ -664,7 +831,11 @@ Live2DManager.prototype.removeModel = async function(options = {}) {
         stage && stage.removeAllListeners && stage.removeAllListeners();
     } catch (_) {}
     try {
-        activeModel && activeModel.removeAllListeners && activeModel.removeAllListeners();
+        if (activeModel) {
+            releaseLive2DOutfit.call(activeModel);
+            activeModel.emit?.('wardrobe-detached');
+            activeModel.removeAllListeners?.();
+        }
     } catch (_) {}
 
     try {
@@ -850,6 +1021,7 @@ Live2DManager.prototype._normalizeModelParameters = function(coreModel, paramete
                 ? String(resolved.resolvedId)
                 : `param_${resolved.idx}`);
         const priority = resolved.isIndexKey ? 0 : 1;
+        if (isLive2DOutfitParameter(coreModel, canonicalKey)) continue;
         const existing = normalizedByIndex.get(resolved.idx);
         if (!existing || priority >= existing.priority) {
             normalizedByIndex.set(resolved.idx, { key: canonicalKey, value, priority });
@@ -900,7 +1072,7 @@ Live2DManager.prototype._isRuntimeManagedAppearanceParam = function(paramId, res
         }
     } catch (_) {}
 
-    return ids.some(id => runtimeParamIds.has(id) || this._isEyeBlinkParamId(id));
+    return ids.some(id => runtimeParamIds.has(id) || this._isEyeBlinkParamId(id) || isLive2DOutfitParameter(coreModel, id));
 };
 
 Live2DManager.prototype.mergeAppearanceBaselineParameters = function(model, parameters) {
@@ -1858,7 +2030,7 @@ Live2DManager.prototype._isRuntimeManagedSavedParameter = function(coreModel, id
     const breathIds = runtimeBreathParamIds
         || new Set(typeof this._resolveRuntimeBreathParams === 'function' ? this._resolveRuntimeBreathParams(coreModel) : []);
     return list.some(id => this._isEyeBlinkParamId(id))
-        || list.some(id => mouthParams.includes(id))
+        || list.some(id => mouthParams.includes(id) || isLive2DOutfitParameter(coreModel, id))
         || list.some(id => id === 'ParamOpacity' || id === 'ParamVisibility')
         || list.some(id => breathIds.has(id));
 };
@@ -2483,6 +2655,9 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
         try { this._lastLoadedModelPath = urlString; } catch (_) {}
 
         const cleanPath = urlString.split('#')[0].split('?')[0];
+        if (window.live2dWardrobeSupportsModel?.(cleanPath)) {
+            wardrobeParameterCores.add(model.internalModel.coreModel);
+        }
         const lastSlash = cleanPath.lastIndexOf('/');
         const rootDir = lastSlash >= 0 ? cleanPath.substring(0, lastSlash) : '/static';
         this.modelRootPath = rootDir; // e.g. /static/yui-lolita or /static/some/deeper/dir
@@ -2998,11 +3173,12 @@ Live2DManager.prototype._scheduleReinstallOverride = function() {
 
 // 安装口型同步覆盖（拦截 motionManager.update 和 coreModel.update 以实现口型、眨眼、视线微动）
 Live2DManager.prototype.installMouthOverride = function() {
-    if (!this.currentModel || !this.currentModel.internalModel) {
+    const model = this.currentModel;
+    if (!model?.internalModel) {
         throw new Error('模型未就绪，无法安装口型覆盖');
     }
 
-    const internalModel = this.currentModel.internalModel;
+    const internalModel = model.internalModel;
     const coreModel = internalModel.coreModel;
     const motionManager = internalModel.motionManager;
     
@@ -3526,11 +3702,6 @@ Live2DManager.prototype.installMouthOverride = function() {
                 }
             }
 
-            // 注入点 3（渲染前最后姿态覆盖）：教程苏醒等短期动作在这里写入，
-            // 确保不会被正脸锁、随机视线、眨眼或常驻表情在同一帧覆盖。
-            if (typeof this._applyTemporaryPoseOverride === 'function') {
-                this._applyTemporaryPoseOverride(currentCoreModel);
-            }
         } catch (e) {
             console.error('口型覆盖参数写入失败:', e);
         }
@@ -3545,7 +3716,7 @@ Live2DManager.prototype.installMouthOverride = function() {
                     console.warn('coreModel 已无效，跳过 update 调用');
                     return;
                 }
-                origCoreModelUpdate();
+                updateLive2DOutfit(this, model, currentCoreModel, origCoreModelUpdate);
                 if (typeof this._applyTemporaryPoseOverride === 'function') {
                     this._applyTemporaryPoseOverride(currentCoreModel);
                 }
@@ -3796,6 +3967,7 @@ Live2DManager.prototype.applyModelParameters = function(model, parameters, optio
                     continue;
                 }
                 const resolvedParamId = resolved.resolvedId;
+                if (isLive2DOutfitParameter(coreModel, resolvedParamId)) continue;
 
                 // EyeBlink 参数由运行时眨眼通道接管，避免冷加载闭眼值被持久化/重放
                 if (this._isEyeBlinkParamId(paramId) || this._isEyeBlinkParamId(resolvedParamId)) {

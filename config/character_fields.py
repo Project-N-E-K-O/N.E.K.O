@@ -131,6 +131,7 @@ RESERVED_FIELD_SCHEMA = {
         "asset_source_id": str,
         "live2d": {
             "model_path": str,
+            "outfit": {"version": int, "wardrobe": str, "hat": bool, "color": str, "print": str},
         },
         "vrm": {
             "model_path": str,

@@ -1,4 +1,18 @@
 {
+    "wardrobe": {
+        "title": "Guarda-roupa",
+        "hat": "Chapéu",
+        "color": "Cor do moletom",
+        "print": "Estampa",
+        "plain": "Lisa",
+        "dots": "Bolinhas",
+        "stars": "Estrelas",
+        "save": "Salvar",
+        "clear": "Remover visual",
+        "saved": "Visual salvo",
+        "loadError": "Não foi possível carregar o visual",
+        "saveError": "Não foi possível salvar o visual"
+    },
     "chatAvatar": {
         "custom": {
             "upload": "Carregar imagem",

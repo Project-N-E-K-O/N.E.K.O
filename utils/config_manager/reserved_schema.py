@@ -246,6 +246,21 @@ def _legacy_live2d_name_from_model_path(model_path: str) -> str:
     return raw.rsplit("/", 1)[-1]
 
 
+def portable_live2d_outfit(character: dict) -> dict | None:
+    """Read portable wardrobe choices without requiring the local model catalog."""
+    outfit = get_reserved(character, "avatar", "live2d", "outfit")
+    if not isinstance(outfit, dict) or set(outfit) != {"version", "wardrobe", "hat", "color", "print"}:
+        return None
+    if type(outfit["version"]) is not int or outfit["version"] != 1 or type(outfit["hat"]) is not bool:
+        return None
+    for key in ("wardrobe", "print"):
+        if not isinstance(outfit[key], str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,96}", outfit[key]):
+            return None
+    if not isinstance(outfit["color"], str) or not re.fullmatch(r"#[0-9a-fA-F]{6}", outfit["color"]):
+        return None
+    return dict(outfit)
+
+
 def validate_reserved_schema(reserved: dict) -> list[str]:
     """Validate the `_reserved` structure; returns a list of errors (empty list means pass)."""
     errors: list[str] = []
