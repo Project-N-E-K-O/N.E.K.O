@@ -2279,3 +2279,31 @@ def test_windows_uia_run_on_worker_propagates_timeout_error_without_spinning() -
     finally:
         if backend._executor is not None:
             backend._executor.shutdown(wait=False)
+
+
+def test_windows_uia_run_on_worker_returns_result_if_done_after_slice_timeout() -> None:
+    from nekopower.builtin.uia import WindowsUiaBackend
+
+    class _JustFinishedFuture:
+        def __init__(self) -> None:
+            self._calls = 0
+
+        def result(self, timeout: float | None = None) -> str:
+            self._calls += 1
+            if self._calls == 1 and timeout is not None:
+                raise TimeoutError("slice expired")
+            return "control-ok"
+
+        def done(self) -> bool:
+            return self._calls >= 1
+
+        def cancel(self) -> bool:
+            return False
+
+    class _FakeExecutor:
+        def submit(self, _fn: Any) -> _JustFinishedFuture:
+            return _JustFinishedFuture()
+
+    backend = WindowsUiaBackend()
+    backend._executor = _FakeExecutor()
+    assert backend._run_on_uia_thread(lambda: "control-ok", _wait_timeout=1.0) == "control-ok"

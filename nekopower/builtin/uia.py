@@ -760,7 +760,7 @@ class WindowsUiaBackend:
                 return future.result(timeout=slice_wait)
             except FutureTimeoutError:
                 if future.done():
-                    raise
+                    return future.result()
                 continue
 
     def is_supported(self) -> bool:
