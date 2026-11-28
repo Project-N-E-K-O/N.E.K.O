@@ -686,6 +686,10 @@ async def test_an_answer_that_falls_after_the_switch_was_turned_on_still_lends_n
 
     assert enabled["isError"] is False and used["isError"] is False
     assert [ask.category for _cid, ask in asker.asked] == ["enable_browser", "browser"]
+
+
+async def test_a_setting_tightened_and_put_back_while_the_lineage_is_read_grants_no_loan(world):
+    await world.permission_store.set_mode("browser", "first_ask")
     grant = await _grant_for(world)
     scope = GrantScope(KIND_BUILTIN, "browser")
     asked: list[str] = []
