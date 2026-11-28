@@ -147,7 +147,7 @@
         </el-form-item>
         <!-- What kind of familiar it is: for one that works in a project or on its own, not a leader, a copy or one another started. -->
         <el-form-item v-if="kindChanges" :label="t('power.home.preset')">
-          <el-select v-model="draft.preset" data-testid="card-preset" :loading="!kindsRead">
+          <el-select v-model="draft.preset" data-testid="card-preset" :loading="!kindsRead" :disabled="!kindsRead">
             <el-option v-for="item in kinds" :key="item.name" :label="kindName(item.name, item.label)" :value="item.name" />
           </el-select>
           <p class="muted kind-hint">{{ t('power.space.familiars.presetHint') }}</p>
@@ -383,6 +383,9 @@ function kindName(preset: string, label = ''): string {
 
 async function readKinds(id: string) {
   kindsRead.value = false
+  // What was read for the editor before is another familiar's, maybe another project's: nothing
+  // is chosen, nor said of what a kind can do, by that list while this one is read.
+  templates.value = []
   try {
     const read = (await getTemplates(props.project)).templates
     // The editor is another familiar's by now, or closed: what was read is not its list.

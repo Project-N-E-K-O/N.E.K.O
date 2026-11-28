@@ -544,6 +544,38 @@ describe('a familiar up close', () => {
     }
   })
 
+  it('offers and says nothing by the kinds read for another editor while its own are read', async () => {
+    const kind = (name: string, changes_files: boolean) =>
+      ({ name, label: '', description: '', avatar: name, source: 'builtin', valid: true, error: '', changes_files, needs_builtin: false })
+    const offered = () => [...new Set([...document.querySelectorAll('.el-select-dropdown__item')].map(item => item.textContent?.trim()))]
+    const select = () => byTest('card-preset')?.querySelector('input') as HTMLInputElement | null
+    // Read for one familiar: here its kind changes files.
+    api.getTemplates.mockResolvedValueOnce({ templates: [kind('general', true), kind('scout', true), kind('planner', false)] })
+    const { state } = await show([
+      card({ kind: 'line', preset: 'planner', leader: false }),
+      card({ id: 's2', name: 'Other', kind: 'line', preset: 'scout', leader: false }),
+    ])
+    await click(byTest('card-edit'))
+    expect(select()?.disabled).toBe(false)
+
+    // The editor of another, whose kinds are still being read: not the list that was read before.
+    let read!: (value: unknown) => void
+    api.getTemplates.mockReturnValueOnce(new Promise(resolve => { read = resolve }))
+    state.props = { ...state.props, selectedId: 's2' }
+    await flush()
+    await click(byTest('card-edit'))
+    expect(select()?.disabled).toBe(true)
+    expect(offered().filter(Boolean)).toEqual([words.home.presets.scout])
+    // Read: chosen from, and what a kind can do is told by this list (here the kind it has changes none).
+    read({ templates: [kind('general', true), kind('scout', false)] })
+    await flush()
+    await flush()
+    expect(select()?.disabled).toBe(false)
+    await click([...document.querySelectorAll('.el-select-dropdown__item')]
+      .filter(item => item.textContent?.trim() === words.home.presets.general).at(-1))
+    expect(byTest('card-preset-widens')?.textContent).toBe(words.space.familiars.presetWidens)
+  })
+
   it('a save that is under way sends what it was started with, not what another editor holds by then', async () => {
     const kind = (name: string, changes_files: boolean) =>
       ({ name, label: '', description: '', avatar: name, source: 'builtin', valid: true, error: '', changes_files, needs_builtin: false })

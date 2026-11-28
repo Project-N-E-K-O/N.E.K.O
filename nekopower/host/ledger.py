@@ -2753,11 +2753,14 @@ class Ledger:
         looked for in this transaction, so that none is put on record
         between a look and the write (``add_tree`` with ``seat``).
 
-        What its task agent was last started under
-        (``Session.preset_told``) is not written here: a start that is
-        under way, which read the preset before this, writes what it
-        opened the session as, and the start after it sees that this is
-        another.
+        What its task agent last knew itself as
+        (``Session.preset_told``) is a start's to write, and is left as
+        it is here: a start that is under way, which read the preset
+        before this, writes what it opened the session as, and the start
+        after it sees that this is another. Only where a session was
+        started before and nothing is on record (a build before this
+        one kept none) is the preset it had put down, so that its task
+        agent is told of the change like any other.
 
         The change is an event of a commission of the session, as every
         event is one of a commission: the one its task agent is at, else
@@ -2795,13 +2798,19 @@ class Ledger:
             changes: dict[str, Any] = {"preset": preset}
             if seat is not None:
                 changes["seat"] = seat
+            if not current.preset_told and current.session_dir:
+                # Started before, with nothing on record of what as (by a build that kept none,
+                # or by a start that is under way and has not said yet): as the preset it had.
+                # A start that is under way says what it opened it as, over this.
+                changes["preset_told"] = current.preset
             assignments = ", ".join(f"{name} = ?" for name in changes)
             conn.execute(f"UPDATE sessions SET {assignments} WHERE id = ?", [*changes.values(), session_id])
             # The one its task agent is at (at work, or waiting for the user) before one that
             # waits for its turn, and either before one that is over; the last filed of those.
+            # (One that rests is not what its task agent is at: it holds no session meanwhile.)
             on = conn.execute(
                 "SELECT id FROM commissions WHERE session_id = ? ORDER BY "
-                "CASE WHEN status IN ('working', 'waiting_user') THEN 0 "
+                "CASE WHEN status = 'waiting_user' OR (status = 'working' AND resting_since IS NULL) THEN 0 "
                 f"WHEN status IN ({_ENDED_MARKS}) THEN 2 ELSE 1 END, created_at DESC, rowid DESC LIMIT 1",
                 (session_id, *sorted(ENDED_STATUSES)),
             ).fetchone()

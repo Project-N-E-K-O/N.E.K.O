@@ -421,7 +421,7 @@ class TreeWork:
             return True
         return await self.tree_possible(member.project, member.workdir)
 
-    async def seat_of_new_member(self, project: str) -> str:
+    async def seat_of_new_member(self, project: str, *, but: str = "") -> str:
         """Return the seat a new member that changes files gets in a project: ``tree`` beside one that works in its directory.
 
         The first member that changes files works in the project's
@@ -429,10 +429,12 @@ class TreeWork:
         work has a worktree made for each of its commissions, and so
         does not wait for it. One that only reads is nobody to wait
         for. (Of every character: the directory is the project's.)
+        ``but`` is a member that is not counted: the one a seat is
+        chosen for, where it is a member already (``change_duty``).
         """
         rows = await self._ledger.find_sessions(project=project, kind="line", limit=500, commissions_each=0)
         for row in rows:
-            if row.session.seat != "" or not await self._ledger.session_alive(row.session):
+            if row.session.id == but or row.session.seat != "" or not await self._ledger.session_alive(row.session):
                 continue
             try:
                 writes = bool((await self._template_of(row.session)).changes_files)

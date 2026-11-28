@@ -179,8 +179,12 @@ async def test_a_change_of_preset_is_written_with_an_event_of_the_commission_its
     # With the one its task agent is at, though another was filed after it and waits.
     at_work = await filed("four", "working")
     later = await filed("five")
+    # Nor with one that rests, which holds no session though it is on record as worked on.
+    rests = await filed("six", "working")
+    await ledger.run(lambda conn: conn.execute("UPDATE commissions SET resting_since = 1.0 WHERE id = ?", (rests.id,)))
+    assert (await ledger.get(rests.id)).resting
     _kept, _was, on = await ledger.change_preset(session.id, "planner", by="session")
-    assert on == at_work.id and await changes(later.id) == []
+    assert on == at_work.id and await changes(later.id) == [] and await changes(rests.id) == []
     moved = await ledger.transition(at_work.id, "waiting_user", reason="test")
     assert moved.applied, moved.refusal
     _kept, _was, on = await ledger.change_preset(session.id, "scout", by="host")
@@ -235,6 +239,18 @@ async def test_what_a_session_was_started_under_is_what_a_start_says_and_a_chang
     await ledger.preset_was_told(session.id, "scout")
     kept = await ledger.get_session(session.id)
     assert (kept.preset, kept.preset_told) == ("planner", "scout")
+
+    # One that was started before by a build that kept nothing of it (it has a directory, and
+    # nothing on record): as the preset it had, so that its task agent is told of the change.
+    earlier = await ledger.create_session(lanlan_name="Lan", name="earlier", kind="line", session_dir="D:/sessions/earlier")
+    kept, _was, _on = await ledger.change_preset(earlier.id, "scout", by="user")
+    assert (kept.preset, kept.preset_told) == ("scout", "general")
+    kept, _was, _on = await ledger.change_preset(earlier.id, "planner", by="user")
+    assert (kept.preset, kept.preset_told) == ("planner", "general")
+    # One that was never started has nothing to be told of.
+    never = await ledger.create_session(lanlan_name="Lan", name="never", kind="line")
+    kept, _was, _on = await ledger.change_preset(never.id, "scout", by="user")
+    assert kept.preset_told == ""
 
 
 # ---------------------------------------------------------------------------
@@ -488,6 +504,83 @@ async def test_changed_back_before_it_took_a_word_of_the_change_it_begins_as_it_
     assert "preset was changed" not in _said(llm.requests[1])
 
 
+async def test_it_knows_itself_as_the_preset_once_the_message_is_in_its_conversation_whatever_becomes_of_the_run(
+    hosts, tmp_path
+):
+    release = asyncio.Event()
+
+    async def wait() -> None:
+        await release.wait()
+
+    # The run that takes the message is stopped before its model answered anything.
+    llm = ScriptedLLM([_report("header fixed"), [wait, *_report("never said")], _report("looked")])
+    specs: list[Any] = []
+    host = await _shop(hosts, tmp_path, llm, specs)
+    await _done(host, "fix the header of the shop site")
+    await host.change_duty(host.member, "scout")
+
+    receipt = await _dispatch(host, "look at the footer of the shop site")
+    await wait_until(lambda: len(llm.requests) >= 2, what="its model being asked")
+    assert _said(llm.requests[1]).count(CHANGED) == 1
+
+    async def told() -> str:
+        return (await host.ledger.get_session(host.member)).preset_told
+
+    for _ in range(100):
+        if await told() == "scout":
+            break
+        await asyncio.sleep(0.02)
+    assert await told() == "scout"
+    await host.abort(receipt.commission_id, reason="test")
+    release.set()
+    await let_go(host)
+
+    await _done(host, "look at the fonts of the shop site")
+
+    # Not told a second time: the first is in its conversation.
+    assert _said(llm.requests[-1]).count(CHANGED) == 1 and await told() == "scout"
+
+
+async def test_a_member_made_one_that_changes_files_waits_for_the_run_of_one_that_was_made_one_that_only_reads(
+    hosts, tmp_path
+):
+    release = asyncio.Event()
+
+    async def wait() -> None:
+        await release.wait()
+
+    llm = ScriptedLLM([[wait, *_write("a.txt")], _report("header fixed"), _write("b.txt"), _report("footer fixed")])
+    specs: list[Any] = []
+    host = await _shop(hosts, tmp_path, llm, specs)
+    manager = host.task_agents
+    other = (await host.open_member("Lan", "Shop site", preset="scout"))["session_id"]
+    first = await _dispatch(host, "fix the header of the shop site")
+    await wait_until(lambda: len(llm.requests) >= 1, what="the member being at work")
+
+    # The one at work is made one that only reads: its run goes on with the tools it has.
+    assert (await host.change_duty(host.member, "scout"))["at_work"]
+    # The other is made one that changes files. By what is on record no member changes files in the
+    # project's directory any more, so it works there itself, and in no worktree from here on.
+    assert (await host.change_duty(other, "general"))["seat"] == ""
+    assert manager._writes_in == {host.member: ("Shop site", host.member), other: ("Shop site", other)}
+
+    commission, _created = await host.ledger.create(
+        lanlan_name="Lan", title="fix the footer", dispatch_text="fix the footer", source="dispatch", route="task_agent",
+        lang="en", project="Shop site",
+    )
+    commission = await host.ledger.update(commission.id, session_id=other)
+    assert await manager.submit(commission)
+    await manager.settle()
+
+    # It waits for the run that still changes files there: the two are not at it at once.
+    assert manager.queued == [commission.id] and (await host.ledger.get(commission.id)).status == "queued"
+    assert len(llm.requests) == 1 and not (host.workdir / "b.txt").exists()
+    release.set()
+    await wait_status(host, first.commission_id, "done")
+    await wait_status(host, commission.id, "done")
+    assert (host.workdir / "a.txt").exists() and (host.workdir / "b.txt").exists()
+
+
 # ---------------------------------------------------------------------------
 # Who may, and where it works afterwards
 # ---------------------------------------------------------------------------
@@ -515,7 +608,19 @@ async def test_made_one_that_changes_files_by_the_user_it_gets_its_place_as_a_ne
     alone = tmp_path / "Notes-files"
     alone.mkdir()
     only = (await host.open_session("Lan", "Notes", preset="scout", workdir=str(alone)))["session_id"]
-    assert (await host.change_duty(only, "general"))["seat"] == ""
+    manager = host.task_agents
+    template_of = manager._template_of
+
+    async def unreadable(session: Any) -> Any:
+        if session.id == only and session.preset == "scout":
+            raise RuntimeError("the preset 'scout' cannot be used")
+        return await template_of(session)
+
+    with pytest.MonkeyPatch.context() as patched:
+        # Also where the preset it has cannot be read, which counts as one that changes files
+        # for the others of its project: it is not beside itself.
+        patched.setattr(manager, "_template_of", unreadable)
+        assert (await host.change_duty(only, "general"))["seat"] == ""
     # A directory of its own from before it was the project's stays its own.
     await host.ledger.update_session(reader, seat="own")
     assert (await host.change_duty(reader, "worker"))["seat"] == "own"

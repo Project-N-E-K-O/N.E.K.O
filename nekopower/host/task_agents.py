@@ -360,6 +360,8 @@ class _Session:
     # shown that the session took it: on record as what it was started
     # under once one does (``_note_started_as``). None otherwise.
     started_as: str | None = None
+    # Which of the texts sent to the session tells it so, by its number.
+    started_as_with: int = 0
     # Output permissions of commands still represented in this session’s job registry.
     job_sources: dict[str, tuple[Callable[[], bool], Callable[[], Awaitable[bool]]]] = field(default_factory=dict)
     # Text increments and tool output waiting to be written as one event row.
@@ -2464,7 +2466,8 @@ class TaskAgentManager(TreeWork):
             # a start of it that is under way, and read its seat before this, makes none after it
             # (``Ledger.add_tree``).
             in_project = bool(kept.project) and kept.project != DEFAULT_PROJECT
-            seat = await self.seat_of_new_member(str(kept.project)) if widens and in_project else ""
+            # (Not by itself: one whose preset cannot be read counts as one that changes files.)
+            seat = await self.seat_of_new_member(str(kept.project), but=kept.id) if widens and in_project else ""
         # (Its worktrees are looked for once more as it is written: one may have been made since.)
         changed, was, _on = await self._ledger.change_preset(
             kept.id, preset, by=by, was=kept.preset, seat=seat, without_trees=reads
@@ -4127,7 +4130,7 @@ class TaskAgentManager(TreeWork):
                     if told_as:
                         # On record as started under this preset once the session took the
                         # message, which tells it of the change (``_note_opened``).
-                        session.started_as = now_as
+                        session.started_as, session.started_as_with = now_as, session.sent + 1
                     try:
                         await self._send_text(
                             runtime, session, "prompt", render(text), opening=opens, wakes=riding, human=not nobody
@@ -6011,6 +6014,10 @@ class TaskAgentManager(TreeWork):
             return
         # Taken, so it is not refused any more.
         _not_refused(session, number)
+        if session.started_as is not None and number >= session.started_as_with:
+            # The text that tells it of a change of its preset is in its conversation: it knows
+            # itself as that preset from here on, whatever becomes of the run that took it.
+            await self._note_started_as(session)
         receipt = session.answer_receipts.pop(number, None)
         if receipt is not None:
             self._settle_call_soon(receipt[0], "completed")
