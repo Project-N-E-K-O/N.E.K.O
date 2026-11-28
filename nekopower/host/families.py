@@ -56,7 +56,8 @@ logger = logging.getLogger(__name__)
 
 # Asked with the request that says which candidate a sentence belongs with;
 # returns what the small model answered, None when it could not be asked.
-Judge = Callable[[list[dict[str, Any]]], Awaitable["str | None"]]
+# Asked with the request and how many candidates it shows (``candidates=``).
+Judge = Callable[..., Awaitable["str | None"]]
 
 # Why a project got its leader.
 # The presets of a member that works: the one a member has that nobody
@@ -383,7 +384,7 @@ class Families:
             line_max_tokens=settings.ORCHESTRATOR_CANDIDATE_MAX_TOKENS,
         )
         try:
-            raw = await self._judge(messages)
+            raw = await self._judge(messages, candidates=len(keys))
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - not told: a new loose commission
