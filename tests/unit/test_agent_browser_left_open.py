@@ -888,7 +888,7 @@ async def test_switching_the_master_switch_off_drops_what_was_kept_of_the_main_d
 
 
 # ---------------------------------------------------------------------------
-# The last capability switch went off: NekoPower is off as with the master switch off
+# The last capability switch went off: NekoPower stays on with the master switch alone
 # ---------------------------------------------------------------------------
 
 
@@ -902,19 +902,29 @@ def _kept_for_task_agents(monkeypatch: pytest.MonkeyPatch) -> Any:
     return kept
 
 
-async def test_switching_the_last_capability_switch_off_drops_what_was_kept_of_the_main_dialogue_for_task_agents(
+async def test_switching_the_last_capability_switch_off_keeps_what_was_kept_while_the_master_switch_is_on(
     stage: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     kept = _kept_for_task_agents(monkeypatch)
 
-    # Only the browser tools are on (the fixture): with them off NekoPower is off, whatever the
-    # master switch says.
+    # Only the browser tools are on (the fixture): NekoPower is on with the master switch
+    # alone, so with them off the task agents still start from what was said.
     await api_routes.set_agent_flags({"browser_use_enabled": False, "_persist_intent": False})
     await stage.settled()
 
-    # Then and there, with no message of the main dialogue coming by: nothing from before is
-    # handed to a task agent when a switch is put on again.
     assert stage.state.analyzer_enabled is True
+    assert [turn.text for turn in kept.recent("Lan")] == ["sort the photos please"]
+
+
+async def test_with_the_master_switch_off_what_was_kept_is_dropped_whatever_the_capability_switches_say(
+    stage: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    kept = _kept_for_task_agents(monkeypatch)
+    stage.state.agent_flags["browser_use_enabled"] = True
+    monkeypatch.setattr(stage.state, "analyzer_enabled", False)
+
+    api_runtime.forget_turns_if_nekopower_is_off()
+
     assert kept.recent("Lan") == []
 
 
@@ -932,7 +942,7 @@ async def test_switching_one_of_two_capability_switches_off_keeps_what_was_kept_
     assert [turn.text for turn in kept.recent("Lan")] == ["sort the photos please"]
 
 
-async def test_the_keyboard_and_mouse_found_unusable_drops_what_was_kept_when_theirs_was_the_last_switch_on(
+async def test_the_keyboard_and_mouse_found_unusable_keeps_what_was_kept_while_the_master_switch_is_on(
     stage: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     kept = _kept_for_task_agents(monkeypatch)
@@ -950,10 +960,10 @@ async def test_the_keyboard_and_mouse_found_unusable_drops_what_was_kept_when_th
         await asyncio.sleep(0)
 
     assert stage.state.agent_flags["computer_use_enabled"] is False
-    assert kept.recent("Lan") == []
+    assert [turn.text for turn in kept.recent("Lan")] == ["sort the photos please"]
 
 
-async def test_user_plugins_that_do_not_come_up_drop_what_was_kept_when_theirs_was_the_last_switch_on(
+async def test_user_plugins_that_do_not_come_up_keep_what_was_kept_while_the_master_switch_is_on(
     stage: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     stage.state.agent_flags.update({"browser_use_enabled": False})
@@ -977,7 +987,7 @@ async def test_user_plugins_that_do_not_come_up_drop_what_was_kept_when_theirs_w
     await asyncio.wait(pending, timeout=10.0)
 
     assert stage.state.agent_flags["user_plugin_enabled"] is False
-    assert kept.recent("Lan") == []
+    assert [turn.text for turn in kept.recent("Lan")] == ["sort the photos please"]
 
 
 class _AsItWas:
@@ -999,7 +1009,7 @@ class _AsItWas:
         return self.answer
 
 
-async def test_what_was_kept_is_gone_before_the_plugins_that_were_not_found_are_stopped(
+async def test_what_was_kept_stays_while_the_plugins_that_were_not_found_are_stopped(
     stage: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     stage.state.agent_flags.update({"browser_use_enabled": False})
@@ -1027,11 +1037,11 @@ async def test_what_was_kept_is_gone_before_the_plugins_that_were_not_found_are_
     await asyncio.wait(pending, timeout=10.0)
 
     assert stage.state.agent_flags["user_plugin_enabled"] is False
-    assert as_it_was.seen == [[]]
-    assert kept.recent("Lan") == []
+    assert as_it_was.seen == [["sort the photos please"]]
+    assert [turn.text for turn in kept.recent("Lan")] == ["sort the photos please"]
 
 
-async def test_what_was_kept_is_gone_before_a_switch_that_takes_the_place_of_the_last_one_is_looked_into(
+async def test_what_was_kept_stays_while_a_switch_takes_the_place_of_the_last_one(
     stage: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     kept = _kept_for_task_agents(monkeypatch)
@@ -1047,8 +1057,8 @@ async def test_what_was_kept_is_gone_before_a_switch_that_takes_the_place_of_the
     await stage.settled()
 
     assert stage.state.agent_flags["browser_use_enabled"] is True
-    assert as_it_was.seen == [[]]
-    assert kept.recent("Lan") == []
+    assert as_it_was.seen == [["sort the photos please"]]
+    assert [turn.text for turn in kept.recent("Lan")] == ["sort the photos please"]
 
 
 _CAPABILITY_SWITCHES = {"computer_use_enabled", "browser_use_enabled", "user_plugin_enabled"}

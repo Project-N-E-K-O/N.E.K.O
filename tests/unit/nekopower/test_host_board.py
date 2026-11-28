@@ -932,7 +932,7 @@ async def test_the_presets_are_listed_with_what_each_is_and_the_wrong_ones_with_
         "valid": True, "error": "",
     }
     assert (found["tester"]["source"], found["tester"]["read_only"], found["tester"]["writes"]) == ("project", True, "none")
-    assert (found["broken"]["valid"], found["broken"]["error"]) == (False, "model is one of agent, inherit, not 'gpt-9'")
+    assert (found["broken"]["valid"], found["broken"]["error"]) == (False, "model is one of agent, inherit, advanced, not 'gpt-9'")
 
 
 # ---------------------------------------------------------------------------

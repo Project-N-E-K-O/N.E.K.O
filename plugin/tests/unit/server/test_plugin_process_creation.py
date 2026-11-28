@@ -276,8 +276,10 @@ def test_macos_plugin_does_not_inherit_merged_host_fork_context(tmp_path, monkey
         from pathlib import Path
         launcher = Path(__file__).resolve().parents[4] / "launcher.py"
         assert launcher.is_file()
-        monkeypatch.setattr(__main__, "__file__", str(launcher))
-        monkeypatch.setattr(__main__, "__spec__", None)
+        # pytest-xdist workers run under execnet, whose __main__ has no
+        # __file__; raising=False adds it and teardown removes it again.
+        monkeypatch.setattr(__main__, "__file__", str(launcher), raising=False)
+        monkeypatch.setattr(__main__, "__spec__", None, raising=False)
 
     # Model the merged launcher's fork default without changing the test runner's
     # global multiprocessing configuration. Also runs on Linux CI.

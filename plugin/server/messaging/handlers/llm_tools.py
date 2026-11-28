@@ -25,6 +25,7 @@ from typing import Any
 from plugin.core.rpc import RpcContext
 from plugin.server.messaging.llm_tool_registry import (
     RemoteToolError,
+    failed_before_send,
     parse_register_request,
     parse_unregister_request,
     register_remote_tool,
@@ -54,22 +55,22 @@ def _unregister_result(
     return build_unregister_result(body, ok=ok, error=error, message=message)
 
 
+def _with_notes(exc: BaseException) -> str:
+    """``str(exc)`` plus the notes the registry attached (e.g. what the host
+    did about a register whose answer was lost), so the SDK caller sees them."""
+    return "; ".join([str(exc), *getattr(exc, "__notes__", ())])
+
+
 def _transport_failure(httpx, exc: Exception) -> tuple[str, str]:
     """Map an httpx error from the main_server call to an ``error`` code.
 
-    Only errors that certainly happen before the request is sent (connect
-    failure or timeout, no pooled connection, proxy, unsupported scheme,
-    invalid request on our side) are ``main_server_unavailable``. Anything
-    else (read/write timeout or failure, connection dropped mid-exchange,
-    undecodable answer, ...) means main_server may have applied the change,
-    so it is reported as ``timeout``: the outcome is unknown.
+    Only errors that certainly happen before the request is sent (see
+    ``failed_before_send``) are ``main_server_unavailable``. Anything else
+    means main_server may have applied the change, so it is reported as
+    ``timeout``: the outcome is unknown.
     """
-    message = f"{type(exc).__name__}: {exc}"
-    before_send = (
-        httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout,
-        httpx.ProxyError, httpx.UnsupportedProtocol, httpx.LocalProtocolError,
-    )
-    if isinstance(exc, before_send):
+    message = f"{type(exc).__name__}: {_with_notes(exc)}"
+    if failed_before_send(httpx, exc):
         return "main_server_unavailable", message
     return "timeout", message
 
@@ -84,7 +85,7 @@ async def handle_llm_tool_register(ctx: RpcContext, request: dict[str, object]) 
     try:
         body = await register_remote_tool(plugin_id=ctx.from_plugin, **fields)
     except RemoteToolError as exc:
-        return _register_result(exc.body, ok=False, error=exc.code, message=str(exc))
+        return _register_result(exc.body, ok=False, error=exc.code, message=_with_notes(exc))
     except httpx.HTTPError as exc:
         error, message = _transport_failure(httpx, exc)
         return _register_result({}, ok=False, error=error, message=message)

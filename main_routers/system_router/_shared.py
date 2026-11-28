@@ -289,4 +289,8 @@ def _get_app_root():
         else:
             return os.path.dirname(sys.executable)
     else:
-        return os.getcwd()
+        # Source mode: this file lives at <repo>/main_routers/system_router/_shared.py,
+        # so the repo root is three dirname() calls up.
+        return os.path.dirname(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        )

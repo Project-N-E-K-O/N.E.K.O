@@ -4730,7 +4730,6 @@
             "connecting": "Connecting to NekoPower server...",
             "ready": "NekoPower server ready",
             "enabled": "NekoPower enabled",
-            "noCapability": "Turn on at least one option below for NekoPower to act",
             "disabled": "NekoPower disabled",
             "disabledError": "NekoPower disabled (partial cleanup failed)",
             "enableFailed": "Enable failed",

@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from knowledge.importing.documents import SourceError, SourceLimits, parse_source
+from services.knowledge.importing.documents import SourceError, SourceLimits, parse_source
 import zipfile
 from utils import document_parser as office
 

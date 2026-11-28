@@ -147,10 +147,13 @@ _LLM_TOOL_MAX_REMOVAL_ATTEMPTS = 2
 # Budget of the unregister a failed register sends to clean up after itself.
 _LLM_TOOL_CLEANUP_TIMEOUT = 15.0
 # Register errors after which main_server may hold the tool: every role's
-# sync failed after it was stored ("rejected"), or the outcome is unknown.
+# sync failed after it was stored ("rejected"), the outcome is unknown, or
+# the plugin was stopped meanwhile ("plugin_stopped": the host withdraws the
+# registration itself, but that withdrawal may fail; when nothing had been
+# sent yet, the cleanup is a harmless removal by id of nothing).
 # The other codes mean nothing was stored (bad request, unknown role,
 # main_server not reached), where a cleanup would only fail the same way.
-_LLM_TOOL_CLEANUP_ERRORS = frozenset({"rejected", "timeout", "host_unavailable"})
+_LLM_TOOL_CLEANUP_ERRORS = frozenset({"rejected", "timeout", "host_unavailable", "plugin_stopped"})
 # main_server's ToolRegisterRequest bound for a tool's own per-call timeout.
 _LLM_TOOL_MAX_TIMEOUT_SECONDS = 300.0
 # Host-reported RPC error codes that mean "no answer in time".
@@ -1070,7 +1073,8 @@ class NekoPluginBase(_SharedNekoPluginBase):
         ``list_llm_tools()`` and the host stay in step and the same name
         can be registered again. When main_server may have stored the tool
         anyway (``rejected``: every role's sync failed after it was stored;
-        ``timeout`` / ``host_unavailable``: outcome unknown), the SDK then
+        ``timeout`` / ``host_unavailable``: outcome unknown;
+        ``plugin_stopped``: the host's own withdrawal may have failed), the SDK then
         unregisters it once, still in order with this name's other async
         calls, and reports that in ``cleanup`` (up to 15s more than
         ``request_timeout``). If ``cleanup`` is not ``ok``, call
