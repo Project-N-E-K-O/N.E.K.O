@@ -176,24 +176,35 @@ jobs:
         # until the job ceiling. With 0 the first crash ends the run: the job is
         # red, the crashed test is recorded for the flaky check below, and tests
         # not yet run at that point are not run.
-        run: uv run pytest plugin/tests -n 4 --dist loadfile --max-worker-restart 0 --basetemp "${{ runner.temp }}/neko-plugin-tests" -q --durations=20
+        # The JUnit report is how the flaky check tells that the run was cut
+        # short: -q hides xdist's own "restarting disabled" line, but the
+        # crashed test's failure message is always there.
+        run: uv run pytest plugin/tests -n 4 --dist loadfile --max-worker-restart 0 --basetemp "${{ runner.temp }}/neko-plugin-tests" -q --durations=20 --junitxml "${{ runner.temp }}/plugin-junit/full.xml"
 
       - name: Re-run failed tests once (flaky check)
         # Same step as the Linux job above and unit-tests.yml; see the comment
-        # there.
+        # there. One addition: when the full run stopped at a crashed worker,
+        # the tests still queued never ran and are not in the `--lf` record, so
+        # a passing re-run says nothing about them. The step then prints no
+        # verdict (the reporter does not call the run flaky) and says why in
+        # the summary. A failing re-run is still reported as `failed`.
         if: failure() && steps.full-suite.outcome == 'failure'
         timeout-minutes: 8
         shell: pwsh
         run: |
           uv run pytest plugin/tests -q -n 0 --lf --lfnf none --basetemp "${{ runner.temp }}/neko-plugin-rerun"
           $rc = $LASTEXITCODE
-          $verdict = if ($rc -eq 0) { 'passed' } else { 'failed' }
-          Write-Host "NEKO_LF_RERUN_RESULT=$verdict (pytest exit $rc)"
+          $junit = "${{ runner.temp }}/plugin-junit/full.xml"
+          $cutShort = -not (Test-Path -LiteralPath $junit) -or (Select-String -LiteralPath $junit -Pattern 'crashed while running' -SimpleMatch -Quiet)
+          $verdict = if ($rc -ne 0) { 'failed' } elseif ($cutShort) { 'none' } else { 'passed' }
+          if ($verdict -ne 'none') {
+            Write-Host "NEKO_LF_RERUN_RESULT=$verdict (pytest exit $rc)"
+          }
           $lines = @(
             '### Flaky check (`--lf` re-run)',
             '',
             "Re-running only the failed tests exited with ${rc}: **$verdict**.",
-            $(if ($verdict -eq 'passed') { 'The failures did not reproduce; treat them as flaky until proven otherwise.' } else { 'The failures reproduced.' })
+            $(if ($verdict -eq 'passed') { 'The failures did not reproduce; treat them as flaky until proven otherwise.' } elseif ($verdict -eq 'none') { 'The full run stopped at a crashed worker, so the tests queued after it never ran; a passing re-run cannot tell whether this run is flaky.' } else { 'The failures reproduced.' })
           )
           $lines | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
           exit 0

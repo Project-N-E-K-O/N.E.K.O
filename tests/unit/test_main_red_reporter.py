@@ -95,6 +95,20 @@ def test_every_plugin_job_reruns_its_failures_with_the_marker():
         assert rerun[0]["run"].rstrip().endswith("exit 0"), name
 
 
+def test_windows_plugin_flaky_check_does_not_pass_a_run_cut_short_by_a_crash():
+    # --max-worker-restart 0 stops the run at the first crashed worker; the
+    # tests still queued never ran, so a passing re-run must not say "passed".
+    job = yaml.safe_load(PLUGIN_WORKFLOW.read_bytes().decode("utf-8"))["jobs"]["plugin-pytest"]
+    full = next(step for step in job["steps"] if step.get("id") == "full-suite")
+    rerun = next(step for step in job["steps"] if "--lf --lfnf none" in step.get("run", ""))
+    assert "--max-worker-restart 0" in full["run"]
+    junit = '"${{ runner.temp }}/plugin-junit/full.xml"'
+    assert f"--junitxml {junit}" in full["run"]
+    assert f"$junit = {junit}" in rerun["run"]
+    assert "'crashed while running'" in rerun["run"]
+    assert "if ($verdict -ne 'none')" in rerun["run"]
+
+
 @pytest.mark.parametrize(
     "message, number",
     [
