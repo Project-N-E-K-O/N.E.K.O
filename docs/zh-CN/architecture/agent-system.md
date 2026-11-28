@@ -238,9 +238,9 @@ Manager 和智能体服务器构造时这些开关均为关闭。首次真实 `g
 | 台账、outbox、汇报 | `nekopower/host/ledger.py`、`outbox.py`、`reports.py` |
 | 新委托的去向、家族、老大和成员 | `nekopower/host/orchestrator.py`、`families.py`、`tests/unit/nekopower/fixtures/orchestrator_scenarios.json` |
 | 职能预设和模板、卡片、看板、召唤使魔的表单 | `nekopower/host/templates.py`、`board.py`、`drafts.py`、`config/prompts/prompts_nekopower_presets.py` |
-| 会话之间的消息、唤醒、读别的会话的记录 | `nekopower/host/wakes.py`、`records.py`、`task_agents.py`、`config/prompts/prompts_nekopower_sessions.py` |
+| 会话之间的消息、唤醒、读别的会话的记录 | `nekopower/host/wakes.py`、`records.py`、`task_agents/messaging.py`、`config/prompts/prompts_nekopower_sessions.py` |
 | 会话之间发生了什么、谁在等谁（只读） | `nekopower/host/timeline.py` |
-| task agent 和 agent runtime | `nekopower/host/task_agents.py`、`nekopower/runtime/` |
+| task agent 和 agent runtime | `nekopower/host/task_agents/`、`nekopower/runtime/` |
 | dsh：可选的 agent runtime 和它的选用 | `nekopower/dsh/`、`nekopower/host/runtimes.py`、`config/prompts/prompts_nekopower_dsh.py` |
 | task agent 空间：条目、索引、复盘、归档 | `nekopower/host/space.py`、`space_keeper.py`、`config/prompts/prompts_nekopower_space.py` |
 | 能力清单、网关、权限 | `nekopower/host/capabilities.py`、`gateway.py`、`permissions.py` |
