@@ -643,6 +643,10 @@ async function save(row: PanelRow, run: () => Promise<PermissionPanel>) {
         first_use: pending.value.first_use.filter(
           (use) => !(use.plugin_id === props.pluginId && use.permission === row.permission),
         ),
+        // A panel that came back with this save says itself whether the declaration is read.
+        incomplete: validPanel(next)
+          ? pending.value.incomplete.filter((id) => id !== props.pluginId)
+          : pending.value.incomplete,
       }
     }
     // Without a current answer, nothing is claimed about unused time.

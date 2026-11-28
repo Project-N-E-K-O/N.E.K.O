@@ -711,6 +711,19 @@ describe('PluginPermissions tab', () => {
     expect(q(root, `first-use-${NET}`)).toBeNull()
   })
 
+  it('drops the incomplete mark with the counts when a save cannot read the pending list again', async () => {
+    serve(panel({ rows: [row({ state: 'undecided', condition: null })] }), {
+      pending: { incomplete: ['demo'], first_use: [] },
+    })
+    const root = await mount()
+    expect(q(root, 'incomplete')).not.toBeNull()
+    api.getPendingPermissions.mockRejectedValue(new Error('offline'))
+    api.decidePermission.mockResolvedValue(panel())
+    q(root, `switch-${NET}`)!.dispatchEvent(new Event('change'))
+    await flush()
+    expect(q(root, 'incomplete')).toBeNull()
+  })
+
   it('resumes retrying a failed refresh after a failed save', async () => {
     vi.useFakeTimers()
     try {
