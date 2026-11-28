@@ -2507,3 +2507,98 @@ async def test_a_planner_counts_against_the_free_quota_only_where_the_advanced_m
     paid = await host.task_agents.session_model(await _planner(host, "paid"))
 
     assert (free.free, paid.free) == (True, False)
+
+
+async def test_a_session_given_another_preset_is_sent_to_that_presets_model_from_its_next_start(hosts, tmp_path):
+    manager = _manager(tmp_path, _default_slots())
+    llm = ScriptedLLM([_report(), _report(), _report()])
+    specs: list[Any] = []
+
+    def pick(spec: Any) -> Any:
+        specs.append(spec)
+        return llm
+
+    host = _host(hosts, tmp_path, pick, manager)
+    await host.set_role_model("scout", OWN_SLOT)
+    member = (await host.open_session("Lan", "Shop site", preset="general"))["session_id"]
+
+    async def sent_to() -> tuple[str, str]:
+        kept = await host.ledger.get_session(member)
+        return kept.model_slot, kept.model_name
+
+    await wait_status(host, (await _dispatch(host, "fix the header of the shop site")).commission_id, "done")
+    await let_go(host)
+    assert await sent_to() == (AGENT_SLOT, "agent-model")
+
+    # Given another preset: settled anew by that one's setting, as one made of it would be.
+    await host.change_duty(member, "scout")
+    assert await sent_to() == (OWN_SLOT, "own-model")
+    (card,) = (await host.board())["projects"][0]["members"]
+    assert card["model"] == "own-model"
+    await wait_status(host, (await _dispatch(host, "look at the footer of the shop site")).commission_id, "done")
+    await let_go(host)
+
+    # And back: the preset it has says where it is sent, not the one it was made with.
+    await host.change_duty(member, "general")
+    assert await sent_to() == (AGENT_SLOT, "agent-model")
+    await wait_status(host, (await _dispatch(host, "fix the footer of the shop site")).commission_id, "done")
+
+    assert [spec.model.model for spec in specs] == ["agent-model", "own-model", "agent-model"]
+
+
+async def test_a_session_whose_new_presets_model_cannot_be_told_just_now_stays_where_it_was(hosts, tmp_path, monkeypatch):
+    manager = _manager(tmp_path, _default_slots())
+    host = _host(hosts, tmp_path, ScriptedLLM([_report()]), manager)
+    member = (await host.open_session("Lan", "Shop site", preset="general"))["session_id"]
+    before = await host.ledger.get_session(member)
+    assert (before.model_slot, before.model_name) == (AGENT_SLOT, "agent-model")
+
+    async def unreadable(*_args: Any, **_kwargs: Any) -> Any:
+        raise OSError("the settings cannot be read")
+
+    monkeypatch.setattr(host.task_agents.role_models, "choose", unreadable)
+    changed = await host.change_duty(member, "scout")
+
+    # Its preset is changed all the same; where it is sent is as it was.
+    kept = await host.ledger.get_session(member)
+    assert changed["changed"] and kept.preset == "scout"
+    assert (kept.model_slot, kept.model_name, kept.model_ident) == (before.model_slot, before.model_name, before.model_ident)
+
+
+async def test_a_session_begun_in_dsh_that_leaves_it_for_its_preset_is_sent_to_that_presets_model(hosts, tmp_path, monkeypatch):
+    from nekopower.host import task_agents as task_agents_module
+
+    manager = _manager(tmp_path, _default_slots())
+    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM([_report()]), manager)
+    await host.set_role_model("scout", OWN_SLOT)
+    # A preset that withholds tools is held to in the built-in runtime only: the session is
+    # opened there whatever it was begun in, and nothing keeps it on the model dsh was started by.
+    await host.open_session("Lan", "Shop site", preset="scout")
+    seen: list[tuple[Any, bool]] = []
+
+    async def choosing(commission: Any, model: Any, begun_in: Any, *, builtin_only: bool = False) -> Any:
+        seen.append((model.model, builtin_only))
+        raise RuntimeError("stop here")
+
+    monkeypatch.setattr(task_agents_module, "_begun_in", lambda place, session_dir: task_agents_module.RUNTIME_DSH)
+    host.task_agents._choose_runtime = choosing
+    await wait_status(host, (await _dispatch(host, "look at the header of the shop site")).commission_id, "failed")
+
+    assert seen == [("own-model", True)]
+
+
+async def test_a_session_whose_new_preset_has_no_model_configured_just_now_stays_where_it_was(hosts, tmp_path, monkeypatch):
+    manager = _manager(tmp_path, _default_slots())
+    host = _host(hosts, tmp_path, ScriptedLLM([_report()]), manager)
+    member = (await host.open_session("Lan", "Shop site", preset="general"))["session_id"]
+    before = await host.ledger.get_session(member)
+
+    async def nothing_there(*_args: Any, **_kwargs: Any) -> Any:
+        # Where it would go has no model configured this moment.
+        return role_models.Choice(slot=OWN_SLOT, agent=False, name="", ident="", free=False)
+
+    monkeypatch.setattr(host.task_agents.role_models, "choose", nothing_there)
+    await host.change_duty(member, "scout")
+
+    kept = await host.ledger.get_session(member)
+    assert (kept.model_slot, kept.model_name, kept.model_ident) == (before.model_slot, before.model_name, before.model_ident)

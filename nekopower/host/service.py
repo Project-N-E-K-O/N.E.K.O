@@ -1644,8 +1644,8 @@ class NekoPowerHost:
         next start; a run under way goes on as it was opened
         (``at_work`` in the answer). To a preset that can change files
         nobody is asked: it is the user who says so. The model it is
-        sent to stays. See ``TaskAgentManager.change_duty`` for what is
-        returned and raised.
+        sent to is the new preset's from its next start. See
+        ``TaskAgentManager.change_duty`` for what is returned and raised.
         """
         self._first_use()
         # With the lock a project's members are made under: where a member that changes

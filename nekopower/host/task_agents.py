@@ -2389,7 +2389,8 @@ class TaskAgentManager(TreeWork):
         on with the tools it was opened with; the session's next start
         puts the head of its requests together anew, for the preset it
         has then, and tells it of the change (``_start``). The model it
-        is sent to stays the one it was settled on.
+        is sent to is settled anew, by the preset it has now
+        (``_settle_model_anew``): from its next start too.
 
         To a preset that can change files from one that cannot
         (``Template.changes_files``), the user is asked first as for a
@@ -2474,6 +2475,14 @@ class TaskAgentManager(TreeWork):
         )
         if changed is None:
             raise LookupError(session_id)
+        if changed.seat == "tree" and at_work and kept.id not in self._tree_sessions:
+            # A run of it is under way in the project's directory, whatever seat it has from
+            # here on: the seat is for the commissions it starts after this. Until this one is
+            # over it counts as one that writes there (``_works_in_tree``), and whoever waits
+            # for it goes on waiting.
+            self._direct_now.add(kept.id)
+        # Where it is sent from its next start: by the preset it has now.
+        await self._settle_model_anew(changed)
         # Whether it changes files in its project is looked at again: one that does no more is
         # waited for no longer (a run of it under way keeps what it was opened with, and is
         # looked at when it is over), and what waited for it may start.
@@ -2707,6 +2716,30 @@ class TaskAgentManager(TreeWork):
         kept = await self._ledger.get_session(commission.session_id) if commission is not None else None
         choice = await self.session_model(kept, record=False) if kept is not None else await self._new_session_model()
         return choice.config
+
+    async def _settle_model_anew(self, kept: Session) -> None:
+        """Settle the model of a session whose preset was changed, by the preset it has now.
+
+        As for one that is just made of that preset: its setting, else
+        its default, which may be to follow the session that started it
+        or the lead of its project (``_choose_model``). Written on its
+        row in place of what it was settled on; a run under way goes on
+        with the model it was opened with, and the next start is sent to
+        this one. Where none can be told just now (the settings cannot
+        be read, no model is configured there), it stays where it was.
+        (Nothing sets the model of one session by hand yet; one that
+        was so set would keep it here.)
+        """
+        from nekopower.host.role_models import same_as_kept
+
+        try:
+            choice = await self._choose_model(kept, record=True, depth=0)
+            if choice.ident and not same_as_kept(kept, choice):
+                await self._ledger.update_session(kept.id, **choice.columns())
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - it goes on with the model it has
+            logger.warning("settling the model of session %s anew, by its new preset, failed", kept.id, exc_info=True)
 
     async def settle_model(self, session: Session) -> None:
         """Settle the model of a session that was just made (``session_model``), unless it is settled.
@@ -3760,8 +3793,11 @@ class TaskAgentManager(TreeWork):
                 # A model the user set for the preset is used in the
                 # built-in runtime only, for now: dsh starts its processes
                 # by the task agent model. A session that was begun in dsh
-                # goes on there, with that model, as before.
-                if begun_in == RUNTIME_DSH:
+                # goes on there, with that model, as before; not one that
+                # leaves dsh with this start in any case (its preset is
+                # held to in the built-in runtime only), which is sent
+                # where it was settled.
+                if begun_in == RUNTIME_DSH and not builtin_only:
                     choice = await self.role_models.agent()
                     config = choice.config
                     if not config or not config.get("model"):

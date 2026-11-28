@@ -3875,3 +3875,49 @@ async def test_a_start_that_read_a_members_seat_before_it_was_made_one_that_only
     made, why, _detail = await host.task_agents._make_tree(commission, as_read, str(workdir))
     assert (made, why) == (None, "seat_changed")
     assert await host.ledger.trees() == [] and trees.creates == made_before
+
+
+async def test_a_member_at_work_in_the_directory_is_waited_for_until_that_run_is_over_whatever_seat_it_is_given(
+    hosts, tmp_path
+):
+    release = asyncio.Event()
+
+    async def wait() -> None:
+        await release.wait()
+
+    llm = ScriptedLLM([[wait, *_write("a.txt")], _report("header fixed"), _write("b.txt"), _report("footer fixed")])
+    host, _trees, workdir = await _shop(hosts, tmp_path, llm)
+    manager = host.task_agents
+    first = (await host.open_member("Lan", "Shop site", preset="general"))["session_id"]
+    other = (await host.open_member("Lan", "Shop site", preset="scout"))["session_id"]
+
+    async def filed_in(session_id: str, text: str) -> Any:
+        commission, _created = await host.ledger.create(
+            lanlan_name="Lan", title=text, dispatch_text=text, source="dispatch", route="task_agent", lang="en",
+            project="Shop site",
+        )
+        commission = await host.ledger.update(commission.id, session_id=session_id)
+        assert await manager.submit(commission)
+        return commission
+
+    one = await filed_in(first, "fix the header")
+    await wait_until(lambda: len(llm.requests) >= 1, what="the first member being at work")
+    # Made one that only reads while it is at work, and the other one that changes files: that one
+    # works in the project's directory, and waits for the run that still does.
+    assert (await host.change_duty(first, "scout"))["at_work"]
+    assert (await host.change_duty(other, "general"))["seat"] == ""
+    # Made one that changes files again before its run is over: beside the other now, so in a
+    # worktree of its own from its next commission on. The run it is at is where it was.
+    again = await host.change_duty(first, "general")
+    assert (again["seat"], again["at_work"]) == ("tree", True)
+    assert manager._writes_in.get(first) == ("Shop site", first)
+
+    two = await filed_in(other, "fix the footer")
+    await manager.settle()
+    assert manager.queued == [two.id] and len(llm.requests) == 1 and not (workdir / "b.txt").exists()
+    release.set()
+    await wait_status(host, one.id, "done")
+    await wait_status(host, two.id, "done")
+    assert (workdir / "a.txt").exists() and (workdir / "b.txt").exists()
+    # Over, it is one that works in a worktree: nobody waits for it in the directory any more.
+    await wait_until(lambda: first not in manager._direct_now, what="its run in the directory being over")
