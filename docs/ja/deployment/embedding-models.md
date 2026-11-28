@@ -69,4 +69,12 @@ TIKTOKEN_CACHE_DIR="$(pwd)/data/tiktoken_cache" \
   uv run python -c "import tiktoken; tiktoken.get_encoding('o200k_base')"
 ```
 
+Windows では PowerShell で次のコマンドを使ってウォームアップします：
+
+```powershell
+New-Item -ItemType Directory -Force data/tiktoken_cache | Out-Null
+$env:TIKTOKEN_CACHE_DIR = "$(Get-Location)\data\tiktoken_cache"
+uv run python -c "import tiktoken; tiktoken.get_encoding('o200k_base')"
+```
+
 `scripts/check_nuitka_dist.py` が検証するのは完成した成果物の embedding モデルファイルだけで、tiktoken キャッシュや実行ファイルにコンパイルされた推論モジュールは検査しません。ローカルビルドの後は、実行ディレクトリの `data/tiktoken_cache/` に blob が 1 つ以上あることを確認し（workflow も同じ確認をします）、アプリを一度起動してベクトル記憶が読み込めることを確かめてください——重みだけをバンドルして推論ランタイムを欠いた成果物は初回利用時にベクトル機能を sticky-disable し、気付きにくい不具合になるためです。
