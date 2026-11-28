@@ -2318,7 +2318,11 @@
                 ? (this.lipSyncFrame ? this.lipSyncMouthOpen : (this.speakingMouthOpen ? 0.7 : 0))
                 : 0;
             const tau = target > playback.openness ? 42 : 78;
-            if (!snapshot) playback.openness += (Math.max(0, Math.min(1, target)) - playback.openness) * (1 - Math.exp(-dt / tau));
+            if (!snapshot) {
+                playback.openness += (Math.max(0, Math.min(1, target)) - playback.openness) * (1 - Math.exp(-dt / tau));
+                // Below the existing quiet-render threshold no mouth is visible.
+                if (this.hasReviewedActions() && !this.isSpeaking && playback.openness < 0.001) playback.openness = 0;
+            }
             const amount = playback.openness;
             const padding = Number(this.layeredCanvasPadding) || 0;
             const blendImage = selection.blendIndex === null ? null : playback.cache.get(selection.blendIndex);

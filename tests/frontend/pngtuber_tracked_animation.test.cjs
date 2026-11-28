@@ -2767,3 +2767,22 @@ test('promoting an oversized prewarmed idle falls back to the bounded rolling ca
     assert.equal(m._trackedPlayback.idleResource,null);assert.equal(m._reviewedIdleResources.has(1),false);
     assert.ok([...m._reviewedIdleResources.values()].reduce((n,r)=>n+r.bytes,0)<=432*1024*1024);
 });
+
+test('stopped reviewed speech reaches exact silence and resumes stable idle canvas reuse', () => {
+    const {manager:m,context}=longIdleFixture();const p=m._trackedPlayback;
+    p.data.frames.forEach((_,i)=>p.cache.set(i,{}));m.drawTrackedMouth=()=>{};m.reviewedPlaybackTick=()=>{};
+    m.isSpeaking=false;p.openness=.5;p.lastDraw=100;
+    for(let i=1;i<=30;i++)m.drawTrackedPlayback(context,100+i*33);
+    assert.equal(p.openness,0);
+    let paints=0;const ctx=new Proxy({}, {get:(_,key)=>key==='clearRect'?()=>paints++:()=>{}});
+    m.canvasElement={width:576,height:768,getContext:()=>ctx};delete m.drawLayeredState;
+    m.drawLayeredState('idle',1120);m.drawLayeredState('idle',1130);assert.equal(paints,1);
+});
+
+test('silence snapping leaves active speech smoothing, snapshots and legacy models unchanged', () => {
+    const {manager:m,context}=longIdleFixture();const p=m._trackedPlayback;p.data.frames.forEach((_,i)=>p.cache.set(i,{}));
+    m.drawTrackedMouth=()=>{};m.reviewedPlaybackTick=()=>{};p.openness=.0005;p.lastDraw=100;m.isSpeaking=false;
+    m.drawTrackedPlayback(context,133,true);assert.equal(p.openness,.0005);assert.equal(p.lastDraw,100);
+    m.isSpeaking=true;m.speakingMouthOpen=true;p.openness=.5;m.drawTrackedPlayback(context,133);assert.ok(p.openness>.5&&p.openness<.7);
+    m.isSpeaking=false;m.hasReviewedActions=()=>false;p.openness=.0005;p.lastDraw=133;m.drawTrackedPlayback(context,166);assert.ok(p.openness>0&&p.openness<.0005);
+});

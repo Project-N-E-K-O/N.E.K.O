@@ -2249,6 +2249,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         currentModelType = type;
         const optionalPanel = document.getElementById('pngtuber-optional-models');
         if (optionalPanel) optionalPanel.hidden = type !== 'pngtuber';
+        if (type === 'pngtuber') window.dispatchEvent(new CustomEvent('pngtuber-optional-refresh'));
         window._modelManagerCurrentAvatarType = type;
         if (type === 'live3d') {
             currentLive3dSubType = (subType === 'vrm' || subType === 'mmd') ? subType : 'mmd';
@@ -9359,6 +9360,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
         }
 
+        if (deletedPNGTuber) window.dispatchEvent(new CustomEvent('pngtuber-optional-refresh'));
         if (deletedPNGTuber && currentModelType === 'pngtuber') {
             try {
                 if (typeof loadPNGTuberModels === 'function') await loadPNGTuberModels();

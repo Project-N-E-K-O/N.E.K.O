@@ -80,7 +80,11 @@ class PNGTuberDownloads:
             job = dict(self._jobs.get(model_id, {}))
         installed_folder = self.installation_folder(row)
         installed = self.output_root / installed_folder / ".builtin-pack-sha256"
-        if job.get("state") == "complete" and not installed.is_file():
+        try:
+            installed_hash = installed.read_text(encoding="utf-8").strip().lower()
+        except FileNotFoundError:
+            installed_hash = None
+        if job.get("state") == "complete" and installed_hash is None:
             job = {}
         return {
             "id": model_id,
@@ -91,10 +95,9 @@ class PNGTuberDownloads:
             "download_size": sum(
                 p["archive_size"] for p in _archive_parts(row["package"])
             ),
-            "installed": installed.is_file(),
-            "update_available": installed.is_file()
-            and installed.read_text(encoding="utf-8").strip().lower()
-            != row["package"]["archive_sha256"].lower(),
+            "installed": installed_hash is not None,
+            "update_available": installed_hash is not None
+            and installed_hash != row["package"]["archive_sha256"].lower(),
             "state": "idle",
             "received": 0,
             **job,

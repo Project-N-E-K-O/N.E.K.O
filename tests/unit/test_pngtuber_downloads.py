@@ -188,7 +188,10 @@ async def test_downloaded_optional_model_takes_precedence_over_old_local_builtin
         "name": "Test",
         "pngtuber": {"idle_image": "idle.png"},
     }
-    for directory in [root / "static/pngtuber" / folder, manager.output_root / manager.installation_folder(row)]:
+    for directory in [
+        root / "static/pngtuber" / folder,
+        manager.output_root / manager.installation_folder(row),
+    ]:
         directory.mkdir(parents=True)
         (directory / "model.json").write_text(json.dumps(data))
     (
@@ -250,3 +253,32 @@ def test_resource_versions_use_distinct_paths_and_old_version_remains_readable(
     manager.start("test")
     assert wait(manager)["state"] == "complete"
     assert (old / "keep.png").read_bytes() == b"active renderer still reads these bytes"
+
+
+@pytest.mark.parametrize("delete_during_read", [False, True])
+def test_status_uses_one_marker_read_and_treats_concurrent_deletion_as_uninstalled(
+    tmp_path, monkeypatch, delete_during_read
+):
+    manager, row, _, _ = make_manager(tmp_path)
+    marker = (
+        manager.output_root / manager.installation_folder(row) / ".builtin-pack-sha256"
+    )
+    marker.parent.mkdir(parents=True)
+    marker.write_text(row["package"]["archive_sha256"])
+    manager._jobs["test"] = {"state": "complete"}
+    original = Path.read_text
+    reads = []
+
+    def read(path, *args, **kwargs):
+        if path == marker:
+            reads.append(path)
+            if delete_during_read:
+                marker.unlink()
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read)
+    result = manager.status("test")
+    assert len(reads) == 1
+    assert result["installed"] is (not delete_during_read)
+    assert result["update_available"] is False
+    assert result["state"] == ("idle" if delete_during_read else "complete")
