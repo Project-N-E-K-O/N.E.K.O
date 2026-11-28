@@ -16,7 +16,7 @@ description: NekoPower（喵能力，`nekopower/`）的不变式、跨进程契�
 | agent runtime | `nekopower/runtime/` | 第 7、8 节；8.9 |
 | 能力网关、权限 | `nekopower/host/gateway.py`、`permissions.py` | 第 10 节 |
 | 键鼠、浏览器 | `nekopower/builtin/` | 第 11 节；11.9 |
-| 使魔空间、插件共享空间 | `nekopower/host/space.py`、`space_keeper.py` | 第 12 节；12.5 |
+| 使魔空间、插件共享空间 | `nekopower/host/space/`、`space_keeper.py`、`storage.py` | 第 12 节；12.5 |
 | 还没定的、没验证过的 | — | 第 15 节 |
 
 设计稿和代码对不上时以代码和测试为准。上限、时限都在 `config/nekopower_settings.py`（新加的可调参数也放这里），提示词在 `config/prompts/prompts_nekopower*.py`，测试在 `tests/unit/nekopower/` 和 `tests/unit/test_agent_*.py`。
@@ -58,7 +58,9 @@ description: NekoPower（喵能力，`nekopower/`）的不变式、跨进程契�
 
 - OpenClaw 不接。
 - 内置运行时只维护移植来的核心循环，不 fork 上游、不换成别的 SDK。
-- 系统级沙箱现在不做；将来的方向是自己做、Windows 原生，不依赖 Docker。仓库里的 seccomp 配置只服务 Docker 部署镜像里的浏览器。
+- 系统级原生沙箱不做、不再跟进（owner 2026-11-28 定）。仓库里的 seccomp 配置只服务 Docker 部署镜像里的浏览器。
+- 长期留存脱敏（复盘 / 经验条目打码）不做、不再跟进（owner 2026-11-28 定）。
+- 键鼠操作时不阻止用户介入（不做系统层键鼠输入过滤，owner 2026-11-28 定）。
 - task agent 的额度将来按用量算。现行按次扣是过渡（第 15 节），不要再设计按次数的方案。
 - 退出应用时关浏览器。
 
