@@ -1122,6 +1122,9 @@ export default {
     cancelConfirmMessage: 'Run ID: {runId}',
     cancelSuccess: 'キャンセルリクエストを送信しました'
   },
+  pythonDependencies: {
+    startBlocked: 'このプラグインの依存関係はまだインストールされていません。このプラグインの「起動」ボタンを個別にクリックしてインストールしてください。'
+  },
   status: {
     sourceMissing: 'ソースディレクトリを利用できません',
     running: '実行中',
@@ -1130,7 +1133,8 @@ export default {
     loadFailed: '読み込み失敗',
     loading: '読み込み中',
     disabled: '無効',
-    pending: 'ホスト待ち'
+    pending: 'ホスト待ち',
+    dependenciesPending: '依存関係が未インストール'
   },
   logLevel: {
     DEBUG: 'デバッグ',

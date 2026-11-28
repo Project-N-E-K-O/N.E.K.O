@@ -1122,6 +1122,9 @@ export default {
     cancelConfirmMessage: 'Run ID: {runId}',
     cancelSuccess: 'Cancel requested'
   },
+  pythonDependencies: {
+    startBlocked: 'This plugin\'s dependencies are not installed yet. Click its own Start button to install them.'
+  },
   status: {
     sourceMissing: 'Source directory unavailable',
     running: 'Running',
@@ -1130,7 +1133,8 @@ export default {
     loadFailed: 'Load Failed',
     loading: 'Loading',
     disabled: 'Disabled',
-    pending: 'Pending Host'
+    pending: 'Pending Host',
+    dependenciesPending: 'Dependencies not installed'
   },
   logLevel: {
     DEBUG: 'Debug',

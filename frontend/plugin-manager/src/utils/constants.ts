@@ -43,7 +43,8 @@ export enum PluginStatus {
   LOAD_FAILED = 'load_failed',
   LOADING = 'loading',
   DISABLED = 'disabled',
-  PENDING = 'pending'
+  PENDING = 'pending',
+  DEPENDENCIES_PENDING = 'dependencies_pending'
 }
 
 // 日志级别
@@ -71,7 +72,8 @@ export const STATUS_COLORS = {
   [PluginStatus.LOAD_FAILED]: 'var(--el-color-danger)',
   [PluginStatus.LOADING]: 'var(--el-color-primary)',
   [PluginStatus.DISABLED]: 'var(--el-color-info)',
-  [PluginStatus.PENDING]: 'var(--el-color-warning)'
+  [PluginStatus.PENDING]: 'var(--el-color-warning)',
+  [PluginStatus.DEPENDENCIES_PENDING]: 'var(--el-color-warning)'
 } as const
 
 // 状态文本映射
@@ -82,7 +84,8 @@ export const STATUS_TEXT_KEYS = {
   [PluginStatus.LOAD_FAILED]: 'status.loadFailed',
   [PluginStatus.LOADING]: 'status.loading',
   [PluginStatus.DISABLED]: 'status.disabled',
-  [PluginStatus.PENDING]: 'status.pending'
+  [PluginStatus.PENDING]: 'status.pending',
+  [PluginStatus.DEPENDENCIES_PENDING]: 'status.dependenciesPending'
 } as const
 
 // 日志级别颜色映射

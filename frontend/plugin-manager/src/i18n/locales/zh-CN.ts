@@ -1122,6 +1122,9 @@ export default {
     cancelConfirmMessage: 'Run ID: {runId}',
     cancelSuccess: '已发送取消请求'
   },
+  pythonDependencies: {
+    startBlocked: '此插件的运行依赖还没有安装，请单独点击它的「启动」按钮来安装。'
+  },
   status: {
     sourceMissing: '源码目录不可用',
     running: '运行中',
@@ -1130,7 +1133,8 @@ export default {
     loadFailed: '加载失败',
     loading: '加载中',
     disabled: '已禁用',
-    pending: '等待宿主'
+    pending: '等待宿主',
+    dependenciesPending: '依赖未安装'
   },
   logLevel: {
     DEBUG: '调试',

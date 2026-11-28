@@ -3554,6 +3554,92 @@ async def test_start_plugin_checks_python_requirements_off_the_event_loop(
 
 @pytest.mark.plugin_unit
 @pytest.mark.asyncio
+async def test_start_plugin_reports_lock_installable_dependencies_as_pending(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """uv.lock and no vendor/: a distinct code, so the plugin manager offers to install them."""
+    config_path = tmp_path / "vendor_adapter" / "plugin.toml"
+    vendor_dir = config_path.parent / "vendor"
+    config_path.parent.mkdir(parents=True)
+    (config_path.parent / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    config_path.write_text(
+        "\n".join(
+            [
+                "[plugin]",
+                "id = 'vendor_adapter'",
+                "name = 'Vendor Adapter'",
+                "type = 'adapter'",
+                "entry = 'tests.fake_mcp:FakeAdapterPlugin'",
+                "",
+                "[plugin_runtime]",
+                "enabled = true",
+                "auto_start = false",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (config_path.parent / "pyproject.toml").write_text(
+        '[project]\ndependencies = ["demo-lib>=2"]\n',
+        encoding="utf-8",
+    )
+
+    seen: dict[str, object] = {}
+
+    def _fake_find_missing(requirements, *, search_paths=None):
+        seen["thread"] = threading.current_thread()
+        seen["requirements"] = list(requirements)
+        seen["search_paths"] = list(search_paths or [])
+        # The returned name **intentionally differs from the declared name**: the gate must read the checker's verdict,
+        # not the plugin's own declaration. Both are nonempty, so merely asserting an error cannot distinguish
+        # swapped unpacking order, which reports the declared list as missing, telling the user
+        # to install a package already installed (revealed by a surviving mutation).
+        return ["missing-pkg>=9"]
+
+    monkeypatch.setattr(module.plugin_registry_service, "refresh_plugin", lambda _plugin_id: {"success": True})
+    monkeypatch.setattr(module, "_get_plugin_config_path", lambda _plugin_id: config_path)
+    monkeypatch.setattr(
+        module,
+        "resolve_plugin_config_from_path",
+        lambda *args, **kwargs: {
+            "effective_config": kwargs["base_config"],
+            "warnings": [],
+        },
+    )
+    monkeypatch.setattr(module, "_resolve_plugin_id_conflict", lambda *args, **kwargs: args[0])
+    monkeypatch.setattr(module, "_find_missing_python_requirements", _fake_find_missing)
+    monkeypatch.setattr(module, "create_plugin_host", _FakeProcessHost)
+    monkeypatch.setattr(module, "scan_plugin_metadata_isolated", _metadata_scan_for(_FakeAdapterPlugin))
+    monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: None)
+
+    plugins_backup = copy.deepcopy(module.state.plugins)
+    hosts_backup = dict(module.state.plugin_hosts)
+    try:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+        with module.state.acquire_plugin_hosts_write_lock():
+            module.state.plugin_hosts.clear()
+
+        with pytest.raises(ServerDomainError) as exc_info:
+            await module.PluginLifecycleService().start_plugin(
+                "vendor_adapter", refresh_registry=False
+            )
+
+        assert exc_info.value.code == "PLUGIN_PYTHON_DEPENDENCIES_PENDING"
+        assert "missing-pkg>=9" in str(exc_info.value)
+        assert seen["search_paths"] == []
+        assert not vendor_dir.exists()
+    finally:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+            module.state.plugins.update(plugins_backup)
+        with module.state.acquire_plugin_hosts_write_lock():
+            module.state.plugin_hosts.clear()
+            module.state.plugin_hosts.update(hosts_backup)
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
 @pytest.mark.parametrize("schema_version", ["current", 3])
 async def test_start_plugin_scans_once_when_the_packaged_schema_is_stale(
     monkeypatch: pytest.MonkeyPatch,
@@ -4407,3 +4493,70 @@ async def test_start_plugins_batch_with_refresh_registry_uses_borrowed_lock_with
         assert set(refreshed) == {"alpha", "beta"}
     finally:
         _restore_lifecycle_state(*backup)
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.parametrize(
+    ("error_type", "status"),
+    [("PythonDependenciesPending", "dependencies_pending"), ("MissingPythonDependencies", "load_failed")],
+)
+def test_plugin_status_tells_pending_dependencies_from_load_failures(error_type: str, status: str) -> None:
+    from plugin.server.application.plugins.query_service import _resolve_plugin_status
+
+    meta = {"runtime_load_state": "failed", "runtime_load_error_type": error_type}
+    assert _resolve_plugin_status(plugin_id="demo", plugin_meta=meta, running_plugin_ids=set()) == status
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.parametrize(
+    ("files", "expected"),
+    [
+        ({"uv.lock": "version = 1\n"}, "PythonDependenciesPending"),
+        ({"uv.lock": "version = 1\n", "vendor/dep.py": ""}, "MissingPythonDependencies"),
+        ({}, "MissingPythonDependencies"),
+    ],
+)
+def test_registry_marks_lock_installable_dependencies_as_pending(
+    tmp_path: Path, files: dict[str, str], expected: str,
+) -> None:
+    from plugin.core.registry import missing_dependencies_error_type
+
+    for name, content in files.items():
+        (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / name).write_text(content, encoding="utf-8")
+    assert missing_dependencies_error_type(tmp_path) == expected
+
+
+@pytest.mark.plugin_unit
+def test_start_gate_treats_a_vendor_built_for_another_python_as_pending(tmp_path: Path) -> None:
+    from plugin.neko_plugin_cli.core import uv_lock_install as lock_install
+
+    (tmp_path / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    (tmp_path / "vendor").mkdir()
+    lock_install.write_lock_marker(tmp_path / "vendor", lock_install.lock_sha256(tmp_path))
+    assert module._lock_dependencies_pending(tmp_path, False) is False
+    assert module._lock_dependencies_pending(tmp_path, True) is True
+
+    lock_install.write_lock_marker(tmp_path / "vendor", lock_install.lock_sha256(tmp_path), python="cp27-plan9")
+    assert module._lock_dependencies_pending(tmp_path, False) is True
+
+
+@pytest.mark.plugin_unit
+def test_registry_flags_a_stale_lock_installed_vendor_without_missing_dependencies(tmp_path: Path) -> None:
+    from plugin.core.registry import lock_dependencies_stale, missing_dependencies_error_type
+    from plugin.neko_plugin_cli.core import uv_lock_install as lock_install
+
+    (tmp_path / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    (tmp_path / "vendor").mkdir()
+    lock_install.write_lock_marker(tmp_path / "vendor", lock_install.lock_sha256(tmp_path))
+    assert lock_dependencies_stale(tmp_path) is False
+
+    (tmp_path / "uv.lock").write_text("version = 1\n# edited\n", encoding="utf-8")
+    assert lock_dependencies_stale(tmp_path) is True
+    assert missing_dependencies_error_type(tmp_path) == "PythonDependenciesPending"
+
+    shipped = tmp_path / "shipped"
+    (shipped / "vendor").mkdir(parents=True)
+    (shipped / "vendor" / "dep.py").write_text("", encoding="utf-8")
+    (shipped / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    assert lock_dependencies_stale(shipped) is False

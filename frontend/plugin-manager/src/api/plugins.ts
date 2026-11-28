@@ -437,3 +437,53 @@ export function getServerInfo(): Promise<{
 }> {
   return get('/server/info')
 }
+
+/** One package of a plugin's uv.lock install plan; size in bytes (null when the lock has none). */
+export interface PythonDependencyPackage {
+  name: string
+  version: string
+  size: number | null
+}
+
+export type PythonDependencyTaskState =
+  | 'planning'
+  | 'awaiting_confirmation'
+  | 'installing'
+  | 'completed'
+  | 'failed'
+
+export interface PythonDependencyStatus {
+  plugin_id: string
+  /** null when no install task exists for the plugin in this server process. */
+  state: PythonDependencyTaskState | null
+  /** Whether the plugin still needs its uv.lock dependencies installed (read from disk). */
+  pending: boolean
+  phase?: string | null
+  lock_sha256?: string | null
+  packages?: PythonDependencyPackage[]
+  total_size?: number
+  size_complete?: boolean
+  error_code?: string | null
+  error_detail?: string | null
+}
+
+/** Whether a plugin needs its uv.lock dependencies, and the install task if any. */
+export function getPythonDependencies(
+  pluginId: string,
+  config?: ErrorDisplayRequestConfig,
+): Promise<PythonDependencyStatus> {
+  return get(`/plugin/${encodeURIComponent(pluginId)}/python-dependencies`, config)
+}
+
+/**
+ * Plan the install (no lock digest) or run it for the plan the user confirmed.
+ * Also the retry after a failure. Poll getPythonDependencies for progress.
+ */
+export function requestPythonDependencyInstall(
+  pluginId: string,
+  confirmLockSha256?: string | null,
+): Promise<PythonDependencyStatus> {
+  return post(`/plugin/${encodeURIComponent(pluginId)}/python-dependencies`, {
+    confirm_lock_sha256: confirmLockSha256 ?? null,
+  })
+}

@@ -6,6 +6,8 @@ import {
   type ConsentRequestPlugin,
 } from '@/stores/pluginConsentState'
 import { usePluginStore } from '@/stores/plugin'
+import { usePluginDependencyInstall } from '@/stores/pluginDependencyInstall'
+import { getPythonDependencies } from '@/api/plugins'
 
 /**
  * Manual-start consent gate. Programmatic/internal starts and reloads call
@@ -14,6 +16,25 @@ import { usePluginStore } from '@/stores/plugin'
 export function usePluginStartGate() {
   const pluginStore = usePluginStore()
   const consentState = usePluginConsentState()
+  /**
+   * A plugin that ships uv.lock instead of vendor/ installs its Python
+   * dependencies first, after the user confirms the list. False when the
+   * dialog was closed before they were installed. A failed status read never
+   * blocks: the start itself then reports what is wrong.
+   */
+  async function ensureDependencies(pluginId: string) {
+    let pending = false
+    try {
+      // Silent: this probe runs before every manual start; the start reports real problems.
+      pending = (await getPythonDependencies(pluginId, { suppressErrorMessage: true })).pending === true
+    } catch {
+      return true
+    }
+    if (!pending) return true
+    const plugin = pluginStore.getPluginById(pluginId)
+    // Resolved lazily: callers that never start a pending plugin need no store for it.
+    return usePluginDependencyInstall().request(pluginId, plugin?.name || pluginId)
+  }
 
   /**
    * Returns the ids that may start now plus whether the confirmation dialog
@@ -54,6 +75,7 @@ export function usePluginStartGate() {
   async function startWithConsent(pluginId: string) {
     const { allowed } = await prepareBatchStart([pluginId])
     if (!allowed.includes(pluginId)) return false
+    if (!(await ensureDependencies(pluginId))) return false
     await pluginStore.start(pluginId)
     return true
   }

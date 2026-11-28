@@ -221,3 +221,37 @@ async def reload_all_plugins_endpoint(_: str = require_admin,
         raise _busy_response()
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
+
+
+class PythonDependencyInstallRequest(BaseModel):
+    # The uv.lock digest of the plan the user confirmed; omitted to only plan.
+    confirm_lock_sha256: Optional[str] = None
+
+
+@router.get("/plugin/{plugin_id}/python-dependencies")
+async def plugin_python_dependencies_status(plugin_id: str) -> dict[str, object]:
+    """Whether the plugin's uv.lock dependencies still need installing, and the running task."""
+    from plugin.server.application.plugin_lock_dependencies import get_dependency_status
+
+    try:
+        return await get_dependency_status(plugin_id)
+    except ServerDomainError as error:
+        raise_http_from_domain(error, logger=logger)
+
+
+@router.post("/plugin/{plugin_id}/python-dependencies")
+async def plugin_python_dependencies_install(
+    plugin_id: str,
+    payload: PythonDependencyInstallRequest | None = None,
+    _: str = require_admin,
+    __: None = Depends(require_plugin_mutation_access),
+) -> dict[str, object]:
+    """Plan the install of the plugin's locked dependencies, or run it once confirmed; poll with GET."""
+    from plugin.server.application.plugin_lock_dependencies import request_dependency_install
+
+    try:
+        return await request_dependency_install(
+            plugin_id, confirm_lock_sha256=payload.confirm_lock_sha256 if payload is not None else None,
+        )
+    except ServerDomainError as error:
+        raise_http_from_domain(error, logger=logger)

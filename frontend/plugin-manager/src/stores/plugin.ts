@@ -3,7 +3,7 @@ import { usePluginConsentState } from '@/stores/pluginConsentState'
  * 插件状态管理
  */
 import { defineStore } from 'pinia'
-import { ref, computed } from 'vue'
+import { ref, computed, reactive } from 'vue'
 import type { AxiosError } from 'axios'
 import { readErrorCode } from '@/utils/request'
 import {
@@ -77,6 +77,19 @@ export const usePluginStore = defineStore('plugin', () => {
   const registryRevision = ref(0)
   let statusReadSequence = 0
   const runtimeStatusTickets = new Map<string, number>()
+  // Request ticket of the latest running status per plugin. Metadata and
+  // status requests share one sequence, so one rule covers every arrival
+  // order: a dependencies_pending entry requested before a running status
+  // was requested is over (the dependencies got installed and it started),
+  // even if it arrives later or a metadata refresh failed; one requested
+  // after it still shows.
+  // Reactive: a late running that only records its ticket must still recompute the list.
+  const lastRunningTicket = reactive(new Map<string, number>())
+  function noteRuntimeStatus(pluginId: string, data: PluginStatusData | undefined, statusTicket: number) {
+    if (runtimeStatus(data) === 'running') {
+      lastRunningTicket.set(pluginId, Math.max(statusTicket, lastRunningTicket.get(pluginId) ?? 0))
+    }
+  }
   const metadataStatuses = ref<Record<string, { status: string; ticket: number }>>({})
   
   // 防止请求堆积：正在进行的请求
@@ -138,8 +151,17 @@ export const usePluginStore = defineStore('plugin', () => {
     // without a host it can synthesize "stopped". Only new metadata clears them.
     if (status === 'load_failed' || status === 'source_missing') return status
     const runtime = runtimeStatus(pluginStatuses.value[plugin.id])
-    return runtime && (runtimeStatusTickets.get(plugin.id) ?? 0) >= (metadata?.ticket ?? 0)
-      ? runtime : status
+    const runtimeIsNewer = runtime && (runtimeStatusTickets.get(plugin.id) ?? 0) >= (metadata?.ticket ?? 0)
+    // Pending dependencies hold over a synthesized stop until a newer runtime
+    // status says it runs: installing them and starting it ends the state for
+    // that metadata entry, even if the metadata refresh afterwards failed.
+    if (status === 'dependencies_pending') {
+      if ((lastRunningTicket.get(plugin.id) ?? -1) >= (metadata?.ticket ?? 0)) {
+        return runtimeIsNewer ? runtime : StatusEnum.STOPPED
+      }
+      return status
+    }
+    return runtimeIsNewer ? runtime : status
   }
 
   const consentState = usePluginConsentState()
@@ -483,6 +505,9 @@ export const usePluginStore = defineStore('plugin', () => {
         // 忽略过期响应（仅对全量请求）
         if (!pluginId && seq !== fetchStatusSeq) return supersededStatusResult(statusTicket)
         if (pluginId) {
+          // Before the staleness check: a running that lost the race to a newer
+          // stop still ends older pending metadata (it only records a ticket).
+          noteRuntimeStatus(pluginId, response as PluginStatusData, statusTicket)
           if (statusTicket < (runtimeStatusTickets.get(pluginId) ?? 0)) return supersededStatusResult(statusTicket)
           if (reportedStatus(response)) {
             runtimeStatusTickets.set(pluginId, statusTicket)
@@ -493,6 +518,7 @@ export const usePluginStore = defineStore('plugin', () => {
           const incoming = statuses.plugins || {}
           const next = { ...pluginStatuses.value }
           for (const id of new Set([...Object.keys(next), ...Object.keys(incoming)])) {
+            noteRuntimeStatus(id, incoming[id], statusTicket)  // as above: before the staleness check
             if (statusTicket < (runtimeStatusTickets.get(id) ?? 0)) continue
             if (reportedStatus(incoming[id])) {
               runtimeStatusTickets.set(id, statusTicket)

@@ -1122,6 +1122,9 @@ export default {
     cancelConfirmMessage: 'ID de ejecución: {runId}',
     cancelSuccess: 'Cancelación solicitada'
   },
+  pythonDependencies: {
+    startBlocked: 'Las dependencias de este complemento aún no están instaladas. Pulsa su propio botón Iniciar para instalarlas.'
+  },
   status: {
     sourceMissing: 'Directorio de código no disponible',
     running: 'En ejecución',
@@ -1130,7 +1133,8 @@ export default {
     loadFailed: 'Error de carga',
     loading: 'Cargando',
     disabled: 'Deshabilitado',
-    pending: 'Anfitrión pendiente'
+    pending: 'Anfitrión pendiente',
+    dependenciesPending: 'Dependencias sin instalar'
   },
   logLevel: {
     DEBUG: 'Depuración',

@@ -293,6 +293,87 @@ describe('plugin state ownership and registry cache invalidation', () => {
     expectVisibleStatus(store, 'running')
   })
 
+  it('keeps dependencies_pending over a synthesized stop, but a newer running status ends it', async () => {
+    const store = usePluginStore()
+    vi.mocked(getPluginSummaries).mockResolvedValueOnce({ plugins: [plugin({ status: 'dependencies_pending' })], message: '' })
+    vi.mocked(getPlugin).mockResolvedValueOnce(plugin({ status: 'dependencies_pending' }))
+    await store.fetchPluginSummaries()
+    await store.fetchPluginDetail('demo')
+    vi.mocked(getPluginStatus).mockResolvedValueOnce(runtime('stopped'))
+    await store.fetchPluginStatus('demo')
+    expectVisibleStatus(store, 'dependencies_pending')
+
+    // Installed and started; the metadata refresh has not landed (or failed).
+    vi.mocked(getPluginStatus).mockResolvedValueOnce(runtime('running'))
+    await store.fetchPluginStatus('demo')
+    expectVisibleStatus(store, 'running')
+
+    // The metadata refresh failed: a later stop or crash must not bring the stale pending back.
+    vi.mocked(getPluginStatus).mockResolvedValueOnce(runtime('stopped'))
+    await store.fetchPluginStatus('demo')
+    expectVisibleStatus(store, 'stopped')
+
+    // New metadata saying pending again (a later lock change) shows it again.
+    vi.mocked(getPluginSummaries).mockResolvedValueOnce({ plugins: [plugin({ status: 'dependencies_pending' })], message: '' })
+    await store.fetchPluginSummaries(true)
+    expectVisibleStatus(store, 'dependencies_pending')
+  })
+
+  it('an older running response does not end a newer dependencies_pending', async () => {
+    const store = usePluginStore()
+    let resolveStale!: (value: ReturnType<typeof runtime>) => void
+    vi.mocked(getPluginStatus).mockImplementationOnce(() => new Promise((resolve) => { resolveStale = resolve }))
+    // A status request starts before the metadata saying pending arrives...
+    const stale = store.fetchPluginStatus('demo')
+    vi.mocked(getPluginSummaries).mockResolvedValueOnce({ plugins: [plugin({ status: 'dependencies_pending' })], message: '' })
+    await store.fetchPluginSummaries()
+    // ...and answers running only afterwards.
+    resolveStale(runtime('running'))
+    await stale
+    vi.mocked(getPluginStatus).mockResolvedValueOnce(runtime('stopped'))
+    await store.fetchPluginStatus('demo')
+
+    expectVisibleStatus(store, 'dependencies_pending')
+  })
+
+  it('a running status requested after pending metadata ends it even when it arrives first', async () => {
+    const store = usePluginStore()
+    await store.fetchPluginSummaries()  // older metadata: stopped
+    let resolveMetadata!: (value: { plugins: ReturnType<typeof plugin>[]; message: string }) => void
+    vi.mocked(getPluginSummaries).mockImplementationOnce(() => new Promise((resolve) => { resolveMetadata = resolve }))
+    // The pending metadata is requested first...
+    const metadata = store.fetchPluginSummaries(true)
+    // ...a running status requested afterwards answers first...
+    vi.mocked(getPluginStatus).mockResolvedValueOnce(runtime('running'))
+    await store.fetchPluginStatus('demo')
+    // ...and the pending metadata lands last.
+    resolveMetadata({ plugins: [plugin({ status: 'dependencies_pending' })], message: '' })
+    await metadata
+    expectVisibleStatus(store, 'running')
+
+    vi.mocked(getPluginStatus).mockResolvedValueOnce(runtime('stopped'))
+    await store.fetchPluginStatus('demo')
+    expectVisibleStatus(store, 'stopped')
+  })
+
+  it('a running that loses the race to a newer stop still ends older pending metadata', async () => {
+    const store = usePluginStore()
+    vi.mocked(getPluginSummaries).mockResolvedValueOnce({ plugins: [plugin({ status: 'dependencies_pending' })], message: '' })
+    await store.fetchPluginSummaries()
+    let resolveRunning!: (value: ReturnType<typeof runtime>) => void
+    vi.mocked(getPluginStatus).mockImplementationOnce(() => new Promise((resolve) => { resolveRunning = resolve }))
+    const running = store.fetchPluginStatus('demo')  // requested first...
+    vi.mocked(getPluginStatus).mockResolvedValueOnce(runtime('stopped'))
+    await store.fetchPluginStatus('demo')  // ...the later stop answers first
+    // The list is read (and its computed cached) before the late running lands.
+    expect(store.pluginSummariesWithStatus.find((item) => item.id === 'demo')?.status).toBe('dependencies_pending')
+    resolveRunning(runtime('running'))
+    await running
+
+    expectVisibleStatus(store, 'stopped')
+    expect(store.pluginSummariesWithStatus.find((item) => item.id === 'demo')?.status).toBe('stopped')
+  })
+
   it('retains readable runtime state after a failed refresh', async () => {
     const store = usePluginStore()
     await store.fetchPluginSummaries()

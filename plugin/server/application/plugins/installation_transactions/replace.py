@@ -360,6 +360,55 @@ def _validate_replacement_targets(
         )
 
 
+def _needs_lock_dependencies(target_dir: Path) -> bool:
+    """Whether the new install waits for its uv.lock dependencies to be confirmed.
+
+    Then a running plugin is not restarted: the start would refuse with
+    PLUGIN_PYTHON_DEPENDENCIES_PENDING and roll a valid upgrade back before
+    the user could install them. The new version stays installed and
+    stopped; starting it offers the install.
+    """
+    from plugin.server.application.plugin_lock_dependencies import dependencies_pending
+
+    return dependencies_pending(target_dir)
+
+
+def _carry_over_locked_vendor(backup_dir: Path, target_dir: Path) -> None:
+    """Keep the dependencies the host installed from uv.lock when the lock did not change.
+
+    Only when the new package ships no vendor/ but a uv.lock with the same
+    digest as the one recorded in the old vendor/'s marker: a vendor/ the old
+    package shipped or a user copied in has no marker and is never carried
+    over. Copied, not moved, so a rollback still finds the backup complete.
+    A failed copy leaves the new install without vendor/: the plugin then
+    asks for its dependencies again, as after a lock change.
+    """
+    import secrets
+
+    from plugin.neko_plugin_cli.core.uv_lock_install import VENDOR_DIR_NAME, vendor_matches_lock
+    from plugin.utils.source_paths import VENDOR_SYNC_STAGING_PREFIX
+
+    if not vendor_matches_lock(backup_dir, target_dir):
+        return
+    destination = target_dir / VENDOR_DIR_NAME
+    # Copied beside vendor/ and renamed into place: a copy that fails halfway
+    # (and a cleanup that fails too) never sits at vendor/, where it would
+    # read as a shipped vendor/ and block installing from the lock.
+    staging = target_dir / f"{VENDOR_SYNC_STAGING_PREFIX}{secrets.token_hex(4)}"
+    try:
+        shutil.copytree(backup_dir / VENDOR_DIR_NAME, staging, symlinks=True)
+        if destination.is_dir():
+            destination.rmdir()  # vendor_matches_lock() allows only an empty one here
+        staging.rename(destination)
+    except OSError as exc:
+        shutil.rmtree(staging, ignore_errors=True)
+        logger.warning(
+            "carrying over the lock-installed vendor/ failed plugin_dir={} err_type={}",
+            target_dir.name,
+            type(exc).__name__,
+        )
+
+
 async def replace_plugin(
     *,
     layout: PluginLayout,
@@ -463,9 +512,11 @@ async def replace_plugin(
             if backup is not None:
                 await merge_directory_contents(backup, target)
         await _restore_manifest_adjacent_profiles(backup_dir, target_dir)
+        await asyncio.to_thread(_carry_over_locked_vendor, backup_dir, target_dir)
         stage = "invalidate_cache"
         await asyncio.to_thread(_evict_replaced_plugin_modules, plugin_id)
-        if was_running:
+        restarted = was_running and not await asyncio.to_thread(_needs_lock_dependencies, target_dir)
+        if restarted:
             stage = "restart"
             await _start_plugin(plugin_id)
         # New source is installed: recovery grants from an earlier failed automatic reload no longer apply. Do this after
@@ -482,7 +533,7 @@ async def replace_plugin(
                     type(exc).__name__,
                 )
         return ReplacePluginResult(
-            restarted=was_running,
+            restarted=restarted,
             rollback_status="not_needed",
             install_result=install_result,
             backup_dir=backup_dir,

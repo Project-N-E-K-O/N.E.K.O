@@ -1122,6 +1122,9 @@ export default {
     cancelConfirmMessage: 'Run ID: {runId}',
     cancelSuccess: '已傳送取消請求'
   },
+  pythonDependencies: {
+    startBlocked: '此外掛的執行依賴還沒有安裝，請單獨點擊它的「啟動」按鈕來安裝。'
+  },
   status: {
     sourceMissing: '原始碼目錄無法使用',
     running: '執行中',
@@ -1130,7 +1133,8 @@ export default {
     loadFailed: '載入失敗',
     loading: '載入中',
     disabled: '已停用',
-    pending: '等待宿主'
+    pending: '等待宿主',
+    dependenciesPending: '依賴未安裝'
   },
   logLevel: {
     DEBUG: '除錯',

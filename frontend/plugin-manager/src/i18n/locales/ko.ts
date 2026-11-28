@@ -1122,6 +1122,9 @@ export default {
     cancelConfirmMessage: 'Run ID: {runId}',
     cancelSuccess: '취소 요청을 전송했습니다'
   },
+  pythonDependencies: {
+    startBlocked: '이 플러그인의 의존성이 아직 설치되지 않았습니다. 해당 플러그인의 "시작" 버튼을 따로 클릭해 설치하세요.'
+  },
   status: {
     sourceMissing: '소스 폴더를 사용할 수 없음',
     running: '실행 중',
@@ -1130,7 +1133,8 @@ export default {
     loadFailed: '로드 실패',
     loading: '로딩 중',
     disabled: '비활성화됨',
-    pending: '호스트 대기 중'
+    pending: '호스트 대기 중',
+    dependenciesPending: '의존성 미설치'
   },
   logLevel: {
     DEBUG: '디버그',

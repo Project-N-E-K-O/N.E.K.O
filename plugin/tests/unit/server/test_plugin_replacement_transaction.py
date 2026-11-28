@@ -1220,3 +1220,221 @@ async def test_committed_install_reconciles_by_manifest_id_not_directory_name(
 
     # Grants are keyed by the manifest id; an unreadable manifest is skipped.
     assert seen == ["demo"]
+
+
+_LOCK_TEXT = "version = 1\n"
+
+
+async def _upgrade_with_lock(
+    tmp_path: Path, *, old_vendor: str, new_lock: str, new_vendor: bool = False,
+) -> Path:
+    """Upgrade an install whose vendor/ is ``old_vendor`` ("locked" or "hand") to a lock-only package."""
+    from plugin.neko_plugin_cli.core import uv_lock_install as lock_install
+
+    target = tmp_path / "plugins" / "demo"
+    target.mkdir(parents=True)
+    (target / "plugin.toml").write_text(OLD_PLUGIN_MANIFEST, encoding="utf-8")
+    (target / "uv.lock").write_text(_LOCK_TEXT, encoding="utf-8")
+    (target / "vendor").mkdir()
+    (target / "vendor" / "dependency.txt").write_text("old", encoding="utf-8")
+    if old_vendor == "locked":
+        lock_install.write_lock_marker(target / "vendor", lock_install.lock_sha256(target))
+
+    async def install_new() -> dict[str, object]:
+        target.mkdir()
+        (target / "plugin.toml").write_text(NEW_PLUGIN_MANIFEST, encoding="utf-8")
+        (target / "uv.lock").write_text(new_lock, encoding="utf-8")
+        if new_vendor:
+            (target / "vendor").mkdir()
+            (target / "vendor" / "dependency.txt").write_text("shipped", encoding="utf-8")
+        return {"installed": True}
+
+    await replace_plugin(
+        layout=resolve_plugin_layout("demo", target, storage_root=tmp_path / "state"),
+        install_new=install_new,
+        validate_channel_specific=_async_none,
+    )
+    return target
+
+
+@pytest.mark.asyncio
+async def test_upgrade_with_an_unchanged_lock_keeps_the_lock_installed_vendor(tmp_path: Path) -> None:
+    target = await _upgrade_with_lock(tmp_path, old_vendor="locked", new_lock=_LOCK_TEXT)
+
+    assert (target / "plugin.toml").read_text(encoding="utf-8") == NEW_PLUGIN_MANIFEST
+    assert (target / "vendor" / "dependency.txt").read_text(encoding="utf-8") == "old"
+    assert (target / "vendor" / ".neko-uv-lock.json").is_file()
+
+
+@pytest.mark.asyncio
+async def test_upgrade_with_a_changed_lock_drops_the_old_vendor(tmp_path: Path) -> None:
+    target = await _upgrade_with_lock(tmp_path, old_vendor="locked", new_lock=_LOCK_TEXT + "# new\n")
+
+    assert not (target / "vendor").exists()
+
+
+@pytest.mark.asyncio
+async def test_upgrade_never_carries_a_hand_copied_vendor_even_with_the_same_lock(tmp_path: Path) -> None:
+    target = await _upgrade_with_lock(tmp_path, old_vendor="hand", new_lock=_LOCK_TEXT)
+
+    assert not (target / "vendor").exists()
+
+
+@pytest.mark.asyncio
+async def test_upgrade_to_a_package_with_its_own_vendor_keeps_the_shipped_one(tmp_path: Path) -> None:
+    target = await _upgrade_with_lock(tmp_path, old_vendor="locked", new_lock=_LOCK_TEXT, new_vendor=True)
+
+    assert (target / "vendor" / "dependency.txt").read_text(encoding="utf-8") == "shipped"
+    assert not (target / "vendor" / ".neko-uv-lock.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_upgrade_carries_the_vendor_over_an_empty_shipped_vendor_dir(tmp_path: Path) -> None:
+    from plugin.neko_plugin_cli.core import uv_lock_install as lock_install
+
+    target = tmp_path / "plugins" / "demo"
+    target.mkdir(parents=True)
+    (target / "plugin.toml").write_text(OLD_PLUGIN_MANIFEST, encoding="utf-8")
+    (target / "uv.lock").write_text(_LOCK_TEXT, encoding="utf-8")
+    (target / "vendor").mkdir()
+    (target / "vendor" / "dependency.txt").write_text("old", encoding="utf-8")
+    lock_install.write_lock_marker(target / "vendor", lock_install.lock_sha256(target))
+
+    async def install_new() -> dict[str, object]:
+        target.mkdir()
+        (target / "plugin.toml").write_text(NEW_PLUGIN_MANIFEST, encoding="utf-8")
+        (target / "uv.lock").write_text(_LOCK_TEXT, encoding="utf-8")
+        (target / "vendor").mkdir()  # an explicit empty vendor/ entry in the archive
+        return {"installed": True}
+
+    await replace_plugin(
+        layout=resolve_plugin_layout("demo", target, storage_root=tmp_path / "state"),
+        install_new=install_new,
+        validate_channel_specific=_async_none,
+    )
+
+    assert (target / "vendor" / "dependency.txt").read_text(encoding="utf-8") == "old"
+    assert not any(path.name.startswith(".vendor.") for path in target.iterdir())
+
+
+@pytest.mark.asyncio
+async def test_failed_carry_over_copy_leaves_no_partial_vendor(tmp_path: Path, monkeypatch) -> None:
+    def failing_copytree(source, destination, **kwargs):
+        Path(destination).mkdir()
+        (Path(destination) / "half.txt").write_text("partial", encoding="utf-8")
+        raise OSError("disk full")
+
+    monkeypatch.setattr(replace_transaction.shutil, "copytree", failing_copytree)
+    target = await _upgrade_with_lock(tmp_path, old_vendor="locked", new_lock=_LOCK_TEXT)
+
+    # No half-copied vendor/: the plugin asks for its dependencies again instead.
+    assert not (target / "vendor").exists()
+
+
+@pytest.mark.asyncio
+async def test_running_plugin_upgraded_to_a_new_lock_stays_installed_and_stopped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from plugin.neko_plugin_cli.core import uv_lock_install as lock_install
+
+    started: list[str] = []
+
+    async def running(_plugin_id: str) -> bool:
+        return True
+
+    async def start(plugin_id: str) -> None:
+        started.append(plugin_id)
+        raise AssertionError("a start would refuse with PLUGIN_PYTHON_DEPENDENCIES_PENDING and roll back")
+
+    monkeypatch.setattr(replace_transaction, "_plugin_is_running", running)
+    monkeypatch.setattr(replace_transaction, "_start_plugin", start)
+    target = tmp_path / "plugins" / "demo"
+    target.mkdir(parents=True)
+    (target / "plugin.toml").write_text(OLD_PLUGIN_MANIFEST, encoding="utf-8")
+    (target / "uv.lock").write_text(_LOCK_TEXT, encoding="utf-8")
+    (target / "vendor").mkdir()
+    lock_install.write_lock_marker(target / "vendor", lock_install.lock_sha256(target))
+
+    async def install_new() -> dict[str, object]:
+        target.mkdir()
+        (target / "plugin.toml").write_text(NEW_PLUGIN_MANIFEST, encoding="utf-8")
+        (target / "pyproject.toml").write_text(
+            '[project]\nname = "demo"\nversion = "2"\ndependencies = ["orjson>=3"]\n', encoding="utf-8",
+        )
+        (target / "uv.lock").write_text(_LOCK_TEXT + "# new\n", encoding="utf-8")
+        return {"installed": True}
+
+    result = await replace_plugin(
+        layout=resolve_plugin_layout("demo", target, storage_root=tmp_path / "state"),
+        install_new=install_new,
+        validate_channel_specific=_async_none,
+    )
+
+    assert result.rollback_status == "not_needed"
+    assert result.restarted is False and started == []
+    assert (target / "plugin.toml").read_text(encoding="utf-8") == NEW_PLUGIN_MANIFEST
+    assert not (target / "vendor").exists()
+
+
+@pytest.mark.asyncio
+async def test_running_plugin_upgraded_with_the_same_lock_restarts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    started: list[str] = []
+
+    async def running(_plugin_id: str) -> bool:
+        return True
+
+    async def start(plugin_id: str) -> None:
+        started.append(plugin_id)
+
+    monkeypatch.setattr(replace_transaction, "_plugin_is_running", running)
+    monkeypatch.setattr(replace_transaction, "_start_plugin", start)
+    target = await _upgrade_with_lock(tmp_path, old_vendor="locked", new_lock=_LOCK_TEXT)
+
+    assert started == ["demo"]
+    assert (target / "vendor" / "dependency.txt").is_file()
+
+
+@pytest.mark.asyncio
+async def test_carried_vendor_satisfies_the_restart_gate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With declared dependencies, the restart is allowed only because the vendor/ was carried over first."""
+    from plugin.neko_plugin_cli.core import uv_lock_install as lock_install
+
+    started: list[str] = []
+
+    async def running(_plugin_id: str) -> bool:
+        return True
+
+    async def start(plugin_id: str) -> None:
+        started.append(plugin_id)
+
+    monkeypatch.setattr(replace_transaction, "_plugin_is_running", running)
+    monkeypatch.setattr(replace_transaction, "_start_plugin", start)
+    pyproject = '[project]\nname = "demo"\nversion = "1"\ndependencies = ["demo-lib==1"]\n'
+    target = tmp_path / "plugins" / "demo"
+    dist = target / "vendor" / "demo_lib-1.dist-info"
+    dist.mkdir(parents=True)
+    (dist / "METADATA").write_text("Metadata-Version: 2.1\nName: demo-lib\nVersion: 1\n", encoding="utf-8")
+    (target / "plugin.toml").write_text(OLD_PLUGIN_MANIFEST, encoding="utf-8")
+    (target / "pyproject.toml").write_text(pyproject, encoding="utf-8")
+    (target / "uv.lock").write_text(_LOCK_TEXT, encoding="utf-8")
+    lock_install.write_lock_marker(target / "vendor", lock_install.lock_sha256(target))
+
+    async def install_new() -> dict[str, object]:
+        target.mkdir()
+        (target / "plugin.toml").write_text(NEW_PLUGIN_MANIFEST, encoding="utf-8")
+        (target / "pyproject.toml").write_text(pyproject, encoding="utf-8")
+        (target / "uv.lock").write_text(_LOCK_TEXT, encoding="utf-8")
+        return {"installed": True}
+
+    result = await replace_plugin(
+        layout=resolve_plugin_layout("demo", target, storage_root=tmp_path / "state"),
+        install_new=install_new,
+        validate_channel_specific=_async_none,
+    )
+
+    assert result.restarted is True and started == ["demo"]
+    assert (target / "vendor" / "demo_lib-1.dist-info" / "METADATA").is_file()

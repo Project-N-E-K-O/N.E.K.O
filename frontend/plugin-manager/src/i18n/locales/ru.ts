@@ -1122,6 +1122,9 @@ export default {
     cancelConfirmMessage: 'Run ID: {runId}',
     cancelSuccess: 'Запрос на отмену отправлен'
   },
+  pythonDependencies: {
+    startBlocked: 'Зависимости этого плагина ещё не установлены. Нажмите его собственную кнопку «Запустить», чтобы установить их.'
+  },
   status: {
     sourceMissing: 'Каталог исходников недоступен',
     running: 'Запущен',
@@ -1130,7 +1133,8 @@ export default {
     loadFailed: 'Ошибка загрузки',
     loading: 'Загрузка',
     disabled: 'Отключён',
-    pending: 'Ожидание хоста'
+    pending: 'Ожидание хоста',
+    dependenciesPending: 'Зависимости не установлены'
   },
   logLevel: {
     DEBUG: 'Отладка',
