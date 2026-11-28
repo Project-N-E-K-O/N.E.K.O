@@ -21,6 +21,7 @@ memory (``Manager``): nothing of the user's is read.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from pathlib import Path
@@ -2646,6 +2647,24 @@ async def test_a_session_whose_preset_was_changed_and_changed_back_is_not_summed
     await host.change_duty(member, "general")
     assert (await host.ledger.get_session(member)).model_was == ran_on
     await host.change_duty(member, "scout")
+
+    # A start whose first message the session never takes sent nothing of it there: the runtime
+    # having taken the command is not its task agent having run.
+    runtime = agents._runtimes.builtin()
+    sent: list[str] = []
+
+    async def never_arrives(_session_id: str, text: str, **_how: Any) -> None:
+        sent.append(text)
+
+    with pytest.MonkeyPatch.context() as patched:
+        patched.setattr(runtime, "prompt", never_arrives)
+        receipt = await _dispatch(host, "look at the fonts of the shop site")
+        await wait_until(lambda: bool(sent), what="the first message being sent")
+        await asyncio.sleep(0.2)
+        assert (await host.ledger.get_session(member)).model_was == ran_on
+        await host.abort(receipt.commission_id, reason="test")
+        await let_go(host)
+    assert (await host.ledger.get_session(member)).model_was == ran_on and await agents._idle_model(member) is None
 
     # Started there, it is where it last ran.
     await wait_status(host, (await _dispatch(host, "look at the footer of the shop site")).commission_id, "done")

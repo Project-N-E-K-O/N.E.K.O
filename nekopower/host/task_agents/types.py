@@ -279,6 +279,11 @@ class _Session:
     started_as: str | None = None
     # Which of the texts sent to the session tells it so, by its number.
     started_as_with: int = 0
+    # The model this start sends the session to (its ``model_ident``), where its row kept
+    # that its task agent last ran on another (``Session.model_was``) and no event has yet
+    # shown a run of this start at work: on record as where it ran once one does
+    # (``_note_ran_on``). None otherwise.
+    started_on: str | None = None
     # Output permissions of commands still represented in this session’s job registry.
     job_sources: dict[str, tuple[Callable[[], bool], Callable[[], Awaitable[bool]]]] = field(default_factory=dict)
     # Text increments and tool output waiting to be written as one event row.

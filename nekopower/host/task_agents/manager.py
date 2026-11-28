@@ -1480,14 +1480,12 @@ class TaskAgentManager(
             await runtime.start(spec)
             session.opened_in_runtime = True
             if kept.model_was and choice.ident:
-                # Its row said it was sent to another model than its task agent last ran on (its
-                # preset was changed): it runs there from here on.
-                try:
-                    await self._ledger.model_ran(session.session_id, choice.ident)
-                except asyncio.CancelledError:
-                    raise
-                except Exception:  # noqa: BLE001 - it is not summed up while idle until a start says so
-                    logger.warning("noting the model a session was started on failed", exc_info=True)
+                # Its row says it is sent to another model than its task agent last ran on (its
+                # preset was changed): it has run there once an event shows a run of this start
+                # at work (``_note_ran_on``), not by the runtime having taken the command. A
+                # start that is refused after this, or whose first message is never sent, sent
+                # nothing of its conversation there.
+                session.started_on = choice.ident
             if not told_as and last_as != now_as:
                 # Nothing to tell it: what it is opened as is on record from here on, whatever
                 # becomes of this start, for the next start to tell a change by; also one made
@@ -2939,6 +2937,7 @@ class TaskAgentManager(
         one whose start failed before that is.
         """
         await self._note_started_as(session)
+        await self._note_ran_on(session)
         if not session.opening_sent:
             return
         session.opening_sent = False
@@ -2992,6 +2991,27 @@ class TaskAgentManager(
         except Exception:  # noqa: BLE001 - noted with the next event, or told once more with the next start
             session.started_as = preset
             logger.warning("noting the preset a session was started under failed", exc_info=True)
+
+    async def _note_ran_on(self, session: _Session) -> None:
+        """Put on record that a session's task agent ran on the model this start sent it to, where a start has that to say.
+
+        Called once an event shows a run of the start at work
+        (``_Session.started_on``, ``_note_opened``): its conversation
+        went to that model with it. Not written, it is noted with the next such
+        event; never, the session is not summed up while idle until a
+        start says so (``_idle_model``).
+        """
+        ident = session.started_on
+        if ident is None:
+            return
+        session.started_on = None
+        try:
+            await self._ledger.model_ran(session.session_id, ident)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - noted with the next event; until then it is not summed up while idle
+            session.started_on = ident
+            logger.warning("noting the model a session was started on failed", exc_info=True)
 
     def _summary(self, text: str) -> str:
         from config.nekopower_settings import TASK_AGENT_RESULT_SUMMARY_MAX_TOKENS
