@@ -313,6 +313,35 @@ def test_the_page_retains_remaining_concurrent_browser_occupant_when_latest_ends
     assert out["warnings"] == []
 
 
+def test_websocket_lifecycle_clears_cached_builtin_activities_to_avoid_resurrection():
+    source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+    onopen_idx = source.index("S.socket.onopen = function () {")
+    onclose_idx = source.index("S.socket.onclose = function () {")
+    onopen_head = source[onopen_idx : onopen_idx + 600]
+    onclose_head = source[onclose_idx : onclose_idx + 800]
+    for snippet in (onopen_head, onclose_head):
+        assert "window._agentBuiltinActivity = {};" in snippet
+        assert "window._agentBuiltinActivities = Object.create(null);" in snippet
+
+    first = {**ACTIVITY, "commission_id": "c1"}
+    second = {**ACTIVITY, "commission_id": "c2"}
+    out = _run_branch(
+        f"""
+        const first = {json.dumps(first)};
+        const second = {json.dumps(second)};
+        tell(first);
+        // Simulate socket close / reconnect reset while c1's ended was missed.
+        window._agentBuiltinActivity = {{}};
+        window._agentBuiltinActivities = Object.create(null);
+        tell(second);
+        tell(Object.assign({{}}, second, {{ state: 'ended', window: null }}));
+        out.afterSecondEnded = kept();
+        """
+    )
+    assert out["afterSecondEnded"] == {}
+    assert out["warnings"] == []
+
+
 # ---------------------------------------------------------------------------
 # The main server's routes pass the requests on to the agent process
 # ---------------------------------------------------------------------------

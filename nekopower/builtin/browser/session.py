@@ -1008,6 +1008,7 @@ class BrowserSession:
                         block_http=need_js_http,
                         timeout=5.0,
                     )
+                    await self._enable_auto_attach(connection, child_session_id, timeout=5.0)
         except CdpClosed:
             return
         finally:
@@ -1716,7 +1717,11 @@ class BrowserSession:
         if not session_id:
             return None
         for page in self._pages.values():
-            if page.session_id == session_id or session_id in page.child_sessions.values():
+            if (
+                page.session_id == session_id
+                or session_id in page.child_sessions.values()
+                or session_id in page.worker_sessions
+            ):
                 return page
         return None
 

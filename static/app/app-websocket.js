@@ -3031,6 +3031,10 @@
         // ---- onopen ----
         S.socket.onopen = function () {
             if (S.socket !== _thisSocket) return;
+            // Discard cached builtin activity from any previous connection so a task whose
+            // `ended` event was missed while disconnected cannot be resurrected after reconnect.
+            window._agentBuiltinActivity = {};
+            window._agentBuiltinActivities = Object.create(null);
             // 连接断开期间挂起的问话不会补发：连上时读一次现在还在等的。
             if (window.NekoPowerAsk) { try { window.NekoPowerAsk.sync(); } catch (_) {} }
             // session_ended_by_server latches suppressAssistantStreamUntilNextSession
@@ -6448,6 +6452,8 @@
                 console.log('[WS] stale onclose skipped (socket already replaced)');
                 return;
             }
+            window._agentBuiltinActivity = {};
+            window._agentBuiltinActivities = Object.create(null);
             console.log(window.t('console.websocketClosed'));
             if (window.nekoVoiceCaptureReadiness) window.nekoVoiceCaptureReadiness.disconnected();
             removeExternalAsrPreview();

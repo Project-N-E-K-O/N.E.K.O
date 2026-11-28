@@ -4924,6 +4924,58 @@ async def test_attach_mode_arms_websocket_guard_and_auto_attaches_oopifs_and_wor
     assert any(tid == "shared-w-1" for tid, _ in world.browser.port_guards)
 
 
+async def test_nested_workers_created_by_workers_receive_port_guards(
+    make_session: Any, world: BrowserWorld
+) -> None:
+    world.settings(mode="attach")
+    session = make_session(own_ports=lambda: {48911})
+    await session.start()
+    page = session.selected()
+    await session.navigate(page, "url", ORDER)
+
+    world.browser.other_targets.append(
+        {"targetId": "outer-w-1", "type": "worker", "url": "https://evil.example/outer.js", "title": "outer"}
+    )
+    world.browser.other_targets.append(
+        {"targetId": "nested-w-1", "type": "worker", "url": "https://evil.example/nested.js", "title": "nested"}
+    )
+    world.browser._other_sessions["outer-w-sid"] = "outer-w-1"
+    world.browser._other_sessions["nested-w-sid"] = "nested-w-1"
+
+    mark = world.browser.mark()
+    world.browser._emit(
+        "Target.attachedToTarget",
+        {
+            "sessionId": "outer-w-sid",
+            "targetInfo": {"targetId": "outer-w-1", "type": "worker", "url": "https://evil.example/outer.js"},
+            "waitingForDebugger": True,
+        },
+        page.session_id,
+    )
+    await _until(lambda: "outer-w-1" in world.browser.resumed_targets)
+    outer_cmds = [cmd.method for cmd in world.browser.since(mark) if cmd.session_id == "outer-w-sid"]
+    assert "Target.setAutoAttach" in outer_cmds
+    assert outer_cmds.index("Target.setAutoAttach") < outer_cmds.index("Runtime.runIfWaitingForDebugger")
+    assert any(tid == "outer-w-1" for tid, _ in world.browser.port_guards)
+
+    nested_mark = world.browser.mark()
+    world.browser._emit(
+        "Target.attachedToTarget",
+        {
+            "sessionId": "nested-w-sid",
+            "targetInfo": {"targetId": "nested-w-1", "type": "worker", "url": "https://evil.example/nested.js"},
+            "waitingForDebugger": True,
+        },
+        "outer-w-sid",
+    )
+    await _until(lambda: "nested-w-1" in world.browser.resumed_targets)
+    nested_cmds = [cmd.method for cmd in world.browser.since(nested_mark) if cmd.session_id == "nested-w-sid"]
+    assert "Target.setAutoAttach" in nested_cmds
+    assert nested_cmds.index("Target.setAutoAttach") < nested_cmds.index("Runtime.runIfWaitingForDebugger")
+    assert any(tid == "nested-w-1" for tid, _ in world.browser.port_guards)
+    assert "nested-w-sid" in page.worker_sessions
+
+
 async def test_attach_retries_remaining_candidates_when_cdp_connect_fails(
     session: BrowserSession, world: BrowserWorld
 ) -> None:
