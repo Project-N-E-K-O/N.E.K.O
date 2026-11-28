@@ -868,10 +868,11 @@ async def test_a_task_agent_started_by_another_runs_where_that_one_runs(
     assert (name, note) == (expected, None)
 
 
-async def test_a_task_agent_whose_preset_withholds_tools_runs_in_the_built_in_runtime_though_its_starter_is_in_dsh(
+async def test_a_task_agent_whose_preset_withholds_tools_runs_where_its_starter_is_and_is_told_what_not_to_use(
     hosts, tmp_path
 ):
-    # dsh has file and command tools of its own, which the host cannot keep from a session there.
+    # dsh has file and command tools of its own, which the host cannot keep from a session there:
+    # a session of a preset that is without them is opened there all the same, and told not to use them.
     def lead(preset: dict[str, Any]) -> ScriptedLLM:
         return ScriptedLLM(
             [
@@ -892,12 +893,15 @@ async def test_a_task_agent_whose_preset_withholds_tools_runs_in_the_built_in_ru
     (scout,) = await host.ledger.select(parent_id=scouted.id)
     (worker,) = await host.ledger.select(parent_id=worked.id)
     assert (scouted.runtime, worked.runtime) == (RUNTIME_DSH, RUNTIME_DSH)
-    # The scout where the host keeps the tools from it; a worker where its starter is, as before.
-    assert ((await host.ledger.get_session(scout.session_id)).preset, scout.runtime) == ("scout", RUNTIME_BUILTIN)
+    # Both where their starter is.
+    assert ((await host.ledger.get_session(scout.session_id)).preset, scout.runtime) == ("scout", RUNTIME_DSH)
     assert ((await host.ledger.get_session(worker.session_id)).preset, worker.runtime) == ("worker", RUNTIME_DSH)
-    # That is where it belongs: it is not on record as a commission dsh could not take.
-    assert await _fallbacks(host, scout.id) == []
-    assert len(host.fake.builtin.created) == 1
+    assert await _fallbacks(host, scout.id) == [] and host.fake.builtin.created == []
+    # The scout is told, with what opens its part, which of dsh's own tools its preset is without;
+    # the worker, which has them, is told nothing of the kind.
+    told = [json.dumps(request) for request in child.requests]
+    kept_off = "This runtime still offers you tools of its own that write or edit files or run commands; as scout"
+    assert kept_off in told[0] and "still offers you tools" not in told[-1]
 
 
 @pytest.mark.parametrize(

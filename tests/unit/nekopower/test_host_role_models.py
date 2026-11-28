@@ -2637,10 +2637,21 @@ async def test_a_model_chosen_for_a_preset_the_session_has_no_longer_is_not_writ
         await host.ledger.keep_model(session.id, "scout", seat="tree")
 
 
-async def test_a_new_session_of_a_preset_that_withholds_tools_is_opened_in_the_built_in_runtime(hosts, tmp_path):
+CAPPED_TEMPLATE = '---\nname: capped\ndescription: When a few requests are enough.\nmax_requests: 5\n---\nYour role: quick.\n'
+
+
+@pytest.mark.parametrize(
+    ("preset", "only_built_in"), [("scout", False), ("general", False), ("boss", True), ("capped", True)]
+)
+async def test_which_new_sessions_are_opened_in_the_built_in_runtime_whatever_else_would_be_chosen(
+    hosts, tmp_path, preset, only_built_in
+):
     manager = _manager(tmp_path, _default_slots())
-    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM([_report()]), manager)
-    await host.open_session("Lan", "Shop site", preset="scout")
+    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM([_report(), _report()]), manager)
+    templates = tmp_path / "nekopower" / "task_agent_space" / "templates"
+    templates.mkdir(parents=True, exist_ok=True)
+    (templates / "capped.md").write_text(CAPPED_TEMPLATE, encoding="utf-8")
+    await host.open_session("Lan", "Shop site", preset=preset)
     chosen: list[bool] = []
     choose = host.task_agents._choose_runtime
 
@@ -2650,8 +2661,8 @@ async def test_a_new_session_of_a_preset_that_withholds_tools_is_opened_in_the_b
 
     host.task_agents._choose_runtime = choosing
     await wait_status(host, (await _dispatch(host, "look at the header of the shop site")).commission_id, "done")
-    await let_go(host)
-    await wait_status(host, (await _dispatch(host, "look at the footer of the shop site")).commission_id, "done")
 
-    # Where the host can keep its tools from it; and it goes on where it was begun.
-    assert chosen == [True, True]
+    # A preset that withholds tools is held to in dsh by what its session is told, and is opened
+    # wherever another would be. The leader of a project is not, nor one whose requests are capped
+    # (the host cannot count them in dsh).
+    assert chosen and chosen[0] is only_built_in

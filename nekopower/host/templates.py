@@ -37,9 +37,11 @@ without. Six come with the program (``PRESETS``):
   agent space keeps: it judges with nothing but the work before it. It is
   told the user's rules like every session (``TaskAgentSpace.brief``).
 
-A session whose preset withholds a tool, or caps its requests, is opened in
-the built-in runtime (``Template.needs_builtin``): dsh has file and command
-tools of its own, which the host cannot keep from a session there.
+A session whose preset withholds a tool is held to it for certain in the
+built-in runtime only (``Template.needs_builtin``): dsh has file and command
+tools of its own, which the host cannot keep from a session there. In dsh
+such a session is told its role and not to use those tools, and is opened
+without the host's own tools its preset withholds; that is all that holds it.
 
 Withholding the tools that write files is not a sandbox. A preset that
 keeps the shell (the inspector, or a template with ``writes: none`` alone)
@@ -266,13 +268,16 @@ class Template:
 
     @property
     def needs_builtin(self) -> bool:
-        """Whether its sessions are opened in the built-in runtime, whatever else would be chosen.
+        """Whether the host holds its sessions to it in the built-in runtime only.
 
         dsh has tools of its own that write files and run commands, and
         makes its model requests by itself: the host can neither keep a
-        tool from a session there nor count its requests. A preset that
-        withholds a tool or caps the requests is held to only where the
-        host opens the session itself.
+        tool from a session there nor count its requests. A session of
+        such a preset is opened in dsh like any other all the same,
+        where it is held to its preset by what it is told
+        (``TaskAgentManager._start``); only one whose requests are
+        capped, and the leader of a project, stay with the built-in
+        runtime.
         """
         return bool(self.withheld()) or self.max_requests is not None
 

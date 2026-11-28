@@ -861,3 +861,32 @@ def test_what_a_session_is_told_of_a_change_stays_small():
     for now in ("worker", "general"):
         assert "still offers you tools" not in said("scout", now, in_dsh=True)
     assert "still offers you tools" not in said("general", "scout", in_dsh=False)
+
+
+def test_in_dsh_a_session_is_told_with_every_commission_which_of_its_tools_its_preset_is_without():
+    from nekopower.host.task_agents import preset_keeps_off_in_dsh, preset_notes
+    from nekopower.host.templates import builtin_templates
+    from utils.tokenize import count_tokens
+
+    made = builtin_templates()
+
+    def notes(was: str, now: str, **how: bool) -> list[str]:
+        return preset_notes(was, now, made[now], **{"in_dsh": True, "above": True, "opens": True, **how})
+
+    off = preset_keeps_off_in_dsh("scout", made["scout"])
+    # Nothing but being told holds it to that there: said with every commission it opens in dsh,
+    # whether or not its preset was ever changed (its template may have come to withhold them).
+    assert notes("", "scout") == [off] and notes("", "scout", above=False) == [off]
+    # With a change of its preset it is told once, in what tells it of the change.
+    (changed,) = notes("general", "scout")
+    assert changed.count(off) == 1 and changed.startswith("A note from the host")
+    # A session that holds nothing said under the other preset is told of no change, and of this.
+    assert notes("general", "scout", above=False) == [off]
+    # Not where no commission is opened (it goes on with one), not for a preset that has those tools,
+    # and not in the built-in runtime, where it has none of them.
+    assert notes("", "scout", opens=False) == [] and notes("", "general") == [] and notes("", "worker") == []
+    assert notes("", "scout", in_dsh=False) == [] and notes("", "scout", in_dsh=False, above=False) == []
+    assert notes("general", "scout", in_dsh=False) == [presets.PRESET_CHANGED.format(was="general", now="scout")]
+    sizes = {now: count_tokens(preset_keeps_off_in_dsh(now, made[now])) for now in ("scout", "planner", "inspector")}
+    # Measured 34 for the scout and the planner, 31 for the inspector.
+    assert max(sizes.values()) <= 36, sizes

@@ -764,6 +764,43 @@ def preset_change_note(was: str, now: str, template: Any, *, in_dsh: bool) -> st
     if not in_dsh:
         return presets.PRESET_CHANGED.format(**names)
     said = presets.PRESET_CHANGED_IN_DSH.format(role=template.body or presets.PRESET_CHANGED_NO_ROLE, **names)
+    kept_off = preset_keeps_off_in_dsh(now, template)
+    return f"{said} {kept_off}" if kept_off else said
+
+
+def preset_notes(was: str, now: str, template: Any, *, in_dsh: bool, above: bool, opens: bool) -> list[str]:
+    """Return what the first message of a start says of the session's preset, before anything else; empty for nothing.
+
+    A change of it (``was``: what its task agent last knew itself as,
+    empty when that is what it has), where what was said under the
+    other preset is ``above`` in the conversation that takes the
+    message: a session that holds none of it begins as what it is.
+    And in dsh, with every commission that is opened there (``opens``),
+    that the tools dsh has of its own which the preset is without are
+    not used: nothing but being told holds a session to that there, a
+    template may have come to withhold them since the session's first
+    message, and dsh sums its conversations up by itself. (Said once
+    where the change is told, which says it as well.)
+    """
+    if was and above:
+        return [preset_change_note(was, now, template, in_dsh=in_dsh)]
+    if in_dsh and opens:
+        kept_off = preset_keeps_off_in_dsh(now, template)
+        return [kept_off] if kept_off else []
+    return []
+
+
+def preset_keeps_off_in_dsh(preset: str, template: Any) -> str:
+    """Return what a session in dsh is told of the tools dsh has of its own that its preset is without; empty for none.
+
+    Tools that write or edit files and tools that run commands: the
+    host cannot keep them from a session in dsh, so a session of a
+    preset that is without them is told not to use them, after what it
+    is told of its role (which says it has none).
+    """
+    from config.prompts import prompts_nekopower_presets as presets
+    from nekopower.host.templates import model_name
+
     withheld = template.withheld()
     kept_off = [
         words
@@ -773,9 +810,9 @@ def preset_change_note(was: str, now: str, template: Any, *, in_dsh: bool) -> st
         )
         if set(tools) <= withheld
     ]
-    if kept_off:
-        said += presets.PRESET_IN_DSH_KEEPS_OFF.format(what=" or ".join(kept_off), now=names["now"])
-    return said
+    if not kept_off:
+        return ""
+    return presets.PRESET_IN_DSH_KEEPS_OFF.format(what=" or ".join(kept_off), now=model_name(preset))
 
 
 def _shows_work_taken(event: dict[str, Any], sent: int) -> bool:
@@ -3826,13 +3863,15 @@ class TaskAgentManager(TreeWork):
             opened = opened_at is not None
             at_it = opened and await self._ledger.opened_last(session.session_id) == commission.id
 
-            # A preset that withholds tools or caps requests is held to in the built-in
-            # runtime, where a new session of it is opened. One that was begun in dsh goes on
-            # there all the same, with what was said in it (a session given such a preset
-            # later, or whose template came to withhold something): held to its preset there
-            # by what it is told, and by the tools of the host's it is opened without; the
-            # tools dsh has of its own the host cannot keep from it.
-            builtin_only = template.needs_builtin and begun_in != RUNTIME_DSH
+            # A preset that withholds tools is held to in dsh by what its session is told
+            # (its role, and that the tools dsh has of its own are not used: ``preset_notes``)
+            # and by the tools of the host's it is opened without; the tools dsh has of its
+            # own the host cannot keep from it. So such a session is opened wherever any
+            # other would be, and one begun in dsh goes on there. Two stay with the built-in
+            # runtime, where they are not begun in dsh already: the leader of a project
+            # (never run in dsh, with the tools it hands work out by), and a session whose
+            # preset caps its requests, which the host cannot count in dsh.
+            builtin_only = (kept.kind == "project" or template.max_requests is not None) and begun_in != RUNTIME_DSH
             if not choice.agent:
                 # A model the user set for the preset is used in the
                 # built-in runtime only, for now: dsh starts its processes
@@ -4052,16 +4091,6 @@ class TaskAgentManager(TreeWork):
             anew = await worded(cleared=True, excerpt=excerpt) if commission.continues or excerpt else onward
             back_at_it = await worded(cleared=False, back=True) if opened and not at_it else onward
 
-            def duty_note(runtime_name: str) -> list[str]:
-                if not told_as:
-                    return []
-                if begun_in != runtime_name or session.cleared_before:
-                    # Nothing that was said under the other preset is in the conversation that
-                    # takes this message (removed since, or in the other runtime): it begins as
-                    # what it is, and there is no change to tell it of.
-                    return []
-                return [preset_change_note(told_as, now_as, template, in_dsh=runtime_name == RUNTIME_DSH)]
-
             def first_message(runtime_name: str) -> tuple[list[str], bool]:
                 here = begun_in == runtime_name
                 opens = opens_in(runtime_name)
@@ -4072,7 +4101,13 @@ class TaskAgentManager(TreeWork):
                 # came of the other instead.
                 said = anew if not here else back_at_it if opened else onward
                 parts = [
-                    *duty_note(runtime_name), *([said] if opens else []), *carried,
+                    *preset_notes(
+                        told_as, now_as, template, in_dsh=runtime_name == RUNTIME_DSH,
+                        # Whether what was said under the other preset is in the conversation
+                        # that takes this message (not removed since, nor in the other runtime).
+                        above=here and not session.cleared_before, opens=opens,
+                    ),
+                    *([said] if opens else []), *carried,
                     *([prompt] if prompt is not None else []),
                 ]
                 # Keep answer envelopes intact until the runtime is ready to receive them.

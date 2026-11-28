@@ -211,12 +211,13 @@ PRESET_CHANGED_IN_DSH = (
 )
 # What stands for the role of a preset that says nothing of one.
 PRESET_CHANGED_NO_ROLE = "You have no role beyond what every session is told."
-# Added there for a preset that is without tools dsh has of its own, which
-# the host cannot keep from a session in dsh: the session stays where it was
-# begun, and is held to its preset by being told. Rendered with str.format:
+# Said to a session in dsh of a preset that is without tools dsh has of its
+# own, which the host cannot keep from a session there: it is held to its
+# preset by being told. With the first message of such a session, behind the
+# host's instructions, and after the role where it is told of a change. Rendered with str.format:
 # now, what (``PRESET_IN_DSH_FILES``, ``PRESET_IN_DSH_COMMANDS`` or both, joined by `` or ``).
 PRESET_IN_DSH_KEEPS_OFF = (
-    " This runtime still offers you tools of its own that {what}; as {now} you do not use them, "
+    "This runtime still offers you tools of its own that {what}; as {now} you do not use them, "
     "whatever is said above of having none."
 )
 PRESET_IN_DSH_FILES = "write or edit files"
