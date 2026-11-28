@@ -724,6 +724,11 @@ class WorktreeManager:
                 meta = await asyncio.to_thread(_copy_trees.read_copy_meta, target)
                 if meta is None or not await asyncio.to_thread(target.is_dir):
                     raise WorktreeError(f"{target} is not a working copy of {project_dir}")
+                if not _copy_trees.same_path(str(meta.get("project_dir") or ""), resolved_project):
+                    raise WorktreeError(f"{target} is not a working copy of {project_dir}")
+                meta_id = str(meta.get("id") or "")
+                if meta_id != worktree_id or (copy_meta.get("id") and meta_id != str(copy_meta.get("id"))):
+                    raise WorktreeError(f"{target} is not a working copy of {project_dir}")
                 now_id = await asyncio.to_thread(_directory_identity, target)
                 if _copy_trees.copy_matches_identity(target, meta, now_id) == "theirs":
                     raise WorktreeError(f"{target} is not the working copy originally made for {project_dir}")
@@ -1102,7 +1107,7 @@ class WorktreeManager:
                 (await self._git(worktree.repo_root, "rev-parse", "--path-format=absolute", "--git-common-dir")).lines()[0]
             )
             delivery = await asyncio.to_thread(_noted_delivery, common, worktree.path, strict=True)
-            return bool(delivery.get("pr_pending"))
+            return bool(delivery.get("pr_pending") or delivery.get("pending_pr"))
 
     def _forget_created_prs(self, path: Path) -> None:
         key_path = os.path.normcase(str(path))
@@ -1913,13 +1918,30 @@ class WorktreeManager:
 
     @classmethod
     def _normalize_push_target(cls, push_url: str, remote_name: str, root: Path | None = None) -> str:
-        """Return a stable repository identifier for ``push_url`` so remote-alias retargeting is detected."""
+        """Return a stable push-endpoint identifier for ``push_url`` while preserving explicit ports."""
         raw = push_url.strip()
         if not raw:
             return f"remote:{remote_name}"
-        gh_repo = cls._github_repo_from_remote_url(raw)
-        if gh_repo:
-            return f"gh:{gh_repo.lower()}"
+        # SCP-like SSH syntax: git@host:owner/repo.git (uses default SSH port 22).
+        scp = re.match(r"^(?:[^@/\s]+@)?([A-Za-z0-9._-]+):([^/\s]+(?:/[^/\s]+)*?)(?:\.git)?/?$", raw)
+        if scp:
+            host, repo_path = scp.group(1), scp.group(2)
+            if not (len(host) == 1 and host.isalpha()):
+                return f"remote-repo:{host.lower()}/{repo_path.rstrip('/').lower()}"
+        # Standard URL syntax: http(s):// or ssh:// (keep non-default ports distinct).
+        url_match = re.match(
+            r"^(https?|ssh)://(?:[^@/\s]+@)?([A-Za-z0-9._-]+)(?::(\d+))?/([^/\s]+(?:/[^/\s]+)*?)(?:\.git)?/?$",
+            raw,
+        )
+        if url_match:
+            scheme = url_match.group(1).lower()
+            host = url_match.group(2).lower()
+            port = url_match.group(3)
+            repo_path = url_match.group(4).rstrip("/").lower()
+            default_ports = {"http": "80", "https": "443", "ssh": "22"}
+            if port and port != default_ports[scheme]:
+                return f"remote-repo:{scheme}:{host}:{port}/{repo_path}"
+            return f"remote-repo:{host}/{repo_path}"
         if re.match(r"^[A-Za-z][A-Za-z0-9+.-]*://", raw) or re.match(r"^[^@/\s]+@[^:/\s]+:", raw):
             return raw.rstrip("/")
         if root is not None and not os.path.isabs(raw):
@@ -2139,21 +2161,92 @@ class WorktreeManager:
             already_pushed_here = bool(push_target and pushed_targets.get(push_target) == existing_tip)
             needs_push = bool(remote_name) and same_owned and not already_pushed_here
             if needs_push and existing_tip is not None:
-                ok_push, push_err = await _push_owned_branch(existing_tip)
-                if not ok_push:
-                    return MergeResult(
-                        "failed",
-                        detail=push_err,
-                        skipped=result.skipped,
-                        current=existing_tip,
-                        result=result.commit,
-                        result_tree=result.tree,
-                        merged_tree=merged_tree_oid,
-                        base=base,
-                        branch=target_branch,
-                        commit=existing_tip,
-                        remote=remote_name,
+                already_pushed_by_intent = False
+                if not owns_remote_branch:
+                    try:
+                        remote_oid = await self._remote_head_oid(root, ls_remote_target, ref_name, label=remote_name)
+                    except WorktreeError as exc:
+                        return MergeResult(
+                            "failed",
+                            detail=str(exc),
+                            skipped=result.skipped,
+                            current=existing_tip,
+                            result=result.commit,
+                            result_tree=result.tree,
+                            merged_tree=merged_tree_oid,
+                            base=base,
+                            branch=target_branch,
+                            commit=existing_tip,
+                            remote=remote_name,
+                        )
+                    if remote_oid is not None:
+                        if (
+                            delivery.get("pending_branch") == target_branch
+                            and delivery.get("pending_commit") == existing_tip
+                            and delivery.get("pending_push_target") == push_target
+                            and remote_oid == existing_tip
+                        ):
+                            already_pushed_by_intent = True
+                        else:
+                            return MergeResult(
+                                "failed",
+                                detail=(
+                                    f"remote branch {target_branch!r} already exists on {remote_name!r} "
+                                    f"and does not belong to this worktree"
+                                ),
+                                skipped=result.skipped,
+                                current=existing_tip,
+                                result=result.commit,
+                                result_tree=result.tree,
+                                merged_tree=merged_tree_oid,
+                                base=base,
+                                branch=target_branch,
+                                commit=existing_tip,
+                                remote=remote_name,
+                            )
+                if not already_pushed_by_intent:
+                    intent_delivery: dict[str, Any] = {
+                        **delivery,
+                        "pending_branch": target_branch,
+                        "pending_commit": existing_tip,
+                        "pending_push_target": push_target,
+                        **({"pending_pr": True} if mark_pr_pending else {}),
+                    }
+                    try:
+                        await _to_the_end(asyncio.to_thread(_note_delivery, common, worktree.path, intent_delivery))
+                    except OSError as exc:
+                        return MergeResult(
+                            "failed",
+                            detail=f"recording delivery intent failed: {exc}",
+                            skipped=result.skipped,
+                            current=existing_tip,
+                            result=result.commit,
+                            result_tree=result.tree,
+                            merged_tree=merged_tree_oid,
+                            base=base,
+                            branch=target_branch,
+                            commit=existing_tip,
+                            remote=remote_name,
+                        )
+                    ok_push, push_err = await _push_owned_branch(
+                        existing_tip, checked_remote_absent=not owns_remote_branch
                     )
+                    if not ok_push:
+                        with contextlib.suppress(OSError):
+                            await _to_the_end(asyncio.to_thread(_note_delivery, common, worktree.path, delivery))
+                        return MergeResult(
+                            "failed",
+                            detail=push_err,
+                            skipped=result.skipped,
+                            current=existing_tip,
+                            result=result.commit,
+                            result_tree=result.tree,
+                            merged_tree=merged_tree_oid,
+                            base=base,
+                            branch=target_branch,
+                            commit=existing_tip,
+                            remote=remote_name,
+                        )
                 new_pushed_targets = {**pushed_targets, push_target: existing_tip} if push_target else dict(pushed_targets)
                 same_target_prior = (
                     same_branch
@@ -2385,6 +2478,7 @@ class WorktreeManager:
             "pending_branch": target_branch,
             "pending_commit": new_commit,
             "pending_push_target": push_target if remote_name else "",
+            **({"pending_pr": True} if mark_pr_pending else {}),
         }
         try:
             await _to_the_end(asyncio.to_thread(_note_delivery, common, worktree.path, intent_delivery))
@@ -3085,7 +3179,15 @@ class WorktreeManager:
                     asyncio.to_thread(_copy_trees.stage_copy_landing, worktree.path, computed["result_scan"])
                 )
             except (OSError, ValueError) as error:
+                with contextlib.suppress(OSError):
+                    await _to_the_end(asyncio.to_thread(_copy_trees.clear_copy_landing_intent, worktree.path))
                 return MergeResult("failed", detail=f"staging working-copy landing baseline failed: {error}", **counted)
+            except BaseException:
+                # Staging ran before any project file was written: clear the intent so cancellation
+                # does not leave future landings blocked by an unfinalized landing marker.
+                with contextlib.suppress(OSError):
+                    await _to_the_end(asyncio.to_thread(_copy_trees.clear_copy_landing_intent, worktree.path))
+                raise
             stop = threading.Event()
             landed_ok = False
             try:
@@ -3184,15 +3286,22 @@ class WorktreeManager:
                 f"reading working-copy metadata for {path} failed ({exc}); leaving working copy and recovery data intact"
             ) from exc
         if meta is None:
-            # Confirmed missing meta.json: keep recovery data if any exists, otherwise prune empty dir.
+            # Confirmed missing meta.json: only prune an empty metadata directory; never discard
+            # base_manifest.json, blobs/, or recovery backups when meta.json is absent.
             if await asyncio.to_thread(meta_dir.exists):
-                if await asyncio.to_thread(_copy_trees._has_incomplete_rollback, meta_dir) or (
-                    await asyncio.to_thread(_copy_trees._read_landing_intent, meta_dir) is not None
-                ):
+                def _prune_empty_meta_dir(directory: Path) -> bool:
+                    try:
+                        os.rmdir(_fs(directory))
+                        return True
+                    except FileNotFoundError:
+                        return True
+                    except OSError:
+                        return False
+
+                if not await _to_the_end(asyncio.to_thread(_prune_empty_meta_dir, meta_dir)):
                     raise WorktreeError(
-                        f"{path} has pending recovery data under {meta_dir} without meta.json; leaving it intact"
+                        f"{path} is missing meta.json while {meta_dir} is not empty; leaving working copy and metadata intact"
                     )
-                await _to_the_end(asyncio.to_thread(_remove_tree, meta_dir))
             return
         if token and meta.get("token") and meta["token"] != token:
             raise WorktreeError(

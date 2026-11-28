@@ -790,9 +790,11 @@ def _read_landing_intent(meta_dir: Path) -> dict[str, Any] | None:
 
 
 def _merged_file_mode(existing_mode: int | None, chosen_mode: int) -> int:
-    """Preserve an existing POSIX file's non-execute mode bits while applying the merged execute bit."""
+    """Preserve an existing POSIX file's permission bits while applying execute-bit transitions."""
     if existing_mode is None:
         return chosen_mode
+    if bool(existing_mode & stat.S_IXUSR) == bool(chosen_mode & stat.S_IXUSR):
+        return existing_mode
     if bool(chosen_mode & stat.S_IXUSR):
         exec_mask = ((existing_mode & 0o444) >> 2) | stat.S_IXUSR
         return existing_mode | exec_mask
@@ -1000,6 +1002,15 @@ def copy_has_changes(
     base = read_base_manifest(copy_path)
     if meta is None or base is None:
         return True
+    meta_dir = copy_meta_dir(copy_path)
+    if _has_incomplete_rollback(meta_dir):
+        return True
+    landing_intent = _read_landing_intent(meta_dir)
+    if landing_intent is not None:
+        intent_digest = str(landing_intent.get("digest") or "")
+        base_digest = str(base.get("digest") or "")
+        if not (intent_digest and base_digest == intent_digest and base.get("source") == "landed"):
+            return True
     links = active_links(copy_path, meta.get("links") or ())
     base_files = base.get("files") or {}
     try:
@@ -1477,12 +1488,21 @@ def compute_copy_merge(
                 else:
                     merged_manifest_entries[rel] = dict(entry)
             _check_cancelled(cancel_event)
+            preserved_base_for_skipped = {
+                rel: dict(base_files[rel]) for rel in copy_skipped_untouched if rel in base_files
+            }
+            if preserved_base_for_skipped:
+                pending_current_files = {**current_scan.files, **preserved_base_for_skipped}
+                pending_current_digest = manifest_digest(pending_current_files)
+            else:
+                pending_current_files = current_scan.files
+                pending_current_digest = current_scan.digest
             _atomic_write_json(
                 pending_dir / "pending.json",
                 {
                     "base": base_digest,
-                    "current": current_scan.digest,
-                    "current_files": current_scan.files,
+                    "current": pending_current_digest,
+                    "current_files": pending_current_files,
                     "current_skipped": list(current_scan.skipped),
                     "result": result_scan.digest,
                     "result_files": result_scan.files,
@@ -1504,7 +1524,7 @@ def compute_copy_merge(
             "conflicts": tuple(sorted(conflicts)),
             "skipped": new_skipped,
             "base": base_digest,
-            "current": current_scan.digest,
+            "current": pending_current_digest,
             "result": result_scan.digest,
             "result_tree": result_scan.digest,
             "merged_tree": merge_id,
@@ -1524,6 +1544,22 @@ def compute_copy_merge(
             }
         else:
             expected_current[rel] = cur
+    preserved_base_for_skipped = {
+        rel: dict(base_files[rel]) for rel in copy_skipped_untouched if rel in base_files
+    }
+    if preserved_base_for_skipped:
+        # Retain baseline entries (and their blobs) for paths temporarily skipped in the copy
+        # so re-including them later does not resurrect files the user deleted in project_dir.
+        next_baseline_files = {**result_scan.files, **preserved_base_for_skipped}
+        baseline_scan = CopyScan(
+            files=next_baseline_files,
+            skipped=result_scan.skipped,
+            dependency_dirs=result_scan.dependency_dirs,
+            total_bytes=result_scan.total_bytes,
+            digest=manifest_digest(next_baseline_files),
+        )
+    else:
+        baseline_scan = result_scan
     return {
         "status": "ready" if changes else "unchanged",
         "changes": tuple(changes),
@@ -1536,7 +1572,7 @@ def compute_copy_merge(
         "result": result_scan.digest,
         "result_tree": result_scan.digest,
         "merged_tree": manifest_digest(merged_entries),
-        "result_scan": result_scan,
+        "result_scan": baseline_scan,
     }
 
 
@@ -1657,9 +1693,16 @@ def stage_copy_landing(copy_path: Path, new_scan: CopyScan) -> None:
     for rel, entry in new_scan.files.items():
         if entry.get("kind") == "file":
             sha = str(entry["sha256"])
+            blob_path = blobs_dir / sha
+            if os.path.isfile(fs_path(blob_path)):
+                continue
             src = copy_path / rel
-            if os.path.isfile(fs_path(src)):
-                _store_blob_file(src, sha, blobs_dir)
+            src_fs = fs_path(src)
+            if not os.path.isfile(src_fs) or os.path.islink(src_fs):
+                raise ValueError(f"working copy file vanished before landing ({rel}); merge again")
+            if _hash_file(src_fs) != sha:
+                raise ValueError(f"working copy file changed before landing ({rel}); merge again")
+            _store_blob_file(src, sha, blobs_dir)
     prev_base = read_base_manifest(copy_path)
     prev_skipped = list(prev_base.get("skipped") or ()) if prev_base is not None else []
     _atomic_write_json(
@@ -1695,8 +1738,11 @@ def advance_copy_baseline(copy_path: Path, new_scan: CopyScan) -> None:
         if entry.get("kind") == "file":
             sha = str(entry["sha256"])
             keep.add(sha)
+            if os.path.isfile(fs_path(blobs_dir / sha)):
+                continue
             src = copy_path / rel
-            if os.path.isfile(fs_path(src)):
+            src_fs = fs_path(src)
+            if os.path.isfile(src_fs) and not os.path.islink(src_fs) and _hash_file(src_fs) == sha:
                 _store_blob_file(src, sha, blobs_dir)
     prev_base_file = meta_dir / _BASE_MANIFEST_FILE
     prev_base = read_base_manifest(copy_path)

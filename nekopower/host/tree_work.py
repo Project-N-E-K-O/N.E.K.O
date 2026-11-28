@@ -1491,6 +1491,14 @@ class TreeWork:
                 # when that run is over.
                 await self._ledger.update_tree(row.id, state="active")
                 return "again"
+            if await self._has_pending_delivery(row, handle):
+                return await self._not_landed(
+                    row,
+                    commission,
+                    done,
+                    REASON_FAILED,
+                    detail="a pushed branch in this worktree still has a pending pull request delivery",
+                )
             told, shown = self._landed_texts(
                 row,
                 commission.lang,
@@ -1591,12 +1599,29 @@ class TreeWork:
             kept_copies=result.kept_copies,
         )
 
+    async def _has_pending_delivery(self, row: Tree, handle: Any) -> bool:
+        """Return whether ``handle`` still has a pushed branch awaiting PR creation (fail-closed on errors)."""
+        if handle is None:
+            return False
+        check_pending = getattr(self.worktrees, "has_pending_delivery", None)
+        if check_pending is None:
+            return False
+        try:
+            return bool(await check_pending(handle))
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - fail-closed: keep worktree when delivery state cannot be read
+            logger.warning("whether worktree %s has a pending delivery could not be told; it is kept", row.id, exc_info=True)
+            return True
+
     async def _seen_to_once_landed(self, row: Tree, handle: Any, result: Any) -> None:
         """Remove a worktree whose changes are landed, or keep it for what was never carried over."""
         if result.skipped:
             # What is never carried over (too large, or a repository of its own) is in the
             # worktree alone: removed with it, it would be gone. Kept, for the user to see to.
             await self._keep_for_skipped(row, result.skipped)
+        elif await self._has_pending_delivery(row, handle):
+            await self._ledger.update_tree(row.id, state="unlanded", reason=REASON_FAILED)
         else:
             await self._remove_tree(row, handle)
 
@@ -1838,10 +1863,8 @@ class TreeWork:
             changed = not gone or (handle is not None and await self.worktrees.has_changes(handle))
             if handle is None and not await self._tree_is_gone(row):
                 changed = True  # there, and not to be opened this moment: kept
-            if not changed and handle is not None:
-                check_pending = getattr(self.worktrees, "has_pending_delivery", None)
-                if check_pending is not None and await check_pending(handle):
-                    changed = True
+            if not changed and handle is not None and await self._has_pending_delivery(row, handle):
+                changed = True
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 - kept: it may hold something
@@ -2045,6 +2068,13 @@ class TreeWork:
                 await self._note_tree_event(
                     row.commission_id, "landed", {**self._landed_payload(row, result, outside), "by": "user"}
                 )
+            if await self._has_pending_delivery(row, handle):
+                detail = "a pushed branch in this worktree still has a pending pull request delivery"
+                answer["status"] = "failed"
+                answer["detail"] = detail
+                if not was_kept:
+                    await self._ledger.update_tree(row.id, state="unlanded", reason=REASON_FAILED)
+                return answer
             if result.skipped:
                 # Landed, but for what is never carried over: that stays where it is, with the worktree.
                 await self._keep_for_skipped(row, result.skipped, kept=was_kept)

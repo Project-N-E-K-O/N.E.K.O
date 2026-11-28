@@ -3961,3 +3961,48 @@ async def test_clean_worktree_after_run_checks_pending_delivery_before_removal(
     else:
         assert await host.ledger.trees() == []
         assert trees.removed == [tree_id] and not host.paths.worktree_dir(tree_id).exists()
+
+
+@pytest.mark.parametrize("pending_state", ["pending", "error"])
+async def test_auto_complete_and_manual_land_preserve_worktree_with_pending_delivery(
+    hosts, tmp_path, pending_state
+):
+    go = asyncio.Event()
+
+    async def wait_to_report() -> None:
+        await go.wait()
+
+    # Clean worktree finishes with status="ready" (auto-complete returns unchanged from WorkingFiles)
+    # while has_pending_delivery() reports an unfinished PR delivery (or fails to read metadata).
+    host, trees, _workdir, one, two, _members = await _two_members(
+        hosts,
+        tmp_path,
+        second=[[wait_to_report, *_report("nothing new to edit")]],
+    )
+    checked: list[str] = []
+
+    async def fake_has_pending_delivery(worktree: Worktree) -> bool:
+        checked.append(worktree.id)
+        if pending_state == "error":
+            raise OSError("delivery metadata unreadable")
+        return True
+
+    trees.has_pending_delivery = fake_has_pending_delivery
+    go.set()
+    host.release.set()
+    await wait_status(host, one.commission_id, "done")
+    stuck = await wait_status(host, two.commission_id, "blocked")
+    await wait_until(lambda: not host.task_agents._tree_tasks, what="auto-complete landing settling")
+
+    tree_id = two.commission_id[:12]
+    assert tree_id in checked
+    (tree,) = await host.ledger.trees()
+    assert (tree.id, tree.state, tree.reason) == (tree_id, "unlanded", "failed")
+    assert trees.removed == [] and Path(tree.path).is_dir()
+    assert "pending pull request delivery" in stuck.result_summary
+
+    # Manual land_worktree with default WorkingFiles must also keep the worktree while PR delivery is pending.
+    manual = await host.land_worktree(tree.id)
+    assert manual["status"] == "failed" and "pending pull request delivery" in manual["detail"]
+    (still_there,) = await host.ledger.trees()
+    assert still_there.id == tree_id and trees.removed == [] and Path(tree.path).is_dir()

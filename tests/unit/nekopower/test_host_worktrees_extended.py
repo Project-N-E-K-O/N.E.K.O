@@ -25,6 +25,7 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -2445,3 +2446,201 @@ async def test_coderabbit_and_greptile_git_followup_fixes(tmp_path: Path, monkey
     _copy_trees.remove_dir_link(wt_inway_copy / "vendor")
     _write(wt_inway_copy / "vendor" / "config.json", '{"real": true}\n')
     assert worktrees._in_the_way(wt_inway_copy, ["vendor/config.json"], set(), set(), set()) == ["vendor/config.json"]
+
+
+async def test_round14_greptile_followup_fixes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify execute-bit preservation, stage-cancel intent cleanup, and existing-branch push-intent recovery."""
+    # 1. _merged_file_mode preserves existing execute bits when owner-execute did not change.
+    assert _copy_trees._merged_file_mode(0o744, 0o755) == 0o744
+    assert _copy_trees._merged_file_mode(0o740, 0o755) == 0o740
+    assert _copy_trees._merged_file_mode(0o700, 0o755) == 0o700
+    assert _copy_trees._merged_file_mode(0o744, 0o644) == 0o644
+    assert _copy_trees._merged_file_mode(0o640, 0o755) == 0o750
+    assert _copy_trees._merged_file_mode(0o600, 0o755) == 0o700
+
+    # 2. Cancelling _land_copy during stage_copy_landing clears landing_intent.json so later merges work.
+    proj = tmp_path / "stage_cancel_proj"
+    _write(proj / "app.txt", "base\n")
+    mgr = WorktreeManager()
+    wt_copy = await mgr.create(proj, tmp_path / "copies" / "sc1")
+    _write(wt_copy.path / "app.txt", "updated\n")
+    orig_stage = _copy_trees.stage_copy_landing
+    staging_started = asyncio.Event()
+    allow_stage_finish = threading.Event()
+    loop = asyncio.get_running_loop()
+
+    def slow_stage(copy_path: Path, result_scan: Any) -> dict[str, Any]:
+        result = orig_stage(copy_path, result_scan)
+        loop.call_soon_threadsafe(staging_started.set)
+        allow_stage_finish.wait(timeout=10.0)
+        return result
+
+    with monkeypatch.context() as mp:
+        mp.setattr(_copy_trees, "stage_copy_landing", slow_stage)
+        merge_task = asyncio.create_task(mgr.merge_back(wt_copy))
+        await asyncio.wait_for(staging_started.wait(), timeout=10.0)
+        merge_task.cancel()
+        allow_stage_finish.set()
+        with pytest.raises(asyncio.CancelledError):
+            await merge_task
+    assert (proj / "app.txt").read_text(encoding="utf-8") == "base\n"
+    assert _copy_trees._read_landing_intent(_copy_trees.copy_meta_dir(wt_copy.path)) is None
+    retried = await mgr.merge_back(wt_copy)
+    assert retried.status == "landed", retried.detail
+    assert (proj / "app.txt").read_text(encoding="utf-8") == "updated\n"
+    await mgr.remove(wt_copy)
+
+    # 3. Pushing an existing local branch persists push intent before git push so retrying after a
+    # post-push delivery-note failure recovers ownership instead of rejecting the remote branch.
+    if not REAL_GIT_TOO_OLD:
+        local, bare, _other = _make_repo_with_remote(tmp_path / "existing_push_intent")
+        wt = await mgr.create(local, tmp_path / "wt" / "epi1", RemoteDefaultBranch(fetch=False))
+        _write(wt.path / "a.txt", "local-first\nline2\nline3\nline4\nline5\n")
+        local_land = await mgr.merge_back(wt, BranchCommit(branch="feat/local-then-push", message="local only"))
+        assert local_land.status == "landed" and local_land.commit
+
+        orig_replace = os.replace
+        note_writes = {"n": 0}
+
+        def fail_second_note(src: Any, dst: Any) -> None:
+            if str(dst).endswith("nekopower-delivery.json"):
+                note_writes["n"] += 1
+                # 1 = intent_delivery before git push, 2 = updated_delivery after git push
+                if note_writes["n"] == 2:
+                    raise OSError("simulated post-push note write failure")
+            orig_replace(src, dst)
+
+        with monkeypatch.context() as mp:
+            mp.setattr(os, "replace", fail_second_note)
+            with pytest.raises(OSError, match="simulated post-push note write failure"):
+                await mgr.merge_back(
+                    wt, BranchCommit(branch="feat/local-then-push", remote="origin", message="push existing")
+                )
+        assert _git(bare, "rev-parse", "refs/heads/feat/local-then-push").strip() == local_land.commit
+        recovered = await mgr.merge_back(
+            wt, BranchCommit(branch="feat/local-then-push", remote="origin", message="push existing retry")
+        )
+        assert recovered.status == "landed", recovered.detail
+        assert recovered.commit == local_land.commit
+        await mgr.remove(wt)
+
+
+async def test_round14_coderabbit_followup_fixes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify skipped-baseline retention, missing-blob fail-closed, open() lock recheck, reconcile intent guard, port-aware push_target, and non-empty meta_dir preservation."""
+    mgr = WorktreeManager()
+
+    # 1. Skipped path in copy retains its old baseline entry & blob across landing so later
+    # re-inclusion does not resurrect a file deleted in the project, while new files still land.
+    proj_skip = tmp_path / "skip_retain_proj"
+    _write(proj_skip / "sub" / "a.txt", "original-a\n")
+    _write(proj_skip / "other.txt", "v1\n")
+    wt_skip = await mgr.create(proj_skip, tmp_path / "copies" / "skip_ret")
+    _write(wt_skip.path / "sub" / ".git" / "HEAD", "ref: refs/heads/main\n")
+    _write(wt_skip.path / "other.txt", "v2\n")
+    first_skip_land = await mgr.merge_back(wt_skip)
+    assert first_skip_land.status == "landed", first_skip_land.detail
+    assert (proj_skip / "sub" / "a.txt").read_text(encoding="utf-8") == "original-a\n"
+    retained_base = _copy_trees.read_base_manifest(wt_skip.path)
+    assert retained_base is not None and "sub/a.txt" in retained_base["files"]
+    # User deletes sub/a.txt in project; copy removes nested .git (leaving sub/a.txt untouched) and adds sub/new.txt.
+    (proj_skip / "sub" / "a.txt").unlink()
+    shutil.rmtree(wt_skip.path / "sub" / ".git")
+    _write(wt_skip.path / "sub" / "new.txt", "brand-new\n")
+    second_skip_land = await mgr.merge_back(wt_skip)
+    assert second_skip_land.status == "landed", second_skip_land.detail
+    assert not (proj_skip / "sub" / "a.txt").exists()
+    assert (proj_skip / "sub" / "new.txt").read_text(encoding="utf-8") == "brand-new\n"
+    await mgr.remove(wt_skip)
+
+    # 2. If a newly added file in the copy vanishes before stage_copy_landing stores its blob,
+    # landing fails closed BEFORE writing project_dir or landing_intent.json.
+    proj_blob = tmp_path / "missing_blob_proj"
+    _write(proj_blob / "base.txt", "hello\n")
+    wt_blob = await mgr.create(proj_blob, tmp_path / "copies" / "blob_vanish")
+    _write(wt_blob.path / "fresh.txt", "only-in-copy\n")
+    orig_stage = _copy_trees.stage_copy_landing
+
+    def vanish_before_stage(copy_path: Path, new_scan: Any) -> None:
+        (copy_path / "fresh.txt").unlink()
+        orig_stage(copy_path, new_scan)
+
+    with monkeypatch.context() as mp:
+        mp.setattr(_copy_trees, "stage_copy_landing", vanish_before_stage)
+        vanished = await mgr.merge_back(wt_blob)
+    assert vanished.status == "failed" and "vanished" in vanished.detail
+    assert not (proj_blob / "fresh.txt").exists()
+    assert _copy_trees._read_landing_intent(_copy_trees.copy_meta_dir(wt_blob.path)) is None
+    await mgr.remove(wt_blob)
+
+    # 3. open() re-validates copy metadata's project_dir and id under the copy lock.
+    proj_a = tmp_path / "open_a"
+    proj_b = tmp_path / "open_b"
+    _write(proj_a / "x.txt", "a\n")
+    _write(proj_b / "x.txt", "b\n")
+    wt_a = await mgr.create(proj_a, tmp_path / "copies" / "reused_slot")
+    orig_read_meta = _copy_trees.read_copy_meta
+    read_calls = {"n": 0}
+
+    def swapped_under_lock(copy_path: Path, *, strict: bool = False) -> dict[str, Any] | None:
+        meta = orig_read_meta(copy_path, strict=strict)
+        read_calls["n"] += 1
+        if meta is not None and read_calls["n"] == 2:
+            return {**meta, "project_dir": str(proj_b.resolve()), "token": "other-project-token"}
+        return meta
+
+    with monkeypatch.context() as mp:
+        mp.setattr(_copy_trees, "read_copy_meta", swapped_under_lock)
+        with pytest.raises(WorktreeError, match="not a working copy"):
+            await mgr.open(proj_a, wt_a.path)
+    await mgr.remove(wt_a)
+
+    # 4. Unfinalized landing_intent.json makes copy_has_changes return True so orphan reconcile keeps it,
+    # while a finalized landed manifest matching the intent digest allows cleanup.
+    proj_rec = tmp_path / "reconcile_intent_proj"
+    _write(proj_rec / "f.txt", "v1\n")
+    copies_base = tmp_path / "reconcile_intent_copies"
+    wt_rec = await mgr.create(proj_rec, copies_base / "orphan1")
+    meta_dir_rec = _copy_trees.copy_meta_dir(wt_rec.path)
+    intent_path = meta_dir_rec / "pending" / "landing_intent.json"
+    intent_path.parent.mkdir(parents=True, exist_ok=True)
+    intent_path.write_text(json.dumps({"status": "applying", "digest": "unfinalized-digest"}), encoding="utf-8")
+    assert await mgr.has_changes(wt_rec) is True
+    kept_report = await mgr.reconcile(proj_rec, copies_base, known=())
+    assert wt_rec.path in kept_report.kept and wt_rec.path.is_dir() and intent_path.exists()
+    # Once base_manifest.json is marked source="landed" with the same digest, reconcile can remove it.
+    base_data = _copy_trees.read_base_manifest(wt_rec.path)
+    assert base_data is not None
+    base_data["source"] = "landed"
+    (meta_dir_rec / "base_manifest.json").write_text(json.dumps(base_data), encoding="utf-8")
+    intent_path.write_text(json.dumps({"status": "applying", "digest": base_data["digest"]}), encoding="utf-8")
+    assert await mgr.has_changes(wt_rec) is False
+    cleaned_report = await mgr.reconcile(proj_rec, copies_base, known=())
+    assert wt_rec.id in cleaned_report.removed and not wt_rec.path.exists()
+
+    # 5. _normalize_push_target preserves explicit non-default ports while keeping gh selector untouched.
+    t_2222 = WorktreeManager._normalize_push_target("ssh://git@forge.example:2222/team/repo.git", "origin")
+    t_2223 = WorktreeManager._normalize_push_target("ssh://git@forge.example:2223/team/repo.git", "origin")
+    assert t_2222 != t_2223
+    assert WorktreeManager._normalize_push_target("https://github.com/Org/Repo.git", "origin") == (
+        WorktreeManager._normalize_push_target("git@github.com:org/repo.git", "origin")
+    )
+    assert WorktreeManager._github_repo_from_remote_url("ssh://git@forge.example:2222/team/repo.git") == (
+        "forge.example/team/repo"
+    )
+
+    # 6. Missing meta.json refuses to remove a non-empty meta_dir (base_manifest.json / blobs/),
+    # and only prunes meta_dir once it is actually empty.
+    proj_meta = tmp_path / "missing_meta_nonempty"
+    _write(proj_meta / "k.txt", "keep\n")
+    wt_meta = await mgr.create(proj_meta, tmp_path / "copies" / "mm1")
+    meta_dir_mm = _copy_trees.copy_meta_dir(wt_meta.path)
+    (meta_dir_mm / "meta.json").unlink()
+    with pytest.raises(WorktreeError, match="missing meta.json"):
+        await mgr.remove(wt_meta)
+    assert wt_meta.path.is_dir() and (meta_dir_mm / "base_manifest.json").exists() and (meta_dir_mm / "blobs").is_dir()
+    # Empty meta_dir -> remove() prunes only the empty meta_dir cleanly.
+    (meta_dir_mm / "base_manifest.json").unlink()
+    shutil.rmtree(meta_dir_mm / "blobs")
+    await mgr.remove(wt_meta)
+    assert not meta_dir_mm.exists() and wt_meta.path.is_dir()
+    shutil.rmtree(wt_meta.path)
