@@ -2091,6 +2091,7 @@
                 uid: catgirlConfig._reserved?.character_uid || '',
                 name: newCatgirl
             });
+            window.appChatAvatar?.onCharacterScopeCommitted?.(newCatgirl, switchRevision);
             // commit 之后再 dispose 延后保留的旧 MMD 实例（MMD→非 MMD 路径）。
             // commit 前 dispose 会让中途失败的 rollback 没法恢复旧 MMD（容器没渲染 + 实例已销毁）。
             _disposeDeferredMmd();

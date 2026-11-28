@@ -25,6 +25,36 @@
         return pathname === '/chat' || pathname === '/chat/' || pathname === '/chat_full' || pathname === '/chat_full/';
     };
 
+    function postScopedOwnerAvatar(scope) {
+        const preview = window.appChatAvatar?.getScopedOwnerPreview?.(scope);
+        if (!preview) return;
+        I.postYuiGuideMessageToChat('avatar_updated', {
+            lanlan_name: scope.name,
+            dataUrl: preview.dataUrl,
+            modelType: preview.modelType,
+            avatar_scope: scope,
+            avatar_source: 'pet'
+        });
+    }
+
+    window.addEventListener('neko:avatar-scope-committed', function (event) {
+        const scope = event.detail;
+        if (!scope?.name) return;
+        if (I.isStandaloneChatPage()) {
+            if (window.appChatAvatar?.getModelAvatarDataUrl?.()) return;
+            I.postYuiGuideMessageToPet('request_avatar', {
+                lanlan_name: scope.name,
+                avatar_scope: scope,
+                avatar_source: 'chat'
+            });
+        } else {
+            // Follower-first: the original request may have arrived while Pet
+            // still had the previous character. A committed same-key owner
+            // can supply its already-valid portrait without another capture.
+            postScopedOwnerAvatar(scope);
+        }
+    });
+
     try {
         if (typeof BroadcastChannel !== 'undefined') {
             I.nekoBroadcastChannel = new BroadcastChannel('neko_page_channel');
@@ -40,8 +70,10 @@
                 // or must retry a failed load. Keep legacy and other message dedupe unchanged.
                 var stampedSwitch = message.action === 'catgirl_switched'
                     && Number.isSafeInteger(message.switch_revision) && message.switch_revision > 0;
+                const scopedAvatar = message.avatar_scope != null
+                    && (message.action === 'request_avatar' || message.action === 'avatar_updated');
                 if (
-                    !stampedSwitch &&
+                    !stampedSwitch && !scopedAvatar &&
                     !I.isIcebreakerBridgeAction(message.action)
                     &&
                     !I.shouldBypassYuiGuideMessageDedup(message.action, message)
@@ -239,6 +271,14 @@
                         if (event.data.lanlan_name && (!currentName || event.data.lanlan_name !== currentName)) break;
                         const incomingDataUrl = event.data.dataUrl || '';
                         const incomingModelType = event.data.modelType || '';
+                        if (event.data.avatar_scope != null) {
+                            if (event.data.avatar_source === 'pet' && event.data.lanlan_name === currentName) {
+                                window.appChatAvatar?.setScopedExternalAvatar?.(
+                                    incomingDataUrl, incomingModelType, event.data.avatar_scope
+                                );
+                            }
+                            break;
+                        }
                         if (window.appChatAvatar && typeof window.appChatAvatar.setExternalAvatar === 'function') {
                             window.appChatAvatar.setExternalAvatar(incomingDataUrl, incomingModelType);
                         } else if (incomingDataUrl) {
@@ -266,6 +306,12 @@
                         // 校验 lanlan_name：与 avatar_updated 对称，本地名未就绪或不匹配时不回包
                         const reqCurrentName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
                         if (event.data.lanlan_name && (!reqCurrentName || event.data.lanlan_name !== reqCurrentName)) break;
+                        if (event.data.avatar_scope != null) {
+                            if (event.data.avatar_source === 'chat' && event.data.lanlan_name === reqCurrentName) {
+                                postScopedOwnerAvatar(event.data.avatar_scope);
+                            }
+                            break;
+                        }
                         if (window.appChatAvatar && typeof window.appChatAvatar.getCachedPreview === 'function') {
                             const cached = window.appChatAvatar.getCachedPreview();
                             if (cached && cached.dataUrl) {

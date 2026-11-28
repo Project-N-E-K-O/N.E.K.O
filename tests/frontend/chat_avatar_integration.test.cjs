@@ -1055,3 +1055,6 @@ test('retired websocket still forwards stamped character-switch control frames',
     assert.deepEqual(forwarded, [['C', 'B', 77]]);
 });
 
+
+// This suite is loaded by the existing pytest integration gate.
+require("./chat_avatar_bc_scope.test.cjs");

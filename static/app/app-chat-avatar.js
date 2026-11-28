@@ -1823,6 +1823,50 @@
         return mod.getModelAvatarDataUrl();
     };
 
+    let committedBroadcastAvatarScope = null;
+
+    function getCommittedBroadcastAvatarScope() {
+        const scope = committedBroadcastAvatarScope;
+        const config = window.lanlan_config;
+        if (!scope || scope.name !== config?.lanlan_name || scope.revision !== config.switch_revision ||
+            scope.modelKey !== getCurrentModelCacheKey()) return null;
+        return scope;
+    }
+
+    function isCommittedBroadcastAvatarScope(scope) {
+        const current = getCommittedBroadcastAvatarScope();
+        return !!current && scope?.name === current.name && scope.revision === current.revision &&
+            scope.modelKey === current.modelKey;
+    }
+
+    // Observe the character commit, not the early configuration/revision assignment.
+    // The Pet and its follower can finish the same switch in either order.
+    mod.onCharacterScopeCommitted = function (name, revision) {
+        const config = window.lanlan_config;
+        const modelKey = getCurrentModelCacheKey();
+        if (!name || name !== config?.lanlan_name || !Number.isSafeInteger(revision) ||
+            revision <= 0 || revision !== config.switch_revision || !modelKey || modelKey.endsWith(':')) return;
+        const scope = { name, revision, modelKey };
+        if (isCommittedBroadcastAvatarScope(scope)) return;
+        committedBroadcastAvatarScope = scope;
+        window.dispatchEvent(new CustomEvent('neko:avatar-scope-committed', { detail: { ...scope } }));
+    };
+
+    mod.getScopedOwnerPreview = function (scope) {
+        if (isCardDropIdentityFollowerWindow() || !isCommittedBroadcastAvatarScope(scope) ||
+            !hasUsableCachedPreview() || cachedPreview.displayOnly || !isRasterImageDataUrl(cachedPreview.dataUrl) ||
+            cachedPreview.modelType !== getCurrentModelType()) return null;
+        return mod.getCachedPreview();
+    };
+
+    mod.setScopedExternalAvatar = function (dataUrl, modelType, scope) {
+        if (!isCardDropIdentityFollowerWindow() || !isCommittedBroadcastAvatarScope(scope) ||
+            !isRasterImageDataUrl(dataUrl) || modelType !== getCurrentModelType()) return;
+        if (getExternalAvatarScope(externalAvatarPreview) === 'current' &&
+            externalAvatarPreview.dataUrl === dataUrl && externalAvatarPreview.modelType === modelType) return;
+        mod.setExternalAvatar(dataUrl, modelType);
+    };
+
     // The model avatar alone: never the tutorial override or the persisted custom image.
     mod.getModelAvatarDataUrl = function getModelAvatarDataUrl() {
         return modelPreviewForDisplay()?.dataUrl || '';
