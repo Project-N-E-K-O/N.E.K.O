@@ -195,11 +195,16 @@ async def test_turn_check_asks_no_second_look_when_the_chat_finds_nothing():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("decided", [None, {"verdict": _answer({})}, RuntimeError("down")])
-async def test_turn_check_keeps_the_chat_verdict_when_the_second_look_misses(decided):
+@pytest.mark.parametrize(("decided", "calls"), [
+    (None, 1),  # not sent (today's chat route): one request
+    ({}, 2),  # sent and missed (timeout, error): both requests are counted
+    ({"verdict": _answer({})}, 2),  # sent, no probabilities to read
+    (RuntimeError("down"), 2),
+])
+async def test_turn_check_keeps_the_chat_verdict_when_the_second_look_misses(decided, calls):
     llm = _LLM(chat='{"verdict": "claimed_done", "task": "turned off the lights"}', decided=decided)
     verdict = await LexicalDecisionModel(llm).judge_turn("lights off", "Done, they're off.", "en")
-    assert (verdict.kind, verdict.model_calls, verdict.task) == ("claimed_done", 1, "turned off the lights")
+    assert (verdict.kind, verdict.model_calls, verdict.task) == ("claimed_done", calls, "turned off the lights")
 
 
 # ── ConfiguredDecisionLLM.decide ──────────────────────────────────────
@@ -225,11 +230,24 @@ async def test_configured_decide_routes_with_the_tiers_chat_slot(monkeypatch):
         return {"q": "answer"}
 
     monkeypatch.setattr(dc, "ask_site_questions", _ask)
+    monkeypatch.setattr(dc, "decide_route", lambda site, **kw: dc.ROUTE_NATIVE)
     got = await dm.ConfiguredDecisionLLM().decide(dm.TIER_TURN_CHECK, "turn_check", state="s", questions={"q": 1}, rehost=True)
     assert got == {"q": "answer"}
     assert asked_slots == ["emotion", "decision"]
     assert seen["chat_config"]["model"] == "emotion" and seen["decision_config"]["model"] == "decision"
     assert seen["rehost"] is True and seen["timeout"] > 0
+
+    # Sent but missed: empty, so the caller counts the request.
+    async def _miss(site, **kw):
+        return None
+
+    monkeypatch.setattr(dc, "ask_site_questions", _miss)
+    assert await dm.ConfiguredDecisionLLM().decide(dm.TIER_TURN_CHECK, "turn_check", state="s", questions={}, rehost=True) == {}
+    # Today's chat route: nothing is sent at all.
+    monkeypatch.setattr(dc, "decide_route", lambda site, **kw: dc.ROUTE_CHAT)
+    seen.clear()
+    assert await dm.ConfiguredDecisionLLM().decide(dm.TIER_TURN_CHECK, "turn_check", state="s", questions={}, rehost=True) is None
+    assert seen == {}
 
 
 @pytest.mark.asyncio

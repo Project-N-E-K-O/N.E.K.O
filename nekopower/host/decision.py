@@ -332,14 +332,16 @@ class ConfiguredDecisionLLM:
         of *tier*'s slot (rehost); see :func:`utils.decision_client.ask_site_questions`.
         """
         from utils.config_manager import get_config_manager
-        from utils.decision_client import ask_site_questions
+        from utils.decision_client import ROUTE_CHAT, ask_site_questions, decide_route
 
         from config.nekopower_settings import DECISION_QUESTION_TIMEOUT_SECONDS
 
         manager = get_config_manager(migrate=False)
         chat_config = await asyncio.to_thread(manager.get_model_api_config, self._slot(tier))
         decision_config = await asyncio.to_thread(manager.get_model_api_config, "decision")
-        return await ask_site_questions(
+        if decide_route(site, decision_config=decision_config, chat_config=chat_config, rehost=rehost) == ROUTE_CHAT:
+            return None  # nothing is sent: the chat prompt is the only request
+        answers = await ask_site_questions(
             site,
             state=state,
             questions=questions,
@@ -350,6 +352,9 @@ class ConfiguredDecisionLLM:
             timeout=DECISION_QUESTION_TIMEOUT_SECONDS,
             call_type=_CALL_TYPES.get(tier, "agent"),
         )
+        # Sent but missed (an error, a timeout, no probabilities): empty, so a
+        # caller can count the request it made.
+        return answers if answers is not None else {}
 
     async def _client(self, tier: str, budget: int) -> Any:
         from utils.config_manager import get_config_manager
@@ -1060,7 +1065,7 @@ class LexicalDecisionModel:
     async def _decided(
         self, tier: str, site: str, state: str, questions: dict[str, Any], *, rehost: bool,
     ) -> dict[str, Any] | None:
-        """Answers to a site's decision questions, or None to ask the chat prompt (owner decision D26)."""
+        """Answers to a site's decision questions (D26): None when none were sent, empty when sent and missed."""
         decide = getattr(self._llm, "decide", None)
         if decide is None:
             return None
@@ -1070,7 +1075,7 @@ class LexicalDecisionModel:
             raise
         except Exception as exc:  # noqa: BLE001 - the chat prompt is asked instead
             logger.info("decision question for %s skipped: %s", site, type(exc).__name__)
-            return None
+            return {}  # may have been sent: counted as a request that missed
 
     async def side_question(self, dispatch_text: str, user_text: str, waiting_for: str = "") -> bool | None:
         """Say whether a commission is a side question: answered by looking, with nothing changed. None when it cannot be told.
@@ -1720,17 +1725,19 @@ class LexicalDecisionModel:
             # A second look on a decision model (or rehosted on a chat model
             # with token probabilities) before anything is acted on: its
             # verdict stands, with the task the chat wrote (owner decision D28).
-            checked = await self._turn_second_look(messages[1]["content"])
+            asked, checked = await self._turn_second_look(messages[1]["content"])
+            if asked:
+                calls = 2  # counted whether or not its answer could be read
             if checked is not None:
-                kind, calls = checked, 2
+                kind = checked
         return TurnVerdict(
             kind=kind,
             task="" if kind == "none" else truncate_to_tokens(task, TURN_CHECK_TASK_MAX_TOKENS),
             model_calls=calls,
         )
 
-    async def _turn_second_look(self, state: str) -> str | None:
-        """The verdict of the turn check's decision question, or None when it was not asked or not read."""
+    async def _turn_second_look(self, state: str) -> tuple[bool, str | None]:
+        """Whether the turn check's decision question was sent, and its verdict (None when not sent or not read)."""
         from config.prompts.prompts_nekopower_brain import TURN_CHECK_DECISION_INSTRUCTIONS, TURN_CHECK_DECISION_OPTIONS
         from utils.decision_client import ChoiceQuestion
         from utils.decision_client.routing import SITE_TURN_CHECK
@@ -1742,7 +1749,7 @@ class LexicalDecisionModel:
             {"verdict": ChoiceQuestion(instructions=TURN_CHECK_DECISION_INSTRUCTIONS, criteria=dict(TURN_CHECK_DECISION_OPTIONS))},
             rehost=True,
         )
-        return turn_verdict_from((answers or {}).get("verdict"))
+        return answers is not None, turn_verdict_from((answers or {}).get("verdict"))
 
     # -- second round -----------------------------------------------------
 
