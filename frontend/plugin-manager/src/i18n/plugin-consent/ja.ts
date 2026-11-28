@@ -164,9 +164,9 @@ const messages: PluginConsentMessages = {
       notStart: "起動しない",
     },
     upgrade: {
-      title: "「{name}」が {version} に更新されました",
-      intro: "新しいバージョンでは以下の権限が追加で必要です。項目ごとに決めてください。",
-      unchanged: "既存の {n} 件の権限は変わらず、再確認しません",
+      title: "「{name}」にまだ決めていない権限があります",
+      intro: "以下の権限はまだ決まっていません。項目ごとに決めてください。",
+      unchanged: "決定済みの {n} 件はそのままで、再確認しません",
       notStart: "今は起動しない",
     },
     firstUse: {

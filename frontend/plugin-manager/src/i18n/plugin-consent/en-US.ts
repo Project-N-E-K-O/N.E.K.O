@@ -163,9 +163,9 @@ const messages = {
       notStart: "Don't start",
     },
     upgrade: {
-      title: "“{name}” updated to {version}",
-      intro: "The new version asks for the permissions below. Please decide each one.",
-      unchanged: "The {n} earlier permission(s) stay as they are and are not asked again",
+      title: "“{name}” has permissions not decided yet",
+      intro: "The permissions below are not decided yet. Please decide each one.",
+      unchanged: "The {n} decided permission(s) stay as they are and are not asked again",
       notStart: "Not now",
     },
     firstUse: {

@@ -107,12 +107,10 @@ export function laterAsks(panel: PermissionPanel): PanelRow[] {
   )
 }
 
-/** Items of ③ the update did not touch: what the plugin had before. */
+/** Items ③ does not ask about that are decided already: they stay as they are. */
 export function unchangedCount(panel: PermissionPanel, items: string[]): number {
   const named = new Set(items)
-  return panel.rows.filter(
-    (row) => !named.has(row.permission) && (row.declared !== null || row.state !== 'undecided'),
-  ).length
+  return panel.rows.filter((row) => !named.has(row.permission) && row.state !== 'undecided').length
 }
 
 export function undecidedCount(sections: DialogSection[]): number {

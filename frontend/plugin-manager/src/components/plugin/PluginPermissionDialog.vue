@@ -88,7 +88,8 @@
         <p v-if="partialBlock(catalog ?? null, usedRow.permission)" class="perm-dialog__partial" data-test="dialog-partial">
           {{ t('pluginConsent.tab.partialBlock') }}
         </p>
-        <details class="perm-dialog__when" data-test="dialog-when">
+        <!-- A required item has no "when it may", as on the Permissions tab. -->
+        <details v-if="usedRow.declared?.level !== 'require'" class="perm-dialog__when" data-test="dialog-when">
           <summary>{{ t('pluginConsent.dialogs.firstUse.when') }}</summary>
           <div class="perm-dialog__choices">
             <label v-for="choice in choices" :key="choice" :data-test="`dialog-when-${choice}`">
@@ -266,7 +267,7 @@ const title = computed(() => {
         ? t('pluginConsent.dialogs.first.title', { name })
         : t('pluginConsent.dialogs.first.reviewTitle', { name })
     case 'upgrade':
-      return t('pluginConsent.dialogs.upgrade.title', { name, version: current.value.version })
+      return t('pluginConsent.dialogs.upgrade.title', { name })
     default:
       return t('pluginConsent.dialogs.firstUse.title', {
         name,
@@ -355,7 +356,9 @@ function decide(row: PanelRow, state: 'granted' | 'denied') {
 async function decideUsed(state: 'granted' | 'denied') {
   const row = usedRow.value
   if (!row) return
-  if (await save(row, state, state === 'granted' ? condition.value : undefined)) close(false)
+  // A required item is saved as the tab saves it (no condition of its own).
+  const chosen = state === 'granted' && row.declared?.level !== 'require' ? condition.value : undefined
+  if (await save(row, state, chosen)) close(false)
 }
 function close(startNow: boolean) {
   if (busy.value !== null) return

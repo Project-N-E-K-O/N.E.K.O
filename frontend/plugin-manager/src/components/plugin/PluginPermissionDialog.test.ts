@@ -310,14 +310,14 @@ describe('dialog ① before the first start', () => {
   })
 })
 
-describe('dialog ③ after an update', () => {
-  it('shows only the added items, the version, and how many stay as they were', async () => {
+describe('dialog ③ for items still to decide', () => {
+  it('shows only the listed items and how many decided ones stay, without claiming an update', async () => {
     const { root } = await mount({ panel: firstPanel(), request: { kind: 'upgrade', items: [ENV] }, start: true })
     expect(q(root, 'title')!.textContent).toContain('pluginConsent.dialogs.upgrade.title')
-    expect(q(root, 'title')!.textContent).toContain('"version":"1.0.0"')
+    expect(q(root, 'title')!.textContent).not.toContain('version')
     expect(q(root, `dialog-item-${ENV}`)).not.toBeNull()
     expect(q(root, `dialog-item-${NET}`)).toBeNull()
-    expect(q(root, 'dialog-unchanged')!.textContent).toContain('{"n":3}')
+    expect(q(root, 'dialog-unchanged')!.textContent).toContain('{"n":1}')
     expect(q(root, 'dialog-later')).toBeNull()
     expect(q(root, 'dialog-skip')!.textContent).toContain('pluginConsent.dialogs.upgrade.notStart')
     expect((q(root, 'dialog-start') as HTMLButtonElement).disabled).toBe(false)
@@ -362,7 +362,17 @@ describe('dialog ② for an item used before it was decided', () => {
     const p = panel({ rows: [row({ permission: MEMORY, state: 'undecided', condition: null, anytime_allowed: true, declared: ask({ level: 'require' }) })] })
     const { root } = await mount({ panel: p, request: { kind: 'firstUse', permission: MEMORY }, pending: usedPending() })
     api.decidePermission.mockResolvedValue(p)
-    expect((q(root, 'dialog-when-anytime')!.querySelector('input') as HTMLInputElement).checked).toBe(true)
+    // No "when it may" for a required item, as on the tab.
+    expect(q(root, 'dialog-when')).toBeNull()
+    q(root, 'dialog-allow')!.click()
+    await flush()
+    expect(api.decidePermission).toHaveBeenCalledWith('demo', MEMORY, 'granted', 'anytime')
+  })
+
+  it('grants a required item as the tab does while the declaration cannot be read', async () => {
+    const p = panel({ rows: [row({ permission: MEMORY, state: 'undecided', condition: 'anytime', anytime_allowed: null, declared: ask({ level: 'require' }) })] })
+    const { root } = await mount({ panel: p, request: { kind: 'firstUse', permission: MEMORY }, pending: usedPending() })
+    api.decidePermission.mockResolvedValue(p)
     q(root, 'dialog-allow')!.click()
     await flush()
     expect(api.decidePermission).toHaveBeenCalledWith('demo', MEMORY, 'granted', 'anytime')
@@ -429,5 +439,10 @@ describe('dialog wording', () => {
     for (const phrase of ['无法启动', '才能启动', '才会启动', '仅这一次', '同意并启动']) {
       expect(text).not.toContain(phrase)
     }
+    // The pending list cannot tell an update apart: ③ never claims one.
+    for (const messages of Object.values(allPluginConsentMessages)) {
+      expect(JSON.stringify(messages.dialogs.upgrade)).not.toContain('{version}')
+    }
+    expect(JSON.stringify(zhCN.dialogs.upgrade)).not.toMatch(/更新|版本/)
   })
 })

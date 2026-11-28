@@ -136,11 +136,11 @@ describe('laterAsks', () => {
 })
 
 describe('unchangedCount', () => {
-  it('counts what the plugin had before the update', () => {
-    // NET (declared), FS_READ, MEMORY, MODELS; ENV is the added one.
-    expect(unchangedCount(panel({ rows: rows() }), [ENV])).toBe(4)
-    // An undeclared undecided item is nothing it had.
-    expect(unchangedCount(panel({ rows: rows() }), [NET])).toBe(3)
+  it('counts the decided items ③ does not ask about', () => {
+    // FS_READ and MODELS are decided; NET and MEMORY are not, ENV is asked.
+    expect(unchangedCount(panel({ rows: rows() }), [ENV])).toBe(2)
+    // A decided item ③ asks about again is not counted.
+    expect(unchangedCount(panel({ rows: rows() }), [FS_READ])).toBe(1)
   })
 })
 

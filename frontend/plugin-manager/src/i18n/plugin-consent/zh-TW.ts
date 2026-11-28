@@ -164,9 +164,9 @@ const messages: PluginConsentMessages = {
       notStart: "不啟動",
     },
     upgrade: {
-      title: "「{name}」更新到 {version}",
-      intro: "新版本多要了下面的權限，請逐項決定。",
-      unchanged: "原有的 {n} 項權限不變，不再重複詢問",
+      title: "「{name}」還有權限沒決定",
+      intro: "下面這些權限還沒決定，請逐項決定。",
+      unchanged: "已決定的 {n} 項不變，不再重複詢問",
       notStart: "先不啟動",
     },
     firstUse: {

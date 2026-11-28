@@ -164,9 +164,9 @@ const messages: PluginConsentMessages = {
       notStart: "Não iniciar",
     },
     upgrade: {
-      title: "“{name}” atualizado para {version}",
-      intro: "A nova versão pede as permissões abaixo. Decida cada uma.",
-      unchanged: "As {n} permissões anteriores continuam iguais e não serão perguntadas de novo",
+      title: "“{name}” tem permissões ainda sem decisão",
+      intro: "As permissões abaixo ainda não foram decididas. Decida cada uma.",
+      unchanged: "As {n} permissões já decididas continuam iguais e não serão perguntadas de novo",
       notStart: "Agora não",
     },
     firstUse: {

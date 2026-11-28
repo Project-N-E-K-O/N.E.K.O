@@ -292,11 +292,11 @@ test('"Don\'t start" sends no start', async ({ page }) => {
   expect(calls.decided).toEqual([])
 })
 
-test('after an update: only the added items, then start', async ({ page }) => {
+test('items still to decide after earlier decisions: only those items, then start', async ({ page }) => {
   const calls = await fixture(page, { permissions: WAITING, waiting: 'upgraded' })
   await page.goto(`${PREVIEW_ORIGIN}/ui/plugins/consent_demo`)
   await startButton(page).click()
-  const dialog = page.getByRole('dialog', { name: '“Conversation reminder” updated to 1.0.0' })
+  const dialog = page.getByRole('dialog', { name: '“Conversation reminder” has permissions not decided yet' })
   await expect(dialog).toBeVisible()
   await dialog.getByRole('button', { name: 'Not now', exact: true }).click()
   expect(calls.started).toBe(0)

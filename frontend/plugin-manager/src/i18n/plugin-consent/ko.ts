@@ -164,9 +164,9 @@ const messages: PluginConsentMessages = {
       notStart: "시작 안 함",
     },
     upgrade: {
-      title: "「{name}」이(가) {version}(으)로 업데이트됨",
-      intro: "새 버전에서 아래 권한을 추가로 요청합니다. 항목별로 결정해 주세요.",
-      unchanged: "기존 권한 {n}개는 그대로이며 다시 묻지 않습니다",
+      title: "「{name}」에 아직 결정하지 않은 권한이 있습니다",
+      intro: "아래 권한은 아직 결정되지 않았습니다. 항목별로 결정해 주세요.",
+      unchanged: "결정한 {n}개는 그대로이며 다시 묻지 않습니다",
       notStart: "나중에",
     },
     firstUse: {
