@@ -3,7 +3,7 @@
 Decisions are read from and written to the permission store (see
 ``permission_service``), the same records the host's permission checks and
 the plugin process use. ``plugin_consents.json`` is no longer read or
-written here; uninstalling a plugin still removes its entry from it.
+written here, except that uninstalling a plugin removes its entry from it.
 """
 
 from __future__ import annotations
@@ -211,7 +211,7 @@ def forget_plugin(plugin_id: str) -> None:
     try:
         capability_analysis_service.analysis_service.forget(plugin_id)
     finally:
-        # The only write left to plugin_consents.json: the permission store
-        # imports it again whenever its own file is missing, so an
-        # uninstalled plugin's entry must not stay behind.
+        # The permission store imports plugin_consents.json again whenever
+        # its own file is missing, so an uninstalled plugin's entry must not
+        # stay behind.
         consent_store.delete(plugin_id)

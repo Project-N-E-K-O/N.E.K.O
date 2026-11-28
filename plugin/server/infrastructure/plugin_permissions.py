@@ -389,6 +389,16 @@ def _supersede_legacy_denial(record: dict) -> bool:
     return True
 
 
+def _reads_decided(record: dict, permission_id: str) -> bool:
+    """Whether ``permission_id`` reads granted or denied on ``record``."""
+    entry = (record.get("permissions") or {}).get(permission_id)
+    if isinstance(entry, dict):
+        return entry.get("state") in STATES
+    if entry is not None:
+        return True
+    return bool(record.get(LEGACY_DENIED)) and permission_id in LEGACY_IDS
+
+
 def _drop_for_source_change(record: dict) -> None:
     """Discard what no longer applies once the plugin's code may differ."""
     record["permissions"] = {}
@@ -875,9 +885,9 @@ class PluginPermissionStore:
         write. A changed ``source`` is applied and saved first, like in
         :meth:`decide`. An id outside the vocabulary is accepted only when the
         record already holds it (e.g. an id the vocabulary has since
-        dropped), and its entry is removed. Like :meth:`decide`, it marks a
-        ``legacy_denied`` record ``LEGACY_DENIAL_SUPERSEDED`` (saved even
-        when the permission was undecided already).
+        dropped), and its entry is removed. When the permission read granted
+        or denied, a ``legacy_denied`` record is also marked
+        ``LEGACY_DENIAL_SUPERSEDED``, as in :meth:`decide`.
         """
         known_id = normalize_permission(permission_id)
         if known_id is None and not (isinstance(permission_id, str) and permission_id):
@@ -896,12 +906,7 @@ class PluginPermissionStore:
             source_changes = source is not None and known != source
             # Nothing to do only when the record already says undecided under
             # the current source; a source change is applied and saved first.
-            superseding = (
-                record is not None
-                and bool(record.get(LEGACY_DENIED))
-                and not record.get(LEGACY_DENIAL_SUPERSEDED)
-            )
-            if known_id is not None and not source_changes and not answer and not superseding:
+            if known_id is not None and not source_changes and not answer:
                 entry = (record.get("permissions") or {}).get(known_id)
                 if isinstance(entry, dict) and entry.get("state") == STATE_UNDECIDED:
                     return copy.deepcopy(record)
@@ -919,8 +924,10 @@ class PluginPermissionStore:
             self._apply_source(record, source)
             now = _now()
             record.pop(GRANTS_RESET, None)
-            _supersede_legacy_denial(record)
             permissions = record.setdefault("permissions", {})
+            if _reads_decided(record, known_id or permission_id):
+                # Only a clear that changes the permission supersedes.
+                _supersede_legacy_denial(record)
             if known_id is None:
                 # A source change above may have dropped it already.
                 permissions.pop(permission_id, None)

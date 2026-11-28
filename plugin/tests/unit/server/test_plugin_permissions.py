@@ -968,11 +968,11 @@ def test_stored_undecided_entries_load_and_repeat_clears_do_not_write(manager):
     )
     store = PluginPermissionStore(manager)
 
-    # The first clear marks the denial superseded (one save); repeats do not write.
-    assert store.clear("x", MEMORY_READ)["permissions"][MEMORY_READ]["state"] == "undecided"
-    assert manager.saves == 1
-    assert store.clear("x", MEMORY_READ)["permissions"][MEMORY_READ]["state"] == "undecided"
-    assert manager.saves == 1
+    record = store.clear("x", MEMORY_READ)
+    assert record["permissions"][MEMORY_READ]["state"] == "undecided"
+    # Nothing changed: the whole-plugin denial is not superseded either.
+    assert LEGACY_DENIAL_SUPERSEDED not in record
+    assert manager.saves == 0
 
 
 def test_view_reports_source_mismatch(install_sources, monkeypatch, manager):
@@ -1993,3 +1993,38 @@ def test_failed_legacy_cleanup_does_not_fail_the_decision(decision_flow, monkeyp
     assert consent_service.denied_plugin_ids(["demo"]) == set()
     assert decision_flow["legacy_bytes"]() == legacy
     assert len(warnings) == 1 and "legacy plugin denial not removed" in warnings[0][0]
+
+
+def test_clear_that_changes_nothing_keeps_the_whole_plugin_denial(manager):
+    store = _denied_store(manager)
+    saves = manager.saves
+    spawn = "system.process:spawn"  # no legacy name: undecided, not covered
+
+    record = store.clear("x", spawn)
+
+    assert LEGACY_DENIAL_SUPERSEDED not in record
+    assert manager.saves == saves
+    assert permission_service.consent_decision(store.read("x"))["decision"] == "denied"
+
+    # Storing the answer time alone changes no permission either.
+    record = store.clear("x", spawn, answer=True)
+    assert record["permissions"][spawn]["state"] == "undecided"
+    assert LEGACY_DENIAL_SUPERSEDED not in record
+    assert permission_service.consent_decision(record)["decision"] == "denied"
+
+
+def test_failed_store_write_leaves_the_legacy_file_alone(decision_flow):
+    from plugin.server.application.plugins import consent_service
+
+    decision_flow["seed"]("demo", "denied")
+    decision_flow["permissions"].read("demo")  # import saved before the failure
+    legacy = decision_flow["legacy_bytes"]()
+    decision_flow["manager"].fail_name = "plugin_permissions.json"
+
+    with pytest.raises(ServerDomainError):
+        permission_service.decide_permission("demo", MEMORY_READ, "granted")
+    with pytest.raises(ServerDomainError):
+        permission_service.clear_permission("demo", MEMORY_READ)
+
+    assert decision_flow["legacy_bytes"]() == legacy
+    assert consent_service.denied_plugin_ids(["demo"]) == {"demo"}
