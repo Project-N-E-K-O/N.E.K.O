@@ -276,6 +276,7 @@ describe('message-schema', () => {
     { emoji: 'invalid', author: 'Neko' },
     { emoji: 'A', author: 'Neko' },
     { emoji: 'A\uFE0F', author: 'Neko' },
+    { emoji: '\u{1F600}\u0301', author: 'Neko' },
     { emoji: '\u00a9', author: 'Neko' },
     { emoji: '1', author: 'Neko' },
     { emoji: '😊😄', author: 'Neko' },

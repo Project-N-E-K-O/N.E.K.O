@@ -289,7 +289,7 @@ for(const emoji of ['😊','😄','🥰','✨','🎉','😢','🥺','🤗','💧
 for(const emoji of ['🫠','😀','✨️','👍🏽','👩‍💻','🇯🇵','1️⃣']) test('accepts any single emoji '+emoji,()=>{
  const f=fixture();f.I.appendMessage(message());f.window.applyMessageReactionFromEmotion(f.window.captureMessageReactionTarget('test-request'),result(emoji));assert.equal(f.I.state.messages[0].reaction.emoji,emoji);
 });
-for(const r of [null,{error:'failed'},result('not-emoji'),result('A'),result('A\uFE0F'),result('1'),result('1\uFE0F'),result('\u00a9'),result('\u2122'),result('😊😄'),result(' 😊'),result(''),{reaction:{emoji:'😊',author:'Other'}}]) test('invalid result is ignored '+JSON.stringify(r),()=>{
+for(const r of [null,{error:'failed'},result('not-emoji'),result('A'),result('A\uFE0F'),result('\u{1F600}\u0301'),result('1'),result('1\uFE0F'),result('\u00a9'),result('\u2122'),result('😊😄'),result(' 😊'),result(''),{reaction:{emoji:'😊',author:'Other'}}]) test('invalid result is ignored '+JSON.stringify(r),()=>{
  const f=fixture();f.I.appendMessage(message());f.window.applyMessageReactionFromEmotion(f.window.captureMessageReactionTarget('test-request'),r);assert.equal(f.I.state.messages[0].reaction,undefined);
 });
 

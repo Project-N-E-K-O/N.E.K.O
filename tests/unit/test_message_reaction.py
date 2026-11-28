@@ -171,7 +171,9 @@ def test_model_can_choose_every_candidate_across_emotion_categories(emotion, mon
 @pytest.mark.parametrize("emoji", [None, True, 1, ["😊"], {}, "", " ", "😊😄", "A", "1", "ok", "😊x", ":)", "none",
                                    "\u00a9", "\u00ae", "\u2122", "\u203c",
                                    # A plain letter or digit with the selector is not an emoji.
-                                   "A\ufe0f", "1\ufe0f"])
+                                   "A\ufe0f", "1\ufe0f",
+                                   # An emoji with a combining accent is not one emoji sequence.
+                                   "\U0001F600\u0301"])
 def test_unusable_model_emoji_uses_existing_rule(emotion, monkeypatch, emoji):
     monkeypatch.setattr(emotion.random, "choice", lambda items: items[-1])
     result = emotion._emotion_response("sad", 0.9, "NEKO", emoji)
@@ -182,6 +184,8 @@ def test_unusable_model_emoji_uses_existing_rule(emotion, monkeypatch, emoji):
     # Owner decision D20: any single emoji, the configured lists are only suggestions.
     ("😀", "😀"), ("✨️", "✨️"), ("😊 ", "😊"), ("🫠", "🫠"), ("👍🏽", "👍🏽"),
     ("👩‍💻", "👩‍💻"), ("🇯🇵", "🇯🇵"), ("1️⃣", "1️⃣"),
+    ("\U0001F3F3\ufe0f\u200d\U0001F308", "\U0001F3F3\ufe0f\u200d\U0001F308"),
+    ("\u261d\U0001F3FD", "\u261d\U0001F3FD"),
 ])
 def test_any_single_emoji_from_the_model_is_kept(emotion, monkeypatch, emoji, kept):
     def unexpected_random_choice(items):

@@ -2269,14 +2269,15 @@
     var reactionGeneration = 0;
     var reactionCandidates = new Map();
     var reactionAttempts = new Set();
-    // Any one emoji (owner decision D20): a single grapheme shown as an emoji
-    // (emoji presentation, a variation selector, or a flag letter). Plain text,
-    // letters, digits and text-style symbols are refused.
-    var REACTION_EMOJI_MARK = /\p{Emoji_Presentation}|\p{Extended_Pictographic}\u{FE0F}|[0-9#*]\u{FE0F}?\u{20E3}|\p{Regional_Indicator}/u;
+    // Any one emoji (owner decision D20): one grapheme matched whole as an emoji
+    // sequence (keycap, flag, tag flag, or pictographs with emoji presentation or
+    // the variation selector, skin tones and joiners). Plain text, letters, digits,
+    // text-style symbols and emoji carrying other marks are refused.
+    var REACTION_EMOJI_SEQUENCE = /^(?:[0-9#*]\u{FE0F}?\u{20E3}|\p{Regional_Indicator}\p{Regional_Indicator}|\u{1F3F4}[\u{E0020}-\u{E007E}]+\u{E007F}|(?:(?:\p{Emoji_Presentation}\u{FE0F}?|\p{Extended_Pictographic}\u{FE0F})\p{Emoji_Modifier}?|\p{Extended_Pictographic}\p{Emoji_Modifier})(?:\u{200D}\p{Extended_Pictographic}\u{FE0F}?\p{Emoji_Modifier}?)*)$/u;
     var reactionGraphemes = (typeof Intl !== 'undefined' && typeof Intl.Segmenter === 'function')
         ? new Intl.Segmenter(undefined, { granularity: 'grapheme' }) : null;
     function isSingleReactionEmoji(value) {
-        if (typeof value !== 'string' || !value || value !== value.trim() || !REACTION_EMOJI_MARK.test(value)) return false;
+        if (typeof value !== 'string' || !value || value !== value.trim() || !REACTION_EMOJI_SEQUENCE.test(value)) return false;
         if (reactionGraphemes) return Array.from(reactionGraphemes.segment(value)).length === 1;
         return Array.from(value).length <= 8;
     }

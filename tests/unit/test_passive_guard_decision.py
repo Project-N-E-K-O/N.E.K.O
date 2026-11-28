@@ -230,3 +230,11 @@ def test_two_long_speeches_differing_only_at_the_end_are_different():
     ]}
     assert pgd._reply_to_speech({"userSpeech": head + " play for real"}, route) == "Okay!"
     assert pgd._reply_to_speech({"userSpeech": head + " just give up"}, route) is None
+
+
+@pytest.mark.unit
+def test_probability_only_on_an_unknown_option_means_the_chat_prompt():
+    mixed = SimpleNamespace(value="unexpected", probability=1.0, probabilities={"giving_up": 0.0, "unexpected": 1.0})
+    assert pgd.action_from_answer(mixed, {"stage": 8}) is None
+    assert pgd.action_from_answer(mixed, {"stage": 8, "promptType": "rest"}) is None
+

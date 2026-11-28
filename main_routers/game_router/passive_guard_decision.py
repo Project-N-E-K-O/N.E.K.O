@@ -215,7 +215,9 @@ def action_from_answer(answer: Any, data: Dict[str, Any], route_state: Any = Non
                    "giving_up": PREPARE if stage8 else RESCUE, "one_slip": RESCUE, "neutral": OBSERVE}
     actions: Dict[str, float] = {}
     for k, p in probs.items():
-        if k in mapping:
+        # Only this stage's own options count: probability on an option the
+        # question does not have says nothing about the action.
+        if k in mapping and p > 0:
             actions[mapping[k]] = actions.get(mapping[k], 0.0) + p
     ranked = sorted(((actions[a], a) for a in ACTIONS if a in actions), reverse=True)
     if not ranked:

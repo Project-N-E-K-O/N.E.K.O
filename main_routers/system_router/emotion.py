@@ -614,14 +614,15 @@ def _push_emotion_update(lanlan_name, emotion, confidence):
         })
 
 
-# One emoji grapheme shown as an emoji: a pictograph with emoji presentation
-# (with any modifiers or joiners), a pictograph made an emoji by its variation
-# selector, a keycap, or a flag. Plain letters and digits (even with the
-# selector), text and text-style symbols such as the copyright or trademark
-# sign without the selector are not.
+# One emoji grapheme, matched whole as an emoji sequence: a keycap, a flag, a
+# tag flag, or a pictograph with emoji presentation or the variation selector,
+# an optional skin tone, and more such joined by zero-width joiners. Plain
+# letters and digits (even with the selector), text-style symbols such as the
+# copyright or trademark sign without the selector, and an emoji carrying any
+# other mark (such as a combining accent) are not.
 _SINGLE_GRAPHEME_RE = regex.compile(r"\X")
-_EMOJI_MARK_RE = regex.compile(
-    r"\p{Emoji_Presentation}|\p{Extended_Pictographic}\uFE0F|[0-9#*]\uFE0F?\u20E3|\p{Regional_Indicator}"
+_EMOJI_SEQUENCE_RE = regex.compile(
+    r"(?:[0-9#*]\uFE0F?\u20E3|\p{Regional_Indicator}\p{Regional_Indicator}|\U0001F3F4[\U000E0020-\U000E007E]+\U000E007F|(?:(?:\p{Emoji_Presentation}\uFE0F?|\p{Extended_Pictographic}\uFE0F)\p{Emoji_Modifier}?|\p{Extended_Pictographic}\p{Emoji_Modifier})(?:\u200D\p{Extended_Pictographic}\uFE0F?\p{Emoji_Modifier}?)*)"
 )
 
 
@@ -629,7 +630,7 @@ def _is_single_emoji(value):
     if not isinstance(value, str):
         return False
     value = value.strip()
-    return bool(value) and bool(_SINGLE_GRAPHEME_RE.fullmatch(value)) and bool(_EMOJI_MARK_RE.search(value))
+    return bool(value) and bool(_SINGLE_GRAPHEME_RE.fullmatch(value)) and bool(_EMOJI_SEQUENCE_RE.fullmatch(value))
 
 
 def _reaction_emoji(emotion, model_emoji):

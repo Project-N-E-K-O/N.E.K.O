@@ -295,10 +295,11 @@ const turnIdSchema = z.preprocess((value) => {
   return value;
 }, z.string().min(1).optional());
 
-// Any one emoji (owner decision D20): a single grapheme shown as an emoji
-// (emoji presentation, a variation selector, or a flag letter). Plain text,
-// letters, digits and text-style symbols are refused.
-const REACTION_EMOJI_MARK = /\p{Emoji_Presentation}|\p{Extended_Pictographic}\u{FE0F}|[0-9#*]\u{FE0F}?\u{20E3}|\p{Regional_Indicator}/u;
+// Any one emoji (owner decision D20): one grapheme matched whole as an emoji
+// sequence (keycap, flag, tag flag, or pictographs with emoji presentation or
+// the variation selector, skin tones and joiners). Plain text, letters, digits,
+// text-style symbols and emoji carrying other marks are refused.
+const REACTION_EMOJI_SEQUENCE = /^(?:[0-9#*]\u{FE0F}?\u{20E3}|\p{Regional_Indicator}\p{Regional_Indicator}|\u{1F3F4}[\u{E0020}-\u{E007E}]+\u{E007F}|(?:(?:\p{Emoji_Presentation}\u{FE0F}?|\p{Extended_Pictographic}\u{FE0F})\p{Emoji_Modifier}?|\p{Extended_Pictographic}\p{Emoji_Modifier})(?:\u{200D}\p{Extended_Pictographic}\u{FE0F}?\p{Emoji_Modifier}?)*)$/u;
 type GraphemeSegmenter = { segment(input: string): Iterable<unknown> };
 type GraphemeSegmenterCtor = new (locale: undefined, options: { granularity: 'grapheme' }) => GraphemeSegmenter;
 // Intl.Segmenter is in every runtime the chat window ships to, but not in this project's TS lib.
@@ -310,7 +311,7 @@ const reactionGraphemes: GraphemeSegmenter | null = typeof SegmenterCtor === 'fu
   : null;
 
 export function isSingleReactionEmoji(value: string): boolean {
-  if (!value || value !== value.trim() || !REACTION_EMOJI_MARK.test(value)) return false;
+  if (!value || value !== value.trim() || !REACTION_EMOJI_SEQUENCE.test(value)) return false;
   if (reactionGraphemes) return Array.from(reactionGraphemes.segment(value)).length === 1;
   return Array.from(value).length <= 8;
 }
