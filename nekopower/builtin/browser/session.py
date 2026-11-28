@@ -163,6 +163,8 @@ class Page:
     # set up is what a call leaves behind that was stopped half way.
     prepared: bool = False
     snapshot: Snapshot | None = None
+    # Owner that took ``snapshot``; lets ``release_owner`` clear unowned tabs it touched without affecting others.
+    snapshot_owner: str | None = None
     # node (``<loader id>_<backend node id>``) -> the uid it was given.
     known_uids: dict[str, str] = field(default_factory=dict)
     # frame id -> the id of the document loaded in it right now.
@@ -1614,8 +1616,9 @@ class BrowserSession:
     def forget_snapshots(self, *, owner: str | None = None) -> None:
         """Make uids handed out so far invalid; scoped to ``owner``'s tabs when given."""
         for page in self._pages.values():
-            if owner is None or page.owner == owner:
+            if owner is None or page.owner == owner or (page.owner is None and page.snapshot_owner == owner):
                 page.snapshot = None
+                page.snapshot_owner = None
                 page.known_uids.clear()
 
     def release_owner(self, owner: str | None = None, *, clear_unowned: bool = True) -> None:
@@ -1639,12 +1642,17 @@ class BrowserSession:
         for page in self._pages.values():
             if page.owner == owner:
                 page.snapshot = None
+                page.snapshot_owner = None
                 page.known_uids.clear()
                 page.owner = None
-            elif clear_unowned and page.owner is None:
-                # Unowned tabs (from legacy owner=None calls or fallback paths) cannot belong
-                # to another active named owner; clear stale uids when no unowned call is active.
+            elif page.owner is None and (
+                page.snapshot_owner == owner or (clear_unowned and page.snapshot_owner is None)
+            ):
+                # Clear unowned tabs snapshotted by ``owner`` (e.g. attach fallback) or by a
+                # legacy owner=None caller when no unowned call is active, without touching
+                # unowned tabs whose latest snapshot belongs to another named owner.
                 page.snapshot = None
+                page.snapshot_owner = None
                 page.known_uids.clear()
         for tid, recorded_owner in list(self._tab_owners.items()):
             if recorded_owner == owner:
@@ -1765,6 +1773,16 @@ class BrowserSession:
                 return page
         return None
 
+    async def _resume_orphan_child(
+        self, connection: CdpConnection, child_session_id: str, *, detach: bool
+    ) -> None:
+        """Resume (and detach) a paused auto-attached child whose parent page is no longer tracked."""
+        if connection.closed:
+            return
+        await self._send_quietly(connection, "Runtime.runIfWaitingForDebugger", {}, child_session_id)
+        if detach and not connection.closed:
+            await self._send_quietly(connection, "Target.detachFromTarget", {"sessionId": child_session_id}, None)
+
     def _on_event(self, method: str, params: dict[str, Any], session_id: str | None) -> None:
         if method == "Fetch.requestPaused":
             self._answer_paused(params, session_id)
@@ -1772,18 +1790,30 @@ class BrowserSession:
         if method == "Target.attachedToTarget":
             child_sid = params.get("sessionId")
             parent_page = self._page_of_session(session_id)
-            if isinstance(child_sid, str) and child_sid and parent_page is not None:
-                task = asyncio.ensure_future(
-                    self._on_child_attached(
-                        parent_page,
-                        child_sid,
-                        params.get("targetInfo") or {},
-                        bool(params.get("waitingForDebugger")),
+            if isinstance(child_sid, str) and child_sid:
+                if parent_page is not None:
+                    task = asyncio.ensure_future(
+                        self._on_child_attached(
+                            parent_page,
+                            child_sid,
+                            params.get("targetInfo") or {},
+                            bool(params.get("waitingForDebugger")),
+                        )
                     )
-                )
-                self._answers.add(task)
-                task.add_done_callback(self._answers.discard)
-                task.add_done_callback(_drop_outcome)
+                    self._answers.add(task)
+                    task.add_done_callback(self._answers.discard)
+                    task.add_done_callback(_drop_outcome)
+                elif params.get("waitingForDebugger"):
+                    # A forgotten tab (e.g. navigated to file:// or chrome://) may still have
+                    # auto-attach active; always resume paused child targets so they never wedge.
+                    connection = self._connection
+                    if connection is not None and not connection.closed:
+                        task = asyncio.ensure_future(
+                            self._resume_orphan_child(connection, child_sid, detach=session_id is not None)
+                        )
+                        self._answers.add(task)
+                        task.add_done_callback(self._answers.discard)
+                        task.add_done_callback(_drop_outcome)
             return
         if method in ("Target.targetCreated", "Target.targetInfoChanged"):
             self._note_target(params.get("targetInfo") or {})
@@ -2193,6 +2223,7 @@ class BrowserSession:
             raise BrowserError("type must be one of: url, back, forward, reload")
         page.load_event.clear()
         page.snapshot = None
+        page.snapshot_owner = None
         if kind == "url":
             assert url is not None
             if page.dialog is None:
@@ -2257,12 +2288,13 @@ class BrowserSession:
             return
         if page.loading or page.navigations != navigations_before:
             page.snapshot = None
+            page.snapshot_owner = None
             await self._wait_load(page, ACTION_NAVIGATION_TIMEOUT_SECONDS)
         await self._quiet(page)
 
     # -- snapshots ------------------------------------------------------------
 
-    async def take_snapshot(self, page: Page, *, verbose: bool = False) -> Snapshot:
+    async def take_snapshot(self, page: Page, *, verbose: bool = False, owner: str | None = None) -> Snapshot:
         """Take a snapshot of a page and make it the one its uids are read from."""
         self.require_no_dialog(page)
         await self._refresh_frames(page)
@@ -2296,6 +2328,7 @@ class BrowserSession:
         page.snapshot = Snapshot(
             snapshot_id=snapshot_id, root=tree, verbose=verbose, by_uid=by_uid, unlisted_frames=unlisted[0]
         )
+        page.snapshot_owner = owner if owner is not None else page.owner
         return page.snapshot
 
     async def _attach_oopif(
@@ -2878,8 +2911,10 @@ class BrowserSession:
         page.drag_data = None
         pressed = False
         html5_dropped = False
+        drop_sent = False
         reached_target = False
         released = False
+        release_sent = False
         last_x, last_y = sx, sy
         try:
             intercept_attempted = True
@@ -2915,18 +2950,21 @@ class BrowserSession:
                                     and await self._send_unless_dialog(
                                         page, "Input.dispatchDragEvent", {"type": "dragOver", "x": ex, "y": ey, "data": data}, session_id=sid
                                     )
-                                    and await self._send_unless_dialog(
-                                        page, "Input.dispatchDragEvent", {"type": "drop", "x": ex, "y": ey, "data": data}, session_id=sid
-                                    )
                                 ):
                                     last_x, last_y = ex, ey
-                                    html5_dropped = True
+                                    drop_sent = page.dialog is None and self.is_open(page)
+                                    if drop_sent and await self._send_unless_dialog(
+                                        page, "Input.dispatchDragEvent", {"type": "drop", "x": ex, "y": ey, "data": data}, session_id=sid
+                                    ):
+                                        html5_dropped = True
                                 break
                         else:
                             reached_target = True
             finally:
                 if pressed:
                     async def release_drag() -> bool:
+                        nonlocal release_sent
+                        release_sent = page.dialog is None and self.is_open(page)
                         return await self._mouse(
                             page, "mouseReleased", last_x, last_y, session_id=sid, button="left", buttons=0, clickCount=1
                         )
@@ -2941,7 +2979,11 @@ class BrowserSession:
                         pass
 
                 await asyncio.shield(_disable_drag_interception())
-        completed = html5_dropped or (reached_target and released)
+        completed = (
+            html5_dropped
+            or (reached_target and released)
+            or ((page.dialog is not None or not self.is_open(page)) and (drop_sent or (reached_target and release_sent)))
+        )
         if not completed:
             if page.dialog is not None:
                 raise BrowserError(

@@ -102,6 +102,7 @@ class Element:
         on_change: Callable[["FakeBrowser", "FakePage"], None] | None = None,
         on_focus: Callable[["FakeBrowser", "FakePage"], None] | None = None,
         on_hover: Callable[["FakeBrowser", "FakePage"], None] | None = None,
+        on_drop: Callable[["FakeBrowser", "FakePage"], None] | None = None,
         frame: "Document | None" = None,
         oopif: bool = False,
         draggable: bool = False,
@@ -129,6 +130,8 @@ class Element:
         self.on_focus = on_focus
         # Called when the pointer moves onto the element (the page's own ``mouseover`` handler).
         self.on_hover = on_hover
+        # Called when an HTML5 ``drop`` event lands on the element.
+        self.on_drop = on_drop
         # What lies over the element (a banner, a dialog of the page), and
         # where: None for all of it, else ``(left, top, right, bottom)``.
         self.cover: Element | None = None
@@ -806,6 +809,10 @@ class FakeBrowser:
 
     def _do_Input_dispatchDragEvent(self, command: Sent, page: FakePage) -> dict[str, Any]:
         page.drag_events.append(dict(command.params))
+        if command.params.get("type") == "drop":
+            element = self._at(page, float(command.params.get("x") or 0), float(command.params.get("y") or 0))
+            if element is not None and not element.disabled and element.on_drop is not None:
+                element.on_drop(self, page)
         return {}
 
     def _do_Target_detachFromTarget(self, command: Sent, page: None) -> dict[str, Any]:

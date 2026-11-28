@@ -1817,3 +1817,65 @@ async def test_named_release_preserves_unowned_snapshot_while_unowned_call_is_in
         world.browser.gates.remove(gate)
     done = await asyncio.wait_for(clicking, 5.0)
     assert done.success, done.text
+
+
+async def test_named_release_does_not_clear_unowned_tab_snapshotted_by_another_named_owner(
+    tools: BrowserTools, world: BrowserWorld
+) -> None:
+    assert (await tools.call(TOOL_PREFIX + "navigate_page", {"url": ORDER}, owner="team-a")).success
+    # Simulate an unowned tab (page.owner is None) whose latest snapshot was taken by team-b
+    # (for instance via fallback when opening a new tab is unavailable).
+    unowned_fake = world.browser.add_page(ORDER, "Order form")
+    world.browser._load(unowned_fake, ORDER)
+    page_b = tools.session._pages[unowned_fake.target_id]
+    assert page_b.owner is None
+    await tools.session.take_snapshot(page_b, owner="team-b")
+    assert page_b.snapshot is not None and page_b.snapshot_owner == "team-b"
+
+    # Releasing team-a leaves team-b's unowned-tab snapshot intact.
+    await tools.released(owner="team-a")
+    assert page_b.snapshot is not None and page_b.snapshot_owner == "team-b"
+
+    # Releasing team-b clears the unowned-tab snapshot it took.
+    await tools.released(owner="team-b")
+    assert page_b.snapshot is None and page_b.snapshot_owner is None
+
+
+async def test_drag_opening_dialog_on_drop_or_mouse_release_reports_success_with_dialog(
+    tools: BrowserTools, world: BrowserWorld
+) -> None:
+    world.browser.serve(
+        "https://shop.example/drag-drop-dialog",
+        lambda: Document(
+            "Drag Drop Dialog",
+            el("button", "Html5 card", draggable=True),
+            el(
+                "region",
+                "Html5 zone",
+                on_drop=lambda b, p: b.open_dialog(p, "confirm", "Confirm HTML5 drop?"),
+            ),
+            el("button", "Pointer card"),
+            el(
+                "region",
+                "Pointer zone",
+                on_click=lambda b, p: b.open_dialog(p, "confirm", "Confirm pointer drop?"),
+            ),
+        ),
+    )
+    opened = await call(tools, "navigate_page", url="https://shop.example/drag-drop-dialog")
+    assert opened.success, opened.text
+    html5_card = re.search(r'uid=(\S+) button "Html5 card"', opened.text).group(1)
+    html5_zone = re.search(r'uid=(\S+) region "Html5 zone"', opened.text).group(1)
+    ptr_card = re.search(r'uid=(\S+) button "Pointer card"', opened.text).group(1)
+    ptr_zone = re.search(r'uid=(\S+) region "Pointer zone"', opened.text).group(1)
+
+    res_html5 = await call(tools, "drag", from_uid=html5_card, to_uid=html5_zone)
+    assert res_html5.success, res_html5.text
+    assert "Successfully dragged an element" in res_html5.text
+    assert "Confirm HTML5 drop?" in res_html5.text
+    assert (await call(tools, "handle_dialog", action="accept")).success
+
+    res_ptr = await call(tools, "drag", from_uid=ptr_card, to_uid=ptr_zone)
+    assert res_ptr.success, res_ptr.text
+    assert "Successfully dragged an element" in res_ptr.text
+    assert "Confirm pointer drop?" in res_ptr.text

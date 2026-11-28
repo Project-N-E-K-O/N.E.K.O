@@ -409,7 +409,7 @@ class BrowserTools:
             parts.append(self._pages_section(owner))
         if snapshot and page is not None:
             try:
-                taken = await self._session.take_snapshot(page, verbose=verbose)
+                taken = await self._session.take_snapshot(page, verbose=verbose, owner=owner)
             except (BrowserError, CdpError, CdpTimeout) as exc:
                 if not acted:
                     raise

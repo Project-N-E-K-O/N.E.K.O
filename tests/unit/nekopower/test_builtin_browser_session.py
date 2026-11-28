@@ -5291,3 +5291,50 @@ async def test_switching_to_a_different_browser_resets_tab_ownership(
 
     assert "team-a" not in session._selected_by_owner
     assert all(page.owner != "team-a" for page in session.pages())
+
+
+async def test_orphan_auto_attached_child_is_resumed_and_detached_when_parent_page_was_forgotten(
+    make_session: Any, world: BrowserWorld
+) -> None:
+    world.settings(mode="attach")
+    session = make_session(own_ports=lambda: {48911})
+    await session.start()
+    page = session.selected()
+    await session.navigate(page, "url", ORDER)
+    parent_sid = page.session_id
+    assert parent_sid is not None
+
+    # Tab navigates to a local file:// URL and is forgotten from session._pages while
+    # its browser-side CDP session still has auto-attach active.
+    world.browser._emit(
+        "Target.targetInfoChanged",
+        {"targetInfo": {"targetId": page.target_id, "type": "page", "url": "file:///tmp/local.html", "title": "local"}},
+    )
+    assert page.target_id not in session._pages
+
+    world.browser.other_targets.append(
+        {"targetId": "orphan-popup-1", "type": "page", "url": "about:blank", "title": ""}
+    )
+    world.browser._other_sessions["orphan-popup-sid"] = "orphan-popup-1"
+
+    mark = world.browser.mark()
+    world.browser._emit(
+        "Target.attachedToTarget",
+        {
+            "sessionId": "orphan-popup-sid",
+            "targetInfo": {
+                "targetId": "orphan-popup-1",
+                "type": "page",
+                "url": "about:blank",
+                "openerId": page.target_id,
+            },
+            "waitingForDebugger": True,
+        },
+        parent_sid,
+    )
+    await _until(lambda: "orphan-popup-1" in world.browser.resumed_targets)
+    await _until(lambda: "orphan-popup-1" in world.browser.detached_from)
+    resumed_cmds = [cmd for cmd in world.browser.since(mark) if cmd.method == "Runtime.runIfWaitingForDebugger"]
+    assert any(cmd.session_id == "orphan-popup-sid" for cmd in resumed_cmds)
+    detach_cmds = [cmd for cmd in world.browser.since(mark) if cmd.method == "Target.detachFromTarget"]
+    assert any(cmd.params.get("sessionId") == "orphan-popup-sid" for cmd in detach_cmds)
