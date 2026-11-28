@@ -134,3 +134,18 @@ def test_packaged_desktop_path_preserves_existing_tool_precedence(tmp_path, monk
     bootstrap._configure_desktop_tool_path()
 
     assert os.get_exec_path() == [existing, str(user_bin)]
+
+
+def test_plugin_tools_group_carries_what_the_sdk_imports_in_plugin_tests():
+    # The CLI wheel is installed with --no-deps, so the group is all the tool
+    # environment gets. A real PluginContext probes ``images``, which imports PIL.
+    import tomllib
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    group = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))["dependency-groups"]["plugin-tools"]
+    names = {entry.split("[")[0].split(">")[0].split("=")[0].strip().lower() for entry in group}
+    assert {"pillow", "pytest", "portalocker", "httpx"} <= names
+    locked = tomllib.loads((root / "uv.lock").read_text(encoding="utf-8"))
+    (project,) = [package for package in locked["package"] if package.get("source", {}).get("editable") == "."]
+    assert "pillow" in {entry["name"] for entry in project["dev-dependencies"]["plugin-tools"]}
