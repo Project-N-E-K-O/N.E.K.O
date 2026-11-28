@@ -167,6 +167,29 @@ def decide_route(
     return ROUTE_CHAT
 
 
+def site_question_would_send(
+    site: str,
+    *,
+    decision_config: Mapping[str, Any] | None,
+    chat_config: Mapping[str, Any] | None,
+    rehost: bool = True,
+) -> bool:
+    """Whether :func:`ask_site_questions` would send a request now.
+
+    False on the site's own chat route, and while the native decision
+    endpoint is in its cooldown after an error (the request is skipped).
+    Lets a caller count only requests that were made.
+    """
+    route = decide_route(site, decision_config=decision_config, chat_config=chat_config, rehost=rehost)
+    if route == ROUTE_CHAT:
+        return False
+    if route == ROUTE_NATIVE:
+        from .client import native_decision_in_cooldown
+
+        return not native_decision_in_cooldown(decision_config)
+    return True
+
+
 async def ask_site_questions(
     site: str,
     *,
