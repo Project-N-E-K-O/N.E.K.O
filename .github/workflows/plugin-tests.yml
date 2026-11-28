@@ -93,17 +93,26 @@ jobs:
         # empty record from re-running everything. The job stays red either
         # way; main-red-reporter.yml reads the NEKO_LF_RERUN_RESULT line from
         # this job's log and labels the issue `flaky` when the re-run passed.
+        # `timeout 420`: here (signal method) every hung test in the re-run
+        # takes its full 300 s and the next one starts, so two of them would
+        # outlast the step limit and the step would be killed before printing
+        # the verdict. Stopping pytest first reports them as `failed` (exit
+        # 124). The Windows re-run cannot get there: its first hung test ends
+        # the pytest process.
         if: failure() && steps.full-suite.outcome == 'failure'
         timeout-minutes: 8
         run: |
           rc=0
-          uv run pytest plugin/tests -q -n 0 --lf --lfnf none || rc=$?
+          timeout -k 10 420 uv run pytest plugin/tests -q -n 0 --lf --lfnf none || rc=$?
           if [ "$rc" -eq 0 ]; then verdict=passed; else verdict=failed; fi
           echo "NEKO_LF_RERUN_RESULT=$verdict (pytest exit $rc)"
           {
             echo '### Flaky check (`--lf` re-run)'
             echo
             echo "Re-running only the failed tests exited with ${rc}: **$verdict**."
+            if [ "$rc" -eq 124 ]; then
+              echo 'The re-run was stopped after 7 min.'
+            fi
             if [ "$verdict" = passed ]; then
               echo 'The failures did not reproduce; treat them as flaky until proven otherwise.'
             else
