@@ -2458,11 +2458,16 @@ async def test_round9_worktree_active_session_protection_and_partial_retry_mtime
             await race_task
             host.task_agents._starting_workdirs.pop("comm-wt-race", None)
 
-        # 2. Partial auto-expiry bumps the parent directory's mtime when deleting one file while leaving a locked
-        #    file behind. The next reap_worktrees() round must retry immediately (not wait another 14 days),
-        #    while a real user edit to a file in the deferred worktree still spares it.
+        # 2. Partial auto-expiry via real _remove_worktree_dir restores surviving directory mtimes when deleting
+        #    one file while leaving a locked file behind, so the next reap_worktrees() round retries immediately
+        #    once unlocked (not delayed 14 days), while moving an OLD-mtime file into a deferred worktree updates
+        #    the directory's mtime and MUST spare the worktree.
+        import shutil
+        from nekopower.host import worktrees as wt_mod
+
         wt_partial = host.paths.worktree_dir("partwt01")
         wt_partial.mkdir(parents=True)
+        (wt_partial / ".git").write_text("gitdir: /fake/.git/worktrees/partwt01\n", encoding="utf-8")
         rem_file = wt_partial / "removable.txt"
         locked_file = wt_partial / "locked.txt"
         rem_file.write_text("gone on first try", encoding="utf-8")
@@ -2484,21 +2489,24 @@ async def test_round9_worktree_active_session_protection_and_partial_retry_mtime
             lambda conn: conn.execute("UPDATE worktrees SET updated_at = ? WHERE id = ?", (old_ts, "partwt01"))
         )
         part_handle = Worktree(id="partwt01", repo_root=fake_repo, path=wt_partial, subpath="", start="abc")
+        lock_active = {"locked": True}
         removed_on_retry = {"done": False}
+        real_unlink = os.unlink
 
         async def fake_handle_part(_row: Any) -> Worktree:
             return part_handle
 
-        async def partial_then_complete_remove(handle: Worktree, is_untouched: Any = None) -> str:
+        def maybe_lock_unlink(p: Any) -> None:
+            if lock_active["locked"] and Path(p).name == "locked.txt":
+                raise PermissionError("file in use")
+            real_unlink(p)
+
+        async def real_dir_remove_if_untouched(handle: Worktree, is_untouched: Any = None) -> str:
             if is_untouched is not None and not is_untouched(handle.path):
                 return "aborted"
-            if rem_file.exists():
-                rem_file.unlink()
-                # Removing rem_file refreshes wt_partial's directory mtime to recent_ts while locked_file stays old.
-                _set_mtime(wt_partial, recent_ts)
+            wt_mod._remove_worktree_dir(handle.path)
+            if handle.path.exists():
                 raise WorktreeRemovalIncomplete("locked.txt still open")
-            locked_file.unlink()
-            wt_partial.rmdir()
             removed_on_retry["done"] = True
             return "removed"
 
@@ -2508,60 +2516,99 @@ async def test_round9_worktree_active_session_protection_and_partial_retry_mtime
             "worktrees_due_seen_at": clock.now - 2 * DAY,
         }
         with monkeypatch.context() as mp:
+            mp.setattr(wt_mod.os, "unlink", maybe_lock_unlink)
             mp.setattr(host.task_agents, "_handle_of", fake_handle_part)
-            mp.setattr(host.task_agents.worktrees, "remove_if_untouched", partial_then_complete_remove)
-            # Round 1: expires partwt01, removes removable.txt (bumping dir mtime), defers due to locked.txt.
+            mp.setattr(host.task_agents.worktrees, "remove_if_untouched", real_dir_remove_if_untouched)
+            # Round 1: expires partwt01, removes removable.txt, leaves locked.txt + .git, preserves dir old_ts.
             await host.storage.reap_worktrees(clock.now, wt_state)
             row_mid = await host.ledger.get_tree("partwt01")
             assert row_mid is not None and row_mid.state == "discarding" and row_mid.reason == "expired"
             assert not rem_file.exists() and locked_file.exists()
+            assert abs(wt_partial.stat().st_mtime - old_ts) < 2.0
 
-            # overview() still considers it stale because remaining files are old (dir mtime alone is ignored).
+            # overview() still considers it stale because surviving dir & file mtimes remain old.
             view_mid = await host.storage_overview()
             item_mid = next(w for w in view_mid["worktrees"] if w["id"] == "partwt01")
             assert item_mid["stale"] is True
 
             # Round 2 (same day, after lock released): retries immediately and completes removal!
+            lock_active["locked"] = False
             await host.storage.reap_worktrees(clock.now + 3600.0, wt_state)
             assert removed_on_retry["done"] is True
             assert (await host.ledger.get_tree("partwt01")) is None
             assert not wt_partial.exists()
 
-        # 3. Real user edit to a deferred auto-expired worktree still spares it on reap_worktrees().
-        wt_edited = host.paths.worktree_dir("editwt02")
-        wt_edited.mkdir(parents=True)
-        edited_file = wt_edited / "notes.txt"
-        edited_file.write_text("user came back", encoding="utf-8")
-        _set_tree_mtime(wt_edited, recent_ts)
+        # 3. Moving an OLD-mtime file into a deferred auto-expired worktree refreshes the destination directory's
+        #    mtime while keeping the file's old mtime; reap_worktrees() and overview() MUST still spare it!
+        wt_moved = host.paths.worktree_dir("movewt02")
+        wt_moved.mkdir(parents=True)
+        (wt_moved / "existing.txt").write_text("old", encoding="utf-8")
+        _set_tree_mtime(wt_moved, old_ts)
+        old_src = tmp_path / "old_archive.bin"
+        old_src.write_bytes(b"precious old archive")
+        _set_mtime(old_src, old_ts)
+        # Simulate user moving an old-mtime file into wt_moved (file keeps old_ts, directory gets recent mtime).
+        shutil.move(str(old_src), str(wt_moved / "old_archive.bin"))
+        _set_mtime(wt_moved / "old_archive.bin", old_ts)
+        _set_mtime(wt_moved, recent_ts)
+
         await host.ledger.add_tree(
-            id="editwt02",
+            id="movewt02",
             session_id=None,
             commission_id=None,
             lanlan_name="Lan",
             project=DEFAULT_PROJECT,
             project_dir=str(fake_repo),
             repo_root=str(fake_repo),
-            path=str(wt_edited),
-            workdir=str(wt_edited),
+            path=str(wt_moved),
+            workdir=str(wt_moved),
             state="discarding",
             reason="expired",
         )
-        edit_handle = Worktree(id="editwt02", repo_root=fake_repo, path=wt_edited, subpath="", start="abc")
+        move_handle = Worktree(id="movewt02", repo_root=fake_repo, path=wt_moved, subpath="", start="abc")
 
-        async def fake_handle_edit(_row: Any) -> Worktree:
-            return edit_handle
+        async def fake_handle_move(_row: Any) -> Worktree:
+            return move_handle
 
         async def fail_if_removed(_handle: Worktree, is_untouched: Any = None) -> str:
             if is_untouched is not None and not is_untouched(_handle.path):
                 return "aborted"
-            raise AssertionError("edited file must not be removed")
+            raise AssertionError("worktree with newly moved-in old file must not be removed")
+
+        view_moved = await host.storage_overview()
+        item_moved = next(w for w in view_moved["worktrees"] if w["id"] == "movewt02")
+        assert item_moved["stale"] is False
 
         with monkeypatch.context() as mp:
-            mp.setattr(host.task_agents, "_handle_of", fake_handle_edit)
+            mp.setattr(host.task_agents, "_handle_of", fake_handle_move)
             mp.setattr(host.task_agents.worktrees, "remove_if_untouched", fail_if_removed)
             await host.storage.reap_worktrees(clock.now + 3600.0, wt_state)
-        assert (await host.ledger.get_tree("editwt02")) is not None
-        assert edited_file.read_text(encoding="utf-8") == "user came back"
+        assert (await host.ledger.get_tree("movewt02")) is not None
+        assert (wt_moved / "old_archive.bin").read_bytes() == b"precious old archive"
+
+        # 4. If a new entry appears concurrently DURING partial _remove_worktree_dir, do NOT rewind the dir mtime.
+        wt_conc = tmp_path / "conc_move_wt"
+        wt_conc.mkdir()
+        (wt_conc / ".git").write_text("gitdir: /fake/.git/worktrees/conc\n", encoding="utf-8")
+        (wt_conc / "removable.txt").write_text("bye", encoding="utf-8")
+        (wt_conc / "locked.txt").write_text("stay", encoding="utf-8")
+        _set_tree_mtime(wt_conc, old_ts)
+
+        def concurrent_add_on_unlink(p: Any) -> None:
+            if Path(p).name == "locked.txt":
+                raise PermissionError("locked")
+            real_unlink(p)
+            if Path(p).name == "removable.txt":
+                added = wt_conc / "moved_during_cleanup.bin"
+                added.write_bytes(b"new")
+                _set_mtime(added, old_ts)
+                _set_mtime(wt_conc, recent_ts)
+
+        with monkeypatch.context() as mp:
+            mp.setattr(wt_mod.os, "unlink", concurrent_add_on_unlink)
+            wt_mod._remove_worktree_dir(wt_conc)
+        assert (wt_conc / "moved_during_cleanup.bin").exists()
+        assert wt_conc.stat().st_mtime > old_ts + DAY
     finally:
         await host.shutdown()
 

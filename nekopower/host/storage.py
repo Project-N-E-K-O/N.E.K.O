@@ -199,7 +199,6 @@ class DirStats:
     whole: bool
     file_count: int
     newest_mtime: float | None
-    newest_file_mtime: float | None = None
 
 
 def measure_dir(path: Path, deadline: float, *, skip_names: frozenset[str] = frozenset()) -> DirStats:
@@ -207,16 +206,15 @@ def measure_dir(path: Path, deadline: float, *, skip_names: frozenset[str] = fro
     try:
         root_stat = os.lstat(_fs(path))
     except FileNotFoundError:
-        return DirStats(exists=False, bytes=0, whole=True, file_count=0, newest_mtime=None, newest_file_mtime=None)
+        return DirStats(exists=False, bytes=0, whole=True, file_count=0, newest_mtime=None)
     except OSError:
-        return DirStats(exists=False, bytes=0, whole=False, file_count=0, newest_mtime=None, newest_file_mtime=None)
+        return DirStats(exists=False, bytes=0, whole=False, file_count=0, newest_mtime=None)
     if _is_reparse_link(path, root_stat) or not stat.S_ISDIR(root_stat.st_mode):
-        return DirStats(exists=False, bytes=0, whole=True, file_count=0, newest_mtime=None, newest_file_mtime=None)
+        return DirStats(exists=False, bytes=0, whole=True, file_count=0, newest_mtime=None)
 
     total = 0
     files = 0
     newest = float(root_stat.st_mtime)
-    newest_file: float | None = None
     whole = True
     stack: list[Path] = [path]
     while stack:
@@ -242,44 +240,31 @@ def measure_dir(path: Path, deadline: float, *, skip_names: frozenset[str] = fro
                     child_path = current / entry.name
                     if _is_reparse_link(child_path, st):
                         files += 1
-                        if newest_file is None or st.st_mtime > newest_file:
-                            newest_file = float(st.st_mtime)
                         continue
                     if stat.S_ISDIR(st.st_mode):
                         stack.append(child_path)
                     else:
                         files += 1
                         total += int(st.st_size)
-                        if newest_file is None or st.st_mtime > newest_file:
-                            newest_file = float(st.st_mtime)
         except OSError:
             whole = False
-    return DirStats(
-        exists=True,
-        bytes=total,
-        whole=whole,
-        file_count=files,
-        newest_mtime=newest,
-        newest_file_mtime=newest_file,
-    )
+    return DirStats(exists=True, bytes=total, whole=whole, file_count=files, newest_mtime=newest)
 
 
 def newest_mtime_of(
-    path: Path, budget_seconds: float = 0.25, *, skip_git: bool = False, files_only: bool = False
+    path: Path, budget_seconds: float = 0.25, *, skip_git: bool = False
 ) -> tuple[float | None, bool]:
     """Blocking: return ``(newest_mtime, scan_complete)`` for ``path`` within ``budget_seconds``.
 
     ``scan_complete`` is False whenever the scan timed out or hit unreadable
     entries; callers performing automatic cleanup must refuse to delete when
     ``scan_complete`` is False so recently edited nested files are never lost.
-    Pass ``files_only=True`` to ignore directory mtimes (useful when retrying
-    a partially removed directory whose parent mtime was refreshed by cleanup).
     """
     skip = frozenset({".git"}) if skip_git else frozenset()
     stats = measure_dir(path, time.monotonic() + budget_seconds, skip_names=skip)
     if not stats.exists:
         return None, stats.whole
-    return (stats.newest_file_mtime if files_only else stats.newest_mtime), stats.whole
+    return stats.newest_mtime, stats.whole
 
 
 def _clear_readonly(fs_path: str) -> None:
@@ -1137,14 +1122,15 @@ class StorageManager:
                     if not stats.exists:
                         stale = can_clean and stats.whole
                     else:
-                        file_mtime, file_whole = newest_mtime_of(
+                        # Check non-.git files and surviving directories (whose mtimes partial cleanup preserves),
+                        # ignoring row.updated_at which expire_tree() bumped when deferring removal.
+                        disk_mtime, disk_whole = newest_mtime_of(
                             wt_path,
                             max(0.05, item_deadline() - time.monotonic()),
                             skip_git=True,
-                            files_only=True,
                         )
-                        stale = can_clean and stats.whole and file_whole and (
-                            file_mtime is None or file_mtime <= worktree_cutoff
+                        stale = can_clean and stats.whole and disk_whole and (
+                            disk_mtime is None or disk_mtime <= worktree_cutoff
                         )
                 else:
                     stale = can_clean and (
@@ -2181,16 +2167,7 @@ class StorageManager:
                 return float("inf"), True
             return mtime, whole
 
-        def _check_retry_expired_mtime(path: Path) -> tuple[float | None, bool]:
-            if not self.settings.allows_auto_clean("worktrees", kept_days):
-                return float("inf"), True
-            # Ignore directory mtimes refreshed by our own partial cleanup; check only non-.git files.
-            mtime, whole = newest_mtime_of(path, STORAGE_AUTO_CLEAN_SCAN_SECONDS, skip_git=True, files_only=True)
-            if not self.settings.allows_auto_clean("worktrees", kept_days):
-                return float("inf"), True
-            return mtime, whole
-
-        # Retry auto-expired discarding worktrees only while retention policy matches and files stay untouched.
+        # Retry auto-expired discarding worktrees only while retention policy matches and files/dirs stay untouched.
         retried_expired = 0
         for row in await self._ledger.trees(states=("discarding",)):
             if row.reason != "expired":
@@ -2200,7 +2177,7 @@ class StorageManager:
                 return
             try:
                 if await self._task_agents.retry_discarded_tree(
-                    row.id, until=until, check_mtime=_check_retry_expired_mtime
+                    row.id, until=until, check_mtime=_check_worktree_mtime
                 ):
                     retried_expired += 1
             except (LookupError, ValueError):

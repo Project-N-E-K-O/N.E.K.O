@@ -642,6 +642,9 @@ class TreeWork:
             # The file that says whose the directory is goes last, with the directory: where
             # something of it is in use and stays, what is left still says so when this is
             # tried again (as the host next starts).
+            from nekopower.host.worktrees import _fs, _restore_surviving_dir_times, _snapshot_dir_times
+
+            saved_times = _snapshot_dir_times(path)
             try:
                 for entry in list(path.iterdir()):
                     if entry.name != ".git":
@@ -652,6 +655,9 @@ class TreeWork:
             except OSError:
                 # Best-effort partial cleanup; caller checks _tree_is_gone below.
                 pass
+            finally:
+                if os.path.lexists(_fs(path)):
+                    _restore_surviving_dir_times(saved_times)
             return True
 
         status = await to_thread_through_cancellation(remove)

@@ -2047,6 +2047,61 @@ def _remove_tree(path: Path) -> None:
     shutil.rmtree(_fs(path), onerror=clear_read_only)
 
 
+def _is_reparse_or_link(st: os.stat_result) -> bool:
+    if stat.S_ISLNK(st.st_mode):
+        return True
+    attrs = getattr(st, "st_file_attributes", 0)
+    return bool(attrs & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0))
+
+
+def _snapshot_dir_times(root: Path) -> list[tuple[str, tuple[int, int], frozenset[str]]]:
+    """Capture ``(fs_path, (atime_ns, mtime_ns), entry_names)`` for ``root`` and non-link subdirectories bottom-up."""
+    saved: list[tuple[str, tuple[int, int], frozenset[str]]] = []
+    stack: list[Path] = [root]
+    while stack:
+        current = stack.pop()
+        fs_cur = _fs(current)
+        try:
+            st = os.lstat(fs_cur)
+        except OSError:
+            continue
+        if not stat.S_ISDIR(st.st_mode) or _is_reparse_or_link(st):
+            continue
+        names: list[str] = []
+        try:
+            with os.scandir(fs_cur) as it:
+                for entry in it:
+                    names.append(entry.name)
+                    if entry.name == ".git":
+                        continue
+                    try:
+                        est = entry.stat(follow_symlinks=False)
+                    except OSError:
+                        continue
+                    if stat.S_ISDIR(est.st_mode) and not _is_reparse_or_link(est):
+                        stack.append(current / entry.name)
+        except OSError:
+            continue
+        saved.append((fs_cur, (st.st_atime_ns, st.st_mtime_ns), frozenset(names)))
+    saved.reverse()
+    return saved
+
+
+def _restore_surviving_dir_times(saved: list[tuple[str, tuple[int, int], frozenset[str]]]) -> None:
+    """Restore original ``(atime_ns, mtime_ns)`` on surviving directories unless new entries appeared."""
+    for fs_dir, times, orig_names in saved:
+        try:
+            st = os.lstat(fs_dir)
+            if not stat.S_ISDIR(st.st_mode) or _is_reparse_or_link(st):
+                continue
+            with os.scandir(fs_dir) as it:
+                current_names = {entry.name for entry in it}
+            if current_names <= orig_names:
+                os.utime(fs_dir, ns=times)
+        except OSError:
+            continue
+
+
 def _remove_worktree_dir(path: Path) -> None:
     """Remove non-``.git`` entries before ``.git`` so partial removal keeps worktree identity for retries."""
     fs_path = _fs(path)
@@ -2060,72 +2115,77 @@ def _remove_worktree_dir(path: Path) -> None:
     if not stat.S_ISDIR(st.st_mode) or not os.path.lexists(_fs(path / ".git")):
         _remove_tree(path)
         return
+    saved_times = _snapshot_dir_times(path)
     try:
-        with os.scandir(fs_path) as it:
-            entries = list(it)
-    except OSError:
-        _remove_tree(path)
-        return
-    for entry in entries:
-        if entry.name == ".git":
-            continue
-        child = path / entry.name
         try:
-            is_dir = entry.is_dir(follow_symlinks=False)
+            with os.scandir(fs_path) as it:
+                entries = list(it)
         except OSError:
-            continue
-        if is_dir:
-            with contextlib.suppress(OSError):
-                _remove_tree(child)
-        else:
-            child_fs = _fs(child)
+            _remove_tree(path)
+            return
+        for entry in entries:
+            if entry.name == ".git":
+                continue
+            child = path / entry.name
             try:
-                os.unlink(child_fs)
+                is_dir = entry.is_dir(follow_symlinks=False)
+            except OSError:
+                continue
+            if is_dir:
+                with contextlib.suppress(OSError):
+                    _remove_tree(child)
+            else:
+                child_fs = _fs(child)
+                try:
+                    os.unlink(child_fs)
+                except OSError:
+                    with contextlib.suppress(OSError):
+                        os.chmod(child_fs, stat.S_IWRITE | stat.S_IREAD)
+                        os.unlink(child_fs)
+        # Only drop .git and the root directory once all other entries are gone.
+        try:
+            with os.scandir(fs_path) as it:
+                if any(entry.name != ".git" for entry in it):
+                    return
+        except OSError:
+            return
+        git_marker = path / ".git"
+        git_fs = _fs(git_marker)
+        git_bytes: bytes | None = None
+        try:
+            git_st = os.lstat(git_fs)
+            if stat.S_ISREG(git_st.st_mode):
+                with open(git_fs, "rb") as handle:
+                    git_bytes = handle.read()
+        except OSError:
+            git_bytes = None
+        if git_bytes is not None:
+            try:
+                os.unlink(git_fs)
             except OSError:
                 with contextlib.suppress(OSError):
-                    os.chmod(child_fs, stat.S_IWRITE | stat.S_IREAD)
-                    os.unlink(child_fs)
-    # Only drop .git and the root directory once all other entries are gone.
-    try:
-        with os.scandir(fs_path) as it:
-            if any(entry.name != ".git" for entry in it):
+                    os.chmod(git_fs, stat.S_IWRITE | stat.S_IREAD)
+                    os.unlink(git_fs)
+            if os.path.lexists(git_fs):
                 return
-    except OSError:
-        return
-    git_marker = path / ".git"
-    git_fs = _fs(git_marker)
-    git_bytes: bytes | None = None
-    try:
-        git_st = os.lstat(git_fs)
-        if stat.S_ISREG(git_st.st_mode):
-            with open(git_fs, "rb") as handle:
-                git_bytes = handle.read()
-    except OSError:
-        git_bytes = None
-    if git_bytes is not None:
-        try:
-            os.unlink(git_fs)
-        except OSError:
-            with contextlib.suppress(OSError):
-                os.chmod(git_fs, stat.S_IWRITE | stat.S_IREAD)
-                os.unlink(git_fs)
-        if os.path.lexists(git_fs):
-            return
-        try:
-            os.rmdir(fs_path)
-            return
-        except OSError:
-            with contextlib.suppress(OSError):
-                os.chmod(fs_path, stat.S_IWRITE | stat.S_IREAD | stat.S_IEXEC)
+            try:
                 os.rmdir(fs_path)
                 return
-            # Root removal failed (e.g. read-only parent or open cwd): restore .git so
-            # _whose() can still prove worktree identity on the next retry.
-            with contextlib.suppress(OSError):
-                with open(git_fs, "wb") as handle:
-                    handle.write(git_bytes)
-            return
-    _remove_tree(path)
+            except OSError:
+                with contextlib.suppress(OSError):
+                    os.chmod(fs_path, stat.S_IWRITE | stat.S_IREAD | stat.S_IEXEC)
+                    os.rmdir(fs_path)
+                    return
+                # Root removal failed (e.g. read-only parent or open cwd): restore .git so
+                # _whose() can still prove worktree identity on the next retry.
+                with contextlib.suppress(OSError):
+                    with open(git_fs, "wb") as handle:
+                        handle.write(git_bytes)
+                return
+        _remove_tree(path)
+    finally:
+        if os.path.lexists(fs_path):
+            _restore_surviving_dir_times(saved_times)
 
 
 def _points_into(path: Path, common_dir: Path) -> bool:
