@@ -5243,8 +5243,39 @@
                     try {
                         var activity = response.activity || {};
                         if (!window._agentBuiltinActivity) window._agentBuiltinActivity = {};
+                        if (!window._agentBuiltinActivities) window._agentBuiltinActivities = Object.create(null);
                         if (activity.group) {
-                            if (activity.state === 'started') {
+                            if (activity.group === 'browser') {
+                                var groupActivities = window._agentBuiltinActivities[activity.group];
+                                if (!groupActivities) {
+                                    groupActivities = Object.create(null);
+                                    window._agentBuiltinActivities[activity.group] = groupActivities;
+                                }
+                                if (activity.state === 'started') {
+                                    if (activity.commission_id != null) {
+                                        groupActivities[activity.commission_id] = activity;
+                                    }
+                                    window._agentBuiltinActivity[activity.group] = activity;
+                                } else {
+                                    if (activity.commission_id != null) {
+                                        delete groupActivities[activity.commission_id];
+                                    } else {
+                                        groupActivities = Object.create(null);
+                                        window._agentBuiltinActivities[activity.group] = groupActivities;
+                                    }
+                                    var remainingIds = Object.keys(groupActivities);
+                                    if (remainingIds.length > 0) {
+                                        window._agentBuiltinActivity[activity.group] = groupActivities[remainingIds[remainingIds.length - 1]];
+                                    } else {
+                                        delete window._agentBuiltinActivities[activity.group];
+                                        var keptBrowserActivity = window._agentBuiltinActivity[activity.group];
+                                        if (!keptBrowserActivity || activity.commission_id == null
+                                            || keptBrowserActivity.commission_id === activity.commission_id) {
+                                            delete window._agentBuiltinActivity[activity.group];
+                                        }
+                                    }
+                                }
+                            } else if (activity.state === 'started') {
                                 window._agentBuiltinActivity[activity.group] = activity;
                             } else {
                                 // 上一个任务的「结束」可能比下一个任务的「开始」晚到：

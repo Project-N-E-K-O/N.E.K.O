@@ -173,17 +173,26 @@ def on_builtin_activity(group: str, state: str, commission_id: str) -> None:
     """
     active = _as_list(_in_use.get(group))
     if state == "started":
-        if commission_id not in active:
-            active.append(commission_id)
-        _in_use[group] = active
-        _count(group)
-    else:
-        active = [item for item in active if item != commission_id]
-        if active:
+        if group == BUILTIN_GROUP_BROWSER:
+            if commission_id not in active:
+                active.append(commission_id)
             _in_use[group] = active
         else:
-            _in_use.pop(group, None)
+            _in_use[group] = [commission_id]
+        _count(group)
+        _send_activity(group, state, commission_id)
+        return
+    was_latest = bool(active and active[-1] == commission_id)
+    active = [item for item in active if item != commission_id]
+    if active:
+        _in_use[group] = active
+    else:
+        _in_use.pop(group, None)
     _send_activity(group, state, commission_id)
+    if group == BUILTIN_GROUP_BROWSER and was_latest and active:
+        # Re-announce a remaining active occupant so single-slot consumers
+        # (such as the desktop overlay banner) keep tracking the browser.
+        _send_activity(group, "started", active[-1])
 
 
 def _send_activity(group: str, state: str, commission_id: str) -> None:

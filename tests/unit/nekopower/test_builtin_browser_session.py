@@ -5069,3 +5069,55 @@ async def test_new_page_reserves_tab_against_concurrent_ensure_owner_page(
     assert page_a0.url == ORDER
     assert page_b is not None and page_b.owner == "team-b"
     assert page_b.target_id not in (page_a0.target_id, page_a1.target_id)
+
+
+async def test_reconnect_to_same_browser_preserves_tab_ownership_and_prunes_closed_tabs(
+    session: BrowserSession, world: BrowserWorld
+) -> None:
+    await session.start()
+    page_a = await session.ensure_owner_page("team-a")
+    assert page_a is not None
+    await session.navigate(page_a, "url", ORDER)
+    page_b = await session.ensure_owner_page("team-b")
+    assert page_b is not None
+    await session.navigate(page_b, "url", TERMS)
+    page_c = await session.ensure_owner_page("team-c")
+    assert page_c is not None
+    await session.navigate(page_c, "url", SHOP)
+
+    # Simulate CDP drop while browser keeps running, C's tab closes, and Target.getTargets
+    # returns B's tab before A's tab upon reconnection.
+    world.browser.disconnect()
+    world.browser.pages.pop(page_c.target_id, None)
+    reordered = {
+        page_b.target_id: world.browser.pages[page_b.target_id],
+        page_a.target_id: world.browser.pages[page_a.target_id],
+    }
+    world.browser.pages = reordered
+
+    await session.start()
+    assert page_c.target_id not in session._tab_owners
+    assert "team-c" not in session._selected_by_owner
+
+    reconnected_a = await session.ensure_owner_page("team-a")
+    reconnected_b = await session.ensure_owner_page("team-b")
+    assert reconnected_a is not None and reconnected_a.target_id == page_a.target_id
+    assert reconnected_a.url == ORDER and reconnected_a.owner == "team-a"
+    assert reconnected_b is not None and reconnected_b.target_id == page_b.target_id
+    assert reconnected_b.url == TERMS and reconnected_b.owner == "team-b"
+
+
+async def test_switching_to_a_different_browser_resets_tab_ownership(
+    session: BrowserSession, world: BrowserWorld
+) -> None:
+    await session.start()
+    page_a = await session.ensure_owner_page("team-a")
+    assert page_a is not None
+    await session.navigate(page_a, "url", ORDER)
+
+    world.browser.disconnect()
+    world.settings(mode="attach")
+    await session.start()
+
+    assert "team-a" not in session._selected_by_owner
+    assert all(page.owner != "team-a" for page in session.pages())

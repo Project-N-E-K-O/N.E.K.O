@@ -290,6 +290,29 @@ def test_the_page_survives_a_message_it_cannot_make_sense_of_or_pass_on():
     assert len(out["warnings"]) == 1
 
 
+def test_the_page_retains_remaining_concurrent_browser_occupant_when_latest_ends():
+    first = {**ACTIVITY, "commission_id": "c1"}
+    second = {**ACTIVITY, "commission_id": "c2"}
+    out = _run_branch(
+        f"""
+        const first = {json.dumps(first)};
+        const second = {json.dumps(second)};
+        tell(first);
+        tell(second);
+        out.afterBoth = kept();
+        tell(Object.assign({{}}, second, {{ state: 'ended', window: null }}));
+        out.afterSecondEnded = kept();
+        tell(Object.assign({{}}, first, {{ state: 'ended', window: null }}));
+        out.afterFirstEnded = kept();
+        """
+    )
+
+    assert out["afterBoth"] == {"browser": second}
+    assert out["afterSecondEnded"] == {"browser": first}
+    assert out["afterFirstEnded"] == {}
+    assert out["warnings"] == []
+
+
 # ---------------------------------------------------------------------------
 # The main server's routes pass the requests on to the agent process
 # ---------------------------------------------------------------------------

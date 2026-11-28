@@ -2213,6 +2213,32 @@ async def test_multiple_commissions_using_the_browser_are_reported_and_stopped_i
     assert (await host.ledger.get(third)).status == "cancelled"
 
 
+async def test_browser_ending_the_latest_concurrent_occupant_reannounces_remaining_occupant(builtins):
+    builtins.module.on_builtin_activity(BROWSER, "started", "c1")
+    builtins.module.on_builtin_activity(BROWSER, "started", "c2")
+    builtins.module.on_builtin_activity(BROWSER, "ended", "c2")
+
+    assert builtins.module.occupants(BROWSER) == ["c1"]
+    assert [(event["activity"]["state"], event["activity"]["commission_id"]) for event in await builtins.sent()] == [
+        ("started", "c1"),
+        ("started", "c2"),
+        ("ended", "c2"),
+        ("started", "c1"),
+    ]
+    # Re-announcing c1 does not double-count browser usage.
+    assert len(builtins.counted) == 2
+
+    builtins.module.on_builtin_activity(BROWSER, "ended", "c1")
+    assert builtins.module.occupants(BROWSER) == []
+    assert [(event["activity"]["state"], event["activity"]["commission_id"]) for event in await builtins.sent()] == [
+        ("started", "c1"),
+        ("started", "c2"),
+        ("ended", "c2"),
+        ("started", "c1"),
+        ("ended", "c1"),
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Which browser the browser tools use: the settings routes
 # ---------------------------------------------------------------------------

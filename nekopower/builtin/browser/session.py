@@ -641,7 +641,7 @@ class BrowserSession:
             return
         said_before = self._unwanted_said
         await self._settle_abandoned()
-        await self._drop_connection()
+        await self._drop_connection(preserve_ownership=self._browser is not None)
         settings = await asyncio.to_thread(self._settings.load)
         attach = settings.mode == MODE_ATTACH
         attach_browsers: list[launcher.RunningBrowser] = []
@@ -743,6 +743,7 @@ class BrowserSession:
                 # Not let go of for good: ``close`` tries again.
                 self._unclosed.append(held)
             self._browser = None
+            self._clear_tab_ownership()
         connect_candidates = attach_browsers if attach_browsers else [browser]
         connection: CdpConnection | None = None
         last_connect_error: Exception | None = None
@@ -780,6 +781,9 @@ class BrowserSession:
             raise BrowserError(
                 f"The browser could not be reached ({type(last_connect_error).__name__}).{hint}"
             ) from last_connect_error
+        same_browser = self._is_same_browser(self._browser, browser)
+        if not same_browser:
+            self._clear_tab_ownership()
         self._connection = connection
         self._browser = browser
         self._reached = None
@@ -809,6 +813,8 @@ class BrowserSession:
             # has.
             for info in targets.get("targetInfos") or ():
                 self._note_target(info)
+            if same_browser:
+                self._prune_tab_state()
             self._tabs_known = True
             had_a_window = bool(self._tabs)
             if was_running and browser.owned:
@@ -831,7 +837,7 @@ class BrowserSession:
                     "the tool again when you still need the browser: the user is then asked whether it may be "
                     "opened again."
                 )
-            if attach or not self._pages:
+            if (attach and not any(page.own for page in self._pages.values())) or not self._pages:
                 # A browser the user is using: their own tabs are left as they
                 # are, and the work gets a tab of its own where that can be had.
                 await self._open_blank_page()
@@ -843,12 +849,12 @@ class BrowserSession:
                 # dropped nothing else would say so: the user closed it, and
                 # the next call asks before it starts another.
                 self._closed_by_user_noted = True
-            await self._drop_connection()
+            await self._drop_connection(preserve_ownership=same_browser)
             raise BrowserError(f"The browser did not answer ({exc}).") from exc
         except asyncio.CancelledError:
             # Half set up: the next call connects anew. The browser stays
             # held, so ``close`` closes it.
-            await self._drop_connection()
+            await self._drop_connection(preserve_ownership=same_browser)
             raise
 
     def _block_patterns(self) -> list[dict[str, str]]:
@@ -1282,18 +1288,69 @@ class BrowserSession:
                     )
             return self.current(owner)
 
-    async def _drop_connection(self) -> None:
-        connection, self._connection = self._connection, None
-        self._pages.clear()
+    @staticmethod
+    def _is_same_browser(
+        previous: launcher.RunningBrowser | None, current: launcher.RunningBrowser
+    ) -> bool:
+        """Return whether ``current`` reconnects to the same running browser instance as ``previous``."""
+        if previous is None or previous.owned != current.owned:
+            return False
+        if previous.pipe is not None or current.pipe is not None:
+            return previous.pipe is current.pipe
+        if current.process is not None and current.process is not previous.process:
+            return False
+        if not previous.endpoint or previous.endpoint != current.endpoint:
+            return False
+        if previous.user_data_dir is not None and current.user_data_dir is not None:
+            return os.path.normcase(os.path.abspath(previous.user_data_dir)) == os.path.normcase(
+                os.path.abspath(current.user_data_dir)
+            )
+        return previous.user_data_dir == current.user_data_dir
+
+    def _clear_tab_ownership(self) -> None:
         self._own_pages.clear()
         self._tab_owners.clear()
+        self._selected_by_owner.clear()
+
+    def _prune_tab_state(self) -> None:
+        """Drop preserved ownership and selections for targets that no longer exist after reconnect."""
+        for tid in list(self._own_pages):
+            if tid not in self._tabs:
+                del self._own_pages[tid]
+        for tid in list(self._tab_owners):
+            if tid not in self._tabs:
+                del self._tab_owners[tid]
+        for owner_key, selected_tid in list(self._selected_by_owner.items()):
+            page = self._pages.get(selected_tid)
+            if page is not None and (owner_key is None or page.owner == owner_key):
+                continue
+            if owner_key is None:
+                fallback = self._fallback(None)
+                if fallback is not None:
+                    self._selected_by_owner[None] = fallback.target_id
+                else:
+                    self._selected_by_owner.pop(None, None)
+            else:
+                owned_fallback = next(
+                    (candidate for candidate in self._pages.values() if candidate.owner == owner_key),
+                    None,
+                )
+                if owned_fallback is not None:
+                    self._selected_by_owner[owner_key] = owned_fallback.target_id
+                else:
+                    self._selected_by_owner.pop(owner_key, None)
+
+    async def _drop_connection(self, *, preserve_ownership: bool = False) -> None:
+        connection, self._connection = self._connection, None
+        self._pages.clear()
+        if not preserve_ownership:
+            self._clear_tab_ownership()
         self._closing_targets.clear()
         self._tabs.clear()
         self._tabs_known = False
         self._not_kept.clear()
         self._handles.clear()
         self._handles_by_owner.clear()
-        self._selected_by_owner.clear()
         self._window_pid = None
         self._window_pid_asked = False
         if connection is not None:
