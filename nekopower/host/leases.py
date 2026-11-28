@@ -42,9 +42,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Any
+
+from config.nekopower_settings import BUILTIN_GROUP_BROWSER
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +71,12 @@ class Occupation:
 
 
 class BuiltinLeases:
-    """Keeps track of which team occupies which group of built-in tools."""
+    """Keeps track of which team(s) occupy which group of built-in tools.
+
+    Exclusive groups (such as ``keyboard_mouse``) allow one team at a time;
+    other teams wait up to ``wait_seconds``. Shared groups (``browser`` by
+    default) allow multiple teams concurrently, each isolated to its own tabs.
+    """
 
     def __init__(
         self,
@@ -78,12 +85,17 @@ class BuiltinLeases:
         on_activity: ActivityListener | None = None,
         on_released: ReleasedCallback | None = None,
         wait_seconds: float | None = None,
+        shared_groups: Iterable[str] | None = None,
     ) -> None:
         self._root_of = root_of
         self._on_activity = on_activity
         self._on_released = on_released
         self._wait_seconds = wait_seconds
-        self._held: dict[str, Occupation] = {}
+        self._shared_groups: frozenset[str] = (
+            frozenset({BUILTIN_GROUP_BROWSER}) if shared_groups is None else frozenset(shared_groups)
+        )
+        # group -> {team -> Occupation}
+        self._held: dict[str, dict[str, Occupation]] = {}
         # Pending provider calls sharing a new membership. One completed
         # operation promotes that membership to the normal run-long hold.
         self._pending_members: dict[tuple[str, str], set[object]] = {}
@@ -94,12 +106,35 @@ class BuiltinLeases:
         self._on_activity = listener
 
     def holder(self, group: str) -> Occupation | None:
-        """Return who occupies a group right now, or None."""
-        return self._held.get(group)
+        """Return an occupation of ``group`` right now (the first team for shared groups), or None."""
+        teams = self._held.get(group)
+        if not teams:
+            return None
+        return next(iter(teams.values()))
+
+    def holders(self, group: str) -> list[Occupation]:
+        """Return every team occupying ``group`` right now."""
+        teams = self._held.get(group)
+        return list(teams.values()) if teams else []
 
     def occupied(self) -> dict[str, str]:
-        """Return the occupied groups with the team that has each."""
-        return {group: held.team for group, held in self._held.items()}
+        """Return the occupied groups with a team that has each."""
+        return {group: next(iter(teams)) for group, teams in self._held.items() if teams}
+
+    def occupied_teams(self, group: str) -> list[str]:
+        """Return every team id occupying ``group`` right now."""
+        teams = self._held.get(group)
+        return list(teams) if teams else []
+
+    def team_of(self, group: str, commission_id: str) -> str | None:
+        """Return the team id holding ``group`` on behalf of ``commission_id``, or None."""
+        teams = self._held.get(group)
+        if not teams:
+            return None
+        for team, held in teams.items():
+            if commission_id in held.members:
+                return team
+        return None
 
     def _wait_limit(self) -> float:
         if self._wait_seconds is not None:
@@ -119,20 +154,24 @@ class BuiltinLeases:
     async def acquire(
         self, group: str, commission_id: str, *, title: str = "", claim: object | None = None
     ) -> Occupation | None:
-        """Occupy a group for a commission, waiting while another team has it.
+        """Occupy a group for a commission, waiting while another team holds an exclusive group.
 
         Returns None once the commission's team has the group. When the wait
-        runs out, returns the occupation that is still in the way.
+        runs out on an exclusive group, returns the occupation in the way.
         """
         team = await self._root_of(commission_id)
+        shared = group in self._shared_groups
         loop = asyncio.get_running_loop()
         deadline = loop.time() + self._wait_limit()
         while True:
-            held = self._held.get(group)
-            if held is None or held.team == team:
+            teams = self._held.get(group)
+            held = teams.get(team) if teams else None
+            if shared or not teams or held is not None:
                 started = held is None
+                if teams is None:
+                    teams = self._held[group] = {}
                 if held is None:
-                    held = self._held[group] = Occupation(team=team, title=title)
+                    held = teams[team] = Occupation(team=team, title=title)
                 key = (group, commission_id)
                 if claim is None:
                     self._pending_members.pop(key, None)
@@ -144,9 +183,10 @@ class BuiltinLeases:
                 if started:
                     self._tell(group, "started", team)
                 return None
+            blocker = next(iter(teams.values()))
             remaining = deadline - loop.time()
             if remaining <= 0:
-                return held
+                return blocker
             waiter: asyncio.Future[None] = loop.create_future()
             self._waiters.add(waiter)
             try:
@@ -171,20 +211,24 @@ class BuiltinLeases:
             self.release(commission_id, only_group=group)
 
     def release(self, commission_id: str, *, only_group: str | None = None) -> list[str]:
-        """Release this commission from the requested group, or from all of them. Return the groups freed.
+        """Release this commission from the requested group, or from all of them. Return the groups freed for its team.
 
-        A group stays occupied while another commission of the same team
-        still uses it.
+        A team's hold lasts while another commission of the same team still uses the group.
         """
         freed: list[tuple[str, Occupation]] = []
-        for group, held in list(self._held.items()):
-            if (only_group is not None and group != only_group) or commission_id not in held.members:
+        for group, teams in list(self._held.items()):
+            if only_group is not None and group != only_group:
                 continue
-            self._pending_members.pop((group, commission_id), None)
-            held.members.discard(commission_id)
-            if not held.members:
+            for team, held in list(teams.items()):
+                if commission_id not in held.members:
+                    continue
+                self._pending_members.pop((group, commission_id), None)
+                held.members.discard(commission_id)
+                if not held.members:
+                    del teams[team]
+                    freed.append((group, held))
+            if not teams:
                 del self._held[group]
-                freed.append((group, held))
         if not freed:
             return []
         for waiter in list(self._waiters):
@@ -198,9 +242,10 @@ class BuiltinLeases:
 
     def release_all(self) -> None:
         """Let go of every occupation; for shutting down."""
-        for held in list(self._held.values()):
-            for member in list(held.members):
-                self.release(member)
+        for teams in list(self._held.values()):
+            for held in list(teams.values()):
+                for member in list(held.members):
+                    self.release(member)
 
     def _spawn(self, work: Awaitable[None]) -> None:
         try:

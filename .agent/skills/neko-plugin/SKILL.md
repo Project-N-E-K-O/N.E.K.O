@@ -120,7 +120,7 @@ If the goal needs a host change, stop and follow the escalation section of
 - `references/runtime-model.md`: processes, event loops, startup/shutdown,
   timers, reload, crash behaviour. Read before any lifecycle or background work.
 - `references/execution-boundary.md`: the hard constraints with reasons;
-  allowed imports; escalation.
+  allowed imports; escalation; plugin glossary.
 - `references/core-plugin-contract.md`: identity, `plugin.toml`, entries,
   routers, hooks, i18n, UI modes.
 - `references/plugin-system-surface-map.md`: SDK capability index (paths,

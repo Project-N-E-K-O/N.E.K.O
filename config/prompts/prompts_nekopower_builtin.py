@@ -58,30 +58,35 @@ COMPUTER_TOOL_NAME = "computer"
 COMPUTER_TOOL = {
     "name": COMPUTER_TOOL_NAME,
     "description": (
-        "Operate this computer's desktop with the mouse and the keyboard, one action per call. Every "
-        "call returns a screenshot taken after the action. Coordinates are integers from 0 to 999 on "
-        "both axes whatever the size of the screen: (0, 0) is the top-left corner, (999, 999) the "
-        "bottom-right corner, (500, 500) the centre. They are not pixels.\n"
+        "Operate this computer's desktop with the mouse and the keyboard, one action per call. "
+        "On Windows, call ui_tree (or inspect the UI controls listed with screenshots) to get numbered "
+        "control uids, then pass uid/to_uid to click, move, drag, scroll or type for exact targeting. "
+        "When no uid applies or on non-Windows hosts, use integer coordinates from 0 to 999 on both "
+        "axes: (0, 0) top-left, (999, 999) bottom-right, (500, 500) centre (not pixels).\n"
         "Actions:\n"
-        "- screenshot: look at the screen.\n"
-        "- click: click at x, y. button is left (default), right or middle; clicks is 1 (default), "
-        "2 for a double click or 3.\n"
-        "- move: move the pointer to x, y, to hover.\n"
-        "- drag: press the left button at x, y, move to to_x, to_y and release.\n"
-        "- scroll: turn the wheel at x, y, or where the pointer is. direction is up, down, left or "
-        "right; amount is the number of notches (default 3).\n"
-        "- type: type text where the keyboard focus is.\n"
-        "- key: press one key or a combination joined with +, such as enter, esc, ctrl+c, alt+f4 or "
-        "win+r. hold_seconds keeps it down that long.\n"
-        "- wait: wait seconds (default 1) for something to load."
+        "- screenshot: look at the screen (also lists foreground UI controls on Windows).\n"
+        "- ui_tree: read Windows UI Automation controls with uids (text only unless include_screenshot=true; "
+        "optional window title substring and offset).\n"
+        "- click: click uid or (x, y). button is left (default), right or middle; clicks is 1 (default), 2 or 3.\n"
+        "- move: hover uid or (x, y).\n"
+        "- drag: drag from uid or (x, y) to to_uid or (to_x, to_y).\n"
+        "- scroll: scroll direction (up, down, left, right) by amount notches (default 3) at uid, (x, y), or pointer.\n"
+        "- type: type text (pass uid to click and focus that control first).\n"
+        "- key: press key or combination joined with + (enter, esc, ctrl+c, alt+f4, win+r); hold_seconds optional.\n"
+        "- wait: wait seconds (default 1)."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["screenshot", "click", "move", "drag", "scroll", "type", "key", "wait"],
+                "enum": ["screenshot", "ui_tree", "click", "move", "drag", "scroll", "type", "key", "wait"],
             },
+            "uid": {"type": "string", "description": "Control uid from ui_tree or screenshot (Windows)."},
+            "to_uid": {"type": "string", "description": "Destination control uid for drag (Windows)."},
+            "window": {"type": "string", "description": "Optional window title substring for ui_tree."},
+            "offset": {"type": "integer", "description": "Control offset for paginated ui_tree."},
+            "include_screenshot": {"type": "boolean", "description": "Also attach a screenshot to ui_tree (default false)."},
             "x": {"type": "integer", "description": "0 to 999 from the left edge"},
             "y": {"type": "integer", "description": "0 to 999 from the top edge"},
             "to_x": {"type": "integer"},
@@ -341,6 +346,32 @@ BROWSER_TOOLS: tuple[dict, ...] = (
             "required": ["action"],
         },
     },
+    {
+        "name": "browser_upload_file",
+        "description": "Upload a local file through a file input or button that opens a file chooser.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "uid": {"type": "string", "description": _UID},
+                "filePath": {"type": "string", "description": "Path of the local file to upload."},
+                "includeSnapshot": _INCLUDE_SNAPSHOT,
+            },
+            "required": ["uid", "filePath"],
+        },
+    },
+    {
+        "name": "browser_drag",
+        "description": "Drag an element onto another element.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "from_uid": {"type": "string", "description": "The uid of the element to drag."},
+                "to_uid": {"type": "string", "description": "The uid of the element to drop onto."},
+                "includeSnapshot": _INCLUDE_SNAPSHOT,
+            },
+            "required": ["from_uid", "to_uid"],
+        },
+    },
 )
 
 BROWSER_TOOL_NAMES: tuple[str, ...] = tuple(tool["name"] for tool in BROWSER_TOOLS)
@@ -447,16 +478,12 @@ TOOL_GROUP_FIRST_RESULT = "This first call returned:"
 # desktop. The second is ours, for the tools taken from Chrome DevTools MCP.
 BUILTIN_GROUP_GUIDANCE: dict[str, str] = {
     "keyboard_mouse": (
-        "The computer tool operates the user's real desktop: it sees the screen as screenshots "
-        "and sends mouse and keyboard input. Take a screenshot before the first action, and take "
-        "coordinates only from the most recent screenshot. An action that was delivered does not "
-        "prove its outcome: check the screenshot that comes back for the result you wanted before "
-        "going on, and when an action had no effect, try another way instead of repeating it. "
-        "Prefer keyboard shortcuts where they are quicker than the mouse. The user and other "
-        "programs may change the same desktop at any time. Input that was sent is not rolled "
-        "back when the run is stopped; after an interruption, look at the current state before "
-        "retrying. Only the most recent screenshots stay visible to you, so write down what you "
-        "will need later."
+        "The computer tool operates the user's real desktop via screenshots, Windows UI Automation "
+        "control uids (action ui_tree), and mouse/keyboard input. On Windows, prefer acting by "
+        "control uid from ui_tree or the latest screenshot over guessing 0-999 coordinates; refresh "
+        "ui_tree if a uid becomes stale. Check the result before going on, prefer keyboard shortcuts "
+        "where quicker, and note that input is not rolled back when stopped. Only the most recent "
+        "screenshots stay visible, so write down what you will need later."
     ),
     "browser": (
         "The browser_ tools drive a real web browser on the user's computer. A page is read as a "

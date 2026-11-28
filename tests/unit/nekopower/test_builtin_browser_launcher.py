@@ -68,6 +68,9 @@ def _subprocess(**overrides: Any) -> _ScopedModule:
     return _ScopedModule(subprocess, **{"Popen": _refuse, "run": _refuse, **overrides})
 
 
+_REAL_RUNNING_BROWSER_PROFILES = launcher._running_browser_profiles
+
+
 @pytest.fixture(autouse=True)
 def no_real_processes(monkeypatch: Any) -> None:
     """Make starting, finding and killing real processes impossible; tests put their own fakes on top."""
@@ -80,6 +83,8 @@ def no_real_processes(monkeypatch: Any) -> None:
     monkeypatch.setitem(sys.modules, "psutil", refusing)
     monkeypatch.setattr(launcher, "subprocess", _subprocess())
     monkeypatch.setattr(launcher, "_port_open", lambda port, timeout=0.5: False)
+    monkeypatch.setattr(launcher, "_spawn_pipe_process", _refuse)
+    monkeypatch.setattr(launcher, "_running_browser_profiles", lambda *args, **kwargs: [])
 
 
 # ---------------------------------------------------------------------------
@@ -611,6 +616,7 @@ class Starter:
         self.unreadable_browser = False
         patch_module_clock(monkeypatch, launcher, monotonic=self.clock.monotonic, sleep=self.clock.sleep)
         monkeypatch.setattr(launcher, "LAUNCH_TIMEOUT_SECONDS", 1.0)
+        monkeypatch.setattr(launcher, "_can_use_pipe", lambda: False)
         monkeypatch.setattr(launcher, "subprocess", _subprocess(Popen=self._popen))
         monkeypatch.setattr(launcher, "_port_open", self._port_open)
         monkeypatch.setattr(launcher, "kill_tree", self.killed.append)
@@ -1634,3 +1640,270 @@ def test_whether_a_process_is_the_browser_of_a_profile_is_read_from_its_command_
     # Without psutil it cannot be told.
     monkeypatch.setitem(sys.modules, "psutil", None)
     assert launcher._runs_on(15, profile) is False
+
+
+# ---------------------------------------------------------------------------
+# Pipe launch (--remote-debugging-pipe) and multi-browser / custom-path attach
+# ---------------------------------------------------------------------------
+
+
+def test_launch_arguments_switches_between_tcp_port_and_pipe() -> None:
+    pipe_args = launcher.launch_arguments("/opt/chrome/chrome", "/data/profile", pipe=True)
+    assert "--remote-debugging-pipe" in pipe_args
+    assert "--remote-debugging-port=0" not in pipe_args
+    assert pipe_args[-1] == "about:blank"
+
+
+class _FakePipeTransport:
+    def __init__(self, *, chunks: list[bytes | None] | None = None, write_error: Exception | None = None) -> None:
+        self.written: list[bytes] = []
+        self.chunks = list(chunks or [])
+        self.write_error = write_error
+        self.closed_sync = 0
+        self.closed_async = 0
+        self._read_handle = 99
+        self._is_win32 = False
+        self._initial_buffer = b""
+
+    def write_sync(self, payload: bytes) -> None:
+        if self.write_error is not None:
+            raise self.write_error
+        self.written.append(payload)
+
+    def close_sync(self) -> None:
+        self.closed_sync += 1
+
+    async def close(self) -> None:
+        self.closed_async += 1
+
+
+def test_start_prefers_remote_debugging_pipe_and_preserves_buffered_events(starter: Starter, monkeypatch: Any) -> None:
+    pipe_child = FakeChild(pid=6001)
+    transport = _FakePipeTransport(
+        chunks=[
+            b'{"method":"Target.targetCreated","params":{}}\x00{"id":0,"result":{"product":"Chrome"}}\x00{"method":"Extra"}\x00'
+        ]
+    )
+    spawned: list[list[str]] = []
+
+    def fake_spawn(arguments: list[str]) -> tuple[Any, Any]:
+        spawned.append(arguments)
+        return pipe_child, transport
+
+    monkeypatch.setattr(launcher, "_can_use_pipe", lambda: True)
+    monkeypatch.setattr(launcher, "_spawn_pipe_process", fake_spawn)
+    monkeypatch.setattr(launcher, "_pipe_read_available", lambda tr, timeout: tr.chunks.pop(0) if tr.chunks else b"")
+
+    browser = launcher._start(CHROME, str(starter.profile), True, ("--lang=en",))
+    assert browser.pipe is transport
+    assert browser.endpoint == ""
+    assert browser.process is pipe_child
+    assert browser.headless is True
+    assert "--remote-debugging-pipe" in spawned[0]
+    assert starter.started == []
+    assert b'"Target.targetCreated"' in transport._initial_buffer
+    assert b'"Extra"' in transport._initial_buffer
+
+
+def test_start_falls_back_to_tcp_port_when_pipe_child_closes_without_answering(starter: Starter, monkeypatch: Any) -> None:
+    pipe_child = FakeChild(pid=6002)
+    transport = _FakePipeTransport(chunks=[None])
+    monkeypatch.setattr(launcher, "_can_use_pipe", lambda: True)
+    monkeypatch.setattr(launcher, "_spawn_pipe_process", lambda args: (pipe_child, transport))
+    monkeypatch.setattr(launcher, "_pipe_read_available", lambda tr, timeout: tr.chunks.pop(0) if tr.chunks else None)
+    starter.on_start.append(lambda: starter.browser_listens(9444))
+
+    browser = launcher._start(CHROME, str(starter.profile), False, ())
+    assert browser.pipe is None
+    assert browser.endpoint == "ws://127.0.0.1:9444/devtools/browser/new"
+    assert transport.closed_sync == 1
+    assert 6002 in starter.killed
+    assert len(starter.started) == 1
+
+
+def test_start_does_not_fall_back_when_stopped_during_pipe_probe(starter: Starter, monkeypatch: Any) -> None:
+    import threading
+
+    stop = threading.Event()
+    pipe_child = FakeChild(pid=6003)
+    transport = _FakePipeTransport()
+    monkeypatch.setattr(launcher, "_can_use_pipe", lambda: True)
+    monkeypatch.setattr(launcher, "_spawn_pipe_process", lambda args: (pipe_child, transport))
+
+    def read_and_stop(tr: Any, timeout: float) -> bytes:
+        stop.set()
+        return b""
+
+    monkeypatch.setattr(launcher, "_pipe_read_available", read_and_stop)
+    with pytest.raises(BrowserStartError, match="the start was stopped"):
+        launcher._start(CHROME, str(starter.profile), False, (), stop)
+    assert transport.closed_sync == 1
+    assert starter.started == []
+
+
+async def test_closing_pipe_browser_sends_browser_close_and_closes_pipe_handle(closer: Closer) -> None:
+    child = FakeChild(pid=6004)
+    transport = _FakePipeTransport()
+    conn = FakeConnection()
+    browser = RunningBrowser(
+        install=CHROME, endpoint="", pipe=transport, process=child, owned=True, user_data_dir="/data/profile"
+    )
+    await launcher.close(browser, conn)
+    assert conn.sent == [("Browser.close", {"timeout": 3.0})]
+    assert child.waits == [launcher.CLOSE_WAIT_SECONDS]
+    assert closer.killed == []
+    assert closer.endpoint_checks == []
+    assert transport.closed_async == 1
+
+
+def test_infer_profile_dirs_handles_custom_paths_and_channels(machine: Machine) -> None:
+    machine.windows()
+    local = machine.environ["LOCALAPPDATA"]
+    assert launcher._infer_profile_dirs(r"D:\Apps\Portable\chrome.exe", "win32")[0] == os.path.join(
+        local, "Google", "Chrome", "User Data"
+    )
+    assert launcher._infer_profile_dirs(r"D:\Apps\Chrome SxS\Application\chrome.exe", "win32") == [
+        os.path.join(local, "Google", "Chrome SxS", "User Data")
+    ]
+    assert launcher._infer_profile_dirs(r"D:\Apps\Edge\msedge.exe", "win32") == [
+        os.path.join(local, "Microsoft", "Edge", "User Data")
+    ]
+    assert launcher._infer_profile_dirs(r"D:\Apps\Thorium\thorium.exe", "win32") == []
+    assert launcher._infer_profile_dirs("/opt/google-chrome-beta", "linux") == [
+        os.path.join(os.path.expanduser("~"), ".config", "google-chrome-beta")
+    ]
+
+
+def test_running_browser_profiles_finds_custom_user_data_dir_and_excludes_own(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    own = str(tmp_path / "own_profile")
+    theirs = str(tmp_path / "portable_profile")
+    exe = str(tmp_path / "PortableChrome" / "chrome.exe")
+    _fake_psutil(
+        monkeypatch,
+        [
+            SimpleNamespace(info={"exe": exe, "name": "chrome.exe", "cmdline": [exe, "--type=renderer", f"--user-data-dir={theirs}"]}),
+            SimpleNamespace(info={"exe": exe, "name": "chrome.exe", "cmdline": [exe, f"--user-data-dir={own}"]}),
+            SimpleNamespace(info={"exe": exe, "name": "chrome.exe", "cmdline": [exe, "--user-data-dir", theirs]}),
+        ],
+    )
+    assert _REAL_RUNNING_BROWSER_PROFILES(exe, exclude_user_data_dir=own) == [theirs]
+
+
+async def test_attach_custom_executable_uses_running_or_inferred_profile(machine: Machine, monkeypatch: Any, tmp_path: Path) -> None:
+    machine.windows()
+    portable_exe = str(tmp_path / "Portable" / "chrome.exe")
+    portable_profile = str(tmp_path / "Portable" / "Data")
+    custom = BrowserInstall("custom", "chrome.exe", portable_exe, None)
+    monkeypatch.setattr(launcher, "_running_browser_profiles", lambda exe, exclude_user_data_dir=None: [portable_profile])
+    monkeypatch.setattr(
+        launcher,
+        "running_endpoint",
+        lambda profile: "ws://127.0.0.1:9444/devtools/browser/portable" if profile == portable_profile else None,
+    )
+    attached = await launcher.attach(custom)
+    assert attached.endpoint == "ws://127.0.0.1:9444/devtools/browser/portable"
+    assert attached.user_data_dir == portable_profile
+    assert attached.owned is False
+
+
+def test_attach_candidates_tries_all_detected_browsers_only_when_executable_unset(machine: Machine) -> None:
+    machine.windows()
+    chrome_exe = machine.install("PROGRAMFILES", *WINDOWS_CHROME)
+    edge_exe = machine.install("PROGRAMFILES(X86)", *WINDOWS_EDGE)
+    primary = launcher.pick_browser(platform="win32")
+    assert primary.executable == chrome_exe
+    all_candidates = launcher.attach_candidates(primary, executable=None, platform="win32")
+    assert [item.executable for item in all_candidates] == [chrome_exe, edge_exe]
+    pinned = launcher.attach_candidates(primary, executable=chrome_exe, platform="win32")
+    assert [item.executable for item in pinned] == [chrome_exe]
+
+
+def test_posix_pipe_spawn_uses_posix_spawnp_file_actions_and_cleans_up_on_error(monkeypatch: Any) -> None:
+    spawn_calls: list[dict[str, Any]] = []
+    closed_fds: list[int] = []
+    killed_pids: list[int] = []
+
+    monkeypatch.setattr(os, "set_inheritable", lambda fd, flag: None)
+    monkeypatch.setattr(os, "close", lambda fd: closed_fds.append(fd))
+    monkeypatch.setattr(os, "open", lambda path, flags: 15)
+    monkeypatch.setattr(launcher, "kill_tree", lambda pid: killed_pids.append(pid))
+
+    # Case 1: c_read=4 collides with target FD 4; _dup_fd_above moves it >=5 before building file_actions.
+    # Mock fcntl as well as os.dup so Linux/macOS CI never passes fake descriptors to real fcntl().
+    dup_counter = iter([20, 21])
+    fake_fcntl = SimpleNamespace(F_DUPFD_CLOEXEC=1030, F_DUPFD=0, fcntl=lambda fd, cmd, arg: next(dup_counter))
+    monkeypatch.setitem(sys.modules, "fcntl", fake_fcntl)
+    monkeypatch.setattr(os, "dup", lambda fd: next(dup_counter))
+    pipes = iter([(4, 12), (13, 3)])
+    monkeypatch.setattr(os, "pipe", lambda: next(pipes))
+    monkeypatch.setattr(
+        "nekopower.builtin.browser.cdp.PipeTransport",
+        lambda r, w, is_win32_handle=False: SimpleNamespace(r=r, w=w, is_win32=is_win32_handle),
+    )
+
+    def fake_spawnp(path: str, args: list[str], env: Any, **kwargs: Any) -> int:
+        spawn_calls.append({"path": path, "args": args, **kwargs})
+        return 7777
+
+    monkeypatch.setattr(os, "posix_spawnp", fake_spawnp, raising=False)
+    proc, transport = launcher._spawn_pipe_posix(["/usr/bin/chrome", "--remote-debugging-pipe"])
+    assert proc.pid == 7777 and (transport.r, transport.w) == (13, 12)
+    actions = spawn_calls[0]["file_actions"]
+    dup2_op = getattr(os, "POSIX_SPAWN_DUP2", "POSIX_SPAWN_DUP2")
+    close_op = getattr(os, "POSIX_SPAWN_CLOSE", "POSIX_SPAWN_CLOSE")
+    assert (dup2_op, 15, 0) in actions
+    assert (dup2_op, 15, 1) in actions
+    assert (dup2_op, 15, 2) in actions
+    assert (dup2_op, 20, 3) in actions
+    assert (dup2_op, 21, 4) in actions
+    assert (close_op, 12) in actions and (close_op, 13) in actions
+    assert spawn_calls[0]["setsid"] is True
+    # Child-side FDs + devnull + temporary dups were closed in parent; parent pipe ends stay open.
+    assert {3, 4, 15, 20, 21}.issubset(set(closed_fds))
+    assert 12 not in closed_fds and 13 not in closed_fds
+
+    # Case 2: PipeTransport failure after spawn kills the child and closes parent pipe FDs too.
+    closed_fds.clear()
+    pipes_err = iter([(31, 32), (33, 34)])
+    monkeypatch.setattr(os, "pipe", lambda: next(pipes_err))
+    monkeypatch.setattr(
+        "nekopower.builtin.browser.cdp.PipeTransport",
+        lambda r, w, is_win32_handle=False: (_ for _ in ()).throw(OSError("wakeup pipe failed")),
+    )
+    with pytest.raises(OSError, match="wakeup pipe failed"):
+        launcher._spawn_pipe_posix(["/usr/bin/chrome", "--remote-debugging-pipe"])
+    assert killed_pids == [7777]
+    assert {15, 31, 32, 33, 34}.issubset(set(closed_fds))
+
+
+def test_start_pipe_oserror_falls_back_to_tcp_port(starter: Starter, monkeypatch: Any) -> None:
+    monkeypatch.setattr(launcher, "_can_use_pipe", lambda: True)
+    monkeypatch.setattr(launcher, "_spawn_pipe_process", lambda args: (_ for _ in ()).throw(OSError("pipe failed")))
+    starter.on_start.append(lambda: starter.browser_listens(9445))
+
+    browser = launcher._start(CHROME, str(starter.profile), False, ())
+    assert browser.pipe is None
+    assert browser.endpoint == "ws://127.0.0.1:9445/devtools/browser/new"
+
+
+async def test_attach_endpoints_returns_all_open_profiles(monkeypatch: Any, tmp_path: Path) -> None:
+    p1 = str(tmp_path / "profile-1")
+    p2 = str(tmp_path / "profile-2")
+    monkeypatch.setattr(launcher, "_attach_profile_dirs", lambda install, exclude=None: [p1, p2])
+    monkeypatch.setattr(
+        launcher,
+        "running_endpoint",
+        lambda profile: f"ws://127.0.0.1:{9401 if profile == p1 else 9402}/devtools/browser/x",
+    )
+    found = await launcher.attach_endpoints(CHROME)
+    assert [item.endpoint for item in found] == [
+        "ws://127.0.0.1:9401/devtools/browser/x",
+        "ws://127.0.0.1:9402/devtools/browser/x",
+    ]
+    # A profile with invalid UTF-8 in DevToolsActivePort returns None instead of crashing attach discovery.
+    bad_dir = tmp_path / "corrupt-profile"
+    bad_dir.mkdir()
+    (bad_dir / launcher.ACTIVE_PORT_FILE).write_bytes(b"\xff\xfe\x00\x80")
+    assert launcher.read_active_port(bad_dir) is None

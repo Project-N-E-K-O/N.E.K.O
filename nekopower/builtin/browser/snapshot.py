@@ -318,6 +318,8 @@ class SnapshotNode:
     frame_id: str
     children: list["SnapshotNode"] = field(default_factory=list)
     uid: str = ""
+    # Target session owning this node; None for the page's main session, set for cross-process iframes (OOPIFs).
+    session_id: str | None = None
 
     @property
     def name(self) -> str:
@@ -361,7 +363,13 @@ def _collect_interesting(collection: set[int], root: AXNode) -> None:
         stack.extend((child, inside_control) for child in node.children)
 
 
-def _serialize(root: AXNode, interesting: set[int] | None, loader_id: str, frame_id: str) -> list[SnapshotNode]:
+def _serialize(
+    root: AXNode,
+    interesting: set[int] | None,
+    loader_id: str,
+    frame_id: str,
+    session_id: str | None = None,
+) -> list[SnapshotNode]:
     # What each node turned into, until the node above it takes it up.
     done: dict[int, list[SnapshotNode]] = {}
     seen: set[int] = set()
@@ -393,6 +401,7 @@ def _serialize(root: AXNode, interesting: set[int] | None, loader_id: str, frame
             loader_id=loader_id,
             frame_id=frame_id,
             children=children,
+            session_id=session_id,
         )
         if node.frame is not None:
             serialized.children.append(node.frame)
@@ -400,14 +409,21 @@ def _serialize(root: AXNode, interesting: set[int] | None, loader_id: str, frame
     return done.get(id(root), [])
 
 
-def serialize_tree(root: AXNode, *, verbose: bool, loader_id: str, frame_id: str) -> SnapshotNode | None:
+def serialize_tree(
+    root: AXNode,
+    *,
+    verbose: bool,
+    loader_id: str,
+    frame_id: str,
+    session_id: str | None = None,
+) -> SnapshotNode | None:
     """Return the tree as snapshot nodes: every node when ``verbose``, else the interesting ones."""
     interesting: set[int] | None = None
     if not verbose:
         _mark_focusable_children(root)
         interesting = set()
         _collect_interesting(interesting, root)
-    serialized = _serialize(root, interesting, loader_id, frame_id)
+    serialized = _serialize(root, interesting, loader_id, frame_id, session_id=session_id)
     return serialized[0] if serialized else None
 
 
@@ -419,17 +435,17 @@ class Snapshot:
     root: SnapshotNode
     verbose: bool
     by_uid: dict[str, SnapshotNode]
-    # Embedded pages (iframes) whose content is not in the tree: of another
-    # site, which lives in another process, or more or deeper than are read.
+    # Embedded pages (iframes) whose content is not in the tree: unreachable,
+    # or more or deeper than are read.
     unlisted_frames: int = 0
 
 
 def assign_uids(root: SnapshotNode, snapshot_id: int, known: dict[str, str]) -> dict[str, SnapshotNode]:
     """Give every node that stands for a DOM node its uid and return the nodes by uid.
 
-    ``known`` maps a node (``<loader id>_<backend node id>``) to the uid it
-    was given before; it is kept up to date, and nodes that are no longer in
-    the tree are forgotten.
+    ``known`` maps a node (``<loader id>_<backend node id>``, prefixed with the
+    target session id for cross-process frames) to the uid it was given before;
+    it is kept up to date, and nodes that are no longer in the tree are forgotten.
     """
     by_uid: dict[str, SnapshotNode] = {}
     seen: set[str] = set()
@@ -439,7 +455,8 @@ def assign_uids(root: SnapshotNode, snapshot_id: int, known: dict[str, str]) -> 
     while stack:
         node = stack.pop()
         if node.backend_node_id is not None:
-            key = f"{node.loader_id}_{node.backend_node_id}"
+            base_key = f"{node.loader_id}_{node.backend_node_id}"
+            key = f"{node.session_id}_{base_key}" if node.session_id else base_key
             uid = known.get(key)
             if uid is None or uid in by_uid:
                 uid = f"{snapshot_id}_{counter}"

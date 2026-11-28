@@ -101,6 +101,7 @@ cryptography==50.0.2
     #   dashscope
     #   google-auth
     #   n-e-k-o
+    #   pyjwt
 cycler==0.12.1 ; platform_machine != 'x86_64' or sys_platform != 'darwin'
     # via matplotlib
 dashscope==1.27.7
