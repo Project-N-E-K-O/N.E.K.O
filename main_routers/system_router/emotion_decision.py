@@ -159,8 +159,11 @@ async def decide_emotion(text: str, *, chat_config, config_manager) -> Optional[
         return None
     answer = answers.get("emotion")
     probs = dict(getattr(answer, "probabilities", None) or {})
-    if not any(k in LABELS for k in probs):
-        return None  # no probabilities to read against neutral: ask the chat prompt
+    if not any(
+        k in LABELS and isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0.0
+        for k, v in probs.items()
+    ):
+        return None  # no probability to read against neutral: ask the chat prompt
     return read_against_neutral(probs)
 
 
@@ -211,7 +214,10 @@ class FirstTokenReading:
 
     async def full_text(self) -> str:
         """The whole answer, prefill included, once the stream ends."""
-        return EMOTION_PREFILL + await self._rest
+        rest = await self._rest
+        if rest.lstrip().startswith("{"):
+            return rest  # the model wrote the whole answer instead of going on from the prefill
+        return EMOTION_PREFILL + rest
 
     def cancel(self) -> None:
         self._rest.cancel()

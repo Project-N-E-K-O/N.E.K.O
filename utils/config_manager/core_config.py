@@ -1835,6 +1835,10 @@ class CoreConfigMixin:
                             if isinstance(_profile, dict)
                             else []
                         )
+                        # The decision slot may point at the provider's own decision
+                        # route (e.g. Requesty's /v1/systemone): that is its endpoint too.
+                        if prefix == 'decision' and isinstance(_profile, dict) and _profile.get('DECISION_URL'):
+                            _candidates = [*_candidates, str(_profile['DECISION_URL'])]
                         # Reuse utils.http.url.same_endpoint for origin matching rather than reinventing it:
                         # vision-slot credential inheritance already refined it over six rounds (trailing slashes / path case /
                         # userinfo / malformed ports / default ports / malformed IPv6). A local

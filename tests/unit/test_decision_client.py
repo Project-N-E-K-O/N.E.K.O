@@ -1361,6 +1361,36 @@ def test_config_manager_decision_slot_defaults_and_cross_provider(clean_user_dat
         "https://llm-pinned.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/systemone"
     )
 
+    # A custom slot on the provider's own decision route keeps the provider's
+    # key from the key book (Requesty: /v1/systemone), the slot key left empty.
+    _set_cfg({
+        "coreApi": "qwen",
+        "assistApi": "deepseek",
+        "assistApiKeyDeepseek": "sk-ds",
+        "assistApiKeyRequesty": "sk-requesty-book",
+        "enableCustomApi": True,
+        "decisionModelProvider": "requesty",
+        "decisionModelUrl": "https://router.requesty.ai/v1/systemone",
+        "decisionModelId": "typesafe/jev-1.14.0",
+        "decisionModelApiKey": "",
+    })
+    rq_dec = cm.get_model_api_config("decision")
+    assert rq_dec["api_key"] == "sk-requesty-book"
+    assert rq_dec["decision_protocol"] == "systemone"
+    # Another provider's route still gets no key from this provider's book.
+    _set_cfg({
+        "coreApi": "qwen",
+        "assistApi": "deepseek",
+        "assistApiKeyDeepseek": "sk-ds",
+        "assistApiKeyRequesty": "sk-requesty-book",
+        "enableCustomApi": True,
+        "decisionModelProvider": "requesty",
+        "decisionModelUrl": "https://api.orcarouter.ai/v1/systemone",
+        "decisionModelId": "typesafe/jev-1.14",
+        "decisionModelApiKey": "",
+    })
+    assert cm.get_model_api_config("decision")["api_key"] != "sk-requesty-book"
+
     # Default gemini assist -> native gemini_decisions + /v1beta/decisions
     _set_cfg({"coreApi": "qwen", "assistApi": "gemini", "assistApiKeyGemini": "sk-gem"})
     gem_dec = cm.get_model_api_config("decision")

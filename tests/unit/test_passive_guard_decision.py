@@ -168,3 +168,24 @@ def test_runtime_returns_the_decision_and_skips_the_chat_prompt(monkeypatch):
 def test_a_bare_choice_without_probabilities_gives_no_action():
     bare = SimpleNamespace(value="giving_up", probability=None, probabilities={})
     assert pgd.action_from_answer(bare, {"stage": 8}) is None
+
+
+@pytest.mark.unit
+def test_a_teaching_game_never_opens_the_exit_window():
+    data = {"stage": 8, "promptType": "surrender", "preGameContext": {"gameStance": "teaching"}}
+    assert pgd.action_from_answer(_answer({"giving_up": 1.0}), data) == pgd.OBSERVE
+    # An ordinary game at stage 8 still can.
+    assert pgd.action_from_answer(_answer({"giving_up": 1.0}), {"stage": 8}) == pgd.PREPARE
+
+
+@pytest.mark.unit
+def test_her_reply_counts_only_for_the_same_whole_speech():
+    head = "x" * 240
+    route = {"game_dialog_log": [
+        {"id": "d1", "type": "user", "text": head + " play for real"},
+        {"id": "d2", "type": "assistant", "line": "Okay! I'll play for real"},
+    ]}
+    assert pgd._reply_to_speech({"userSpeech": head + " play for real"}, route) == "Okay! I'll play for real"
+    # Same first 240 characters, different speech: not her reply to it.
+    assert pgd._reply_to_speech({"userSpeech": head + " just give up"}, route) is None
+

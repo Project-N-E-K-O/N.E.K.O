@@ -40,6 +40,7 @@ CANCEL_THRESHOLD = 0.5
 DECISION_TIMEOUT_SECONDS = 2.5
 _MAX_STATE_DIALOGUES = 24
 _LATEST_LINES = 4
+_WHOLE_SPEECH_CHARS = 100_000
 
 
 def _stage_number(stage: Any) -> int:
@@ -51,6 +52,11 @@ def _stage_number(stage: Any) -> int:
 
 def _is_user_stage(data: Dict[str, Any]) -> bool:
     return str(data.get("stage")) in USER_STAGES
+
+
+def _teaching(data: Dict[str, Any]) -> bool:
+    pre = data.get("preGameContext")
+    return isinstance(pre, dict) and str(pre.get("gameStance") or "").strip().lower() == "teaching"
 
 
 def _prompt_type(data: Dict[str, Any]) -> str:
@@ -146,9 +152,11 @@ def _reply_to_speech(data: Dict[str, Any], route_state: Any) -> Optional[str]:
 
     raw_log = route_state.get("game_dialog_log") if isinstance(route_state, dict) else None
     log = [d for d in raw_log or [] if isinstance(d, dict)]
-    speech = _normalize_short_text(data.get("userSpeech") or "", max_chars=240)
+    # Compared whole: two speeches that only share their first 240 characters
+    # are different speeches (the state shows the speech cut to 240).
+    speech = _normalize_short_text(data.get("userSpeech") or "", max_chars=_WHOLE_SPEECH_CHARS)
     if len(log) >= 2 and log[-1].get("type") == "assistant" and log[-2].get("type") == "user":
-        prev = _normalize_short_text(log[-2].get("text") or "", max_chars=240)
+        prev = _normalize_short_text(log[-2].get("text") or "", max_chars=_WHOLE_SPEECH_CHARS)
         if speech and prev == speech:
             return str(log[-1].get("line") or "").strip() or None
     return None
@@ -208,6 +216,9 @@ def action_from_answer(answer: Any, data: Dict[str, Any]) -> Optional[str]:
         return None
     best = ranked[0][1]
     if best == PREPARE and _stage_number(data.get("stage")) < 8:
+        return OBSERVE
+    if best == PREPARE and _teaching(data):
+        # A teaching game never opens the exit window (teachingNeverUsesPrompt).
         return OBSERVE
     return best
 

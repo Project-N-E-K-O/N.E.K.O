@@ -440,3 +440,24 @@ def test_a_slow_doubao_first_token_is_read_as_the_chat_answer_without_a_second_r
     assert llm.calls == 1 and em.chat_calls == 0  # the same stream, nothing sent again
     assert resp["emotion"] == "sad" and resp["reaction"] == {"emoji": "😢", "author": "NEKO"}
 
+
+def test_all_zero_probabilities_mean_the_chat_prompt(em, monkeypatch):
+    import utils.decision_client as dc
+
+    async def _ask(site, **kw):
+        return {"emotion": SimpleNamespace(value="happy", probabilities={"happy": 0.0, "neutral": 0.0})}
+
+    monkeypatch.setattr(dc, "ask_site_questions", _ask)
+    assert asyncio.run(em.ed.decide_emotion("hi", chat_config=OTHER, config_manager=None)) is None
+
+
+def test_a_whole_answer_written_over_the_prefill_is_not_prefixed_twice(em):
+    async def _run():
+        async def _whole():
+            return ' {"emotion": "sad", "confidence": 0.9}'
+
+        reading = em.ed.FirstTokenReading({}, "", asyncio.ensure_future(_whole()))
+        return await reading.full_text()
+
+    assert asyncio.run(_run()) == ' {"emotion": "sad", "confidence": 0.9}'
+
