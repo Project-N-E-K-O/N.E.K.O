@@ -72,7 +72,10 @@ _CHARSET_RE = re.compile(r';\s*charset\s*=\s*"?([^";]+)"?', re.IGNORECASE)
 # these ranges are still refused by ``check_host_name``; only DNS answers for
 # a non-local domain name may connect through a Fake-IPv4 address.
 _FAKE_IP_V4 = ipaddress.IPv4Network("198.18.0.0/15")
-_FAKE_IP_V6 = ipaddress.IPv6Network("fc00::/18")
+_FAKE_IP_V6_NETWORKS = (
+    ipaddress.IPv6Network("fc00::/18"),
+    ipaddress.IPv6Network("fdfe:dcba:9876::/64"),
+)
 # Independent IANA-reserved domains probed only when a target hostname resolves
 # into 198.18.0.0/15: a transparent proxy's Fake-IP DNS synthesizes 198.18.x.x
 # for these too, whereas an attacker's DNS record on a non-Fake-IP network cannot.
@@ -157,7 +160,11 @@ def is_fake_ip_v4(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> boo
 
 
 def _is_fake_ip_v6(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
-    return isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is None and address in _FAKE_IP_V6
+    return (
+        isinstance(address, ipaddress.IPv6Address)
+        and address.ipv4_mapped is None
+        and any(address in network for network in _FAKE_IP_V6_NETWORKS)
+    )
 
 
 async def _is_fake_ip_dns_active(target_host: str) -> bool:

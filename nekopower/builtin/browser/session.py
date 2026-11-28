@@ -340,9 +340,10 @@ _IS_FILE_INPUT = """function() {
 
 _PORT_GUARD_MARKER = "__nekopower_port_guard__"
 
-# Auto-attach filter for cross-process iframes and workers so port blocking
-# reaches them before their first script runs.
+# Auto-attach filter for popups, cross-process iframes, and workers so port
+# blocking reaches them before their first script runs.
 _AUTO_ATTACH_FILTER = [
+    {"type": "page", "exclude": False},
     {"type": "iframe", "exclude": False},
     {"type": "worker", "exclude": False},
     {"type": "shared_worker", "exclude": False},
@@ -967,7 +968,28 @@ class BrowserSession:
         kind = str(target_info.get("type") or "")
         target_id = str(target_info.get("targetId") or "")
         try:
-            if kind == "iframe":
+            if kind == "page":
+                self._note_target(target_info, own=page.own, owner=page.owner)
+                popup_page = self._pages.get(target_id) if target_id else None
+                if popup_page is not None and popup_page.session_id is None:
+                    popup_page.session_id = child_session_id
+                    popup_page.prepared = False
+                elif popup_page is None:
+                    page.worker_sessions.add(child_session_id)
+                if self._blocked_ports:
+                    if not self._blocked_everywhere:
+                        try:
+                            await connection.send(
+                                "Fetch.enable",
+                                {"patterns": self._block_patterns()},
+                                session_id=child_session_id,
+                                timeout=5.0,
+                            )
+                        except (CdpError, CdpTimeout):
+                            logger.debug("Fetch.enable failed on auto-attached popup page", exc_info=True)
+                    await self._install_port_guard(connection, child_session_id, on_new_document=True, timeout=5.0)
+                    await self._enable_auto_attach(connection, child_session_id, timeout=5.0)
+            elif kind == "iframe":
                 if target_id:
                     page.child_sessions[target_id] = child_session_id
                 try:
@@ -2828,6 +2850,9 @@ class BrowserSession:
             raise BrowserError("Cannot drag between elements in different cross-site frames.")
         sid = from_node.session_id
         before = page.navigations
+        # Verify the drop target is reachable before pressing on the source so an
+        # unreachable target fails cleanly without synthesizing an accidental click.
+        await self._point(page, to_uid, to_node, to_obj)
         sx, sy = await self._point(page, from_uid, from_node, from_obj)
         intercepted_on = False
         page.drag_event.clear()

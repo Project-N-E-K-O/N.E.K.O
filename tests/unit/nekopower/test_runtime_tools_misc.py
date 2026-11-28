@@ -503,6 +503,29 @@ async def test_a_public_name_resolving_to_proxy_fake_ip_is_allowed_while_literal
     monkeypatch.setattr(asyncio.get_running_loop(), "getaddrinfo", fake_dual_stack)
     assert await web.resolve_public("example.com", 443) == "198.19.1.5"
 
+    # Mihomo's documented Fake-IPv6 prefix (fdfe:dcba:9876::/64) paired with 198.18.0.0/15
+    # also succeeds, while arbitrary private ULAs (e.g. fd12::1) remain blocked.
+    async def fake_dual_stack_mihomo(host, port, **kwargs):  # noqa: ANN001, ANN003, ANN202
+        del host, kwargs
+        return [
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("fdfe:dcba:9876::1", port, 0, 0)),
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("198.18.0.42", port)),
+        ]
+
+    monkeypatch.setattr(asyncio.get_running_loop(), "getaddrinfo", fake_dual_stack_mihomo)
+    assert await web.resolve_public("example.com", 443) == "198.18.0.42"
+
+    async def fake_v4_with_unrelated_ula(host, port, **kwargs):  # noqa: ANN001, ANN003, ANN202
+        del host, kwargs
+        return [
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("fd12:3456::1", port, 0, 0)),
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("198.18.0.42", port)),
+        ]
+
+    monkeypatch.setattr(asyncio.get_running_loop(), "getaddrinfo", fake_v4_with_unrelated_ula)
+    with pytest.raises(ToolError, match="resolves to fd12:3456::1, which is not a public address"):
+        await web.resolve_public("example.com", 443)
+
     # ULA fc00::/18 alone (without a Fake-IPv4) is still refused as private.
     async def ula_only(host, port, **kwargs):  # noqa: ANN001, ANN003, ANN202
         del host, kwargs

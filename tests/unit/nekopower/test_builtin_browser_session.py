@@ -4875,6 +4875,23 @@ async def test_drag_dispatches_html5_drag_events_and_pointer_drag(
     assert fake.inputs()[1] == "mousePressed"
     assert fake.inputs()[-1] == "mouseReleased"
 
+    # When the drop target is unreachable, drag must fail before pressing on the source
+    # so it never synthesizes an accidental click on the source element.
+    fake.mouse.clear()
+    world.browser.serve(
+        "http://shop.test/board-hidden-target",
+        lambda: Document(
+            "Board",
+            el("button", "Card A", draggable=True),
+            el("region", "Hidden drop", visible=False),
+        ),
+    )
+    page2, fake2, snap2 = await open_page(session, world, "http://shop.test/board-hidden-target")
+    fake2.mouse.clear()
+    with pytest.raises(BrowserError, match="not visible"):
+        await session.drag(page2, uid_of(snap2, "Card A"), uid_of(snap2, "Hidden drop"))
+    assert fake2.mouse == []
+
 
 async def test_attach_mode_arms_websocket_guard_and_auto_attaches_oopifs_and_workers(
     make_session: Any, world: BrowserWorld
@@ -4974,6 +4991,51 @@ async def test_nested_workers_created_by_workers_receive_port_guards(
     assert nested_cmds.index("Target.setAutoAttach") < nested_cmds.index("Runtime.runIfWaitingForDebugger")
     assert any(tid == "nested-w-1" for tid, _ in world.browser.port_guards)
     assert "nested-w-sid" in page.worker_sessions
+
+
+async def test_popup_pages_opened_by_page_receive_port_guards_before_running(
+    make_session: Any, world: BrowserWorld
+) -> None:
+    world.settings(mode="attach")
+    session = make_session(own_ports=lambda: {48911})
+    await session.start()
+    page = session.selected()
+    await session.navigate(page, "url", ORDER)
+
+    world.browser.other_targets.append(
+        {"targetId": "popup-1", "type": "page", "url": "https://evil.example/popup", "title": "popup"}
+    )
+    world.browser._other_sessions["popup-sid"] = "popup-1"
+
+    mark = world.browser.mark()
+    world.browser._emit(
+        "Target.attachedToTarget",
+        {
+            "sessionId": "popup-sid",
+            "targetInfo": {
+                "targetId": "popup-1",
+                "type": "page",
+                "url": "https://evil.example/popup",
+                "openerId": page.target_id,
+            },
+            "waitingForDebugger": True,
+        },
+        page.session_id,
+    )
+    await _until(lambda: "popup-1" in world.browser.resumed_targets)
+    popup_cmds = [cmd.method for cmd in world.browser.since(mark) if cmd.session_id == "popup-sid"]
+    assert "Fetch.enable" in popup_cmds
+    assert "Page.addScriptToEvaluateOnNewDocument" in popup_cmds
+    assert "Runtime.evaluate" in popup_cmds
+    assert "Target.setAutoAttach" in popup_cmds
+    resume_idx = popup_cmds.index("Runtime.runIfWaitingForDebugger")
+    assert popup_cmds.index("Fetch.enable") < resume_idx
+    assert popup_cmds.index("Page.addScriptToEvaluateOnNewDocument") < resume_idx
+    assert popup_cmds.index("Runtime.evaluate") < resume_idx
+    assert popup_cmds.index("Target.setAutoAttach") < resume_idx
+    assert any(tid == "popup-1" for tid, _ in world.browser.port_guards)
+    popup_page = session._pages.get("popup-1")
+    assert popup_page is not None and popup_page.session_id == "popup-sid" and popup_page.own is True
 
 
 async def test_attach_retries_remaining_candidates_when_cdp_connect_fails(
