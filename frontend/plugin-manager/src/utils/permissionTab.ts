@@ -307,7 +307,8 @@ export function validCatalog(value: unknown): value is PermissionCatalog {
   return isObject(value) && Array.isArray(value.privacy_groups)
 }
 export function validPending(value: unknown): value is PendingPermissions {
-  return isObject(value) && Array.isArray(value.first_use) && Array.isArray(value.incomplete)
+  return isObject(value) && Array.isArray(value.first_use) && value.first_use.every(isObject)
+    && Array.isArray(value.incomplete)
 }
 export function validHistory(value: unknown): value is { history: UsageHistory; lost_at: string | null } {
   return isObject(value) && isObject(value.history)

@@ -196,6 +196,50 @@ describe('dialog ① before the first start', () => {
     expect(closed).toEqual([{ start: false, changed: true }])
   })
 
+  const withState = (p: PermissionPanel, states: Record<string, 'granted' | 'denied' | 'undecided'>) => ({
+    ...p,
+    rows: p.rows.map((r) => (r.permission in states ? { ...r, state: states[r.permission]! } : r)),
+  })
+
+  it('takes a later save answer over an earlier answer given here', async () => {
+    const p = firstPanel()
+    const { root } = await mount({ panel: p, request: { kind: 'first', items: [NET, ENV] }, start: true })
+    api.decidePermission.mockResolvedValueOnce(withState(p, { [NET]: 'granted' }))
+    q(root, `dialog-allow-${NET}`)!.click()
+    await flush()
+    // Meanwhile the source changed and cleared NET; the next save's answer says so.
+    api.decidePermission.mockResolvedValueOnce(withState(p, { [NET]: 'undecided', [ENV]: 'denied' }))
+    q(root, `dialog-refuse-${ENV}`)!.click()
+    await flush()
+    expect(q(root, `dialog-allow-${NET}`)!.dataset.type).toBeUndefined()
+    expect(q(root, 'dialog-start')!.textContent).toContain('{"n":1}')
+  })
+
+  it('drops the answers given here when a panel from the tab shows the source changed', async () => {
+    const p = firstPanel()
+    const { root, props } = await mount({ panel: p, request: { kind: 'first', items: [NET] }, start: true })
+    api.decidePermission.mockResolvedValueOnce(withState(p, { [NET]: 'granted' }))
+    q(root, `dialog-allow-${NET}`)!.click()
+    await flush()
+    props.panel = { ...p, grants_reset: { at: null, reason: 'source_changed' } }
+    await flush()
+    expect(q(root, `dialog-allow-${NET}`)!.dataset.type).toBeUndefined()
+    expect(q(root, 'dialog-reset')).not.toBeNull()
+  })
+
+  it('keeps what was read after a failed save against an older panel from the tab', async () => {
+    const p = firstPanel()
+    const { root, props } = await mount({ panel: p, request: { kind: 'first', items: [NET] }, start: true })
+    api.decidePermission.mockRejectedValueOnce(new Error('lost'))
+    api.getPermissionPanel.mockResolvedValueOnce(withState(p, { [NET]: 'granted' }))
+    q(root, `dialog-allow-${NET}`)!.click()
+    await flush()
+    expect(q(root, `dialog-allow-${NET}`)!.dataset.type).toBe('primary')
+    props.panel = { ...p }
+    await flush()
+    expect(q(root, `dialog-allow-${NET}`)!.dataset.type).toBe('primary')
+  })
+
   it('follows a newer panel from the tab, keeping the answers given here', async () => {
     const p = firstPanel()
     const { root, props } = await mount({ panel: p, request: { kind: 'first', items: [NET] }, start: true })

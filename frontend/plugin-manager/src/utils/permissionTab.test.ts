@@ -11,6 +11,7 @@ import {
   permissionsToml,
   scanNotice,
   validPanel,
+  validPending,
   enforcementTag,
   firstUse,
   incomplete,
@@ -323,6 +324,14 @@ describe('permissionsToml', () => {
         + '[permissions.ask]\n"plugin_sdk.models:invoke" = {}',
     )
     expect(permissionsToml(null)).toBe('')
+  })
+})
+
+describe('validPending', () => {
+  it('rejects a list with items of another shape', () => {
+    expect(validPending({ first_use: [], incomplete: [] })).toBe(true)
+    expect(validPending({ first_use: [null], incomplete: [] })).toBe(false)
+    expect(validPending({ first_use: ['x'], incomplete: [] })).toBe(false)
   })
 })
 

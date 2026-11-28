@@ -195,18 +195,38 @@ const current = shallowRef<PermissionPanel>(props.panel)
 const busy = ref<string | null>(null)
 /** A decision was saved, or may have been: the tab reads the plugin again on close. */
 let changed = false
-/** Rows as answered here: a newer panel from the tab (a running scan) keeps them. */
+/**
+ * Rows answered here, as the server last returned them. A panel from the tab
+ * may predate them, so it does not undo them; the server's own answers here
+ * (a save, a read after a failed save) are newer and replace them.
+ */
 const answered = new Map<string, PanelRow>()
 
-function withAnswers(next: PermissionPanel): PermissionPanel {
-  if (!answered.size) return next
-  return { ...next, rows: next.rows.map((row) => answered.get(row.permission) ?? row) }
+/** A panel the server returned after the answers given here: it wins, and updates them. */
+function showFresh(next: PermissionPanel) {
+  for (const permission of [...answered.keys()]) {
+    const row = next.rows.find((item) => item.permission === permission)
+    if (row) answered.set(permission, row)
+    else answered.delete(permission)
+  }
+  current.value = next
+}
+/** Decisions of an earlier source are cleared: answers given before do not apply. */
+function sourceChanged(next: PermissionPanel, shown: PermissionPanel) {
+  return (
+    next.source.fingerprint8 !== shown.source.fingerprint8
+    || next.source.channel !== shown.source.channel
+    || JSON.stringify(next.grants_reset) !== JSON.stringify(shown.grants_reset)
+  )
 }
 // The tab reads the panel again while a scan runs: newly found items show up here too.
 watch(
   () => props.panel,
   (next) => {
-    current.value = withAnswers(next)
+    if (sourceChanged(next, current.value)) answered.clear()
+    current.value = answered.size
+      ? { ...next, rows: next.rows.map((row) => answered.get(row.permission) ?? row) }
+      : next
   },
 )
 
@@ -286,23 +306,28 @@ async function save(row: PanelRow, state: 'granted' | 'denied', chosen?: Permiss
     const next = await decidePermission(current.value.plugin_id, row.permission, state, keep)
     changed = true
     if (validPanel(next)) {
-      const saved = next.rows.find((item) => item.permission === row.permission)
-      if (saved) answered.set(row.permission, saved)
-      current.value = withAnswers(next)
+      answered.set(row.permission, row)
+      showFresh(next)
     } else {
       // An answer of another shape: show the choice made, the tab reads it again.
-      answered.set(row.permission, { ...row, state })
-      current.value = withAnswers(current.value)
+      const shown = { ...row, state }
+      answered.set(row.permission, shown)
+      current.value = {
+        ...current.value,
+        rows: current.value.rows.map((item) => (item.permission === row.permission ? shown : item)),
+      }
     }
     return true
   } catch (error) {
     ElMessage.error(t(decisionErrorKey(error)))
     // The server may have stored it before the answer was lost: show what it holds.
     changed = true
-    answered.delete(row.permission)
     try {
       const held = await getPermissionPanel(current.value.plugin_id)
-      if (validPanel(held)) current.value = withAnswers(held)
+      if (validPanel(held)) {
+        answered.set(row.permission, row)
+        showFresh(held)
+      }
     } catch {
       // Keep what is shown; the tab reads the plugin again on close.
     }
