@@ -238,9 +238,9 @@ Managers and the Agent Server initialize these switches off. Persisted runtime i
 | Ledger, outbox, reports | `nekopower/host/ledger.py`, `outbox.py`, `reports.py` |
 | Where a new commission goes, families, leaders and members | `nekopower/host/orchestrator.py`, `families.py`, `tests/unit/nekopower/fixtures/orchestrator_scenarios.json` |
 | Presets and templates, cards, the board, the form for summoning a familiar | `nekopower/host/templates.py`, `board.py`, `drafts.py`, `config/prompts/prompts_nekopower_presets.py` |
-| Notes between sessions, wakes, reading another session's record | `nekopower/host/wakes.py`, `records.py`, `task_agents.py`, `config/prompts/prompts_nekopower_sessions.py` |
+| Notes between sessions, wakes, reading another session's record | `nekopower/host/wakes.py`, `records.py`, `task_agents/messaging.py`, `config/prompts/prompts_nekopower_sessions.py` |
 | What happened between sessions, who waits for whom (read only) | `nekopower/host/timeline.py` |
-| Task agents and the agent runtime | `nekopower/host/task_agents.py`, `nekopower/runtime/` |
+| Task agents and the agent runtime | `nekopower/host/task_agents/`, `nekopower/runtime/` |
 | dsh: the optional agent runtime and the choice of runtime | `nekopower/dsh/`, `nekopower/host/runtimes.py`, `config/prompts/prompts_nekopower_dsh.py` |
 | Task agent space: entries, indexes, reviews, archiving | `nekopower/host/space.py`, `space_keeper.py`, `config/prompts/prompts_nekopower_space.py` |
 | Capability list, gateway, permissions | `nekopower/host/capabilities.py`, `gateway.py`, `permissions.py` |

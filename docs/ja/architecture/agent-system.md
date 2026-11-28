@@ -238,9 +238,9 @@ Manager と Agent Server は構築時にすべてオフです。ただし最初�
 | 台帳、outbox、報告 | `nekopower/host/ledger.py`、`outbox.py`、`reports.py` |
 | 新しい依頼の行き先、ファミリー、リーダーとメンバー | `nekopower/host/orchestrator.py`、`families.py`、`tests/unit/nekopower/fixtures/orchestrator_scenarios.json` |
 | 役割プリセットとテンプレート、カード、ボード、使い魔を召喚するフォーム | `nekopower/host/templates.py`、`board.py`、`drafts.py`、`config/prompts/prompts_nekopower_presets.py` |
-| セッション間のメッセージ、再開、ほかのセッションの記録の読み取り | `nekopower/host/wakes.py`、`records.py`、`task_agents.py`、`config/prompts/prompts_nekopower_sessions.py` |
+| セッション間のメッセージ、再開、ほかのセッションの記録の読み取り | `nekopower/host/wakes.py`、`records.py`、`task_agents/messaging.py`、`config/prompts/prompts_nekopower_sessions.py` |
 | セッション間で起きたこと、誰が誰を待っているか（読み取りのみ） | `nekopower/host/timeline.py` |
-| task agent と agent runtime | `nekopower/host/task_agents.py`、`nekopower/runtime/` |
+| task agent と agent runtime | `nekopower/host/task_agents/`、`nekopower/runtime/` |
 | dsh：オプションの agent runtime とその選択 | `nekopower/dsh/`、`nekopower/host/runtimes.py`、`config/prompts/prompts_nekopower_dsh.py` |
 | task agent 空間：エントリ、索引、振り返り、アーカイブ | `nekopower/host/space.py`、`space_keeper.py`、`config/prompts/prompts_nekopower_space.py` |
 | 能力一覧、ゲートウェイ、権限 | `nekopower/host/capabilities.py`、`gateway.py`、`permissions.py` |
