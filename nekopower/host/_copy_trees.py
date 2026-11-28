@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import contextlib
 import difflib
+import errno
 import hashlib
 import json
 import os
@@ -34,6 +35,7 @@ import stat
 import sys
 import threading
 import uuid
+from collections import Counter
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -45,6 +47,10 @@ _BASE_MANIFEST_FILE = "base_manifest.json"
 _BLOBS_DIR = "blobs"
 _PENDING_DIR = "pending"
 _CONFLICTS_DIR = "conflicts"
+_ROLLBACK_INCOMPLETE_FILE = "rollback_incomplete.json"
+_XATTR_MISSING_ERRNOS = frozenset(
+    code for code in (getattr(errno, "ENODATA", None), getattr(errno, "ENOATTR", None)) if code is not None
+)
 
 
 class CopyCancelled(RuntimeError):
@@ -243,6 +249,39 @@ def is_binary_bytes(data: bytes) -> bool:
 
 
 _MAX_DIFF_LINES = 25_000
+_MAX_DIFF_PAIR_WORK = 1_500_000
+
+
+class _DiffWorkExceeded(Exception):
+    """Raised internally when SequenceMatcher pair work exceeds the diff budget."""
+
+
+def _trim_common_edges(left: list[bytes], right: list[bytes]) -> tuple[int, list[bytes], list[bytes]]:
+    limit = min(len(left), len(right))
+    prefix = 0
+    while prefix < limit and left[prefix] == right[prefix]:
+        prefix += 1
+    suffix = 0
+    rem = limit - prefix
+    while suffix < rem and left[len(left) - 1 - suffix] == right[len(right) - 1 - suffix]:
+        suffix += 1
+    return prefix, left[prefix : len(left) - suffix], right[prefix : len(right) - suffix]
+
+
+def _diff_work_exceeds_budget(left: list[bytes], right: list[bytes], budget: int | None = None) -> bool:
+    limit = _MAX_DIFF_PAIR_WORK if budget is None else budget
+    if not left or not right:
+        return False
+    left_counts = Counter(left)
+    right_counts = Counter(right)
+    work = 0
+    for line, count in left_counts.items():
+        other = right_counts.get(line)
+        if other:
+            work += count * other
+            if work > limit:
+                return True
+    return False
 
 
 def line_diff_counts(old: bytes | None, new: bytes | None) -> tuple[int | None, int | None]:
@@ -255,7 +294,10 @@ def line_diff_counts(old: bytes | None, new: bytes | None) -> tuple[int | None, 
     new_lines = new_bytes.splitlines()
     if len(old_lines) + len(new_lines) > _MAX_DIFF_LINES:
         return None, None
-    matcher = difflib.SequenceMatcher(None, old_lines, new_lines, autojunk=False)
+    _prefix, old_mid, new_mid = _trim_common_edges(old_lines, new_lines)
+    if _diff_work_exceeds_budget(old_mid, new_mid):
+        return None, None
+    matcher = difflib.SequenceMatcher(None, old_mid, new_mid, autojunk=False)
     added = 0
     deleted = 0
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
@@ -274,11 +316,14 @@ class _Hunk:
 
 
 def _diff_hunks(base: list[bytes], side: list[bytes]) -> list[_Hunk]:
-    matcher = difflib.SequenceMatcher(None, base, side, autojunk=False)
+    prefix, base_mid, side_mid = _trim_common_edges(base, side)
+    if _diff_work_exceeds_budget(base_mid, side_mid):
+        raise _DiffWorkExceeded()
+    matcher = difflib.SequenceMatcher(None, base_mid, side_mid, autojunk=False)
     hunks: list[_Hunk] = []
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
         if tag != "equal":
-            hunks.append(_Hunk(i1, i2, tuple(side[j1:j2])))
+            hunks.append(_Hunk(i1 + prefix, i2 + prefix, tuple(side_mid[j1:j2])))
     return hunks
 
 
@@ -357,8 +402,11 @@ def merge3_bytes(
     if max(len(base_lines), len(curr_lines), len(wt_lines)) > _MAX_DIFF_LINES:
         # Avoid worst-case quadratic SequenceMatcher stalls when both sides edit huge files.
         return worktree, True
-    curr_hunks = _diff_hunks(base_lines, curr_lines)
-    wt_hunks = _diff_hunks(base_lines, wt_lines)
+    try:
+        curr_hunks = _diff_hunks(base_lines, curr_lines)
+        wt_hunks = _diff_hunks(base_lines, wt_lines)
+    except _DiffWorkExceeded:
+        return worktree, True
 
     out: list[bytes] = []
     has_conflict = False
@@ -605,9 +653,14 @@ def scan_copy_directory(
 def _atomic_write_bytes(path: Path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.parent / f".{path.name}.{uuid.uuid4().hex}.tmp"
-    with open(fs_path(tmp), "wb") as handle:
-        handle.write(data)
-    os.replace(fs_path(tmp), fs_path(path))
+    try:
+        with open(fs_path(tmp), "wb") as handle:
+            handle.write(data)
+        os.replace(fs_path(tmp), fs_path(path))
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(fs_path(tmp))
+        raise
 
 
 def _atomic_write_json(path: Path, payload: Any) -> None:
@@ -693,25 +746,60 @@ _COPY_XATTR_NAME = "user.nekopower.copy_token"
 
 def _set_copy_xattr(path: Path, token: str) -> bool:
     """Bind ``token`` to ``path`` via an extended attribute on platforms without birth time; return whether stored."""
+    if is_dir_link(path):
+        return False
     setxattr = getattr(os, "setxattr", None)
     if setxattr is None:
         return False
+    raw = fs_path(path)
+    encoded = token.encode("utf-8")
     try:
-        setxattr(fs_path(path), _COPY_XATTR_NAME, token.encode("utf-8"))
+        try:
+            setxattr(raw, _COPY_XATTR_NAME, encoded, follow_symlinks=False)
+        except TypeError:
+            setxattr(raw, _COPY_XATTR_NAME, encoded)
         return True
     except OSError:
         return False
 
 
-def _get_copy_xattr(path: Path) -> str | None:
-    """Read the copy token extended attribute on ``path``, or return None."""
+def _read_copy_xattr_state(path: Path) -> tuple[Literal["ok", "missing", "error"], str | None]:
+    """Read the copy token extended attribute, distinguishing absent/invalid attributes from I/O errors."""
+    if is_dir_link(path):
+        return "missing", None
     getxattr = getattr(os, "getxattr", None)
     if getxattr is None:
-        return None
+        return "error", None
+    raw = fs_path(path)
     try:
-        return bytes(getxattr(fs_path(path), _COPY_XATTR_NAME)).decode("utf-8", "strict")
-    except (OSError, UnicodeDecodeError):
-        return None
+        try:
+            data = bytes(getxattr(raw, _COPY_XATTR_NAME, follow_symlinks=False))
+        except TypeError:
+            data = bytes(getxattr(raw, _COPY_XATTR_NAME))
+    except OSError as exc:
+        if exc.errno in _XATTR_MISSING_ERRNOS:
+            return "missing", None
+        return "error", None
+    try:
+        return "ok", data.decode("utf-8", "strict")
+    except UnicodeDecodeError:
+        return "missing", None
+
+
+def _get_copy_xattr(path: Path) -> str | None:
+    """Read the copy token extended attribute on ``path``, or return None."""
+    state, value = _read_copy_xattr_state(path)
+    return value if state == "ok" else None
+
+
+def _has_incomplete_rollback(meta_dir: Path) -> bool:
+    pending_root = meta_dir / _PENDING_DIR
+    if not pending_root.is_dir():
+        return False
+    for entry in pending_root.iterdir():
+        if entry.name.startswith("prep-bak-") and (entry / _ROLLBACK_INCOMPLETE_FILE).is_file():
+            return True
+    return False
 
 
 def populate_copy(
@@ -991,6 +1079,11 @@ def compute_copy_merge(
         return {"status": "failed", "detail": f"{copy_path} has no working-copy baseline metadata"}
 
     meta_dir = copy_meta_dir(copy_path)
+    if _has_incomplete_rollback(meta_dir):
+        return {
+            "status": "failed",
+            "detail": f"working copy {copy_path} has an incomplete rollback backup under {meta_dir / _PENDING_DIR}; recover or discard it before landing",
+        }
     blobs_dir = meta_dir / _BLOBS_DIR
     base_files: dict[str, dict[str, Any]] = dict(base.get("files") or {})
     base_digest = str(base.get("digest") or "")
@@ -1038,6 +1131,7 @@ def compute_copy_merge(
         return any(item.startswith(prefix) for item in blocked_current)
 
     for rel in all_paths:
+        _check_cancelled(cancel_event)
         b_ent = base_files.get(rel)
         c_ent = current_scan.files.get(rel)
         w_ent = result_scan.files.get(rel)
@@ -1440,6 +1534,10 @@ def prepare_copy_conflicts_sync(
     if str(meta.get("start") or "") != expected_base:
         raise ValueError("the worktree landed or was prepared since this merge was tried; merge again")
     meta_dir = copy_meta_dir(copy_path)
+    if _has_incomplete_rollback(meta_dir):
+        raise ValueError(
+            f"working copy {copy_path} has an incomplete rollback backup under {meta_dir / _PENDING_DIR}; recover or discard it"
+        )
     pending_dir = meta_dir / _PENDING_DIR / merge_id
     pending_file = pending_dir / "pending.json"
     try:
@@ -1484,15 +1582,20 @@ def prepare_copy_conflicts_sync(
         if rel in skipped_set or any(up in skipped_set for up in _parents(rel)):
             raise ValueError(f"preparing would overwrite skipped path in the working copy: {rel}")
 
-    # Back up every copy path we are about to delete or overwrite so a mid-preparation failure
-    # or cancellation restores the copy untouched instead of losing agent edits.
+    # Back up every copy path we are about to delete or overwrite plus the old metadata on disk
+    # so a mid-preparation failure or double-fault rollback never discards recovery materials.
     old_base_bytes = (meta_dir / _BASE_MANIFEST_FILE).read_bytes()
     old_meta_bytes = (meta_dir / _META_FILE).read_bytes()
     prep_backup_dir = meta_dir / _PENDING_DIR / f"prep-bak-{uuid.uuid4().hex}"
     prep_backup_dir.mkdir(parents=True, exist_ok=True)
     saved_entries: list[tuple[str, str, str | None]] = []
+    mutated_base = False
+    mutated_meta = False
+    rollback_failed = False
     # (rel, kind: 'absent' | 'file' | 'symlink', payload: backup filename or link target)
     try:
+        _atomic_write_bytes(prep_backup_dir / "old_base_manifest.json", old_base_bytes)
+        _atomic_write_bytes(prep_backup_dir / "old_meta.json", old_meta_bytes)
         for idx, rel in enumerate(touched_set):
             src_path = copy_path / rel
             src = fs_path(src_path)
@@ -1579,18 +1682,20 @@ def prepare_copy_conflicts_sync(
                             _store_blob_file(src_blob, sha, blobs_dir)
             _atomic_write_json(saved_dir / "versions.json", conflict_versions)
         new_start = str(pending["current"])
+        mutated_base = True
         _atomic_write_json(
             meta_dir / _BASE_MANIFEST_FILE,
             {"digest": new_start, "files": current_files, "skipped": list(pending.get("current_skipped") or ())},
         )
         meta["start"] = new_start
+        mutated_meta = True
         _atomic_write_json(meta_dir / _META_FILE, meta)
-    except BaseException:
+    except BaseException as exc:
         # Roll back partial copy mutations AND baseline metadata so copy files and baseline stay in sync.
         for rel, orig_kind, payload in saved_entries:
             dst_path = copy_path / rel
             dst = fs_path(dst_path)
-            with contextlib.suppress(OSError):
+            try:
                 if orig_kind == "absent":
                     if os.path.islink(dst) or os.path.isfile(dst):
                         os.remove(dst)
@@ -1621,15 +1726,33 @@ def prepare_copy_conflicts_sync(
                         else:
                             os.remove(dst)
                     shutil.copy2(fs_path(prep_backup_dir / payload), dst, follow_symlinks=False)
-        with contextlib.suppress(OSError):
-            _atomic_write_bytes(meta_dir / _BASE_MANIFEST_FILE, old_base_bytes)
-        with contextlib.suppress(OSError):
-            _atomic_write_bytes(meta_dir / _META_FILE, old_meta_bytes)
+            except OSError as rb_err:
+                rollback_failed = True
+                exc.add_note(f"rollback failed to restore {rel}: {rb_err}")
+        if mutated_base:
+            try:
+                _atomic_write_bytes(meta_dir / _BASE_MANIFEST_FILE, old_base_bytes)
+            except OSError as rb_err:
+                rollback_failed = True
+                exc.add_note(f"rollback failed to restore {_BASE_MANIFEST_FILE}: {rb_err}")
+        if mutated_meta:
+            try:
+                _atomic_write_bytes(meta_dir / _META_FILE, old_meta_bytes)
+            except OSError as rb_err:
+                rollback_failed = True
+                exc.add_note(f"rollback failed to restore {_META_FILE}: {rb_err}")
+        if rollback_failed:
+            with contextlib.suppress(OSError):
+                _atomic_write_json(
+                    prep_backup_dir / _ROLLBACK_INCOMPLETE_FILE,
+                    {"merge_id": merge_id, "copy_path": str(copy_path)},
+                )
         raise
     finally:
-        with contextlib.suppress(OSError):
-            if prep_backup_dir.exists():
-                remove_tree_safe(prep_backup_dir)
+        if not rollback_failed:
+            with contextlib.suppress(OSError):
+                if prep_backup_dir.exists():
+                    remove_tree_safe(prep_backup_dir)
     # Post-commit cleanup: never roll back committed copy files/baseline if temp cleanup fails.
     with contextlib.suppress(OSError):
         _gc_blobs(blobs_dir, keep)
@@ -1680,8 +1803,12 @@ def copy_matches_identity(
     # On platforms without birth time (e.g. Linux), require extended-attribute token match when stored.
     if meta.get("xattr") is True:
         expected_token = str(meta.get("token") or "")
-        actual_token = _get_copy_xattr(copy_path)
-        if not expected_token or actual_token != expected_token:
+        if not expected_token:
+            return "theirs"
+        state, actual_token = _read_copy_xattr_state(copy_path)
+        if state == "error":
+            return "unknown"
+        if state != "ok" or actual_token != expected_token:
             return "theirs"
         noted_stat = meta.get("stat")
         if isinstance(noted_stat, dict) and {"dev", "ino"} <= set(noted_stat):

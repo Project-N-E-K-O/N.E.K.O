@@ -17,11 +17,13 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import json
 import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -84,11 +86,13 @@ def _isolated_env(tmp_path: Path, monkeypatch: Any) -> None:
     monkeypatch.setattr("config.nekopower_settings.WORKTREE_MIN_FREE_BYTES", 1)
 
 
-def _git(cwd: Path, *args: str, check: bool = True) -> str:
+def _git(cwd: Path, *args: str, check: bool = True, input: bytes | str | None = None) -> str:
     env = {**os.environ, **USER_ENV, "GIT_OPTIONAL_LOCKS": "0"}
+    raw_in = input.encode("utf-8") if isinstance(input, str) else input
     done = subprocess.run(
         ["git", "-c", "core.longpaths=true", *args],
         cwd=cwd,
+        input=raw_in,
         capture_output=True,
         env=env,
         check=False,
@@ -1512,3 +1516,210 @@ async def test_coderabbit_hardening_fixes(tmp_path: Path, monkeypatch: pytest.Mo
     assert ok_res.status == "landed" and ok_res.pr_number == 77
     assert await manager.has_pending_delivery(wt_pu) is False
     await manager.remove(wt_pu)
+
+    # 8. Failed _note_delivery write must be atomic and preserve prior ownership note; failed copy into
+    # an existing empty target without birth time must still clean up partial files.
+    note_dir = tmp_path / "atomic_note"
+    note_dir.mkdir()
+    note_file = note_dir / "note.json"
+    _copy_trees._atomic_write_json(note_file, {"branch": "feat/owned"})
+    orig_replace = os.replace
+
+    def fail_replace(src: Any, dst: Any) -> None:
+        if str(dst).endswith("note.json"):
+            raise OSError("simulated replace failure")
+        orig_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", fail_replace)
+    with pytest.raises(OSError, match="simulated replace failure"):
+        _copy_trees._atomic_write_json(note_file, {"branch": "feat/corrupt"})
+    monkeypatch.setattr(os, "replace", orig_replace)
+    assert json.loads(note_file.read_text(encoding="utf-8")) == {"branch": "feat/owned"}
+    assert list(note_dir.glob("*.tmp")) == []
+
+    empty_target = tmp_path / "copies" / "empty_no_birth"
+    empty_target.mkdir(parents=True)
+    monkeypatch.setattr(worktrees, "_directory_identity", lambda _p: None)
+    orig_pop = _copy_trees.populate_copy
+
+    def fail_mid_copy(src: Path, dst: Path, *args: Any, **kwargs: Any) -> Any:
+        _write(dst / "partial.txt", "leftover\n")
+        raise OSError("simulated mid-copy failure")
+
+    monkeypatch.setattr(_copy_trees, "populate_copy", fail_mid_copy)
+    with pytest.raises(OSError, match="simulated mid-copy failure"):
+        await manager.create(proj_a, empty_target)
+    monkeypatch.setattr(_copy_trees, "populate_copy", orig_pop)
+    assert empty_target.is_dir() and list(empty_target.iterdir()) == []
+
+
+async def test_coderabbit_and_greptile_followup_fixes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    manager = WorktreeManager()
+
+    # 1. Staged dependency link must not crash `git rm` (no `-z` flag) and must not be re-added via `kept`.
+    repo = _make_repo(tmp_path / "dep_stage_repo")
+    _write(repo / ".gitignore", "node_modules/\n")
+    _git(repo, "add", ".gitignore")
+    _git(repo, "commit", "-q", "--no-gpg-sign", "-m", "ignore node_modules")
+    _write(repo / "node_modules" / "pkg" / "index.js", "module.exports = 1;\n")
+    wt = await manager.create(repo, tmp_path / "wt" / "dep1", link_dependencies=True)
+    assert wt.linked_dependencies == ("node_modules",)
+    # Replace link with a real file and land on a branch so start tracks `node_modules`.
+    _copy_trees.remove_dir_link(wt.path / "node_modules")
+    _write(wt.path / "node_modules", "placeholder\n")
+    _git(wt.path, "add", "-f", "node_modules")
+    first_land = await manager.merge_back(wt, BranchCommit(branch="feat/dep-keep", message="track file"))
+    assert first_land.status == "landed", first_land.detail
+    # Restore active dependency link at `node_modules` AND stage a 120000 symlink entry in the index.
+    (wt.path / "node_modules").unlink()
+    _copy_trees.make_dir_link(repo / "node_modules", wt.path / "node_modules")
+    blob_sha = _git(wt.path, "hash-object", "-w", "--stdin", input=str(repo / "node_modules")).strip()
+    _git(wt.path, "update-index", "--add", "--cacheinfo", f"120000,{blob_sha},node_modules")
+    _write(wt.path / "a.txt", "updated-after-link\nline2\nline3\nline4\nline5\n")
+    second_land = await manager.merge_back(wt, BranchCommit(branch="feat/dep-keep", message="edit without link"))
+    assert second_land.status == "landed", second_land.detail
+    assert second_land.commit
+    tree_entries = _git(repo, "ls-tree", "-r", "--name-only", second_land.commit).splitlines()
+    assert "node_modules" not in tree_entries
+    await manager.remove(wt)
+
+    # 2. Pair-work diff budget catches pathological repeated-line inputs well below `_MAX_DIFF_LINES`.
+    rep_base = b"top-0\n" + b"dup\n" * 6000 + b"bot-0\n"
+    rep_curr = b"top-c\n" + b"dup\n" * 6000 + b"bot-c\n"
+    rep_wt = b"top-w\n" + b"dup\n" * 6000 + b"bot-w\n"
+    t0 = time.monotonic()
+    assert _copy_trees.line_diff_counts(rep_base, rep_wt) == (None, None)
+    merged_rep, clashed_rep = _copy_trees.merge3_bytes(rep_base, rep_curr, rep_wt)
+    elapsed = time.monotonic() - t0
+    assert clashed_rep is True and merged_rep == rep_wt and elapsed < 1.0
+
+    # 3. Double-fault during prepare_conflicts rollback preserves backup materials and blocks further landing.
+    proj_rb = tmp_path / "rb_proj"
+    _write(proj_rb / "a.txt", "base\n")
+    cp_rb = await manager.create(proj_rb, tmp_path / "copies" / "rb1")
+    _write(cp_rb.path / "a.txt", "worktree-edit\n")
+    _write(proj_rb / "a.txt", "project-edit\n")
+    clash_rb = await manager.merge_back(cp_rb)
+    assert clash_rb.status == "conflict"
+    orig_awb = _copy_trees._atomic_write_bytes
+    base_writes = {"count": 0}
+
+    def fail_meta_and_base_restore(path: Path, data: bytes) -> None:
+        if path.name == "meta.json":
+            raise OSError("simulated meta write failure")
+        if path.name == "base_manifest.json":
+            base_writes["count"] += 1
+            if base_writes["count"] >= 2:
+                raise OSError("simulated base restore failure")
+        orig_awb(path, data)
+
+    monkeypatch.setattr(_copy_trees, "_atomic_write_bytes", fail_meta_and_base_restore)
+    with pytest.raises(OSError, match="simulated meta write failure"):
+        await manager.prepare_conflicts(cp_rb, clash_rb)
+    monkeypatch.setattr(_copy_trees, "_atomic_write_bytes", orig_awb)
+    pending_root = _copy_trees.copy_meta_dir(cp_rb.path) / "pending"
+    bak_dirs = [p for p in pending_root.iterdir() if p.name.startswith("prep-bak-")]
+    assert len(bak_dirs) == 1
+    assert (bak_dirs[0] / "old_base_manifest.json").is_file()
+    assert (bak_dirs[0] / "old_meta.json").is_file()
+    assert (bak_dirs[0] / "rollback_incomplete.json").is_file()
+    blocked_land = await manager.merge_back(cp_rb)
+    assert blocked_land.status == "failed" and "incomplete rollback" in blocked_land.detail
+    await manager.remove(cp_rb)
+
+    # 4. xattr read OSError returns "unknown" (preserving copy + metadata), while ENODATA returns "theirs".
+    proj_xa = tmp_path / "xa_proj"
+    _write(proj_xa / "a.txt", "v1\n")
+    cp_xa = await manager.create(proj_xa, tmp_path / "copies" / "xa1")
+    meta_xa_file = _copy_trees.copy_meta_dir(cp_xa.path) / "meta.json"
+    meta_xa = json.loads(meta_xa_file.read_text(encoding="utf-8"))
+    meta_xa.pop("identity", None)
+    meta_xa["xattr"] = True
+    _copy_trees._atomic_write_json(meta_xa_file, meta_xa)
+    with monkeypatch.context() as mp:
+        mp.setattr(worktrees, "_directory_identity", lambda _p: None)
+
+        def fail_getxattr(*_args: Any, **_kwargs: Any) -> bytes:
+            raise OSError(errno.EIO, "transient xattr error")
+
+        mp.setattr(os, "getxattr", fail_getxattr, raising=False)
+        assert _copy_trees.copy_matches_identity(cp_xa.path, meta_xa, None) == "unknown"
+        with pytest.raises(WorktreeError):
+            await manager.remove(cp_xa)
+        assert cp_xa.path.is_dir() and meta_xa_file.is_file()
+
+        enodata = getattr(errno, "ENODATA", None) or getattr(errno, "ENOATTR", None)
+        if enodata is not None:
+            def missing_getxattr(*_args: Any, **_kwargs: Any) -> bytes:
+                raise OSError(enodata, "no attribute")
+
+            mp.setattr(os, "getxattr", missing_getxattr, raising=False)
+            assert _copy_trees.copy_matches_identity(cp_xa.path, meta_xa, None) == "theirs"
+    _copy_trees.remove_tree_safe(cp_xa.path)
+    _copy_trees.remove_tree_safe(_copy_trees.copy_meta_dir(cp_xa.path))
+
+    # 5. Failed _note_delivery writes (both intent write and final write) are atomic and preserve ownership for retry.
+    local_nd, _bare_nd, _other_nd = _make_repo_with_remote(tmp_path / "nd_atomic")
+    wt_nd = await manager.create(local_nd, tmp_path / "wt" / "nd1", RemoteDefaultBranch(fetch=False))
+    _write(wt_nd.path / "a.txt", "first-edit\nline2\nline3\nline4\nline5\n")
+    land1 = await manager.merge_back(wt_nd, BranchCommit(branch="feat/owned-atomic", message="first"))
+    assert land1.status == "landed", land1.detail
+    _write(wt_nd.path / "a.txt", "second-edit\nline2\nline3\nline4\nline5\n")
+    orig_replace = os.replace
+    fail_on_call = {"n": 0, "target": 1}
+
+    def fail_delivery_note_nth(src: Any, dst: Any) -> None:
+        if str(dst).endswith("nekopower-delivery.json"):
+            fail_on_call["n"] += 1
+            if fail_on_call["n"] == fail_on_call["target"]:
+                raise OSError("simulated delivery note write failure")
+        orig_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", fail_delivery_note_nth)
+    failed_intent = await manager.merge_back(wt_nd, BranchCommit(branch="feat/owned-atomic", message="second"))
+    assert failed_intent.status == "failed" and "recording delivery intent failed" in failed_intent.detail
+    # Now let the intent write succeed (#2) and fail the final write (#3); ownership via intent survives for retry.
+    fail_on_call["target"] = 3
+    with pytest.raises(OSError, match="simulated delivery note write failure"):
+        await manager.merge_back(wt_nd, BranchCommit(branch="feat/owned-atomic", message="second"))
+    monkeypatch.setattr(os, "replace", orig_replace)
+    _write(wt_nd.path / "a.txt", "third-edit\nline2\nline3\nline4\nline5\n")
+    land3 = await manager.merge_back(wt_nd, BranchCommit(branch="feat/owned-atomic", message="third-retry"))
+    assert land3.status == "landed", land3.detail
+    await manager.remove(wt_nd)
+
+    # 6. Claim-time file race and target swap on newly created copy target never delete unrelated files.
+    proj_rc = tmp_path / "rc_proj"
+    _write(proj_rc / "a.txt", "v1\n")
+    race_file_target = tmp_path / "copies" / "claim_race_file"
+    orig_claim = worktrees._claim_directory
+
+    def race_create_file(path: Path) -> bool:
+        if path == race_file_target:
+            _write(path, "raced regular file\n")
+            return False
+        return orig_claim(path)
+
+    monkeypatch.setattr(worktrees, "_claim_directory", race_create_file)
+    with pytest.raises(WorktreeError, match="not an empty directory"):
+        await manager.create(proj_rc, race_file_target)
+    monkeypatch.setattr(worktrees, "_claim_directory", orig_claim)
+    assert race_file_target.is_file() and race_file_target.read_text(encoding="utf-8") == "raced regular file\n"
+
+    swap_target = tmp_path / "copies" / "new_target_swapped"
+    orig_pop = _copy_trees.populate_copy
+
+    def swap_during_populate(src: Path, dst: Path, *args: Any, **kwargs: Any) -> Any:
+        if dst == swap_target:
+            moved = tmp_path / "copies" / "moved_aside_orig"
+            dst.rename(moved)
+            dst.mkdir()
+            _write(dst / "foreign.txt", "do not delete\n")
+            raise OSError("simulated populate failure after swap")
+        return orig_pop(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(_copy_trees, "populate_copy", swap_during_populate)
+    with pytest.raises(OSError, match="simulated populate failure after swap"):
+        await manager.create(proj_rc, swap_target)
+    monkeypatch.setattr(_copy_trees, "populate_copy", orig_pop)
+    assert (swap_target / "foreign.txt").read_text(encoding="utf-8") == "do not delete\n"

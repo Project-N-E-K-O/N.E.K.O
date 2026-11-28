@@ -1633,36 +1633,65 @@ class WorktreeManager:
                         )
             else:
                 await self._git(root, "read-tree", *([head] if head else ["--empty"]), env=env)
-            others = await self._git(root, "ls-files", "-z", "--others", "--exclude-standard", env=env)
-            raw_others = [_decode(name) for name in others.stdout.split(b"\0") if name]
-            unignored_dep_links = [name for name in raw_others if name.rstrip("/") in dep_link_set]
-            names = [name for name in raw_others if name.rstrip("/") not in dep_link_set]
-            # A repository of its own inside (listed with a trailing slash)
-            # would be recorded as a submodule link and its files lost.
-            nested = [name for name in names if name.endswith("/")]
-            files = [name for name in names if not name.endswith("/")]
-            large = await asyncio.to_thread(_too_large, root, files, settings.WORKTREE_UNTRACKED_MAX_BYTES)
+            def _is_dep_link_path(path_name: str) -> bool:
+                if not dep_link_set:
+                    return False
+                clean = path_name.rstrip("/")
+                return clean in dep_link_set or any(up in dep_link_set for up in _copy_trees._parents(clean))
+
             cached = await self._git(root, "ls-files", "-z", "--cached", env=env)
             cached_names = [name for name in cached.stdout.split(b"\0") if name]
-            staged_dep_links: list[str] = []
             if dep_link_set:
-                staged_dep_links = [
-                    _decode(name) for name in cached_names if _decode(name).rstrip("/") in dep_link_set
-                ]
+                staged_dep_links = [_decode(name) for name in cached_names if _is_dep_link_path(_decode(name))]
                 if staged_dep_links:
                     await self._git(
                         root,
                         "rm",
                         "--cached",
                         "--ignore-unmatch",
-                        "-z",
                         "--pathspec-from-file=-",
                         "--pathspec-file-nul",
                         env=env,
                         input=_nul_join(f":(literal,top){name.rstrip('/')}" for name in staged_dep_links),
                         timeout=settings.WORKTREE_GIT_WORK_SECONDS,
                     )
-                    cached_names = [name for name in cached_names if _decode(name).rstrip("/") not in dep_link_set]
+                    cached_names = [name for name in cached_names if not _is_dep_link_path(_decode(name))]
+            others = await self._git(root, "ls-files", "-z", "--others", "--exclude-standard", env=env)
+            raw_others = [_decode(name) for name in others.stdout.split(b"\0") if name]
+            unignored_dep_links = [name for name in raw_others if _is_dep_link_path(name)]
+            names = [name for name in raw_others if not _is_dep_link_path(name)]
+            exclude_dep_specs: list[str] = []
+            if unignored_dep_links:
+                hit_roots = sorted(
+                    dep
+                    for dep in dep_link_set
+                    if any(item.rstrip("/") == dep or item.startswith(dep + "/") for item in unignored_dep_links)
+                )
+                ignored_roots: set[str] = set()
+                if hit_roots:
+                    chk = await self._git(
+                        root,
+                        "check-ignore",
+                        "-z",
+                        "--stdin",
+                        env=env,
+                        input=_nul_join(hit_roots),
+                        check=False,
+                        timeout=settings.WORKTREE_GIT_WORK_SECONDS,
+                    )
+                    ignored_roots = {_decode(p).rstrip("/") for p in chk.stdout.split(b"\0") if p}
+                for dep in hit_roots:
+                    if dep not in ignored_roots:
+                        exclude_dep_specs.append(dep)
+                    else:
+                        exclude_dep_specs.extend(
+                            item for item in unignored_dep_links if item.rstrip("/") == dep or item.startswith(dep + "/")
+                        )
+            # A repository of its own inside (listed with a trailing slash)
+            # would be recorded as a submodule link and its files lost.
+            nested = [name for name in names if name.endswith("/")]
+            files = [name for name in names if not name.endswith("/")]
+            large = await asyncio.to_thread(_too_large, root, files, settings.WORKTREE_UNTRACKED_MAX_BYTES)
             kept: list[str] = []
             if start:
                 known = await self._git(root, "ls-tree", "-r", "-z", "--name-only", start)
@@ -1672,9 +1701,13 @@ class WorktreeManager:
                 # they are there; left out, they would read as deleted.
                 large = [name for name in large if name not in had]
                 seen = {_decode(name) for name in cached_names} | set(files)
-                kept = await asyncio.to_thread(_present, root, sorted(had - seen))
+                kept = [
+                    name
+                    for name in await asyncio.to_thread(_present, root, sorted(had - seen))
+                    if not _is_dep_link_path(name)
+                ]
             skipped = nested + large
-            excluded = [*skipped, *unignored_dep_links, *staged_dep_links]
+            excluded = [*skipped, *exclude_dep_specs]
             specs = ["."] + [f":(exclude,literal,top){name.rstrip('/')}" for name in excluded]
             # What is to be added is checked again each time: a filter may
             # have been set up, or a file it applies to made, since.
@@ -2596,6 +2629,12 @@ class WorktreeManager:
         token = uuid.uuid4().hex
         stop = threading.Event()
         claimed_identity = await asyncio.to_thread(_directory_identity, target)
+        claimed_xattr = False
+        claimed_stat: tuple[int, int] | None = None
+        if claimed_identity is None:
+            claimed_xattr = await asyncio.to_thread(_copy_trees._set_copy_xattr, target, token)
+            if not claimed_xattr:
+                claimed_stat = await asyncio.to_thread(_nonlink_dir_stat, target)
         try:
             start_digest, linked, _scan = await self._run_copy_worker(
                 _copy_trees.populate_copy,
@@ -2617,13 +2656,13 @@ class WorktreeManager:
 
             async def clean_copy() -> None:
                 try:
-                    can_clean_target = not existed
-                    if existed:
-                        if claimed_identity is not None:
-                            can_clean_target = await asyncio.to_thread(_directory_identity, target) == claimed_identity
-                        else:
-                            meta_now = await asyncio.to_thread(_copy_trees.read_copy_meta, target)
-                            can_clean_target = meta_now is not None and meta_now.get("token") == token
+                    can_clean_target = False
+                    if claimed_identity is not None:
+                        can_clean_target = await asyncio.to_thread(_directory_identity, target) == claimed_identity
+                    elif claimed_xattr:
+                        can_clean_target = await asyncio.to_thread(_copy_trees._get_copy_xattr, target) == token
+                    elif claimed_stat is not None:
+                        can_clean_target = await asyncio.to_thread(_nonlink_dir_stat, target) == claimed_stat
                     if can_clean_target:
                         await asyncio.to_thread(_remove_tree, target)
                         if existed:
@@ -3357,6 +3396,20 @@ def _is_existing_empty_dir(path: Path) -> bool:
         return False
 
 
+def _nonlink_dir_stat(path: Path) -> tuple[int, int] | None:
+    """Return ``(st_dev, st_ino)`` if ``path`` is a real non-link directory with a nonzero inode, else None."""
+    raw = _fs(path)
+    if _copy_trees.is_dir_link(path):
+        return None
+    try:
+        st = os.lstat(raw)
+    except OSError:
+        return None
+    if not stat.S_ISDIR(st.st_mode) or not st.st_ino:
+        return None
+    return (st.st_dev, st.st_ino)
+
+
 def _verify_copy_handle(worktree: Worktree) -> str | None:
     """Verify on-disk copy metadata, project binding, token, and directory identity match ``worktree``."""
     meta = _copy_trees.read_copy_meta(worktree.path)
@@ -3680,7 +3733,7 @@ _DELIVERY_NOTE = "nekopower-delivery.json"
 
 
 def _note_links(admin: Path, links: Iterable[str]) -> None:
-    (admin / _LINKS_NOTE).write_text(json.dumps(sorted(set(links))), encoding="utf-8")
+    _copy_trees._atomic_write_json(admin / _LINKS_NOTE, sorted(set(links)))
 
 
 def _noted_links(common_dir: Path, path: Path) -> tuple[str, ...]:
@@ -3698,7 +3751,7 @@ def _note_delivery(common_dir: Path, path: Path, payload: Mapping[str, Any]) -> 
     entry = _registration_of(common_dir, path)
     if entry is None:
         return
-    (entry / _DELIVERY_NOTE).write_text(json.dumps(dict(payload), indent=1, sort_keys=True), encoding="utf-8")
+    _copy_trees._atomic_write_json(entry / _DELIVERY_NOTE, dict(payload))
 
 
 def _noted_delivery(common_dir: Path, path: Path) -> dict[str, Any]:
