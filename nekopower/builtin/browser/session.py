@@ -2103,11 +2103,12 @@ class BrowserSession:
             raise BrowserError(self.dialog_notice(page))
 
     async def select_page(self, page_id: Any, *, bring_to_front: bool = False, owner: str | None = None) -> Page:
-        page = self.page_by_id(page_id, owner=owner)
-        if owner is not None and page.owner is None:
-            page.owner = owner
-            self._tab_owners[page.target_id] = owner
-        self._selected_by_owner[owner] = page.target_id
+        async with self._tab_alloc_lock:
+            page = self.page_by_id(page_id, owner=owner)
+            if owner is not None and page.owner is None:
+                page.owner = owner
+                self._tab_owners[page.target_id] = owner
+            self._selected_by_owner[owner] = page.target_id
         if bring_to_front:
             await self._send(page, "Page.bringToFront")
         return page
@@ -2854,20 +2855,21 @@ class BrowserSession:
         # unreachable target fails cleanly without synthesizing an accidental click.
         await self._point(page, to_uid, to_node, to_obj)
         sx, sy = await self._point(page, from_uid, from_node, from_obj)
-        intercepted_on = False
+        intercept_attempted = False
         page.drag_event.clear()
         page.drag_data = None
-        try:
-            await self._send_session(page, sid, "Input.setInterceptDrags", {"enabled": True}, timeout=5.0)
-            intercepted_on = True
-        except CdpError:
-            logger.debug("Input.setInterceptDrags is not available", exc_info=True)
         pressed = False
         html5_dropped = False
         reached_target = False
         released = False
         last_x, last_y = sx, sy
         try:
+            intercept_attempted = True
+            try:
+                await self._send_session(page, sid, "Input.setInterceptDrags", {"enabled": True}, timeout=5.0)
+            except CdpError:
+                intercept_attempted = False
+                logger.debug("Input.setInterceptDrags is not available", exc_info=True)
             try:
                 if await self._mouse(page, "mouseMoved", sx, sy, session_id=sid):
                     pressed = True
@@ -2913,11 +2915,14 @@ class BrowserSession:
 
                     released = await asyncio.shield(release_drag())
         finally:
-            if intercepted_on:
-                try:
-                    await self._send_session(page, sid, "Input.setInterceptDrags", {"enabled": False}, timeout=5.0)
-                except (BrowserError, CdpError):
-                    pass
+            if intercept_attempted:
+                async def _disable_drag_interception() -> None:
+                    try:
+                        await self._send_session(page, sid, "Input.setInterceptDrags", {"enabled": False}, timeout=2.0)
+                    except (BrowserError, CdpError):
+                        pass
+
+                await asyncio.shield(_disable_drag_interception())
         completed = html5_dropped or (reached_target and released)
         if not completed:
             if page.dialog is not None:

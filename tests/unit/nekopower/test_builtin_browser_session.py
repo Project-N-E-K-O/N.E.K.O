@@ -5185,6 +5185,62 @@ async def test_new_page_reserves_tab_against_concurrent_ensure_owner_page(
     assert page_b.target_id not in (page_a0.target_id, page_a1.target_id)
 
 
+async def test_select_page_waits_for_tab_allocation_lock_during_ensure_owner_page(
+    session: BrowserSession, world: BrowserWorld
+) -> None:
+    await session.start()
+    page_a0 = await session.ensure_owner_page("team-a")
+    assert page_a0 is not None
+
+    gate = world.browser.hold("Target.createTarget")
+    ensure_b = asyncio.ensure_future(session.ensure_owner_page("team-b"))
+    await _until(lambda: gate.reached.is_set())
+
+    # Simulate Target.targetCreated arriving before Target.createTarget returns.
+    early = world.browser.add_page("about:blank")
+    early_page = session._pages[early.target_id]
+    assert early_page.owner is None
+
+    # Another owner trying to explicitly select that newly created tab must wait until
+    # ensure_owner_page releases _tab_alloc_lock.
+    select_a = asyncio.ensure_future(session.select_page(early_page.id, owner="team-a"))
+    await asyncio.sleep(0)
+    assert not select_a.done()
+
+    gate.release()
+    page_b = await ensure_b
+    assert page_b is not None and page_b.owner == "team-b"
+    selected_by_a = await select_a
+    assert selected_by_a.target_id == early.target_id and selected_by_a.owner == "team-a"
+    assert page_b.target_id != selected_by_a.target_id
+
+
+async def test_drag_disables_interception_when_cancelled_during_enable(
+    session: BrowserSession, world: BrowserWorld
+) -> None:
+    world.browser.serve(
+        "http://shop.test/drag-cancel",
+        lambda: Document(
+            "Board",
+            el("button", "Card A", draggable=True),
+            el("region", "Done column"),
+        ),
+    )
+    page, _fake, snapshot = await open_page(session, world, "http://shop.test/drag-cancel")
+    gate = world.browser.hold("Input.setInterceptDrags", enabled=True)
+    mark = world.browser.mark()
+    drag_task = asyncio.ensure_future(
+        session.drag(page, uid_of(snapshot, "Card A"), uid_of(snapshot, "Done column"))
+    )
+    await _until(lambda: gate.reached.is_set())
+    drag_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await drag_task
+    gate.release()
+    sent_drags = [cmd.params for cmd in world.browser.of("Input.setInterceptDrags", mark)]
+    assert {"enabled": False} in sent_drags
+
+
 async def test_reconnect_to_same_browser_preserves_tab_ownership_and_prunes_closed_tabs(
     session: BrowserSession, world: BrowserWorld
 ) -> None:

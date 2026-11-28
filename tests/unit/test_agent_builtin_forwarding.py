@@ -317,11 +317,12 @@ def test_websocket_lifecycle_clears_cached_builtin_activities_to_avoid_resurrect
     source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
     onopen_idx = source.index("S.socket.onopen = function () {")
     onclose_idx = source.index("S.socket.onclose = function () {")
-    onopen_head = source[onopen_idx : onopen_idx + 600]
+    onopen_head = source[onopen_idx : onopen_idx + 1800]
     onclose_head = source[onclose_idx : onclose_idx + 800]
     for snippet in (onopen_head, onclose_head):
         assert "window._agentBuiltinActivity = {};" in snippet
         assert "window._agentBuiltinActivities = Object.create(null);" in snippet
+    assert "fetch('/api/agent/builtin/activity')" in onopen_head
 
     first = {**ACTIVITY, "commission_id": "c1"}
     second = {**ACTIVITY, "commission_id": "c2"}
@@ -333,6 +334,7 @@ def test_websocket_lifecycle_clears_cached_builtin_activities_to_avoid_resurrect
         // Simulate socket close / reconnect reset while c1's ended was missed.
         window._agentBuiltinActivity = {{}};
         window._agentBuiltinActivities = Object.create(null);
+        window._agentBuiltinActivitySeen = Object.create(null);
         tell(second);
         tell(Object.assign({{}}, second, {{ state: 'ended', window: null }}));
         out.afterSecondEnded = kept();
