@@ -36,6 +36,7 @@ from models import (  # noqa: E402
     TelemetryEvent,
     model_from_json,
 )
+import models as telemetry_models  # noqa: E402
 from storage import TelemetryStorage  # noqa: E402
 
 pytestmark = pytest.mark.unit
@@ -88,16 +89,25 @@ def _valid_day(**overrides) -> dict:
         "2099-01-01",
         "k0",
         "2026-W47-7",
-        # Resolved inside the test body: a date computed here is frozen at
-        # collection time, so a run that crosses midnight would compare it
-        # against the validator's later date.today() and see it in-window.
+        # Resolved inside the test body against a frozen "today": a date
+        # computed here is fixed at collection time, so a run that crosses
+        # midnight would see it fall back inside the validator's window.
         "future_beyond_window",
     ],
 )
-def test_model_rejects_invalid_or_out_of_window_stat_date(bad_date):
+def test_model_rejects_invalid_or_out_of_window_stat_date(bad_date, monkeypatch):
     """Pydantic model must reject malformed, ISO-week, or future out-of-window stat_date keys."""
+    frozen_today = date(2026, 6, 15)
+
+    class _FixedDate(date):
+        @classmethod
+        def today(cls):
+            return frozen_today
+
+    # Pin the validator's clock to the same day the input is derived from.
+    monkeypatch.setattr(telemetry_models, "date", _FixedDate)
     if bad_date == "future_beyond_window":
-        bad_date = (date.today() + timedelta(days=DAILY_STATS_FUTURE_DAYS + 1)).isoformat()
+        bad_date = (frozen_today + timedelta(days=DAILY_STATS_FUTURE_DAYS + 1)).isoformat()
     payload = _base_event_dict({bad_date: _valid_day()})
     with pytest.raises(Exception):
         model_from_json(TelemetryEvent, json.dumps(payload))
