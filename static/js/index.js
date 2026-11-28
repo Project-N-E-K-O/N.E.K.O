@@ -165,9 +165,10 @@ function handoffPageSnapshotToSwitch(name, revision, modelBoot = null, explicitP
     // of the same role. A receipt/config revision alone does not own its model.
     const replaceOlderRenderer = !!modelBoot
         && window.appCharacter?.hasCommittedPageModel?.(name, revision, { olderThan: true });
-    // A validated named revision-zero preview may replace a different mounted
-    // role without supplying evidence about the current-character ordering.
-    const previewTakeover = explicitPreview && window.appCharacter?.hasOtherCommittedPageModel?.(name);
+    // Serialize a named preview with the first in-flight switch too: even
+    // without a mounted owner, that switch can still publish or roll back.
+    const previewTakeover = explicitPreview && (state?.isSwitchingCatgirl
+        || window.appCharacter?.hasOtherCommittedPageModel?.(name));
     const orderedHandoff = revision && (recover || replaceOlderRenderer || state?.isSwitchingCatgirl
         || (latestPageSwitchRevision() && name !== window.lanlan_config?.lanlan_name)
         || window.appCharacter?.needsCurrentCharacterRecovery?.(name, { fromSnapshot: true }));
@@ -386,7 +387,8 @@ async function loadPageConfig({ bounded = false, modelBoot = null } = {}) {
                 explicitPreview && data.lanlan_name === name);
             if (liveSwitch) {
                 const outcome = await liveSwitch;
-                if (outcome.applied) {
+                // Ordinary web boot has no modelBoot to await a queued preview.
+                if (outcome.applied || (!modelBoot && explicitPreview && outcome.queued)) {
                     if (explicitPreview) {
                         const ownsPreview = await waitForQueuedPageHandoff(name, switchRevision, modelBoot, true);
                         if (!ownsPreview || !pageSwitchIntentApplied(name, switchRevision)) {

@@ -4015,6 +4015,7 @@ test('review e069 verified pinned role keeps its portrait through a revision-zer
 
 for (const [route, desktop, outcome] of [
     ['/A', false, 'switched'], ['/web_chat_compact?lanlan_name=A', true, 'switched'],
+    ['/A', false, 'cold B succeeds'], ['/A', false, 'cold B fails'],
     ['/A', false, 'failed takeover'], ['/A', false, 'no conflict'],
 ]) {
     test('review d8 explicit VRM preview keeps its named renderer (' + route + ', ' + outcome + ')', {timeout: 6000}, async () => {
@@ -4026,6 +4027,7 @@ for (const [route, desktop, outcome] of [
         c.requestAnimationFrame = () => 0;
         const entered = deferred(), release = deferred(), loads = [], reads = [];
         const a = '/static/vrm/A.vrm', b = '/static/vrm/B.vrm';
+        const cold = outcome.startsWith('cold B'), bEntered = deferred(), bRelease = deferred();
         let roles = 0;
         c.fetch = async url => {
             const u = new URL(String(url), 'https://example.test');
@@ -4036,7 +4038,11 @@ for (const [route, desktop, outcome] of [
                 return {ok: true, json: async () => desktopAvatarConfig('A', 'vrm', 0, a)};
             }
             if (u.pathname === '/api/characters') {
-                if (++roles === 2 && outcome === 'failed takeover') {
+                if (++roles === 1 && cold) {
+                    bEntered.resolve(); await bRelease.promise;
+                    if (outcome === 'cold B fails') return {ok: false, status: 503};
+                }
+                if (roles === 2 && outcome === 'failed takeover') {
                     return {ok: false, status: 503, json: async () => ({})};
                 }
                 return {ok: true, json: async () => ({['\u732b\u5a18']: {
@@ -4060,7 +4066,20 @@ for (const [route, desktop, outcome] of [
         const ready = w.startPageConfigLoad(), boot = w.initVRMModel();
         await entered.promise;
         assert.equal(reads[0].searchParams.get('lanlan_name'), 'A', 'actual startup asks for pinned A, not the current role');
-        if (outcome !== 'no conflict') {
+        if (cold) {
+            const switching = w.handleCatgirlSwitch('B', '', {switchRevision: 83});
+            await bEntered.promise;
+            let settled = false;
+            w.pageConfigReady.then(() => { settled = true; });
+            release.resolve(); await new Promise(setImmediate);
+            try {
+                assert.equal(settled, false, 'pinned A must not declare readiness during the first live switch');
+                assert.equal(w.appState._pendingCatgirlSwitch?.newCatgirl, 'A');
+            } finally { bRelease.resolve(); }
+            assert.equal(await switching, outcome === 'cold B succeeds');
+            for (let turn = 0; !settled && turn < 12; turn++) await advanceModelBootTimer(h, 50);
+            assert.equal(settled, true, 'readiness settles after the queued A replay');
+        } else if (outcome !== 'no conflict') {
             assert.equal(await w.handleCatgirlSwitch('B', 'A', {switchRevision: 83}), true);
             assert.equal(w.vrmManager.currentModel?.url, b, 'actual central receiver mounted B while A HTTP was blocked');
             assert.deepEqual(loads, [b]);
@@ -4085,9 +4104,10 @@ for (const [route, desktop, outcome] of [
             return;
         }
         assert.equal(w.getPageSwitchRevision(), 83, 'the current-character ordering watermark remains B/83');
-        assert.deepEqual(loads, [b, a], 'exactly one B and one A, no guessed startup or duplicate reload');
+        const expectedLoads = outcome === 'cold B fails' ? [a] : [b, a];
+        assert.deepEqual(loads, expectedLoads, 'exactly one B and one A, no guessed startup or duplicate reload');
         assert.equal(await w.handleCatgirlSwitch('B', 'A', {switchRevision: 82}), false);
-        assert.deepEqual(loads, [b, a], 'the old live B receipt is still stale');
+        assert.deepEqual(loads, expectedLoads, 'the old live B receipt is still stale');
     });
 }
 
