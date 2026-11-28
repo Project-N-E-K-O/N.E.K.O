@@ -28,6 +28,7 @@
     // 多窗口模式：由 IPC 从 Pet 窗口注入的头像（/chat 页面无本地模型）
     let externalAvatarDataUrl = '';
     let externalAvatarModelType = '';
+    let externalAvatarPreview = null;
     // 新手教程期间的临时头像覆盖：只驻留内存，不写入用户角色头像缓存。
     let tutorialAvatarOverrideDataUrl = '';
     let tutorialAvatarOverrideModelType = '';
@@ -70,6 +71,8 @@
     }
 
     function saveToStorage(preview) {
+        // A capture can finish after a mirrored IPC portrait arrives.
+        if (isCardDropIdentityFollowerWindow()) return;
         var key = getCurrentCharacterKey();
         if (!key) return;
         try {
@@ -456,8 +459,28 @@
             cachedPreview &&
             cachedPreview.dataUrl &&
             cachedPreview.cacheKey &&
-            cachedPreview.cacheKey === getCurrentModelCacheKey()
+            cachedPreview.cacheKey === getCurrentModelCacheKey() &&
+            getExternalAvatarScope(cachedPreview) !== 'stale'
         );
+    }
+
+    function getExternalAvatarScope(preview) {
+        const scope = preview?.ipcIdentity;
+        if (!scope) return 'unverified';
+        const config = window.lanlan_config;
+        if (scope.name !== config?.lanlan_name || scope.revision !== (config.switch_revision || 0)) return 'stale';
+        if (scope.modelKey.endsWith(':')) return 'unverified';
+        return scope.modelKey === getCurrentModelCacheKey() ? 'current' : 'stale';
+    }
+
+    function modelPreviewForDisplay() {
+        if (cachedPreview?.dataUrl && getExternalAvatarScope(cachedPreview) !== 'stale') {
+            return cachedPreview;
+        }
+        const scope = getExternalAvatarScope(externalAvatarPreview);
+        // Same-model reloads may invalidate the capture cache without changing the IPC owner.
+        if (scope === 'current') return externalAvatarPreview;
+        return loadFromStorage() || (scope === 'unverified' ? externalAvatarPreview : null);
     }
 
     function isRasterImageDataUrl(value) {
@@ -1530,8 +1553,7 @@
 
     function handleModelLoaded(reason) {
         advanceCardDropModelRevision();
-        var newCacheKey = getCurrentModelCacheKey();
-        if (cachedPreview && cachedPreview.dataUrl && cachedPreview.cacheKey === newCacheKey) {
+        if (hasUsableCachedPreview()) {
             // 不同猫娘可能复用同一模型/cache key；即使头像无需重抓，也要把当前名称
             // 和缓存预览重新同步到 card-drop 角色快照。该函数内部也会安排参考图同步。
             if (!cachedPreview.displayOnly) syncAvatarToCardDrop(cachedPreview.dataUrl);
@@ -1682,6 +1704,7 @@
         //   2) 否则退回读取当前角色的持久化头像。
         //   3) 都没有，则进入等待态。
         var stored = loadFromStorage();
+        if (getExternalAvatarScope(cachedPreview) === 'stale') cachedPreview = null;
         if (cachedPreview && cachedPreview.dataUrl) {
             // Rebind the preview to its available model config after startup.
             // A follower's IPC portrait remains display-only after init as well.
@@ -1795,25 +1818,12 @@
 
     // The model avatar alone: never the tutorial override or the persisted custom image.
     mod.getModelAvatarDataUrl = function getModelAvatarDataUrl() {
-        if (hasUsableCachedPreview()) return cachedPreview.dataUrl || '';
-        // 内存缓存被 invalidate（模型加载中）或 cacheKey 暂不匹配时，仍返回旧头像
-        if (cachedPreview && cachedPreview.dataUrl) return cachedPreview.dataUrl;
-        // 内存为空但 localStorage 有持久化头像（invalidate 后的 fallback）
-        var stored = loadFromStorage();
-        if (stored && stored.dataUrl) return stored.dataUrl;
-        // 多窗口 fallback：使用 IPC 注入的头像
-        if (externalAvatarDataUrl) return externalAvatarDataUrl;
-        return '';
+        return modelPreviewForDisplay()?.dataUrl || '';
     };
 
     mod.getCurrentAvatarModelType = function getCurrentAvatarModelType() {
         if (tutorialAvatarOverrideDataUrl) return tutorialAvatarOverrideModelType || getCurrentModelType();
-        if (hasUsableCachedPreview()) return cachedPreview.modelType || getCurrentModelType();
-        if (cachedPreview && cachedPreview.dataUrl) return cachedPreview.modelType || getCurrentModelType();
-        var stored = loadFromStorage();
-        if (stored && stored.dataUrl) return stored.modelType || getCurrentModelType();
-        if (externalAvatarDataUrl) return externalAvatarModelType || getCurrentModelType();
-        return getCurrentModelType();
+        return modelPreviewForDisplay()?.modelType || getCurrentModelType();
     };
 
     mod.setTutorialAvatarOverride = function setTutorialAvatarOverride(dataUrl, modelType) {
@@ -1849,18 +1859,24 @@
     mod.setExternalAvatar = function setExternalAvatar(dataUrl, modelType) {
         externalAvatarDataUrl = dataUrl || '';
         externalAvatarModelType = modelType || '';
+        externalAvatarPreview = null;
 
         // 把 IPC 注入的头像合并进 cachedPreview，让 renderAvatarPreview 的快路径直接命中，
         // 避免弹窗打开时再发一次 IPC（可能超时 → 用户看到失败态）。
         if (externalAvatarDataUrl) {
+            const key = getCurrentModelCacheKey();
+            const follower = isCardDropIdentityFollowerWindow();
+            const {lanlan_name: name, switch_revision: revision} = window.lanlan_config || {};
             cachedPreview = {
-                cacheKey: getCurrentModelCacheKey(),
+                cacheKey: key,
                 dataUrl: externalAvatarDataUrl,
                 modelType: externalAvatarModelType || getCurrentModelType(),
                 capturedAt: Date.now(),
                 // Chat followers may show the owner window's portrait but do not own its cache.
-                displayOnly: isCardDropIdentityFollowerWindow(),
+                displayOnly: follower,
+                ipcIdentity: follower && name ? {name, revision: revision || 0, modelKey: key} : null,
             };
+            externalAvatarPreview = cachedPreview;
             publishPreview(cachedPreview);
         }
 
