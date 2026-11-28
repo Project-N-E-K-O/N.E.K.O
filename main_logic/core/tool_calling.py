@@ -26,6 +26,8 @@ import os
 from main_logic.omni_offline_client import OmniOfflineClient
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic import public_knowledge
+from main_logic import nekopower_enable
+from main_logic.activity.system_signals import is_remote_backend_deployment
 from main_logic.core._shared import _reply_observation_owner
 from main_logic.tool_calling import ToolCall, ToolDefinition, ToolOwnerCheck, ToolResult
 from config.prompts.prompts_sys import _loc
@@ -44,6 +46,26 @@ from config.prompts.prompts_task_tools import (
     TASK_TOOL_QUERY_UNREACHABLE,
     TASK_TOOL_UNCERTAIN,
     TASK_TOOL_UNREACHABLE,
+)
+from config.prompts.prompts_nekopower_enable import (
+    ENABLE_ALREADY_ON,
+    ENABLE_ASKED,
+    ENABLE_COOLDOWN,
+    ENABLE_FAILURE_REASONS,
+    ENABLE_NEKOPOWER_TOOL_DESCRIPTION,
+    ENABLE_NEKOPOWER_TOOL_NAME,
+    ENABLE_REPORT_ACCEPTED,
+    ENABLE_REPORT_ACCEPTED_NOT_RENEWED,
+    ENABLE_REPORT_DECLINED,
+    ENABLE_REPORT_DECLINED_COOLDOWN,
+    ENABLE_REPORT_EXPIRED,
+    ENABLE_REPORT_FAILED,
+    ENABLE_REPORT_NOTE,
+    ENABLE_REPORT_OFF_AGAIN,
+    ENABLE_REPORT_WORDS,
+    ENABLE_REMOTE,
+    ENABLE_UNAVAILABLE,
+    ENABLE_WAITING,
 )
 from config.prompts.prompts_memory import (
     RECALL_MEMORY_TOOL_DESCRIPTION,
@@ -345,7 +367,7 @@ class ToolCallingMixin:
             # The kill-switch of ``_register_builtin_tools`` holds on this
             # path too (a switch update calls this directly).
             enabled = False
-        changed = False
+        changed = self._register_enable_nekopower_tool()
         if not enabled:
             for name in (DISPATCH_TOOL_NAME, QUERY_TOOL_NAME):
                 current = self.tool_registry.get(name)
@@ -393,6 +415,221 @@ class ToolCallingMixin:
             changed = True
             self.tool_registry.register(definition, replace=True)
         return changed
+
+    # ------------------------------------------------------------------
+    # Built-in tool: enable_nekopower (main_logic/nekopower_enable.py)
+    # ------------------------------------------------------------------
+    # Offered while the NekoPower master switch is off: she asks the user, in a
+    # NekoPower question card, to let her switch it on. The tool answers at
+    # once; the user's answer reaches her later as a report. On "yes" the main
+    # server switches NekoPower on as the panel switch does and the session is
+    # renewed, so the new one opens with the NekoPower prompt and the task tools
+    # (owner, 2026-11-27).
+
+    def _nekopower_master_on(self) -> bool:
+        return bool((getattr(self, "agent_flags", None) or {}).get("agent_enabled", False))
+
+    def _enable_nekopower_lang(self) -> str:
+        return _normalize_memory_prompt_lang(self.user_language)
+
+    def _register_enable_nekopower_tool(self) -> bool:
+        """Offer ``enable_nekopower`` while the master switch is off, take it back once it is on.
+
+        Returns whether anything changed.
+        """
+        offered = not self._nekopower_master_on()
+        if os.environ.get("NEKO_DISABLE_BUILTIN_TOOLS", "").strip().lower() in ("1", "true", "yes"):
+            offered = False
+        current = self.tool_registry.get(ENABLE_NEKOPOWER_TOOL_NAME)
+        if current is not None and current.metadata.get("source") != "builtin":
+            # A tool of another source holds the name; it is left alone.
+            return False
+        if not offered:
+            # Switched on otherwise (the panel) while a card waits: the card goes too.
+            withdrawn = nekopower_enable.withdraw(getattr(self, "lanlan_name", "")) if self._nekopower_master_on() else None
+            if withdrawn:
+                self._fire_task(self._close_enable_nekopower_card(withdrawn))
+            if current is None:
+                return False
+            self.tool_registry.unregister(ENABLE_NEKOPOWER_TOOL_NAME)
+            return True
+        definition = ToolDefinition(
+            name=ENABLE_NEKOPOWER_TOOL_NAME,
+            description=_loc(ENABLE_NEKOPOWER_TOOL_DESCRIPTION, self._enable_nekopower_lang()),
+            parameters={"type": "object", "properties": {}},
+            handler=self._handle_enable_nekopower_call,
+            metadata={"source": "builtin"},
+        )
+        if current is not None and current.description == definition.description:
+            return False
+        self.tool_registry.register(definition, replace=True)
+        return True
+
+    async def _handle_enable_nekopower_call(self, arguments: dict) -> object:
+        lang = self._enable_nekopower_lang()
+        if self._nekopower_master_on():
+            return _loc(ENABLE_ALREADY_ON, lang)
+        if is_remote_backend_deployment():
+            # The main server turns agent commands down here (501): the card could not be answered.
+            return {"output": _loc(ENABLE_REMOTE, lang), "is_error": True}
+        websocket = getattr(self, "websocket", None)
+        if websocket is None:
+            return {"output": _loc(ENABLE_UNAVAILABLE, lang), "is_error": True}
+        outcome, question_id = nekopower_enable.ask(self.lanlan_name, lang=lang, name=self.lanlan_name)
+        if outcome == nekopower_enable.COOLING_DOWN:
+            minutes = nekopower_enable.cooldown_minutes_left(self.lanlan_name)
+            return {"output": _loc(ENABLE_COOLDOWN, lang).format(minutes=minutes), "is_error": True}
+        if outcome == nekopower_enable.WAITING:
+            return {"output": _loc(ENABLE_WAITING, lang), "is_error": True}
+        sent = False
+        try:
+            await websocket.send_json(nekopower_enable.card_frame(self.lanlan_name))
+            sent = True
+        except Exception as e:
+            logger.warning("[%s] enable_nekopower: card not sent: %s", self.lanlan_name, type(e).__name__)
+            return {"output": _loc(ENABLE_UNAVAILABLE, lang), "is_error": True}
+        finally:
+            if not sent:
+                # Taken down whatever stopped the sending, a cancelled tool call too (the user
+                # speaking over her): a card left up with no expiry would block her for good.
+                nekopower_enable.withdraw(self.lanlan_name, question_id)
+        self._fire_task(self._expire_enable_nekopower_card(question_id))
+        return _loc(ENABLE_ASKED, lang)
+
+    async def _close_enable_nekopower_card(self, question_id: str) -> None:
+        """Take the card down on the page (every window of it): answered, expired, or no longer needed."""
+        websocket = getattr(self, "websocket", None)
+        if websocket is None:
+            return
+        try:
+            await websocket.send_json(nekopower_enable.closed_frame(self.lanlan_name, question_id))
+        except Exception as e:
+            # The page is gone: it reads the cards that wait when it comes back (/api/agent/questions).
+            logger.debug("[%s] enable_nekopower: card not taken down on the page: %s", self.lanlan_name, type(e).__name__)
+
+    async def _expire_enable_nekopower_card(self, question_id: str) -> None:
+        await asyncio.sleep(nekopower_enable.CARD_SECONDS)
+        if nekopower_enable.withdraw(self.lanlan_name, question_id) is None:
+            return
+        await self._close_enable_nekopower_card(question_id)
+        self._report_enable_nekopower(_loc(ENABLE_REPORT_EXPIRED, self._enable_nekopower_lang()))
+
+    def _report_enable_nekopower(self, text: str, note: str = "") -> None:
+        """Hand her a report; what the user typed beside a click (``note``) goes with it."""
+        lang = self._enable_nekopower_lang()
+        if (note or "").strip():
+            text = text + _loc(ENABLE_REPORT_NOTE, lang).format(text=note.strip())
+        self.submit_proactive_callback(nekopower_enable.report(self.lanlan_name, text, lang=lang))
+
+    def _renew_for_nekopower_on(self) -> "asyncio.Task":
+        """The one renewal for NekoPower coming on: the panel switch and the card share it.
+
+        ``update_agent_flags`` starts it as the master switch comes on mid-session and
+        counts each time it comes on; ``after_nekopower_enabled`` waits for the renewal of
+        the same coming on (under way or done) instead of renewing again.
+        """
+        count = getattr(self, "_nekopower_on_count", 0)
+        held = getattr(self, "_nekopower_renewal", None)
+        if held is not None and held[0] == count:
+            return held[1]
+        task = self._fire_task(self._renew_once_dropped())
+        self._nekopower_renewal = (count, task)
+        return task
+
+    async def _renew_once_dropped(self) -> bool:
+        """Renew, once an earlier renewal's dropping is over: its cleanup must not take this one's preparation."""
+        dropping = getattr(self, "_nekopower_dropping", None)
+        if dropping is not None and not dropping.done():
+            await asyncio.wait({dropping}, timeout=nekopower_enable.RENEWAL_WAIT_SECONDS)
+        return await self.renew_session_now()
+
+    def _drop_nekopower_renewal(self) -> None:
+        """NekoPower went off again (a command taken back, the panel): a renewal under way for it is dropped.
+
+        The session it prepared goes too, or the end of a turn would swap it in with
+        the NekoPower opening while NekoPower is off.
+        """
+        held = getattr(self, "_nekopower_renewal", None)
+        if held is None:
+            return
+        self._nekopower_renewal = None
+        renewal = held[1]
+        if renewal.done():
+            # Swapped in already: nothing of it is left to drop. Not swapped in (it gave up
+            # waiting): the session it prepared may still be swapped in later, and goes.
+            swapped = not renewal.cancelled() and renewal.exception() is None and renewal.result() is True
+            if swapped:
+                return
+        else:
+            renewal.cancel()
+        self._nekopower_dropping = self._fire_task(self._drop_prepared_session())
+
+    async def _drop_prepared_session(self) -> None:
+        # A swap under way is let finish (cut short, it could leave no session at all); a
+        # close that hangs is left to finish by itself, and nothing is reset after it, or a
+        # late reset could take the preparation of NekoPower coming on again.
+        await self._drop_renewal_preparation(closing_within=nekopower_enable.RENEWAL_WAIT_SECONDS)
+
+    async def answer_enable_nekopower_card(self, question_id: str, *, choice: str = "", text: str = "") -> str:
+        """The user answered the card.
+
+        On "yes" the caller switches NekoPower on, then calls ``after_nekopower_enabled``.
+        """
+        outcome = nekopower_enable.answer(self.lanlan_name, question_id, choice=choice, text=text)
+        if outcome == nekopower_enable.STALE:
+            return outcome
+        await self._close_enable_nekopower_card(question_id)
+        lang = self._enable_nekopower_lang()
+        if outcome == nekopower_enable.DECLINED:
+            # The second "no" in a row: she is told she may not ask again for a while.
+            cooled = nekopower_enable.cooling_down(self.lanlan_name)
+            self._report_enable_nekopower(
+                _loc(ENABLE_REPORT_DECLINED_COOLDOWN if cooled else ENABLE_REPORT_DECLINED, lang), note=text,
+            )
+        elif outcome == nekopower_enable.WORDS:
+            self._report_enable_nekopower(_loc(ENABLE_REPORT_WORDS, lang).format(text=(text or "").strip()))
+        return outcome
+
+    async def after_nekopower_enabled(self, failure: str = "", *, note: str = "") -> None:
+        """After a "yes": renew the session so it opens with NekoPower on, then tell her (owner, 2026-11-27).
+
+        ``failure`` says why switching it on failed (a key of ``ENABLE_FAILURE_REASONS``);
+        empty when it came on. ``note``: what the user typed beside the click.
+        """
+        lang = self._enable_nekopower_lang()
+        if failure:
+            reason = _loc(ENABLE_FAILURE_REASONS.get(failure) or ENABLE_FAILURE_REASONS["unknown"], lang)
+            self._report_enable_nekopower(_loc(ENABLE_REPORT_FAILED, lang).format(reason=reason), note=note)
+            return
+        if not self._nekopower_master_on():
+            # Switched off again on the panel while the command was on its way: the newer
+            # switch stands (_Unconfirmed), and she is not told it is on.
+            self._report_enable_nekopower(_loc(ENABLE_REPORT_OFF_AGAIN, lang), note=note)
+            return
+        renewal = self._renew_for_nekopower_on()
+        # Waited for without taking on its fate: a renewal dropped because NekoPower went off
+        # again is not this report's cancellation.
+        await asyncio.wait({renewal}, timeout=nekopower_enable.RENEWAL_WAIT_SECONDS)
+        renewed = False
+        if renewal.done() and not renewal.cancelled():
+            if renewal.exception() is not None:
+                logger.warning(
+                    "[%s] enable_nekopower: session not renewed: %s",
+                    self.lanlan_name, type(renewal.exception()).__name__,
+                )
+            else:
+                renewed = bool(renewal.result())
+        if not self._nekopower_master_on():
+            # Switched off while the session was being renewed: as above.
+            self._report_enable_nekopower(_loc(ENABLE_REPORT_OFF_AGAIN, lang), note=note)
+            return
+        if not renewed:
+            # The tools reached the live session all the same (update_agent_flags), save on
+            # Gemini Live, which takes them at connect: she is told to look before she acts.
+            logger.info("[%s] enable_nekopower: reporting without a renewed session", self.lanlan_name)
+        self._report_enable_nekopower(
+            _loc(ENABLE_REPORT_ACCEPTED if renewed else ENABLE_REPORT_ACCEPTED_NOT_RENEWED, lang), note=note,
+        )
 
     async def _post_to_task_system(self, path: str, body: dict) -> tuple[dict | None, bool]:
         """POST one request of a task tool to the agent process.
@@ -554,14 +791,14 @@ class ToolCallingMixin:
         """The tools holding the names of the builtins that yield to other sources, before a removal."""
         return {
             name: self.tool_registry.get(name)
-            for name in (public_knowledge.TOOL_NAME, DISPATCH_TOOL_NAME, QUERY_TOOL_NAME)
+            for name in (public_knowledge.TOOL_NAME, DISPATCH_TOOL_NAME, QUERY_TOOL_NAME, ENABLE_NEKOPOWER_TOOL_NAME)
         }
 
     def _refill_vacated_builtins(self, previous_holders: dict[str, ToolDefinition | None] | None) -> None:
         """Take a builtin's name back from another source's tool just removed.
 
         Only for builtins that yield to same-name tools of other sources
-        (``query_public_knowledge`` and the two task tools): when such a tool
+        (``query_public_knowledge``, the two task tools and ``enable_nekopower``): when such a tool
         goes away neither the availability flag nor a switch changes, so
         nothing else would restore the builtin. Removing the builtin itself
         (e.g. clearing the "builtin" source) is respected: nothing is put back.
@@ -580,8 +817,9 @@ class ToolCallingMixin:
 
         if vacated(public_knowledge.TOOL_NAME) and public_knowledge.tool_available():
             self._register_public_knowledge_tool()
-        if vacated(DISPATCH_TOOL_NAME) or vacated(QUERY_TOOL_NAME):
-            # Registers what the switches call for and leaves the rest alone.
+        if vacated(DISPATCH_TOOL_NAME) or vacated(QUERY_TOOL_NAME) or vacated(ENABLE_NEKOPOWER_TOOL_NAME):
+            # Registers what the switches call for and leaves the rest alone
+            # (enable_nekopower is registered on the same path).
             self._register_task_tools()
 
     def _on_public_knowledge_availability(self) -> None:

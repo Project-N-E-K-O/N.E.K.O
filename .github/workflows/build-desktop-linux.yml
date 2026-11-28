@@ -327,7 +327,8 @@ jobs:
           NUITKA_OPTS="$NUITKA_OPTS --include-package=services"
           NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=services.theater_workshop"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=memory"
-          NUITKA_OPTS="$NUITKA_OPTS --include-package=knowledge"
+          # Keep the Memory-owned domain explicit under the services package.
+          NUITKA_OPTS="$NUITKA_OPTS --include-package=services.knowledge"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=nekopower"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=utils"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=steamworks"

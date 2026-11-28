@@ -19,6 +19,7 @@ import pytest
 
 from config import TOOL_SERVER_PORT
 from config.nekopower_settings import TASK_TOOL_TIMEOUT_SECONDS
+from config.prompts.prompts_nekopower_enable import ENABLE_NEKOPOWER_TOOL_NAME
 from config.prompts.prompts_task_tools import (
     DISPATCH_TOOL_DESCRIPTION,
     DISPATCH_TOOL_NAME,
@@ -145,13 +146,14 @@ def agent_process(monkeypatch):
         ({"agent_enabled": True, "user_plugin_enabled": True}, True),
         ({"agent_enabled": True, "user_plugin_enabled": False, "computer_use_enabled": True}, True),
         ({"agent_enabled": True, "user_plugin_enabled": False, "browser_use_enabled": True}, True),
-        # The master switch alone offers nothing to do anything with.
-        ({"agent_enabled": True, "user_plugin_enabled": False}, False),
+        # The master switch alone is enough: the task agent starts with it.
+        ({"agent_enabled": True, "user_plugin_enabled": False}, True),
+        ({"agent_enabled": True, "user_plugin_enabled": False, "computer_use_enabled": False, "browser_use_enabled": False}, True),
         # A capability switch left on under a master switch that is off.
         ({"agent_enabled": False, "user_plugin_enabled": True, "computer_use_enabled": True}, False),
     ],
 )
-def test_nekopower_is_on_with_the_master_switch_and_one_capability(flags, expected):
+def test_nekopower_is_on_with_the_master_switch_alone(flags, expected):
     assert _manager(**flags)._is_agent_enabled() is expected
 
 
@@ -225,7 +227,12 @@ def test_a_switch_change_reaches_the_live_session_once():
     manager.update_agent_flags({"agent_enabled": True})
     assert len(manager.fired) == 1
 
+    # With the master switch on, a capability switch going off changes nothing for the session.
     manager.update_agent_flags({"user_plugin_enabled": False})
+    assert manager.tool_registry.get(DISPATCH_TOOL_NAME) is not None
+    assert len(manager.fired) == 1
+
+    manager.update_agent_flags({"agent_enabled": False})
     assert manager.tool_registry.get(DISPATCH_TOOL_NAME) is None
     assert len(manager.fired) == 2
 
@@ -248,7 +255,10 @@ def test_that_switch_holds_when_a_switch_update_registers_them_directly(monkeypa
 
     assert manager.tool_registry.get(DISPATCH_TOOL_NAME) is None
     assert manager.tool_registry.get(QUERY_TOOL_NAME) is None
-    assert manager.fired == []
+    # The one change synced is enable_nekopower going away, offered while the master
+    # switch was off (#4155): not a task tool coming in.
+    assert manager.tool_registry.get(ENABLE_NEKOPOWER_TOOL_NAME) is None
+    assert len(manager.fired) == 1
 
 
 def test_the_switch_set_later_takes_the_two_tools_out_again(monkeypatch):

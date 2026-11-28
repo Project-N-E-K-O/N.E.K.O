@@ -1624,6 +1624,10 @@ class LifecycleMixin:
             )
         except Exception as e:
             logger.debug(f"[{lanlan_name}] 打断摘要请求失败，继续开会话: {type(e).__name__}: {e}")
+        await self._wait_queued_memory_writes(lanlan_name)
+
+    async def _wait_queued_memory_writes(self, lanlan_name) -> None:
+        """Wait, bounded, for the connector to send the memory writes queued so far (no summary preempted)."""
         queue = getattr(self, "sync_message_queue", None)
         if queue is None:
             return
@@ -2890,6 +2894,130 @@ class LifecycleMixin:
                     self.background_preparation_task = asyncio.create_task(self._background_prepare_pending_session())
         except Exception as e:
             logger.error(f"💥 Extra Reply: preparation trigger error: {e}")
+
+    async def renew_session_now(self, *, wait_seconds: float = 60.0) -> bool:
+        """Swap in a session prepared now, with the opening prompt and tools as they are at this moment.
+
+        For a change the live session cannot take in by itself: the opening
+        prompt is built once per session, and Gemini Live fixes its tools at
+        connect (switching NekoPower on from the ``enable_nekopower`` card).
+        Uses the hot swap of session renewal: a pending session prepared
+        before the change is thrown away, a new one is prepared once nothing
+        is under way (``_can_release_proactive``) -- the new session is built
+        from what memory has of the conversation, which takes a turn in at
+        its end -- and the swap runs as soon as nothing is under way again,
+        or at the end of the turn that is. Each wait is fenced by the session
+        it began with: ended or replaced meanwhile, the renewal stops and
+        drops what it prepared.
+        Returns whether the session was swapped within ``wait_seconds``; with
+        no session up there is nothing to swap (the next start builds anew).
+        """
+        if self.session is None or not self.is_active:
+            return False
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + wait_seconds
+        swap = self.final_swap_task
+        if swap is not None and not swap.done():
+            # A swap under way: what it promotes was prepared earlier; renew after it.
+            try:
+                await asyncio.wait_for(asyncio.shield(swap), timeout=wait_seconds)
+            except Exception:
+                return False
+
+        def ended() -> bool:
+            return not self.is_active or self.session is None
+
+        async def drop_preparation() -> bool:
+            return await self._drop_renewal_preparation(closing_within=deadline - loop.time())
+
+        # A preparation made with the switches as they were goes first: left warm, the end
+        # of the turn under way would swap it in instead.
+        if not await drop_preparation():
+            return False
+        # The turn under way ends first, so that what it said is in memory for the new session.
+        while not self._can_release_proactive():
+            if loop.time() >= deadline or ended():
+                return False
+            await asyncio.sleep(0.2)
+        if ended():
+            return False
+        # Swapped meanwhile all the same (a renewal begun since): that one is what is renewed.
+        session = self.session
+
+        def still_up() -> bool:
+            return self.is_active and self.session is session
+
+        if not await drop_preparation():
+            return False
+        while True:
+            # A turn begun while that was dropped ends first too (its cache would go with the reset).
+            while not self._can_release_proactive():
+                if loop.time() >= deadline or not still_up():
+                    return False
+                await asyncio.sleep(0.2)
+            # The turn just ended reaches memory before the new session reads it (/new_dialog), as
+            # on a cold start, but the summary under way is not preempted: the hot swap takes it in.
+            await self._wait_queued_memory_writes(self.lanlan_name)
+            if not still_up():
+                return False
+            if self._can_release_proactive():
+                break
+            # A turn began during that wait: it ends, and is written, before preparing (nothing
+            # of it is cached for the new session until the preparation starts).
+            if loop.time() >= deadline:
+                return False
+        await self._trigger_immediate_preparation_for_extra()
+        warmed = self.pending_session_warmed_up_event
+        if warmed is None:
+            return False
+        while not warmed.is_set():
+            preparing = self.background_preparation_task
+            if loop.time() >= deadline or preparing is None or (preparing.done() and not warmed.is_set()):
+                return False
+            if not still_up():
+                await drop_preparation()
+                return False
+            await asyncio.sleep(0.2)
+        while loop.time() < deadline:
+            if self.session is not session:
+                if self.is_active and self.session is not None:
+                    return True
+                # Ended (or torn down) meanwhile: no swap is to bring a session back.
+                await drop_preparation()
+                return False
+            if not self.is_active:
+                await drop_preparation()
+                return False
+            swapping = self.final_swap_task is not None and not self.final_swap_task.done()
+            if not swapping and not self.is_hot_swap_imminent and self._can_release_proactive():
+                # As the end of a turn does (turn.py), without waiting for one.
+                self.is_hot_swap_imminent = True
+                self.pending_session_final_prime_complete_event = asyncio.Event()
+                self.final_swap_task = asyncio.create_task(self._perform_final_swap_sequence())
+            await asyncio.sleep(0.5)
+        return self.session is not session and self.is_active and self.session is not None
+
+    async def _drop_renewal_preparation(self, *, closing_within: "float | None" = None) -> bool:
+        """Drop the pending preparation for ``renew_session_now``; whether it was dropped.
+
+        A swap under way is not cut short (it may have closed the old connection already).
+        Closing a provider connection has no timeout of its own: with ``closing_within`` it
+        is waited for only that long, then left to finish by itself (not cancelled), and
+        nothing is reset after it -- a reset that late could take a newer preparation or swap.
+        """
+        swap = self.final_swap_task
+        if self.is_hot_swap_imminent or (swap is not None and not swap.done()):
+            return False
+        closing = asyncio.ensure_future(self._cleanup_pending_session_resources())
+        if closing_within is None:
+            await closing
+        else:
+            try:
+                await asyncio.wait_for(asyncio.shield(closing), timeout=max(0.0, closing_within))
+            except asyncio.TimeoutError:
+                return False
+        await self._reset_preparation_state()
+        return True
 
     @staticmethod
     def _swap_session_is_dead(session) -> bool:

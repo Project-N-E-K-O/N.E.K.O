@@ -654,6 +654,9 @@ const messages: PowerMessages = {
       mcp_server: 'MCP サーバーを使う',
       usage_limit: '使用量の上限を超えて続ける',
       browser_reopen: 'ブラウザーをもう一度開く',
+      enable_browser: 'ブラウザー操作をオンにする',
+      enable_keyboard_mouse: 'キーボード・マウス操作をオンにする',
+      enable_plugins: 'ユーザープラグインをオンにする',
       session_action: 'ほかの使い魔に働きかける',
     },
     facts: {
@@ -711,6 +714,7 @@ const messages: PowerMessages = {
     default: '既定（{what}）',
     inherit: '使いに出した使い魔に合わせる',
     agentModel: '使い魔モデル',
+    advancedModel: '使い魔モデル・上級',
     free: '無料',
     noModel: 'モデルなし',
     slotEmpty: 'モデル未入力',

@@ -36,7 +36,7 @@ def test_live2d_return_keeps_floating_toolbar_drag_passthrough():
     source = read_js_parts(APP_UI_PATH)
     drag_source = AVATAR_DRAG_PATH.read_text(encoding="utf-8")
     show_live2d_block = source[
-        source.index("showLive2d = function showLive2d()"):
+        source.index("showLive2d = function showLive2d("):
         source.index("mod.showLive2d = showLive2d;")
     ]
     drag_rule_block = drag_source[

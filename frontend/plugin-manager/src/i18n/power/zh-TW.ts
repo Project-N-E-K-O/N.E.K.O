@@ -654,6 +654,9 @@ const messages: PowerMessages = {
       mcp_server: '使用 MCP 伺服器',
       usage_limit: '超過用量上限後繼續',
       browser_reopen: '重新開啟瀏覽器',
+      enable_browser: '開啟瀏覽器控制',
+      enable_keyboard_mouse: '開啟鍵鼠控制',
+      enable_plugins: '開啟使用者外掛',
       session_action: '對別的使魔做事',
     },
     facts: {
@@ -711,6 +714,7 @@ const messages: PowerMessages = {
     default: '預設（{what}）',
     inherit: '跟隨派它的使魔',
     agentModel: '使魔模型',
+    advancedModel: '使魔模型·高級',
     free: '免費',
     noModel: '沒有模型',
     slotEmpty: '還沒填模型',

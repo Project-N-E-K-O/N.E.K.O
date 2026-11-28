@@ -14,7 +14,7 @@ import zlib
 import pytest
 
 from utils.knowledge_package import PackageError, _check_compressed_stream, canonical_json, validate_package
-from tests.unit.test_knowledge_archive_v2 import make_archive
+from tests.knowledge_archive_fixtures import make_archive
 
 
 pytestmark = pytest.mark.unit_fast

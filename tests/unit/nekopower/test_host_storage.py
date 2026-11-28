@@ -2212,15 +2212,19 @@ async def test_round8_worktree_subdir_gone_restart_forget_gone_and_record_only(
     repo = tmp_path / "git_repo"
     subdir = repo / "packages" / "app"
     subdir.mkdir(parents=True)
-    for args in (
-        ("git", "init"),
-        ("git", "config", "user.name", "Test"),
-        ("git", "config", "user.email", "test@example.com"),
-    ):
-        subprocess.run(args, cwd=repo, check=True, capture_output=True)
-    (subdir / "hello.txt").write_text("hi\n", encoding="utf-8")
-    subprocess.run(("git", "add", "."), cwd=repo, check=True, capture_output=True)
-    subprocess.run(("git", "commit", "-m", "init"), cwd=repo, check=True, capture_output=True)
+
+    def _init_git_repo() -> None:
+        for args in (
+            ("git", "init"),
+            ("git", "config", "user.name", "Test"),
+            ("git", "config", "user.email", "test@example.com"),
+        ):
+            subprocess.run(args, cwd=repo, check=True, capture_output=True)
+        (subdir / "hello.txt").write_text("hi\n", encoding="utf-8")
+        subprocess.run(("git", "add", "."), cwd=repo, check=True, capture_output=True)
+        subprocess.run(("git", "commit", "-m", "init"), cwd=repo, check=True, capture_output=True)
+
+    await asyncio.to_thread(_init_git_repo)
 
     host1 = make_host(tmp_path)
     try:

@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Static check: enforce top-level module layering and forbid cycles.
+"""Static check: enforce logical module layering and forbid cycles.
 
 Why this exists
 ---------------
@@ -24,7 +24,7 @@ stays acyclic). The hierarchy:
 
     L0  config, steamworks                   ← foundation (data + vendored SDK)
     L1  utils
-    L2  knowledge, memory, main_logic, services
+    L2  knowledge (services.knowledge), memory, main_logic, other services
     L3  main_routers
     L4  plugin                                ← high-level extension surface
     L5  nekopower                              ← top-of-stack agent orchestration
@@ -45,7 +45,10 @@ A third category pins boundaries that layers alone cannot express:
                       must never depend on (see ``FORBIDDEN_EDGES``), even when
                       the layers would allow it.
 
-The rules above only see packages listed in ``LAYERS``; imports of and from
+The Memory-owned ``services.knowledge`` domain retains its own ``knowledge``
+node, so nesting it under services cannot inherit Main-side import permissions.
+Other packages retain their top-level nodes. The rules above only see packages
+listed in ``LAYERS``; imports of and from
 any other top-level directory are skipped. So one more check keeps that list
 complete:
 
@@ -112,8 +115,9 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # provided no cycle results. ``launcher`` is the launcher.py top-level
 # script (no package); we treat it specially in PACKAGE_OF_FILE.
 #
-# ``services`` holds Main-side domain services (chat sync, theater runtime)
-# used by main_logic, main_routers and app. ``services/theater_workshop`` is
+# ``services`` holds domain services. Its Memory-owned knowledge subtree has
+# an independent logical node; the other services (chat sync, theater runtime)
+# are Main-side and used by main_logic, main_routers and app. ``services/theater_workshop`` is
 # the source-only author host, separate from the theater runtime. ``launcher_core``
 # is launcher.py's bootstrap and imports app directly. ``nekopower`` is the
 # base that runs task agents (it took over from the former ``brain`` package)
@@ -170,7 +174,7 @@ FORBIDDEN_EDGES: List[Tuple[str, str, str]] = [
     ("app/main_server/", "knowledge", "Main reaches public knowledge over HTTP only"),
     ("services/", "knowledge", "Main reaches public knowledge over HTTP only"),
     ("plugin/", "knowledge", "the plugin server goes through Main's proxy"),
-    ("knowledge/", "memory", "knowledge never reads or writes memory data"),
+    ("services/knowledge/", "memory", "knowledge never reads or writes memory data"),
     ("services/", "main_logic", "main_logic depends on services; services never imports it back"),
     # The built-in agent runtime is a harness without memory that runs in a
     # child process of its own. Its layer would allow far more; these rows keep
@@ -280,8 +284,16 @@ EXCLUDE_FILES = {
 # ---------------------------------------------------------------------------
 
 
+def package_of_module(module: str) -> Optional[str]:
+    """Map the nested knowledge domain separately from its lightweight parent."""
+    if module == "services.knowledge" or module.startswith("services.knowledge."):
+        return "knowledge"
+    head = module.split(".", 1)[0]
+    return head if head in KNOWN_PACKAGES else None
+
+
 def package_of_file(path: Path) -> Optional[str]:
-    """Return the top-level package owning ``path``, or ``None`` if outside
+    """Return the logical package owning ``path``, or ``None`` if outside
     the layering scope (and therefore not subject to the rules).
     """
     rel_path = _relative_to_root(path, None)
@@ -291,6 +303,8 @@ def package_of_file(path: Path) -> Optional[str]:
     # Top-level launcher.py is its own "package" so we can place it in L6.
     if rel == "launcher.py":
         return "launcher"
+    if rel.startswith("services/knowledge/"):
+        return "knowledge"
     head = rel.split("/", 1)[0]
     return head if head in KNOWN_PACKAGES else None
 
@@ -313,7 +327,8 @@ class ImportCollector(ast.NodeVisitor):
     imports are equally subject to the layering rules.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, package: Optional[str] = None) -> None:
+        self.package = package
         # (lineno, col, module_name, raw_repr_for_error_message)
         self.records: list[tuple[int, int, str, str]] = []
 
@@ -327,35 +342,58 @@ class ImportCollector(ast.NodeVisitor):
         self.generic_visit(node)
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
-        # All relative imports are intra-package — skip regardless of whether
-        # ``module`` is set. Both ``from . import x`` (level>0, module=None)
-        # and ``from .foo import x`` (level>0, module='foo') resolve inside
-        # the current package; only ``module`` from ``level=0`` (absolute)
-        # imports can name a top-level package. Without this guard, a file
-        # like ``plugin/core/bus/__init__.py`` containing
-        # ``from .memory import MemoryClient`` would be mis-recorded as a
-        # ``plugin → memory`` edge — fabricating cross-package dependencies
-        # whenever a sibling submodule shares a name with a layered top-level
-        # package, which can produce false LAYER_INVERSION/LAYER_CYCLE reports.
+        # Resolve relatives against the actual file package. A peer service
+        # can reach knowledge through ``..knowledge``; conversely a local
+        # ``.memory`` must never become a dependency on top-level memory.
+        module = node.module
         if node.level:
-            self.generic_visit(node)
-            return
-        if node.module:
+            if not self.package:
+                return  # A standalone collector has no file context.
+            from importlib.util import resolve_name
+            try:
+                module = resolve_name("." * node.level + (module or ""), self.package)
+            except ImportError:
+                return  # An invalid relative name cannot identify a package.
+        if module:
             names = ", ".join(a.name for a in node.names) or "*"
             self.records.append(
                 (
                     node.lineno,
                     node.col_offset + 1,
-                    node.module,
-                    f"from {node.module} import {names}",
+                    module,
+                    f"from {'.' * node.level}{node.module or ''} import {names}",
                 )
             )
+            # ``from services import knowledge`` names the child in aliases,
+            # not in node.module. Preserve the parent edge and add only an
+            # alias that crosses a distinct registered logical boundary.
+            for alias in node.names:
+                child = f"{module}.{alias.name}"
+                if package_of_module(child) not in {None, package_of_module(module)}:
+                    self.records.append((node.lineno, node.col_offset + 1, child,
+                                         f"from {module} import {alias.name}"))
         self.generic_visit(node)
 
     # -- dynamic forms ------------------------------------------------------
 
     def visit_Call(self, node: ast.Call) -> None:
         target = self._dynamic_import_target(node)
+        if target and target.startswith(".") and (
+            isinstance(node.func, ast.Attribute) and node.func.attr == "import_module"
+            or isinstance(node.func, ast.Name) and node.func.id == "import_module"
+        ):
+            # import_module also accepts relative names with a literal package
+            # or the current file's __package__; unknown expressions stay
+            # outside this literal-only analysis as before.
+            package = next((kw.value for kw in node.keywords if kw.arg == "package"),
+                           node.args[1] if len(node.args) > 1 else None)
+            context = (package.value if isinstance(package, ast.Constant) and isinstance(package.value, str)
+                       else self.package if isinstance(package, ast.Name) and package.id == "__package__" else None)
+            from importlib.util import resolve_name
+            try:
+                target = resolve_name(target, context) if context else None
+            except ImportError:
+                target = None
         if target is not None:
             arg = node.args[0] if node.args else None
             self.records.append(
@@ -602,11 +640,13 @@ def collect_edges(paths: Iterable[Path]) -> List[EdgeRecord]:
         tree = _parse_file(file)
         if tree is None:
             continue
-        collector = ImportCollector()
+        relative = _relative_to_root(file, None)
+        assert relative is not None  # package_of_file already certified it.
+        collector = ImportCollector(".".join(relative.parent.parts))
         collector.visit(tree)
         for lineno, col, module_name, repr_ in collector.records:
-            head = module_name.split(".", 1)[0]
-            if head not in KNOWN_PACKAGES:
+            head = package_of_module(module_name)
+            if head is None:
                 continue
             if head == src_pkg:
                 continue

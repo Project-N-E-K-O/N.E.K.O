@@ -839,8 +839,14 @@ class PluginPermissionStore:
         permission_id: object,
         *,
         source: PluginSource | None = None,
+        answer: bool = False,
     ) -> dict:
         """Return one permission to undecided.
+
+        ``answer``: the user answered for refusals of this permission (the
+        pending list's "first use" item): the time is stored even when the
+        permission was undecided already, so those refusals stay answered
+        after the usage index is rebuilt from the audit.
 
         An explicit ``undecided`` entry with the time is stored, so readers
         can tell what happened before the user's last choice; it counts as
@@ -865,13 +871,13 @@ class PluginPermissionStore:
             if known_id is None:
                 if record is None or permission_id not in record.get("permissions", {}):
                     raise ValueError(f"Unknown permission: {permission_id!r}")
-            if record is None:
+            if record is None and not (answer and known_id is not None):
                 return {}
-            known = PluginSource.from_dict(record.get("source"))
+            known = PluginSource.from_dict(record.get("source")) if record is not None else None
             source_changes = source is not None and known != source
             # Nothing to do only when the record already says undecided under
             # the current source; a source change is applied and saved first.
-            if known_id is not None and not source_changes:
+            if known_id is not None and not source_changes and not answer:
                 entry = (record.get("permissions") or {}).get(known_id)
                 if isinstance(entry, dict) and entry.get("state") == STATE_UNDECIDED:
                     return copy.deepcopy(record)
@@ -880,7 +886,12 @@ class PluginPermissionStore:
                     # the permissions with a legacy name).
                     return copy.deepcopy(record)
             document = copy.deepcopy(self._document)
-            record = document["plugins"][plugin_id]
+            record = document["plugins"].get(plugin_id)
+            if record is None:
+                record = document["plugins"][plugin_id] = {
+                    "source": source.to_dict() if source is not None else None,
+                    "permissions": {},
+                }
             self._apply_source(record, source)
             now = _now()
             record.pop(GRANTS_RESET, None)

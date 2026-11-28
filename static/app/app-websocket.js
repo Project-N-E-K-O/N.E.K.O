@@ -5088,8 +5088,7 @@
                     }
                     try {
                         var masterOn = !!flags.agent_enabled;
-                        var anyChildOn = !!(flags.computer_use_enabled || flags.browser_use_enabled || flags.user_plugin_enabled);
-                        if (masterOn && anyChildOn && typeof window.startAgentTaskPolling === 'function' && !isGoodbyeUiSuppressed()) {
+                        if (masterOn && typeof window.startAgentTaskPolling === 'function' && !isGoodbyeUiSuppressed()) {
                             window.startAgentTaskPolling();
                         }
                         var curName2 = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';

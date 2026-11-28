@@ -42,6 +42,7 @@ from plugin.core.entry_points import normalize_plugin_entry_point, plugin_packag
 from plugin.core.model_gateway_access import model_gateway_access
 from plugin.core.rpc import request_deadline
 from plugin.core.state import state
+from plugin.core import system_audit
 from plugin.core.source_imports import ensure_plugins_namespace as _ensure_plugins_namespace
 from plugin.logging_config import logger
 from plugin.sdk import PERSIST_ATTR
@@ -1236,8 +1237,11 @@ class _ContextCopyingThreadPoolExecutor(concurrent.futures.ThreadPoolExecutor):
     and asyncio's own executor work (``loop.getaddrinfo``) see the context
     variables of the task that scheduled them, like ``asyncio.to_thread`` does.
     The copy is taken at submit time, so each call gets its own snapshot.
+    Its ``submit`` only passes the job on: the system.* audit counts the job
+    as its caller's (``system_audit.pass_through``).
     """
 
+    @system_audit.pass_through
     def submit(self, fn, /, *args, **kwargs):
         ctx = contextvars.copy_context()
         return super().submit(ctx.run, fn, *args, **kwargs)

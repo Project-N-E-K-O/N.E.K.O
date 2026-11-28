@@ -83,8 +83,9 @@ def test_a_session_of_its_own_and_a_worker_are_opened_with_everything():
         assert item.delegates and item.remembers and not item.calls_nothing and item.max_requests is None
     # A session of its own is told nothing of a role: it is as it always was.
     assert builtin["general"].body == ""
-    # Whose model each uses by default: the task agents', or that of whoever started it.
-    assert [builtin[name].model for name in PRESETS] == ["agent", "inherit", "inherit", "inherit", "inherit", "agent"]
+    # Whose model each uses by default: the task agents', the advanced one (the planner's), or that of
+    # whoever started it.
+    assert [builtin[name].model for name in PRESETS] == ["agent", "inherit", "inherit", "inherit", "advanced", "agent"]
 
 
 def test_the_lead_has_no_tool_to_do_the_work_with_and_whoever_it_starts_has():
@@ -257,6 +258,11 @@ def test_a_template_file_is_read_with_all_its_fields():
     assert made.withheld() == frozenset({"bash", "web_fetch", "write", "edit", "note_lesson"})
 
 
+@pytest.mark.parametrize("model", ["agent", "inherit", "advanced"])
+def test_a_template_file_can_name_each_default_model(model):
+    assert _parse(f"model: {model}\n").model == model
+
+
 def test_a_template_that_says_no_more_than_it_must_is_like_a_worker():
     made = _parse()
 
@@ -297,8 +303,9 @@ def test_a_file_that_is_no_template_says_so(text, said):
         ("base_url: http://127.0.0.1:1234/v1\n", "unknown fields: base_url"),
         ("api_key: sk-1\ntools: [bash]\n", "unknown fields: api_key, tools"),
         ("lifetime: lasting\n", "unknown fields: lifetime"),
-        ("model: gpt-9\n", "model is one of agent, inherit, not 'gpt-9'"),
-        ("model: [agent]\n", "model is one of agent, inherit"),
+        ("model: gpt-9\n", "model is one of agent, inherit, advanced, not 'gpt-9'"),
+        ("model: [agent]\n", "model is one of agent, inherit, advanced"),
+        ("model: agent_advanced\n", "model is one of agent, inherit, advanced, not 'agent_advanced'"),
         ("withhold: [bsh]\n", "withhold names no tool: bsh"),
         ("withhold: 3\n", "withhold is a list of tool names"),
         ("withhold: [bash, 3]\n", "withhold is a list of tool names"),

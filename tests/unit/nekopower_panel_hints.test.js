@@ -1,8 +1,8 @@
 'use strict';
 
 // 喵能力面板的两句提示：
-// - 只开了总开关、键鼠/浏览器/插件一项都没开时，喵能力其实没开着（agent 进程的 nekopower_on），
-//   状态栏说要再开一项（agent_ui_v2.js 的 render）。
+// - 只开了总开关、键鼠/浏览器/插件一项都没开时，喵能力也是开着的（agent 进程的 nekopower_on 只看总开关），
+//   状态栏照常显示已开启（agent_ui_v2.js 的 render）。
 // - 桌面版的省算力模式正把桌宠窗口裁到模型附近时，任务悬浮窗不显示（common-ui-hud.js 的
 //   showAgentTaskHUD 不让它出来，裁剪开始时藏起、结束时照常判断），「显示悬浮窗」下面说一句
 //   （common-ui-hud.js 建出这行、平时藏着；agent_ui_v2.js 在裁剪期间打开它）。
@@ -119,10 +119,10 @@ const flags = (on = []) => ({
     user_plugin_enabled: on.includes('user_plugin_enabled')
 });
 
-test('the master switch alone asks for one more switch, for nothing is done without one', () => {
+test('the master switch alone is NekoPower on: the task agent starts with it', () => {
     const h = load();
     h.show({ analyzer_enabled: true, flags: flags() });
-    assert.equal(h.status(), 'agent.status.noCapability');
+    assert.equal(h.status(), 'agent.status.enabled');
 });
 
 for (const capability of ['computer_use_enabled', 'browser_use_enabled', 'user_plugin_enabled']) {
