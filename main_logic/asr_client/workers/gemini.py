@@ -34,7 +34,8 @@ from .._infra import AsrSessionConfig, _AsrWorkerEvent, _AsrWorkerRequest
 from ..delivery import begin_transport_write, complete_transport_write, interval_delivery_spans, retire_interval_deliveries
 from ._shared import (
     MAX_SEGMENT_PCM_BYTES,
-    RETRY_LATER_STATUSES,
+    http_failure_kind,
+    transport_failure_kind,
     AsrRequestFailure,
     encode_pcm16_wav,
     is_auth_rejection,
@@ -269,11 +270,9 @@ async def request_gemini_transcript(
             "ASR_GEMINI_REQUEST_FAILED",
             "Gemini ASR request failed",
             kind=(
-                "rate_limited"
-                if status in RETRY_LATER_STATUSES
-                else "rejected"
-                if isinstance(status, int) and 400 <= status < 500
-                else "failed"
+                http_failure_kind(status)
+                if isinstance(status, int)
+                else transport_failure_kind(exc)
             ),
         ) from exc
 

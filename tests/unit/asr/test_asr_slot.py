@@ -152,6 +152,12 @@ def test_models_base_url_strips_the_transcription_path() -> None:
         ("qwen", "qwen3-asr-flash-2026-02-10", True),
         ("qwen", "qwen3-asr-flash-realtime", False),
         ("qwen", "qwen-plus", False),
+        # Listed by DashScope, but compatible mode answers 400 "format is
+        # empty": they need the native API, so the slot must not offer them.
+        ("qwen", "qwen-audio-3.0-asr-flash", False),
+        ("qwen", "fun-asr-flash-2026-06-15", False),
+        ("qwen", "qwen3-asr-flash-filetrans", False),
+        ("qwen_intl", "qwen-audio-3.0-asr-flash", False),
         ("openai", "gpt-4o-transcribe", True),
         ("openai", "whisper-1", True),
         ("openai", "gpt-realtime", False),
@@ -162,12 +168,23 @@ def test_models_base_url_strips_the_transcription_path() -> None:
         ("gemini", "gemini-3.1-flash-lite", True),
         ("gemini", "gemini-embedding-001", False),
         ("gemini", "gemini-2.5-flash-live", False),
-        ("custom", "gigaam-v3-asr", True),
+        # A custom server's list is never filtered, so nothing is a "candidate".
+        ("custom", "gigaam-v3", False),
         ("unknown", "whisper-1", False),
     ],
 )
 def test_model_candidates_exclude_streaming_and_non_asr_models(vendor, model_id, expected) -> None:
     assert is_asr_model_candidate(vendor, model_id) is expected
+
+
+def test_every_vendor_default_model_passes_its_own_filter() -> None:
+    from main_logic.asr_client.slot import ASR_SLOT_VENDORS
+
+    for spec in ASR_SLOT_VENDORS.values():
+        if spec.filters_models:
+            assert is_asr_model_candidate(spec.vendor, spec.default_model), spec.vendor
+        else:
+            assert spec.vendor == "custom"
 
 
 # --------------------------------------------------------------------------
@@ -463,7 +480,8 @@ async def test_qwen_request_omits_an_unsupported_language_hint() -> None:
         (401, "ASR_CREDENTIALS_REJECTED", "auth"),
         (429, "ASR_QWEN_REQUEST_ERROR", "rate_limited"),
         (400, "ASR_QWEN_REQUEST_ERROR", "rejected"),
-        (500, "ASR_QWEN_REQUEST_ERROR", "failed"),
+        (500, "ASR_QWEN_REQUEST_ERROR", "server_error"),
+        (503, "ASR_QWEN_REQUEST_ERROR", "rate_limited"),
     ],
 )
 async def test_qwen_request_classifies_http_failures(status, code, kind) -> None:
@@ -602,6 +620,46 @@ def test_model_list_tags_asr_models_first() -> None:
     assert "asr" not in result["models"][1]
 
 
+def test_qwen_model_list_offers_only_what_the_slot_can_call() -> None:
+    # Ids observed in a live DashScope /models listing (2026-11-28): the
+    # slot's default qwen3-asr-flash is missing and two other ASR models need
+    # the native API.
+    listed = {"success": True, "models": [
+        {"id": "qwen-plus"},
+        {"id": "qwen-audio-3.0-asr-flash"},
+        {"id": "fun-asr-flash-2026-06-15"},
+        {"id": "qwen3-asr-flash-realtime"},
+    ]}
+    result = model_catalog._tag_asr_models(listed, "qwen")
+    assert result["asr_filtered"] is True
+    tagged = [entry["id"] for entry in result["models"] if entry.get("asr")]
+    assert tagged == ["qwen3-asr-flash"]
+    assert result["models"][0] == {"id": "qwen3-asr-flash", "asr": True}
+    # Nothing is hidden: the rest stays reachable behind "show all".
+    assert len(result["models"]) == 5
+
+
+def test_every_vendor_listing_includes_its_default_model() -> None:
+    from main_logic.asr_client.slot import ASR_SLOT_VENDORS
+
+    for spec in ASR_SLOT_VENDORS.values():
+        result = model_catalog._tag_asr_models({"success": True, "models": []}, spec.vendor)
+        ids = [entry["id"] for entry in result["models"]]
+        assert ids == ([spec.default_model] if spec.filters_models else []), spec.vendor
+
+
+def test_custom_model_list_is_returned_untagged() -> None:
+    listed = {"success": True, "models": [{"id": "gigaam-v3"}, {"id": "sensevoice-small"}]}
+    result = model_catalog._tag_asr_models(listed, "custom")
+    assert result["asr_filtered"] is False
+    assert result["models"] == listed["models"]
+
+
+def test_failed_model_list_is_passed_through() -> None:
+    failure = {"success": False, "error_code": "timeout"}
+    assert model_catalog._tag_asr_models(failure, "qwen") == failure
+
+
 def test_model_list_reads_the_custom_base_url(monkeypatch) -> None:
     target = model_catalog._resolve_custom_target(
         model_catalog.ModelListRequest(
@@ -671,6 +729,48 @@ def test_asr_test_endpoint_sends_silence_through_the_slot_request(monkeypatch) -
     assert result == {"success": True}
     assert client.calls[0]["url"] == "http://lan-box:8081/v1/audio/transcriptions"
     assert client.closed is True
+
+
+def test_every_failure_kind_has_an_offline_code_and_a_test_message() -> None:
+    from typing import get_args
+
+    from main_logic.asr_client.workers._shared import AsrRequestFailureKind
+
+    kinds = set(get_args(AsrRequestFailureKind))
+    assert kinds == set(offline._FAILURE_KIND_CODES)
+    assert kinds == set(asr_connectivity._FAILURE_KIND_ERRORS)
+
+
+@pytest.mark.parametrize(
+    ("status", "kind"),
+    [(400, "rejected"), (404, "rejected"), (429, "rate_limited"), (500, "server_error"),
+     (502, "server_error"), (503, "rate_limited"), (None, "failed")],
+)
+def test_http_failure_kind_is_shared(status, kind) -> None:
+    from main_logic.asr_client.workers._shared import http_failure_kind
+
+    assert http_failure_kind(status) == kind
+
+
+@pytest.mark.parametrize(
+    ("outcome", "error_code"),
+    [
+        (_FakeResponse({}, status_code=500), "server_error"),
+        (httpx.ConnectError("refused"), "connection_refused"),
+        (RuntimeError("bug"), "unknown"),
+    ],
+)
+def test_asr_test_endpoint_tells_server_errors_from_unreachable(monkeypatch, outcome, error_code) -> None:
+    client = _FakeHttpClient(outcome)
+    monkeypatch.setattr(slot_request, "create_slot_client", lambda endpoint, key: client)
+    result = asyncio.run(
+        asr_connectivity.test_asr_connectivity(
+            asr_connectivity.AsrConnectivityTestRequest(
+                provider_key="custom", url="http://lan-box:8081", api_key="k"
+            )
+        )
+    )
+    assert result["error_code"] == error_code
 
 
 def test_asr_test_endpoint_maps_auth_failures(monkeypatch) -> None:

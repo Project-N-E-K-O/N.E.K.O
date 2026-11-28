@@ -50,7 +50,8 @@ from ._http_transcription import HttpClient, post_wav_transcription
 from ._shared import (
     MAX_SEGMENT_PCM_BYTES,
     PCM16_SAMPLE_WIDTH_BYTES,
-    RETRY_LATER_STATUSES,
+    http_failure_kind,
+    transport_failure_kind,
     AsrRequestFailure,
     encode_pcm16_wav,
     is_auth_rejection,
@@ -173,13 +174,7 @@ async def _post_qwen_chat(
         raise AsrRequestFailure(
             f"{prefix}_ERROR",
             "Qwen transcription request was rejected",
-            kind=(
-                "rate_limited"
-                if status in RETRY_LATER_STATUSES
-                else "rejected"
-                if status is not None and 400 <= status < 500
-                else "failed"
-            ),
+            kind=http_failure_kind(status),
         ) from exc
     except httpx.TimeoutException as exc:
         raise AsrRequestFailure(
@@ -191,6 +186,7 @@ async def _post_qwen_chat(
         raise AsrRequestFailure(
             f"{prefix}_WORKER_FAILED",
             "Qwen transcription request failed",
+            kind=transport_failure_kind(exc),
         ) from exc
 
     try:
@@ -305,6 +301,7 @@ async def _transcribe(
         raise AsrRequestFailure(
             f"{code_prefix(endpoint)}_WORKER_FAILED",
             f"{_provider_label(endpoint)} transcription request failed",
+            kind=transport_failure_kind(exc),
         ) from exc
     finally:
         retire_interval_deliveries(request_queue, only_spans=delivery_spans)

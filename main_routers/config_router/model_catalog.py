@@ -300,20 +300,33 @@ def _with_openrouter_decision_models(
 
 
 def _tag_asr_models(result: dict[str, Any], vendor: str) -> dict[str, Any]:
-    """Mark the entries that look like non-streaming ASR models and list them first.
+    """Mark the models the vendor's speech-recognition request can use.
 
-    Vendors' /models lists every model (chat, embedding, TTS...) without a
-    capability flag, so the speech-recognition picker shows the tagged ones
-    by default and keeps the rest behind "show all".
+    Vendors' /models lists every model (chat, embedding, TTS, and ASR models
+    that need another API) without a capability flag. For a named vendor the
+    slot's own model families are tagged ``asr: true`` and listed first, and
+    the vendor's default model is added when the listing omits it (DashScope
+    does not list ``qwen3-asr-flash``). ``asr_filtered`` tells the picker
+    whether the tags mean anything: a custom server names its models freely,
+    so its list is returned untagged and the picker shows all of it.
     """
-    from main_logic.asr_client.slot import is_asr_model_candidate
+    from main_logic.asr_client.slot import ASR_SLOT_VENDORS, is_asr_model_candidate
 
+    if not result.get("success"):
+        return result
+    spec = ASR_SLOT_VENDORS.get(str(vendor or "").strip().lower())
     models = [dict(entry) for entry in result.get("models") or []]
+    if spec is None or not spec.filters_models:
+        return {**result, "models": models, "asr_filtered": False}
     for entry in models:
-        if is_asr_model_candidate(vendor, entry["id"]):
+        if is_asr_model_candidate(spec.vendor, entry["id"]):
             entry["asr"] = True
+    if spec.default_model and not any(
+        entry["id"].lower() == spec.default_model.lower() for entry in models
+    ):
+        models.append({"id": spec.default_model, "asr": True})
     models.sort(key=lambda entry: (not entry.get("asr"), entry["id"].lower()))
-    return {**result, "models": models}
+    return {**result, "models": models, "asr_filtered": True}
 
 
 def _tag_decision_models(result: dict[str, Any], url: str) -> dict[str, Any]:

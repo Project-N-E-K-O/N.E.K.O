@@ -133,6 +133,10 @@ _FAILURE_KIND_CODES: dict[AsrRequestFailureKind, str] = {
     "rate_limited": ASR_RATE_LIMITED,
     "timeout": ASR_OFFLINE_TIMEOUT,
     "invalid_response": ASR_OFFLINE_INVALID_RESPONSE,
+    # Voice messages keep one "provider failed" code for these; the split
+    # matters for the settings page's connectivity test.
+    "server_error": ASR_OFFLINE_PROVIDER_FAILED,
+    "unreachable": ASR_OFFLINE_PROVIDER_FAILED,
     "failed": ASR_OFFLINE_PROVIDER_FAILED,
 }
 

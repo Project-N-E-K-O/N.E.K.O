@@ -59,12 +59,20 @@ class AsrSlotVendor:
     # core_config snapshot key holding the vendor's Key Book credential.
     # Empty for ``custom``, whose key lives in the slot itself.
     credential_field: str
-    # Lower-case substrings: a listed model is an ASR candidate when its id
-    # contains any ``model_include`` token and no ``model_exclude`` token.
-    # Excluding "realtime"/"live"/"stream" keeps streaming-only models out of
-    # a non-streaming slot.
+    # Lower-case substrings naming the model families this vendor's
+    # ``protocol`` actually serves -- not "anything that sounds like ASR": a
+    # vendor's /models also lists ASR models that need another API. A listed
+    # model is a candidate when its id contains a ``model_include`` token and
+    # no ``model_exclude`` token. Excluding "realtime"/"live"/"stream" keeps
+    # streaming-only models out of a non-streaming slot. Empty
+    # ``model_include`` means the list is not filtered (``custom``: a
+    # self-hosted server names its models freely, so any guess would miss).
     model_include: tuple[str, ...] = ()
     model_exclude: tuple[str, ...] = ("realtime", "live", "stream", "tts")
+
+    @property
+    def filters_models(self) -> bool:
+        return bool(self.model_include)
 
 
 def _route_credential(core_key: str) -> str:
@@ -115,7 +123,12 @@ ASR_SLOT_VENDORS: dict[str, AsrSlotVendor] = {
         default_url="https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
         default_model="qwen3-asr-flash",
         credential_field=_route_credential("qwen"),
-        model_include=("asr",),
+        # Compatible mode serves only the Qwen3-ASR-Flash family. The listing
+        # also carries qwen-audio-*-asr and fun-asr models, which answer this
+        # request with 400 "format is empty" (native DashScope API only), and
+        # the async file-transcription variant.
+        model_include=("qwen3-asr-flash",),
+        model_exclude=("realtime", "live", "stream", "tts", "filetrans"),
     ),
     # The US region does not offer the OpenAI-compatible mode, so the
     # international vendor always uses the Singapore endpoint.
@@ -125,7 +138,8 @@ ASR_SLOT_VENDORS: dict[str, AsrSlotVendor] = {
         default_url="https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions",
         default_model="qwen3-asr-flash",
         credential_field=_route_credential("qwen_intl"),
-        model_include=("asr",),
+        model_include=("qwen3-asr-flash",),
+        model_exclude=("realtime", "live", "stream", "tts", "filetrans"),
     ),
     ASR_SLOT_CUSTOM: AsrSlotVendor(
         vendor=ASR_SLOT_CUSTOM,
@@ -133,7 +147,6 @@ ASR_SLOT_VENDORS: dict[str, AsrSlotVendor] = {
         default_url="",
         default_model="",
         credential_field="",
-        model_include=("asr", "transcribe", "whisper", "stt", "speech", "audio"),
     ),
 }
 
@@ -207,11 +220,14 @@ def custom_asr_models_base_url(raw_url: object) -> str:
 
 
 def is_asr_model_candidate(vendor: str, model_id: object) -> bool:
-    """Whether a listed model id looks like a non-streaming ASR model."""
+    """Whether a listed model id is one the vendor's slot request can use.
+
+    Always ``False`` for a vendor that does not filter (``custom``).
+    """
 
     spec = ASR_SLOT_VENDORS.get(str(vendor or "").strip().lower())
     normalized = str(model_id or "").strip().lower()
-    if spec is None or not normalized:
+    if spec is None or not normalized or not spec.filters_models:
         return False
     if any(token in normalized for token in spec.model_exclude):
         return False

@@ -20,6 +20,8 @@ import io
 import wave
 from typing import Literal
 
+import httpx
+
 # Segmented workers buffer one 16 kHz mono PCM16 utterance and cap it at 28
 # seconds before submitting a single WAV request.
 PCM16_SAMPLE_RATE_HZ = 16_000
@@ -62,6 +64,11 @@ AsrRequestFailureKind = Literal[
     "rate_limited",
     "timeout",
     "invalid_response",
+    # The server answered with a 5xx: reachable, but it failed the request.
+    "server_error",
+    # No HTTP answer at all: DNS failure, connection refused or reset.
+    "unreachable",
+    # Anything else.
     "failed",
 ]
 
@@ -70,6 +77,34 @@ AsrRequestFailureKind = Literal[
 # throttling and a provider's temporary overload (Gemini answers 503
 # UNAVAILABLE under high demand).
 RETRY_LATER_STATUSES = frozenset({429, 503})
+
+
+def http_failure_kind(status: int | None) -> AsrRequestFailureKind:
+    """The kind for a provider's HTTP error status.
+
+    The single classification every request path uses, so one provider cannot
+    report a server error as a rejection or as "unreachable". Auth statuses
+    (401/403) are checked by the caller first; they carry their own code.
+    """
+
+    if status in RETRY_LATER_STATUSES:
+        return "rate_limited"
+    if status is None:
+        return "failed"
+    if 400 <= status < 500:
+        return "rejected"
+    if status >= 500:
+        return "server_error"
+    return "failed"
+
+
+def transport_failure_kind(exc: BaseException) -> AsrRequestFailureKind:
+    """``unreachable`` when the request got no HTTP answer, else ``failed``.
+
+    Timeouts are classified before this (``timeout``).
+    """
+
+    return "unreachable" if isinstance(exc, httpx.TransportError) else "failed"
 
 
 class AsrRequestFailure(Exception):

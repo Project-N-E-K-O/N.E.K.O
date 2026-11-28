@@ -41,7 +41,9 @@ _FAILURE_KIND_ERRORS: dict[str, tuple[str, str]] = {
     "timeout": ("timeout", "请求超时"),
     "invalid_response": ("invalid_response", "返回格式不是可识别的转写结果"),
     "rejected": ("rejected", "服务拒绝了这次识别请求，请检查 URL 和模型 ID"),
-    "failed": ("connection_refused", "无法完成识别请求，请检查 URL 是否可达"),
+    "server_error": ("server_error", "识别服务已连通，但处理请求时出错，请查看服务端日志"),
+    "unreachable": ("connection_refused", "无法连接到识别服务，请检查 URL 是否可达"),
+    "failed": ("unknown", "识别请求失败"),
 }
 
 
@@ -163,6 +165,8 @@ async def test_asr_connectivity(req: AsrConnectivityTestRequest) -> dict:
     except asyncio.TimeoutError:
         return _failure("timeout", "请求超时")
     except AsrRequestFailure as exc:
+        # Every kind is mapped (pinned by a test); the fallback only guards a
+        # kind added without updating this table.
         error_code, message = _FAILURE_KIND_ERRORS.get(
             exc.kind, _FAILURE_KIND_ERRORS["failed"]
         )
