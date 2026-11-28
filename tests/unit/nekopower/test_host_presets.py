@@ -972,7 +972,7 @@ async def test_the_sessions_of_a_ledger_made_before_presets_are_given_theirs_by_
         await second.close()
     conn = sqlite3.connect(path)
     try:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 9
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 10
     finally:
         conn.close()
     # Opened again nothing is left to do, and a preset that was named since stays.

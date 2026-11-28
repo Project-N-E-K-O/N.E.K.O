@@ -37,6 +37,7 @@ from nekopower.runtime.snapshot import (
     REASON_COMPACTED,
     REASON_MOVED,
     REASON_OPENED,
+    REASON_PRESET,
     SYSTEM_FILE,
     _VERSION,
     SystemSnapshot,
@@ -1282,5 +1283,51 @@ async def test_what_a_refusal_teaches_about_the_window(tmp_path: Path, said: str
         assert session.context.policy.window == window
         told = [event["context_window"] for event in events.of("model_capability")]
         assert told == ([] if window == 32_000 else [window])
+    finally:
+        await session.close()
+
+
+@pytest.mark.parametrize("told", ["changed", "unchanged", "summing_up"])
+async def test_a_session_whose_preset_was_changed_has_the_head_of_its_requests_put_together_anew(
+    tmp_path: Path, told: str
+) -> None:
+    first_llm = ScriptedLLM([[say("ok"), finish()]])
+    session, events = await open_session(make_spec(tmp_path, instructions="Your role: worker."), first_llm)
+    await _ask(session, events, "First commission.")
+    await session.close()
+    before = _saved(make_spec(tmp_path))
+    assert "write" in [tool["name"] for tool in before["tools"]]
+
+    # Opened again as another preset: without the tools that write, and told another role.
+    spec = make_spec(tmp_path, instructions="Your role: scout.").model_copy(
+        update={
+            "disabled_tools": ["write", "edit"],
+            "renew_head": told != "unchanged",
+            "idle_compaction": told == "summing_up",
+        }
+    )
+    llm = ScriptedLLM([[say("ok"), finish()]])
+    session, events = await open_session(spec, llm)
+    try:
+        if told == "summing_up":
+            # The host's own summary of an idle session reads the head the provider kept:
+            # it is put together anew when the session is next given work.
+            assert "Your role: worker." in session._system and _saved(spec) == before
+            return
+        await _ask(session, events, "Second commission.")
+        system = _system_of(llm.requests[0])
+        offered = {tool["function"]["name"] for tool in llm.overrides[0]["tools"]}
+        if told == "changed":
+            assert "Your role: scout." in system and "Your role: worker." not in system
+            assert not {"write", "edit"} & offered
+            saved = _saved(spec)
+            assert saved["reason"] == REASON_PRESET and "write" not in [tool["name"] for tool in saved["tools"]]
+            # What was said before is all there.
+            assert "First commission." in json.dumps(llm.requests[0])
+        else:
+            # Nothing says its preset is another: it begins as it did, and a tool it is
+            # still told of and no longer has is answered for when it is called.
+            assert system == _system_of(first_llm.requests[0]) and {"write", "edit"} <= offered
+            assert _saved(spec) == before
     finally:
         await session.close()

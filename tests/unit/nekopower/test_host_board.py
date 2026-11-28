@@ -31,7 +31,7 @@ from tests.unit.nekopower.host_fakes import fake_model, make_host
 
 CARD_KEYS = {
     "id", "name", "kind", "lanlan_name", "runtime", "workdir",
-    "preset", "avatar", "label", "description",
+    "preset", "preset_was", "avatar", "label", "description",
     "title", "title_by", "duty", "duty_by", "summary", "summary_by",
     "doing", "state", "leader", "parent", "team", "model", "model_fallback",
     "usage", "context_tokens", "last_active_at", "tree", "commission",
@@ -143,7 +143,7 @@ async def test_sessions_are_grouped_by_project_with_every_field_of_a_card(host):
     assert card == {
         "id": lead.id, "name": "Budget app", "kind": "project", "lanlan_name": "Lan", "runtime": "builtin",
         "workdir": "D:/budget",
-        "preset": "boss", "avatar": "boss", "label": "",
+        "preset": "boss", "preset_was": None, "avatar": "boss", "label": "",
         "description": "The leader of a project: its commissions come to it, but for those that plainly go on with "
         "a member's own work; it decides who does each and hands it out, and does none of the work itself.",
         "title": "记账管家", "title_by": "user", "duty": "add a chart", "duty_by": "creator",
@@ -917,19 +917,19 @@ async def test_the_presets_are_listed_with_what_each_is_and_the_wrong_ones_with_
 
     assert [item["name"] for item in everywhere] == ["boss", "worker", "scout", "inspector", "planner", "general", "broken", "doc-writer"]
     assert [item["name"] for item in here][-1] == "tester"
-    keys = {"name", "label", "description", "avatar", "source", "read_only", "writes", "memory", "model", "valid", "error"}
+    keys = {"name", "label", "description", "avatar", "source", "read_only", "writes", "memory", "model", "changes_files", "valid", "error"}
     assert all(set(item) == keys for item in here)
     found = {item["name"]: item for item in here}
     assert found["inspector"] == {
         "name": "inspector", "label": "", "avatar": "inspector", "source": "builtin", "read_only": False,
-        "writes": "none", "memory": "none", "model": "inherit", "valid": True, "error": "",
+        "writes": "none", "memory": "none", "model": "inherit", "changes_files": True, "valid": True, "error": "",
         "description": found["inspector"]["description"],
     }
     assert (found["scout"]["read_only"], found["scout"]["writes"], found["boss"]["model"]) == (True, "none", "agent")
     assert found["doc-writer"] == {
         "name": "doc-writer", "label": "文档猫", "description": "When doc-writer fits.", "avatar": "planner",
         "source": "global", "read_only": False, "writes": "inherit", "memory": "none", "model": "agent",
-        "valid": True, "error": "",
+        "changes_files": True, "valid": True, "error": "",
     }
     assert (found["tester"]["source"], found["tester"]["read_only"], found["tester"]["writes"]) == ("project", True, "none")
     assert (found["broken"]["valid"], found["broken"]["error"]) == (False, "model is one of agent, inherit, advanced, not 'gpt-9'")

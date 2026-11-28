@@ -120,6 +120,7 @@ from nekopower.runtime.snapshot import (
     REASON_COMPACTED,
     REASON_MOVED,
     REASON_OPENED,
+    REASON_PRESET,
     SystemSnapshot,
     ToolDefinition,
     definitions_of,
@@ -684,6 +685,14 @@ class TaskAgentSession(SessionInbox):
             self._compaction_due = snapshot.compactions is not None and snapshot.compactions != self._compactions
             if snapshot.refresh_on_resume and not spec.idle_compaction and not self._compaction_due:
                 await self._renew_snapshot(REASON_COMPACTED)
+            elif spec.renew_head and not spec.idle_compaction and not self._compaction_due:
+                # Its preset is another than the one this was put together
+                # for: what it is told of its role and the tools it has are
+                # the new one's from its first request. (Not for the host's
+                # own summary of an idle session, which reads the head the
+                # provider kept; nor before a summary that is still owed,
+                # after which it is put together anew in any case.)
+                await self._renew_snapshot(REASON_PRESET)
             else:
                 self._adopt(snapshot)
         # Fixed for as long as the session is open: a run looks its tools up

@@ -15,7 +15,9 @@
 """Presets of task agent sessions: the built-in ones and the user's template files.
 
 Every session has a preset (``ledger.Session.preset``), set when it is made
-and never changed. A preset is a ``Template``: one sentence that says when
+and changed afterwards only for a member of a project or a session of one
+commission (``TaskAgentManager.change_duty``): what such a session may do
+and is told is the new preset's from its next start. A preset is a ``Template``: one sentence that says when
 it is used, what a session of it is told of its role, and what it is opened
 without. Six come with the program (``PRESETS``):
 
@@ -320,6 +322,9 @@ class Listed:
             "writes": found.writes if found else None,
             "memory": found.memory if found else None,
             "model": found.model if found else None,
+            # Whether its sessions can change files, with a tool or through the shell
+            # (``Template.changes_files``): what a page warns of before a session is made one.
+            "changes_files": found.changes_files if found else None,
             "valid": found is not None,
             "error": self.error,
         }

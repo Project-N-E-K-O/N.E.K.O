@@ -2371,6 +2371,100 @@ class TaskAgentManager(TreeWork):
         """Whether a session can change files by the template it is opened by (``Template.changes_files``); raises as ``_template_of``."""
         return bool((await self._template_of(kept)).changes_files)
 
+    async def change_duty(
+        self, session_id: str, preset: str, *, by: str = "user", commission_id: str | None = None
+    ) -> dict[str, Any]:
+        """Change the preset of a session: what its task agent may do and is told of its role, from its next start.
+
+        For a member of a project and a session of one commission, to
+        any preset but the leader's (whether a session leads a project
+        or works in it is not its preset's to say). A run under way goes
+        on with the tools it was opened with; the session's next start
+        puts the head of its requests together anew, for the preset it
+        has then, and tells it of the change (``_start``). The model it
+        is sent to stays the one it was settled on.
+
+        To a preset that can change files from one that cannot
+        (``Template.changes_files``), the user is asked first as for a
+        new member that can (``OPEN_SESSION``), under ``commission_id``,
+        unless it is the user who changes it: that is their word
+        already. A member is then given its place in the project as a
+        new one that changes files would be (``seat_of_new_member``):
+        beside one that works in the project's directory it works in a
+        git worktree of its own. One that no longer changes files is
+        taken off those the project's other members wait for; while a
+        worktree of it holds work that is not landed, it is not made
+        one that cannot land it.
+
+        Returns ``{"session_id", "preset", "was", "seat", "changed",
+        "widened", "at_work"}``; ``at_work`` says a run of it is under
+        way, which the change does not reach. Raises ``LookupError`` for
+        a session that is not on record, ``PermissionError`` when the
+        user did not allow it, and ``ValueError`` with a code:
+        ``not_changeable`` (its kind), ``ended`` (it takes no work any
+        more), ``bad_preset`` (none of that name that can be used, or
+        the leader's), ``tree_not_landed``, ``no_commission`` (nothing
+        to ask the user under) and ``changed_meanwhile``.
+        """
+        from config.prompts.prompts_nekopower_presets import PRESET_CHANGE_NOT_ALLOWED
+        from nekopower.host.ledger import PRESET_CHANGED_KINDS, PRESET_OF_KIND, TREE_STATES_PENDING
+        from nekopower.host.templates import SHADOW
+
+        kept = await self._ledger.get_session(session_id)
+        if kept is None:
+            raise LookupError(session_id)
+        if kept.kind not in PRESET_CHANGED_KINDS:
+            raise ValueError("not_changeable")
+        if not await self._ledger.session_alive(kept):
+            raise ValueError("ended")
+        if not isinstance(preset, str) or not preset.strip() or preset in (PRESET_OF_KIND["project"], SHADOW):
+            raise ValueError("bad_preset")
+        at_work = self._held_by.get(kept.id) is not None
+        if preset == kept.preset:
+            return {
+                "session_id": kept.id, "preset": kept.preset, "was": kept.preset, "seat": kept.seat,
+                "changed": False, "widened": False, "at_work": at_work,
+            }
+        try:
+            after = await self._template_of(dataclasses.replace(kept, preset=preset))
+        except RuntimeError:
+            raise ValueError("bad_preset") from None
+        try:
+            before = bool((await self._template_of(kept)).changes_files)
+        except RuntimeError:
+            # One whose preset cannot be used is not opened: it changes nothing as it stands.
+            before = False
+        widens = bool(after.changes_files) and not before
+        narrows = before and not after.changes_files
+        if narrows and await self._ledger.trees(session_id=kept.id, states=sorted(TREE_STATES_PENDING)):
+            raise ValueError("tree_not_landed")
+        if widens and by != "user":
+            if not commission_id:
+                raise ValueError("no_commission")
+            decision = await self._permissions.check(
+                commission_id,
+                OPEN_SESSION,
+                detail={"tool": "change_duty", "title": kept.duty or kept.name, "preset": preset},
+            )
+            if not decision.allow:
+                raise PermissionError(PRESET_CHANGE_NOT_ALLOWED.format(reason=decision.reason or "declined"))
+        seat = None
+        if kept.kind == "line" and kept.seat != "own" and (widens or narrows):
+            # (Before it is written: it is not yet one of those the project's directory is worked in by.)
+            in_project = bool(kept.project) and kept.project != DEFAULT_PROJECT
+            seat = await self.seat_of_new_member(str(kept.project)) if widens and in_project else ""
+        changed, was, _on = await self._ledger.change_preset(kept.id, preset, by=by, was=kept.preset, seat=seat)
+        if changed is None:
+            raise LookupError(session_id)
+        # Whether it changes files in its project is looked at again: one that does no more is
+        # waited for no longer (a run of it under way keeps what it was opened with, and is
+        # looked at when it is over), and what waited for it may start.
+        await self._note_writer(kept.id)
+        return {
+            "session_id": changed.id, "preset": changed.preset, "was": was, "seat": changed.seat,
+            "changed": changed.preset != was, "widened": widens, "at_work": at_work,
+        }
+
     async def _template_of(self, kept: Session) -> Any:
         """Return the template a session is opened by (``templates.Template``); raises when its preset cannot be used.
 
@@ -3577,6 +3671,11 @@ class TaskAgentManager(TreeWork):
             # What the session may do and is told of its role. One whose
             # preset cannot be used fails here, with the reason.
             template = await self._template_of(kept)
+            # Its preset was changed since its task agent was last given work: the head of
+            # its requests is put together anew for this start, and it is told of the change
+            # with the first message (``duty_note`` below), once.
+            told_as = kept.preset_told if kept.preset_told and kept.preset_told != kept.preset else ""
+            now_as = kept.preset
             if (
                 kept.kind == "fork"
                 and kept.forked_from
@@ -3750,7 +3849,7 @@ class TaskAgentManager(TreeWork):
             # opening brief can reserve a call against the new run.
             spec = await self._spec(
                 commission, kept, model, workdir=workdir, session_dir=session_path, gateway=gateway_spec,
-                template=template,
+                template=template, renew_head=bool(told_as),
             )
             session.changes_files = not _CHANGING_TOOLS <= set(spec.disabled_tools)
             if session.changes_files and kept.kind == "child" and kept.parent_id and tree is None:
@@ -3846,6 +3945,20 @@ class TaskAgentManager(TreeWork):
             anew = await worded(cleared=True, excerpt=excerpt) if commission.continues or excerpt else onward
             back_at_it = await worded(cleared=False, back=True) if opened and not at_it else onward
 
+            def duty_note(runtime_name: str) -> list[str]:
+                # What it is told of a change of its preset. In dsh, where the system prompt is
+                # the process's and its role was said with its first message, with the role.
+                if not told_as:
+                    return []
+                from config.prompts import prompts_nekopower_presets as presets
+                from nekopower.host.templates import model_name
+
+                names = {"was": model_name(told_as), "now": model_name(now_as)}
+                if runtime_name == RUNTIME_DSH:
+                    role = template.body or presets.PRESET_CHANGED_NO_ROLE
+                    return [presets.PRESET_CHANGED_IN_DSH.format(role=role, **names)]
+                return [presets.PRESET_CHANGED.format(**names)]
+
             def first_message(runtime_name: str) -> tuple[list[str], bool]:
                 here = begun_in == runtime_name
                 opens = opens_in(runtime_name)
@@ -3855,7 +3968,10 @@ class TaskAgentManager(TreeWork):
                 # built-in runtime finds nothing "above", and is told what
                 # came of the other instead.
                 said = anew if not here else back_at_it if opened else onward
-                parts = [*([said] if opens else []), *carried, *([prompt] if prompt is not None else [])]
+                parts = [
+                    *duty_note(runtime_name), *([said] if opens else []), *carried,
+                    *([prompt] if prompt is not None else []),
+                ]
                 # Keep answer envelopes intact until the runtime is ready to receive them.
                 return [*parts, *notes], opens
 
@@ -3983,6 +4099,15 @@ class TaskAgentManager(TreeWork):
                     nobody = not said_first and all(isinstance(piece, (_Handed, _Unsaid, _Found)) for piece in session.carried)
                     await self._send_text(runtime, session, "prompt", render(text), opening=opens, wakes=riding, human=not nobody)
                 break
+            if told_as:
+                # Told, and its requests begin as its preset has them: not again with its next
+                # start. (Not written, it is told once more then, which costs a sentence.)
+                try:
+                    await self._ledger.preset_was_told(session.session_id, now_as)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:  # noqa: BLE001 - told again with the next start
+                    logger.warning("noting that a session was told of its preset failed", exc_info=True)
             session.ready = True
             # What was passed on while the session was being set up. Like the
             # prompt, it is the user's until the run is seen at work.
@@ -4049,7 +4174,7 @@ class TaskAgentManager(TreeWork):
 
     async def _spec(
         self, commission: Commission, kept: Session, model: Any, *, workdir: str, session_dir: str, gateway: Any,
-        idle_compaction: bool = False, template: Any = None,
+        idle_compaction: bool = False, template: Any = None, renew_head: bool = False,
     ) -> Any:
         """Return what a runtime is given to open a session with, for the commission that is worked on in it.
 
@@ -4057,7 +4182,10 @@ class TaskAgentManager(TreeWork):
         looked up here when it is not given): the tools it withholds are
         withheld besides those below, its sessions make no more requests
         in one run than it allows, and what it says of the role is in the
-        instructions.
+        instructions. ``renew_head`` says that the session's preset was
+        changed since its task agent was last given work: the runtime
+        puts the system prompt and the tool definitions it kept together
+        anew, for the preset it has now.
 
         ``kept`` is the session as the ledger has it. One that was made
         from another by copying what was said in it is opened without the
@@ -4108,6 +4236,7 @@ class TaskAgentManager(TreeWork):
                 commission, with_gateway=gateway is not None, template=template, roster=roster
             ),
             idle_compaction=idle_compaction,
+            renew_head=renew_head,
             top_level=commission.parent_id is None,
             disabled_tools=sorted(withheld),
             image_retention=image_retention,
@@ -11889,6 +12018,10 @@ class TaskAgentManager(TreeWork):
             if not await self._ledger.begin_compacting(session_id):
                 return False
             model = await self._model_of(config)
+            # What the session may do, as when it is started for a commission: its token for
+            # the gateway calls nothing where its preset is without the tool that calls, and
+            # is not left to the list of its tools to see to.
+            template = await self._template_of(kept)
             gateway_spec = None
             if self._gateway is not None:
                 # Make gateway tools available for the summary request. The next
@@ -11896,11 +12029,14 @@ class TaskAgentManager(TreeWork):
                 url = await self._gateway.start()
                 gateway_spec = GatewaySpec(
                     url=url,
-                    token=self._gateway.issue(grant, candidate_plugin_ids=(), supports_images=model.supports_images),
+                    token=self._gateway.issue(
+                        grant, candidate_plugin_ids=(), supports_images=model.supports_images,
+                        reads_only=kept.kind == "fork" or template.calls_nothing,
+                    ),
                 )
             spec = await self._spec(
                 commission, kept, model, workdir=workdir, session_dir=session_path, gateway=gateway_spec,
-                idle_compaction=True,
+                idle_compaction=True, template=template,
             )
             runtime = self._runtimes.builtin()
             if self._pump is None:

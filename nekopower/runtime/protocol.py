@@ -184,6 +184,10 @@ class TaskAgentSpec(_Strict):
     idle_compaction: bool = False
     # A fresh snapshot without the workspace brief should be retried on the next opening.
     workspace_brief_unavailable: bool = False
+    # The session's preset was changed since its task agent was last given work:
+    # the system prompt and the tool definitions kept with it are of the preset
+    # it had, and are put together anew as it is opened.
+    renew_head: bool = False
     # False for a task agent started by another task agent: such a session cannot
     # manage goals on the strength of the messages it receives.
     top_level: bool = True

@@ -96,6 +96,7 @@ TIMELINE_KINDS: tuple[str, ...] = (
     "team_formed",  # the leader of a project started a team for a commission
     "inspected",  # an inspector looked at what a task agent changed before it was merged
     "stall_reminded",  # a leader was reminded that its team is over and its commission stands
+    "duty_changed",  # the preset of a session was changed
 )
 
 # Kinds of waits. More are added later.
@@ -140,6 +141,7 @@ _EVENT_TYPES: tuple[str, ...] = (
     "inspected",
     "stall_reminded",
     "tool_answered",
+    "duty_changed",
 )
 _MESSAGE_KINDS: dict[str, str] = {"note": "message", "done": "done_notice", "ask": "asked_session"}
 _UNDER_WAY: tuple[str, ...] = ("queued", "working", "waiting_user")
@@ -423,6 +425,12 @@ def _event_entry(
         made = payload.get("session_id") if isinstance(payload.get("session_id"), str) else None
         text, peer = _text(payload.get("project")), _session(made) if made else None
         detail = {"project": text, "reason": _text(payload.get("reason"))}
+    elif kind == "duty_changed":
+        # On record with a commission of the session whose preset it is; told by the
+        # session itself, should the commission be another's by now.
+        whose = payload.get("session") if isinstance(payload.get("session"), str) else None
+        peer = _session(whose) if whose and whose != row["session_id"] else None
+        detail = {"from": _text(payload.get("from")), "to": _text(payload.get("to")), "by": _text(payload.get("by"))}
     elif kind == "handed_over":
         to = payload.get("to") if isinstance(payload.get("to"), str) else None
         text, peer = _text(payload.get("name")), _session(to) if to else None

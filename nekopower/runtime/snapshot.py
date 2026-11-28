@@ -26,7 +26,10 @@ A snapshot is replaced after the conversation was summed up
 (``TaskAgentSession``), when the head of the request changes anyway; and
 when the session's working directory is no longer the one the snapshot was
 made for (the data was moved), because the system prompt names that
-directory and every path the task agent writes would be the old one.
+directory and every path the task agent writes would be the old one;
+and when the host says the session's preset was changed
+(``TaskAgentSpec.renew_head``), because what it is told of its role and
+which tools it has are the preset's.
 Until then the session is told of the tools it was opened with: one that is
 gone since is answered for by a stand-in, and one that came since is not
 told of. (A change every session has to take up when it is next opened is
@@ -66,6 +69,7 @@ _VERSION = 3
 REASON_OPENED = "opened"
 REASON_COMPACTED = "compacted"
 REASON_MOVED = "moved"
+REASON_PRESET = "preset"
 
 
 @dataclass(frozen=True, slots=True)
