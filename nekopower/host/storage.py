@@ -1073,7 +1073,7 @@ class StorageManager:
             elif row.commission_id and await self._task_agents._still_at_it_in(row):
                 still_at_it.add(row.id)
             elif await self._task_agents._workdir_referenced_actively(
-                row.path, ignore_blocked_commission_id=row.commission_id
+                row.path, ignore_blocked_commission_id=row.commission_id, exclude_tree_id=row.id
             ):
                 still_at_it.add(row.id)
 
@@ -1460,11 +1460,7 @@ class StorageManager:
                         continue
 
                     for sess_entry in sess_list:
-                        if time.monotonic() > deadline:
-                            work_dirs_whole = False
-                            transcript_whole = False
-                            ta_other_whole = False
-                            break
+                        over_budget = time.monotonic() > deadline
                         sess_id = sess_entry.name
                         sess_path = sessions_dir / sess_id
                         if _is_reparse_link(sess_path):
@@ -1481,9 +1477,12 @@ class StorageManager:
                         try:
                             safe_segment(sess_id, "session id")
                         except ValueError:
-                            extra_stats = measure_dir(sess_path, item_deadline())
-                            ta_other_bytes += extra_stats.bytes
-                            ta_other_whole = ta_other_whole and extra_stats.whole
+                            if over_budget:
+                                ta_other_whole = False
+                            else:
+                                extra_stats = measure_dir(sess_path, item_deadline())
+                                ta_other_bytes += extra_stats.bytes
+                                ta_other_whole = ta_other_whole and extra_stats.whole
                             continue
 
                         srow = sessions_by_id.get(sess_id)
@@ -1497,7 +1496,8 @@ class StorageManager:
                         )
                         session_active = sess_id in active_sessions
 
-                        # Measure session work/ directory if present
+                        # Measure session work/ directory if present; keep listing work/ folders even after
+                        # the shared scan budget runs out so manual cleanup items are never hidden.
                         work_path = sess_path / _WORK_NAME
                         try:
                             work_is_dir = work_path.is_dir() and not _is_reparse_link(work_path)
@@ -1505,7 +1505,10 @@ class StorageManager:
                             work_is_dir = False
                             work_dirs_whole = False
                         if work_is_dir:
-                            stats = measure_dir(work_path, item_deadline())
+                            if over_budget or time.monotonic() > deadline:
+                                stats = DirStats(exists=True, bytes=0, whole=False, file_count=0, newest_mtime=None)
+                            else:
+                                stats = measure_dir(work_path, item_deadline())
                             work_dirs_whole = work_dirs_whole and stats.whole
                             work_dirs_bytes += stats.bytes
                             norm_wp = os.path.normcase(os.path.normpath(str(work_path)))
@@ -1565,7 +1568,12 @@ class StorageManager:
                                 }
                             )
 
-                        # Measure transcript.jsonl, system.json, and outputs/
+                        # Measure transcript.jsonl, system.json, and outputs/ unless scan budget is already spent.
+                        if over_budget or time.monotonic() > deadline:
+                            transcript_whole = False
+                            ta_other_whole = False
+                            seen_session_paths.add(os.path.normcase(os.path.normpath(str(sess_path))))
+                            continue
                         sess_record_bytes = 0
                         sess_outputs_bytes = 0
                         has_record = False

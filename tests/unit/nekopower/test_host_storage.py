@@ -3550,3 +3550,99 @@ async def test_round15_review_fixes(tmp_path: Path, monkeypatch: pytest.MonkeyPa
                 await host.resolve_storage_open_path("place", "task_agents")
     finally:
         await host.shutdown()
+
+
+async def test_round16_codex_and_greptile_fixes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Verify nested-repo worktree dependency protection across expiry/discard/retry/overview and
+    that session work dirs remain listed after scan budget expiry.
+    """
+    from config import nekopower_settings as np_settings
+
+    clock = Clock(1_800_000_000.0)
+    host = make_host(tmp_path)
+    host.storage._clock = clock
+    try:
+        old_ts = clock.now - 30 * DAY
+
+        # 1. Parent worktree contains a nested repository backing another retained worktree.
+        parent_wt = host.paths.worktree_dir("parentwt1")
+        nested_repo = parent_wt / "nested_repo"
+        nested_repo.mkdir(parents=True)
+        child_wt = host.paths.worktree_dir("childwt01")
+        child_wt.mkdir(parents=True)
+        await host.ledger.add_tree(
+            id="parentwt1",
+            session_id=None,
+            commission_id=None,
+            lanlan_name="Lan",
+            project="outer",
+            project_dir=str(tmp_path / "outer_repo"),
+            repo_root=str(tmp_path / "outer_repo"),
+            path=str(parent_wt),
+            workdir=str(parent_wt),
+            token="tok-parent",
+            state="kept",
+        )
+        await host.ledger.add_tree(
+            id="childwt01",
+            session_id=None,
+            commission_id=None,
+            lanlan_name="Lan",
+            project="inner",
+            project_dir=str(nested_repo),
+            repo_root=str(nested_repo),
+            path=str(child_wt),
+            workdir=str(child_wt),
+            token="tok-child",
+            state="kept",
+        )
+        await host.ledger.run(
+            lambda conn: conn.execute("UPDATE worktrees SET updated_at = ? WHERE id = ?", (old_ts, "parentwt1"))
+        )
+
+        # Overview marks parentwt1 non-cleanable while childwt01 depends on nested_repo.
+        ov = await host.storage_overview()
+        by_id = {item["id"]: item for item in ov["worktrees"]}
+        assert by_id["parentwt1"]["can_clean"] is False
+        assert by_id["childwt01"]["can_clean"] is True
+
+        # Auto-expiry and manual discard both refuse while childwt01 is retained.
+        exp_res = await host.task_agents.expire_tree("parentwt1", until=clock.now - 14 * DAY)
+        assert exp_res == {"expired": False, "reason": "in_use"}
+        with pytest.raises(ValueError, match="at_work"):
+            await host.task_agents.discard_tree("parentwt1")
+        assert nested_repo.is_dir()
+
+        # Even if parentwt1 is in discarding/expired retry state, retry_discarded_tree refuses.
+        await host.ledger.update_tree("parentwt1", state="discarding", reason="expired")
+        assert await host.task_agents.retry_discarded_tree("parentwt1") is False
+        assert nested_repo.is_dir()
+
+        # Once the dependent worktree is dropped, parentwt1 is no longer blocked by tree dependency.
+        await host.ledger.drop_tree("childwt01")
+        assert (
+            await host.task_agents._workdir_referenced_actively(parent_wt, exclude_tree_id="parentwt1")
+            is False
+        )
+
+        # 2. Session work dirs stay visible in work_dirs even when scan budget is already expired.
+        s1 = await host.ledger.create_session(name="bud-1", lanlan_name="Lan", project="budproj")
+        s2 = await host.ledger.create_session(name="bud-2", lanlan_name="Lan", project="budproj")
+        for sid in (s1.id, s2.id):
+            wdir = host.paths.work_dir(sid, "budproj")
+            wdir.mkdir(parents=True)
+            (wdir / "f.bin").write_bytes(b"z" * 16)
+
+        with monkeypatch.context() as mp:
+            mp.setattr(np_settings, "STORAGE_SCAN_BUDGET_SECONDS", -1.0)
+            ov_over = await host.storage_overview()
+        listed_ids = {item["id"] for item in ov_over["work_dirs"]}
+        assert f"session:budproj/{s1.id}" in listed_ids
+        assert f"session:budproj/{s2.id}" in listed_ids
+        for item in ov_over["work_dirs"]:
+            if item["project"] == "budproj":
+                assert item["bytes_whole"] is False
+                assert item["can_clean"] is True
+                assert item["empty"] is False
+    finally:
+        await host.shutdown()

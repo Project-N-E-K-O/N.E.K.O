@@ -519,8 +519,9 @@ class TreeWork:
         target_path: Path | str,
         *,
         ignore_blocked_commission_id: str | None = None,
+        exclude_tree_id: str | None = None,
     ) -> bool:
-        """Return whether any active/in-use session, active commission, or active project references ``target_path``."""
+        """Return whether any active/in-use session, active commission, active project, or other worktree references ``target_path``."""
         from nekopower.host.storage import _BUSY_SESSION_STATUSES, _path_is_or_inside
 
         norm_target = os.path.normcase(os.path.normpath(str(target_path)))
@@ -568,6 +569,12 @@ class TreeWork:
                     continue
                 if _path_is_or_inside(cwd, norm_target):
                     return True
+            for other in await self._ledger.trees():
+                if exclude_tree_id is not None and other.id == exclude_tree_id:
+                    continue
+                for backing in (other.repo_root, other.project_dir, other.path, other.workdir):
+                    if backing and _path_is_or_inside(backing, norm_target):
+                        return True
         space = getattr(self, "_space", None)
         if space is not None and hasattr(space, "list_projects_checked"):
             try:
@@ -828,7 +835,9 @@ class TreeWork:
             if workdir_hold is None:
                 return False
         try:
-            if await self._workdir_referenced_actively(row.path, ignore_blocked_commission_id=row.commission_id):
+            if await self._workdir_referenced_actively(
+                row.path, ignore_blocked_commission_id=row.commission_id, exclude_tree_id=row.id
+            ):
                 return False
 
             guard_mtime = row.reason == "expired" and check_mtime is not None and until is not None
@@ -2328,7 +2337,9 @@ class TreeWork:
                 if workdir_hold is None:
                     raise ValueError("at_work")
             try:
-                if await self._workdir_referenced_actively(row.path, ignore_blocked_commission_id=row.commission_id):
+                if await self._workdir_referenced_actively(
+                    row.path, ignore_blocked_commission_id=row.commission_id, exclude_tree_id=row.id
+                ):
                     raise ValueError("at_work")
                 handle = await self._handle_for_cleanup(row)
                 if handle is None and not await self._tree_is_gone(row):
@@ -2457,7 +2468,9 @@ class TreeWork:
                 if workdir_hold is None:
                     return {"expired": False, "reason": "in_use"}
             try:
-                if await self._workdir_referenced_actively(row.path, ignore_blocked_commission_id=row.commission_id):
+                if await self._workdir_referenced_actively(
+                    row.path, ignore_blocked_commission_id=row.commission_id, exclude_tree_id=row.id
+                ):
                     return {"expired": False, "reason": "in_use"}
                 if check_mtime is not None and not await self._tree_is_gone(row):
                     pre_abort = await asyncio.to_thread(evaluate_mtime, Path(row.path))
