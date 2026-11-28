@@ -371,6 +371,8 @@ def _port_guard_script(ports: Collection[int], *, block_http: bool = False) -> s
         "const callFn = Function.prototype.call.bind(Function.prototype.call);"
         "const getDesc = Object.getOwnPropertyDescriptor;"
         "const defineProp = Object.defineProperty;"
+        "const createObj = Object.create;"
+        "const ArrayCtor = g.Array;"
         "const URLCtor = g.URL;"
         "const ProxyCtor = g.Proxy;"
         "const reflectConstruct = g.Reflect.construct;"
@@ -406,9 +408,16 @@ def _port_guard_script(ports: Collection[int], *, block_http: bool = False) -> s
         "  const p = portOf(raw);"
         "  if (p !== null && callFn(setHas, blocked, p)) throw new TypeErr('Blocked by client');"
         "};"
+        "const setDataProp = (target, key, val) => {"
+        "  const d = createObj(null);"
+        "  d.value = val; d.writable = true; d.enumerable = true; d.configurable = true;"
+        "  defineProp(target, key, d);"
+        "};"
         "const copyTail = (args, start, head) => {"
-        "  const out = head;"
-        "  for (let i = start; i < args.length; i++) out.push(args[i]);"
+        "  const extra = args.length > start ? args.length - start : 0;"
+        "  const out = new ArrayCtor(head.length + extra);"
+        "  for (let i = 0; i < head.length; i++) setDataProp(out, i, head[i]);"
+        "  for (let i = 0; i < extra; i++) setDataProp(out, head.length + i, args[start + i]);"
         "  return out;"
         "};"
         "const wrapCtor = (name) => {"
@@ -526,6 +535,9 @@ class BrowserSession:
         self._tab_owners: dict[str, str] = {}
         # Targets currently being closed via ``Target.closeTarget``; skipped by ``ensure_owner_page``.
         self._closing_targets: set[str] = set()
+        # Serializes tab creation and unowned-tab claiming across concurrent owners so a tab
+        # created by one owner cannot be claimed by another while Target.createTarget is in flight.
+        self._tab_alloc_lock = asyncio.Lock()
         # Every tab that is open, by target id, those that are not listed
         # as pages included (the browser's own pages, a file): a browser
         # with none left has no window to leave open (``shows_a_window``).
@@ -1228,37 +1240,38 @@ class BrowserSession:
         """Ensure ``owner`` has a dedicated tab when multiple task agents share the browser."""
         if owner is None:
             return self.current(None)
-        current_tid = self._selected_by_owner.get(owner)
-        if (
-            current_tid
-            and current_tid not in self._closing_targets
-            and current_tid in self._pages
-            and self._pages[current_tid].owner == owner
-        ):
-            return self._pages[current_tid]
-        for page in self._pages.values():
-            if page.target_id in self._closing_targets:
-                continue
-            if page.owner == owner:
-                self._selected_by_owner[owner] = page.target_id
-                return page
-        for page in self._pages.values():
-            if page.target_id in self._closing_targets:
-                continue
-            if page.owner is None and (page.own or not (self._user_browser and self._can_create_tabs)):
-                page.owner = owner
-                self._tab_owners[page.target_id] = owner
-                self._selected_by_owner[owner] = page.target_id
-                return page
-        created = await self._open_blank_page(owner=owner)
-        if created is not None:
-            return created
-        if not self._can_create_tabs and any(p.owner not in (None, owner) for p in self._pages.values()):
-            raise BrowserError(
-                "This browser cannot open additional tabs, and its single page is currently in use by another task. "
-                "Try again once that task finishes."
-            )
-        return self.current(owner)
+        async with self._tab_alloc_lock:
+            current_tid = self._selected_by_owner.get(owner)
+            if (
+                current_tid
+                and current_tid not in self._closing_targets
+                and current_tid in self._pages
+                and self._pages[current_tid].owner == owner
+            ):
+                return self._pages[current_tid]
+            for page in self._pages.values():
+                if page.target_id in self._closing_targets:
+                    continue
+                if page.owner == owner:
+                    self._selected_by_owner[owner] = page.target_id
+                    return page
+            for page in self._pages.values():
+                if page.target_id in self._closing_targets:
+                    continue
+                if page.owner is None and (page.own or not (self._user_browser and self._can_create_tabs)):
+                    page.owner = owner
+                    self._tab_owners[page.target_id] = owner
+                    self._selected_by_owner[owner] = page.target_id
+                    return page
+            created = await self._open_blank_page(owner=owner)
+            if created is not None:
+                return created
+            if not self._can_create_tabs and any(p.owner not in (None, owner) for p in self._pages.values()):
+                raise BrowserError(
+                    "This browser cannot open additional tabs, and its single page is currently in use by another task. "
+                    "Try again once that task finishes."
+                )
+            return self.current(owner)
 
     async def _drop_connection(self) -> None:
         connection, self._connection = self._connection, None
@@ -2014,19 +2027,20 @@ class BrowserSession:
     ) -> Page:
         check_url(url, self._blocked_ports)
         connection = self._require_connection()
-        if not self._can_create_tabs:
-            raise BrowserError("This browser cannot open new tabs. Use browser_navigate_page on the current page instead.")
-        try:
-            created = await connection.send("Target.createTarget", {"url": "about:blank", "background": bool(background)})
-        except CdpError as exc:
-            self._can_create_tabs = False
-            raise BrowserError(
-                "This browser cannot open new tabs. Use browser_navigate_page on the current page instead."
-            ) from exc
-        target_id = str(created.get("targetId") or "")
-        self._note_target({"targetId": target_id, "type": "page", "url": "about:blank"}, own=True, owner=owner)
-        self._selected_by_owner[owner] = target_id
-        page = self.selected(owner)
+        async with self._tab_alloc_lock:
+            if not self._can_create_tabs:
+                raise BrowserError("This browser cannot open new tabs. Use browser_navigate_page on the current page instead.")
+            try:
+                created = await connection.send("Target.createTarget", {"url": "about:blank", "background": bool(background)})
+            except CdpError as exc:
+                self._can_create_tabs = False
+                raise BrowserError(
+                    "This browser cannot open new tabs. Use browser_navigate_page on the current page instead."
+                ) from exc
+            target_id = str(created.get("targetId") or "")
+            self._note_target({"targetId": target_id, "type": "page", "url": "about:blank"}, own=True, owner=owner)
+            self._selected_by_owner[owner] = target_id
+            page = self.selected(owner)
         await self.navigate(page, "url", url, timeout)
         return page
 
@@ -2745,41 +2759,45 @@ class BrowserSession:
         except CdpError:
             logger.debug("Input.setInterceptDrags is not available", exc_info=True)
         pressed = False
+        completed = False
         last_x, last_y = sx, sy
         try:
             try:
-                if not await self._mouse(page, "mouseMoved", sx, sy, session_id=sid):
-                    return
-                pressed = True
-                if not await self._mouse(
-                    page, "mousePressed", sx, sy, session_id=sid, button="left", buttons=1, clickCount=1
-                ):
-                    return
-                # Resolve the drop target after pressing on the source so scrolling the target
-                # into view cannot invalidate the initial press coordinates.
-                ex, ey = await self._point(page, to_uid, to_node, to_obj)
-                steps = 5
-                for step in range(1, steps + 1):
-                    mx = sx + (ex - sx) * (step / steps)
-                    my = sy + (ey - sy) * (step / steps)
-                    last_x, last_y = mx, my
-                    if not await self._mouse(
-                        page, "mouseMoved", mx, my, session_id=sid, button="left", buttons=1
+                if await self._mouse(page, "mouseMoved", sx, sy, session_id=sid):
+                    pressed = True
+                    if await self._mouse(
+                        page, "mousePressed", sx, sy, session_id=sid, button="left", buttons=1, clickCount=1
                     ):
-                        return
-                    if page.drag_event.is_set() and page.drag_data is not None:
-                        data = page.drag_data
-                        await self._send_unless_dialog(
-                            page, "Input.dispatchDragEvent", {"type": "dragEnter", "x": ex, "y": ey, "data": data}, session_id=sid
-                        )
-                        await self._send_unless_dialog(
-                            page, "Input.dispatchDragEvent", {"type": "dragOver", "x": ex, "y": ey, "data": data}, session_id=sid
-                        )
-                        await self._send_unless_dialog(
-                            page, "Input.dispatchDragEvent", {"type": "drop", "x": ex, "y": ey, "data": data}, session_id=sid
-                        )
-                        last_x, last_y = ex, ey
-                        break
+                        # Resolve the drop target after pressing on the source so scrolling the target
+                        # into view cannot invalidate the initial press coordinates.
+                        ex, ey = await self._point(page, to_uid, to_node, to_obj)
+                        steps = 5
+                        for step in range(1, steps + 1):
+                            mx = sx + (ex - sx) * (step / steps)
+                            my = sy + (ey - sy) * (step / steps)
+                            last_x, last_y = mx, my
+                            if not await self._mouse(
+                                page, "mouseMoved", mx, my, session_id=sid, button="left", buttons=1
+                            ):
+                                break
+                            if page.drag_event.is_set() and page.drag_data is not None:
+                                data = page.drag_data
+                                if (
+                                    await self._send_unless_dialog(
+                                        page, "Input.dispatchDragEvent", {"type": "dragEnter", "x": ex, "y": ey, "data": data}, session_id=sid
+                                    )
+                                    and await self._send_unless_dialog(
+                                        page, "Input.dispatchDragEvent", {"type": "dragOver", "x": ex, "y": ey, "data": data}, session_id=sid
+                                    )
+                                    and await self._send_unless_dialog(
+                                        page, "Input.dispatchDragEvent", {"type": "drop", "x": ex, "y": ey, "data": data}, session_id=sid
+                                    )
+                                ):
+                                    last_x, last_y = ex, ey
+                                    completed = True
+                                break
+                        else:
+                            completed = True
             finally:
                 if pressed:
                     async def release_drag() -> None:
@@ -2794,6 +2812,13 @@ class BrowserSession:
                     await self._send_session(page, sid, "Input.setInterceptDrags", {"enabled": False}, timeout=5.0)
                 except (BrowserError, CdpError):
                     pass
+        if not completed:
+            if page.dialog is not None:
+                raise BrowserError(
+                    "A dialog opened before the drag could complete; the element was not dropped. "
+                    f"Handle the dialog, then try again.\n{self.dialog_notice(page)}"
+                )
+            raise BrowserError("The page closed before the drag could complete; the element was not dropped.")
         await self.after_action(page, before)
 
     async def fill_many(self, page: Page, elements: list[tuple[str, str]]) -> list[str]:

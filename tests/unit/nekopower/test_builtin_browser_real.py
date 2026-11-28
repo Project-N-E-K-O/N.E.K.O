@@ -249,16 +249,30 @@ try {
   Object.defineProperty(URL.prototype, 'port', { get: function () { return '80'; }, configurable: true });
   Set.prototype.has = function () { return false; };
   var origCall = Function.prototype.call;
+  var origPush = Array.prototype.push;
   Function.prototype.call = function () { return null; };
+  Array.prototype.push = function () { this[0] = 'ws://127.0.0.1:__OWN_PORT__/ws-push-bypass'; return this.length; };
   try {
-    var ws3 = new WebSocket('ws://127.0.0.1:__OWN_PORT__/ws-tamper');
+    var ws3 = new WebSocket('ws://127.0.0.1:__OWN_PORT__/ws-tamper', ['chat']);
     ws3.onerror = function () { document.getElementById('tamper-ws').textContent = 'tamper-ws-error'; };
   } finally {
     Function.prototype.call = origCall;
+    Array.prototype.push = origPush;
   }
 } catch (e) {
   document.getElementById('tamper-ws').textContent = 'tamper-ws-blocked';
 }
+try {
+  // Also test Array.prototype.push rewrite when initial URL is allowed (exact Codex attack vector).
+  var origPush2 = Array.prototype.push;
+  Array.prototype.push = function () { this[0] = 'ws://127.0.0.1:__OWN_PORT__/ws-push-swap'; return this.length; };
+  try {
+    var ws4 = new WebSocket('ws://127.0.0.1:9/not-blocked', ['chat']);
+    ws4.close();
+  } finally {
+    Array.prototype.push = origPush2;
+  }
+} catch (e) {}
 var w = new Worker('/ws-worker.js');
 w.onmessage = function (ev) { document.getElementById('worker-ws').textContent = ev.data; };
 </script>

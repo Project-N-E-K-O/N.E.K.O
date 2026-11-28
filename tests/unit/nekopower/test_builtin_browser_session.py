@@ -5040,3 +5040,32 @@ async def test_install_port_guard_reports_false_on_runtime_exception_details(
     assert session._connection is not None and page.session_id is not None
     ok = await session._install_port_guard(session._connection, page.session_id, on_new_document=False)
     assert ok is False
+
+
+async def test_new_page_reserves_tab_against_concurrent_ensure_owner_page(
+    session: BrowserSession, world: BrowserWorld
+) -> None:
+    await session.start()
+    page_a0 = await session.ensure_owner_page("team-a")
+    assert page_a0 is not None
+    await session.navigate(page_a0, "url", ORDER)
+
+    # Hold Target.createTarget while emitting Target.targetCreated early; concurrent ensure_owner_page
+    # for team-b must wait and cannot steal team-a's newly created tab.
+    gate = world.browser.hold("Target.createTarget")
+    new_tab_task = asyncio.ensure_future(session.new_page(TERMS, owner="team-a"))
+    await _until(lambda: gate.reached.is_set())
+
+    # Simulate another owner trying to allocate its tab while team-a's createTarget is in flight.
+    ensure_b_task = asyncio.ensure_future(session.ensure_owner_page("team-b"))
+    await asyncio.sleep(0)
+    assert not ensure_b_task.done()
+
+    gate.release()
+    page_a1 = await new_tab_task
+    page_b = await ensure_b_task
+    assert page_a1.target_id != page_a0.target_id
+    assert page_a1.owner == "team-a" and page_a1.url == TERMS
+    assert page_a0.url == ORDER
+    assert page_b is not None and page_b.owner == "team-b"
+    assert page_b.target_id not in (page_a0.target_id, page_a1.target_id)

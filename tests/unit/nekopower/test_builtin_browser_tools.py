@@ -1738,3 +1738,25 @@ async def test_upload_file_interrupted_by_dialog_or_tab_close_reports_failure(
     res_closed = await call(tools, "upload_file", uid=close_uid, filePath=str(sample))
     assert not res_closed.success
     assert "no file was uploaded" in res_closed.text
+
+
+async def test_drag_interrupted_by_dialog_reports_failure(
+    tools: BrowserTools, world: BrowserWorld
+) -> None:
+    world.browser.serve(
+        "https://shop.example/drag-interrupt",
+        lambda: Document(
+            "Drag Interrupt",
+            el("button", "Card", on_hover=lambda b, p: b.open_dialog(p, "confirm", "Pause drag?")),
+            el("region", "Drop zone"),
+        ),
+    )
+    opened = await call(tools, "navigate_page", url="https://shop.example/drag-interrupt")
+    assert opened.success
+    card_uid = re.search(r'uid=(\S+) button "Card"', opened.text).group(1)
+    zone_uid = re.search(r'uid=(\S+) region "Drop zone"', opened.text).group(1)
+
+    dragged = await call(tools, "drag", from_uid=card_uid, to_uid=zone_uid)
+    assert not dragged.success
+    assert "drag could complete" in dragged.text
+    assert "Pause drag?" in dragged.text
