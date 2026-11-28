@@ -30,7 +30,6 @@ N.E.K.O/
 ├── templates/                # Main/chat/subtitle/settings/feature pages
 ├── docker/                   # Dockerfiles, Compose, entrypoint
 ├── scripts/                  # CI, validation, packaging, assets
-├── specs/                    # PyInstaller specifications
 ├── tests/                    # Unit/integration/frontend/e2e/contracts
 ├── docs/                     # VitePress site
 ├── pyproject.toml            # Python metadata/dependency groups
@@ -52,6 +51,15 @@ N.E.K.O/
   needs from those layers (saved community session, live session manager,
   character rename) is registered into `services/chat_sync/host.py` by the
   owning module when that module is imported.
+- Where a new module goes: unlike `utils/` (generic helpers that know nothing
+  about the product) and `main_logic/` (logic tied to the live chat session), a
+  package belongs in `services/` only if it meets all three conditions: (1) it
+  owns concrete domain state, a protocol or a lifecycle, beyond a generic
+  helper; (2) it never imports `main_logic/`, `main_routers/` or `app/`, and
+  gets host capabilities through `host.py` hooks; (3) it is a standalone
+  subsystem or shared by several subsystems/routers.
+  `services/theater_workshop/` is a source-only author SDK and is not shipped
+  in the desktop bundle.
 - `knowledge/` runs inside the Memory Server; Main-side code, `services/`
   included, reaches it over HTTP only.
 - `scripts/check_module_layering.py` enforces these layers. A new top-level

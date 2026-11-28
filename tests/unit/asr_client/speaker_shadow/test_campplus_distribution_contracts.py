@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import ast
-import re
 import tomllib
 from pathlib import Path
 
@@ -29,17 +28,6 @@ def test_unit_ci_installs_pinned_frontend_parity_oracle() -> None:
     runs = [step.get("run") for step in workflow["jobs"]["unit-pytest"]["steps"]]
 
     assert "uv pip install kaldi-native-fbank==1.22.3" in runs
-
-
-def test_pyinstaller_bundles_campplus_and_requires_onnxruntime() -> None:
-    spec = (ROOT / "specs" / "launcher.spec").read_text(encoding="utf-8")
-
-    assert spec.count(f"'{MODEL_DIRECTORY}'") == 2
-    assert "speaker_shadow_assets_present" in spec
-    assert re.search(
-        r"pkg == ['\"]onnxruntime['\"] and speaker_shadow_assets_present",
-        spec,
-    )
 
 
 def test_nuitka_workflows_prepare_and_verify_one_campplus_weight() -> None:

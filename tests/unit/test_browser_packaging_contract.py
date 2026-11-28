@@ -8,6 +8,7 @@ browser tools and the keyboard-and-mouse tool.
 """
 from __future__ import annotations
 
+import pkgutil
 import re
 import sys
 import tomllib
@@ -15,7 +16,6 @@ from pathlib import Path
 
 import pytest
 import yaml
-from PyInstaller.utils.hooks import collect_submodules
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOWS = ROOT / ".github" / "workflows"
@@ -85,11 +85,15 @@ def _module_names(package: str) -> list[str]:
 
 
 def _ensure_project_root_first() -> None:
-    """Keep PyInstaller's isolated scanner on this checkout's package tree."""
+    """Keep the package scanner on this checkout's package tree."""
     root = str(ROOT)
     while root in sys.path:
         sys.path.remove(root)
     sys.path.insert(0, root)
+
+
+def _raise_import_error(name: str) -> None:
+    raise ImportError(name)
 
 
 @pytest.mark.parametrize("workflow", BUILD_WORKFLOWS)
@@ -166,16 +170,16 @@ def test_html_converter_of_the_web_tools_is_declared_not_inherited() -> None:
     assert "markdownify" in runtime
 
 
-def test_pyinstaller_spec_names_no_removed_package_and_collects_nekopower() -> None:
-    spec = (ROOT / "specs" / "launcher.spec").read_text(encoding="utf-8")
-    assert "collect_submodules('nekopower', on_error='raise')" in spec
-    for removed in ("'brain'", "'brain.computer_use'", "'browser_use'", "'playwright'", "browser_use_prompts"):
-        assert removed not in spec
-
-
-def test_pyinstaller_finds_every_nekopower_module() -> None:
+def test_pkgutil_finds_every_nekopower_module() -> None:
     _ensure_project_root_first()
-    collected = sorted(collect_submodules("nekopower", on_error="raise"))
-    assert collected == _module_names("nekopower")
+    collected = {"nekopower"} | {
+        module.name
+        for module in pkgutil.walk_packages(
+            [str(ROOT / "nekopower")],
+            prefix="nekopower.",
+            onerror=_raise_import_error,
+        )
+    }
+    assert sorted(collected) == _module_names("nekopower")
     assert "nekopower.builtin.browser.cdp" in collected
     assert "nekopower.builtin.desktop" in collected

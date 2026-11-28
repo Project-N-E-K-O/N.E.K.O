@@ -40,3 +40,16 @@ uv run pytest tests/unit/test_no_hyphen_python_packages.py -q
 ```
 
 If a packaged run is necessary, record the exact artifact/revision and shut down all child services before rebuilding. Never fix a stale locked distribution with an unreviewed recursive delete.
+
+## Local Nuitka build
+
+CI normally builds the desktop backend, but the same build can be reproduced on a local machine. `.github/workflows/build-desktop.yml` is the authoritative source of the Nuitka options (the `Build with Nuitka (Unix)` and `Build with Nuitka (Windows)` steps); the steps below only give their order. Run every command from the repository root. A C compiler is required (MSVC on Windows, gcc or clang elsewhere).
+
+1. Environment: `uv sync --group galgame`, then `uv pip install --python .venv nuitka==4.2.2 ordered-set zstandard`. The Nuitka version is pinned; use the version named in the workflow.
+2. Frontend: `./build_frontend.sh` (Linux/macOS) or `.\build_frontend.bat` (Windows).
+3. Offline assets and seed configs, as in the workflow: run `scripts/prepare_embedding_model.py` (arguments are in the `Prepare embedding model assets` step), `scripts/prepare_voice_turn_assets.py` and `scripts/prepare_speaker_model.py`; warm the tiktoken cache into `data/tiktoken_cache/` (see the embedding models page); create neutral `config/characters.json`, `config/core_config.json` (`{"coreApi": "free", "assistApi": "free"}`, no keys) and `config/user_preferences.json` (`[]`) if they do not exist.
+4. `uv run --no-sync python scripts/prepare_nuitka_plugins.py prepare` stages the built-in plugins and generates `build_nuitka_launcher.py`.
+5. Delete the `steamworks/` native libraries of the other platforms, then compile: `uv run --no-sync python -m nuitka --standalone --output-dir=dist --output-filename=projectneko_server <options from the workflow> build_nuitka_launcher.py`. On macOS the workflow uses `--mode=app --macos-app-mode=background` instead of `--standalone`.
+6. Finish the layout: rename `dist/build_nuitka_launcher.dist` to `dist/Xiao8`, run `uv run --no-sync python scripts/prepare_nuitka_plugins.py install --destination-dir dist/Xiao8/plugin/plugins`, then verify with `uv run --no-sync python scripts/check_nuitka_dist.py dist/Xiao8 --plugin-stage build/nuitka-plugins`.
+
+Keep the options in the three Nuitka steps (`build-desktop.yml` Unix and Windows, `build-desktop-linux.yml`) in step with each other, and write down in the PR description when a change also needs to reach a local packaging script.

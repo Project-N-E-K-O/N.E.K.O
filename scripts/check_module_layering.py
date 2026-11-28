@@ -113,8 +113,16 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # script (no package); we treat it specially in PACKAGE_OF_FILE.
 #
 # ``services`` holds Main-side domain services (chat sync, theater runtime)
-# used by main_logic, main_routers and app. ``services/theater_workshop`` is
-# the source-only author host, separate from the theater runtime. ``launcher_core``
+# used by main_logic, main_routers and app. A package belongs in ``services``
+# only if it meets all three conditions (otherwise it is a ``utils`` helper or
+# belongs in ``main_logic``):
+#   1. it owns concrete domain state, a protocol or a lifecycle, beyond what a
+#      generic ``utils`` helper does;
+#   2. it never imports ``main_logic``, ``main_routers`` or ``app``; host
+#      capabilities are pushed down through late-binding ``host.py`` hooks;
+#   3. it is a standalone subsystem, or shared by several subsystems/routers.
+# ``services/theater_workshop`` is the source-only author host, separate from
+# the theater runtime and not shipped in the desktop bundle. ``launcher_core``
 # is launcher.py's bootstrap and imports app directly. ``nekopower`` is the
 # base that runs task agents (it took over from the former ``brain`` package)
 # and sits at the top of the stack.
@@ -258,7 +266,6 @@ EXCLUDE_DIRS = {
     "assets",
     "static",
     "templates",
-    "specs",
     # Tests are excluded: test code legitimately reaches across layers
     # (e.g. a unit test for utils may stub a main_routers symbol). Test-only
     # imports do NOT participate in the production dependency graph.

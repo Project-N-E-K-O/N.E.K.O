@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
+import pkgutil
 import sys
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_submodules
-
 
 ROOT = Path(__file__).resolve().parents[2]
+WORKFLOWS = ROOT / ".github" / "workflows"
+BUILD_WORKFLOWS = ("build-desktop.yml", "build-desktop-linux.yml")
 REMOVED_ROOT_SDK_MODULES = (
     "plugin.sdk.base",
     "plugin.sdk.decorators",
@@ -20,11 +21,15 @@ REMOVED_ROOT_SDK_MODULES = (
 
 
 def _ensure_project_root_first() -> None:
-    """Keep PyInstaller's isolated scanner on the repository package tree."""
+    """Keep the package scanner on the repository package tree."""
     root = str(ROOT)
     while root in sys.path:
         sys.path.remove(root)
     sys.path.insert(0, root)
+
+
+def _raise_import_error(name: str) -> None:
+    raise ImportError(name)
 
 
 def _sdk_module_names() -> list[str]:
@@ -37,44 +42,49 @@ def _sdk_module_names() -> list[str]:
     return sorted(module_names)
 
 
+def _workflow(name: str) -> str:
+    return (WORKFLOWS / name).read_text(encoding="utf-8")
+
+
 def test_current_sdk_modules_are_importable() -> None:
     _ensure_project_root_first()
     for module_name in _sdk_module_names():
         importlib.import_module(module_name)
 
 
-def test_pyinstaller_collects_complete_sdk_tree() -> None:
+def test_package_scan_finds_complete_sdk_tree() -> None:
     _ensure_project_root_first()
-    assert sorted(collect_submodules("plugin.sdk", on_error="raise")) == (
-        _sdk_module_names()
-    )
+    scanned = {"plugin.sdk"} | {
+        module.name
+        for module in pkgutil.walk_packages(
+            [str(ROOT / "plugin" / "sdk")],
+            prefix="plugin.sdk.",
+            onerror=_raise_import_error,
+        )
+    }
+    assert sorted(scanned) == _sdk_module_names()
 
 
-def test_launcher_collects_current_plugin_sdk_tree() -> None:
-    spec = (ROOT / "specs" / "launcher.spec").read_text(encoding="utf-8")
-
-    assert "collect_submodules('plugin.sdk', on_error='raise')" in spec
-    for removed_module in REMOVED_ROOT_SDK_MODULES:
-        assert f"'{removed_module}'" not in spec
-
-
-def test_launcher_uses_project_root_for_windows_resources() -> None:
-    spec = (ROOT / "specs" / "launcher.spec").read_text(encoding="utf-8")
-
-    assert "VERSION_INFO_PATH = os.path.join(PROJECT_ROOT, 'version_info.txt')" in spec
-    assert "os.path.isfile(VERSION_INFO_PATH)" in spec
-    assert "ICON_PATH = os.path.join(PROJECT_ROOT, 'assets', 'icon.ico')" in spec
-    assert "icon=ICON_PATH if sys.platform == 'win32' else None" in spec
-    assert (
-        "version=VERSION_INFO_PATH if sys.platform == 'win32' and "
-        "os.path.isfile(VERSION_INFO_PATH) else None"
-    ) in spec
+def test_nuitka_workflows_compile_the_plugin_package_without_removed_sdk_modules() -> None:
+    for name in BUILD_WORKFLOWS:
+        workflow = _workflow(name)
+        assert "--include-package=plugin" in workflow, name
+        for removed_module in REMOVED_ROOT_SDK_MODULES:
+            assert f"--include-package={removed_module}" not in workflow, (name, removed_module)
+            assert f"--include-module={removed_module}" not in workflow, (name, removed_module)
 
 
-def test_launcher_includes_omni_state_proxy_hidden_import() -> None:
-    spec = (ROOT / "specs" / "launcher.spec").read_text(encoding="utf-8")
+def test_windows_nuitka_build_uses_project_root_icon() -> None:
+    workflow = _workflow("build-desktop.yml")
 
-    assert "'main_logic._module_state_proxy'" in spec
+    assert "--windows-icon-from-ico=assets/icon.ico" in workflow
+    assert (ROOT / "assets" / "icon.ico").is_file()
+
+
+def test_nuitka_workflows_compile_main_logic_with_the_omni_state_proxy() -> None:
+    for name in BUILD_WORKFLOWS:
+        assert "--include-package=main_logic" in _workflow(name), name
+    assert (ROOT / "main_logic" / "_module_state_proxy.py").is_file()
 
 
 def test_removed_root_sdk_modules_are_not_importable() -> None:

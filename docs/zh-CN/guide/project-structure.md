@@ -23,7 +23,6 @@ N.E.K.O/
 ├── templates/               # main/chat/subtitle/settings/features
 ├── docker/                  # Docker/Compose/entrypoint
 ├── scripts/                 # CI/校验/打包/资源
-├── specs/                   # PyInstaller spec
 ├── tests/                   # unit/integration/frontend/e2e/contracts
 ├── docs/                    # VitePress
 ├── pyproject.toml
@@ -44,5 +43,7 @@ Provider 无关的语音合同；本地 Silero/Smart Turn 实现与模型资源�
 `services/chat_sync/host.py`。`knowledge/` 运行在 Memory Server 内，Main 侧代码
 （含 `services/`）只经 HTTP 访问它。`scripts/check_module_layering.py` 强制这些
 层级；新增含 Python 代码的顶层目录必须登记进它的 `LAYERS`，否则 CI 失败。
+
+新模块放哪里：与 `utils/`（通用工具，不懂产品业务）和 `main_logic/`（围绕当前聊天会话的核心逻辑）相比，放进 `services/` 必须同时满足三条：(1) 自带具体的领域状态、协议或生命周期，而不只是通用工具；(2) 绝不 import `main_logic/`、`main_routers/`、`app/`，需要的上层能力通过 `host.py` 回调注入；(3) 是独立子系统，或被多个子系统/路由复用。`services/theater_workshop/` 是源码态的剧本作者 SDK，不随桌面包分发。
 
 编辑前用 `rg`、import 和 route 找当前 owner；历史 Issue 中的单文件可能已拆成 package。

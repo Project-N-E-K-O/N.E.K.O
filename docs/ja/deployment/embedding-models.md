@@ -61,7 +61,7 @@ data/embedding_models/local-text-retrieval-v1/
 
 クロスプラットフォーム nightly ワークフロー（`.github/workflows/build-desktop.yml`）は、Windows、macOS、Linux 上で Nuitka を使ってバックエンドをビルドします。Nuitka を呼び出す前に、ピン留めされた `EMBEDDING_MODEL_REVISION` を使って `scripts/prepare_embedding_model.py` を実行し、`tiktoken` の o200k_base キャッシュを `data/tiktoken_cache/` にウォームアップしてから、両ディレクトリを standalone 成果物にバンドルします。ビルド後、すべての必須 embedding ファイル（`tokenizer.json`、fp32 と int8 の両 ONNX バリアント、対応する `*.onnx_data` サイドカー）が存在し非空であること、また tiktoken キャッシュに少なくとも 1 つの blob があることを検証します。
 
-`specs/launcher.spec` は `data/embedding_models/` と `data/tiktoken_cache/` を同時に宣言しているため、手動で PyInstaller を実行して nightly のオフライン動作を再現したい場合は、両ディレクトリを事前に埋めておく必要があります。前者には `scripts/prepare_embedding_model.py` を実行し、後者は以下のコマンドでウォームアップしてください：
+ローカルの Nuitka ビルド（Nuitka パッケージングのページを参照）は `data/embedding_models/` と `data/tiktoken_cache/` を同時にバンドルするため、nightly のオフライン動作を再現したい場合は、両ディレクトリを事前に埋めておく必要があります。前者には `scripts/prepare_embedding_model.py` を実行し、後者は以下のコマンドでウォームアップしてください：
 
 ```bash
 mkdir -p data/tiktoken_cache
@@ -69,4 +69,4 @@ TIKTOKEN_CACHE_DIR="$(pwd)/data/tiktoken_cache" \
   uv run python -c "import tiktoken; tiktoken.get_encoding('o200k_base')"
 ```
 
-`data/embedding_models/` が存在するのに `onnxruntime` / `tokenizers` の収集に失敗した場合、spec ファイルはビルドを中止します——重みだけをバンドルして推論ランタイムを欠いた成果物は初回利用時にベクトル機能を sticky-disable し、気付きにくい不具合になるためです。
+`scripts/check_nuitka_dist.py` は完成した成果物の embedding ファイルと tiktoken キャッシュを検証します——重みだけをバンドルして推論ランタイムを欠いた成果物は初回利用時にベクトル機能を sticky-disable し、気付きにくい不具合になるためです。

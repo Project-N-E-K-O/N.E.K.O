@@ -41,3 +41,16 @@ uv run pytest tests/unit/test_no_hyphen_python_packages.py -q
 ```
 
 パッケージ実行が必要なら、正確な artifact／revision を記録し、再ビルド前に全 child service を停止します。古いロック済み distribution を未レビューの再帰削除で直さないでください。
+
+## ローカル Nuitka ビルド手順
+
+デスクトップ backend は通常 CI がビルドしますが、同じビルドをローカルでも再現できます。Nuitka のオプションは `.github/workflows/build-desktop.yml`（`Build with Nuitka (Unix)` と `Build with Nuitka (Windows)` の各 step）が正であり、以下は順序だけを示します。コマンドはすべてリポジトリのルートで実行します。C コンパイラ（Windows は MSVC、それ以外は gcc または clang）が必要です。
+
+1. 環境: `uv sync --group galgame` の後に `uv pip install --python .venv nuitka==4.2.2 ordered-set zstandard` を実行します。Nuitka のバージョンは固定されており、workflow に書かれたものに従います。
+2. フロントエンド: `./build_frontend.sh`（Linux/macOS）または `.\build_frontend.bat`（Windows）。
+3. オフライン asset とシード設定（workflow と同じ）: `scripts/prepare_embedding_model.py`（引数は `Prepare embedding model assets` step）、`scripts/prepare_voice_turn_assets.py`、`scripts/prepare_speaker_model.py` を実行し、tiktoken キャッシュを `data/tiktoken_cache/` にウォームアップします（コマンドは embedding model のページ）。存在しなければ、中立な `config/characters.json`、`config/core_config.json`（`{"coreApi": "free", "assistApi": "free"}`、キーは書かない）、`config/user_preferences.json`（`[]`）を作成します。
+4. `uv run --no-sync python scripts/prepare_nuitka_plugins.py prepare` が組み込み plugin の staging を行い、`build_nuitka_launcher.py` を生成します。
+5. `steamworks/` にある他プラットフォーム用のネイティブライブラリを削除してから compile します: `uv run --no-sync python -m nuitka --standalone --output-dir=dist --output-filename=projectneko_server <workflow のオプション> build_nuitka_launcher.py`。macOS では workflow が `--standalone` の代わりに `--mode=app --macos-app-mode=background` を使います。
+6. 成果物の整形: `dist/build_nuitka_launcher.dist` を `dist/Xiao8` に改名し、`uv run --no-sync python scripts/prepare_nuitka_plugins.py install --destination-dir dist/Xiao8/plugin/plugins` を実行し、最後に `uv run --no-sync python scripts/check_nuitka_dist.py dist/Xiao8 --plugin-stage build/nuitka-plugins` で検証します。
+
+3 つの Nuitka step（`build-desktop.yml` の Unix と Windows、`build-desktop-linux.yml`）のオプションは一緒に変更します。変更がローカルのパッケージングスクリプトにも影響する場合は、PR 説明に書いてください。

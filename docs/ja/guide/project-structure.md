@@ -22,7 +22,6 @@ N.E.K.O/
 ├── templates/
 ├── docker/
 ├── scripts/
-├── specs/
 ├── tests/
 ├── docs/
 ├── pyproject.toml
@@ -47,5 +46,7 @@ import time。`knowledge/` runs inside the Memory Server; Main-side code,
 `services/` included, reaches it over HTTP only。
 `scripts/check_module_layering.py` enforces these layers; a new top-level
 directory with Python code must be added to its `LAYERS`, or CI fails.
+
+New module placement: unlike `utils/` (generic helpers that know nothing about the product) and `main_logic/` (logic tied to the live chat session), a package belongs in `services/` only if it meets all three conditions: (1) it owns concrete domain state, a protocol or a lifecycle beyond a generic helper; (2) it never imports `main_logic/`、`main_routers/`、`app/`, and gets host capabilities through `host.py` hooks; (3) it is a standalone subsystem or shared by several subsystems/routers. `services/theater_workshop/` is a source-only author SDK and is not shipped in the desktop bundle.
 
 Use `rg`, imports, routes to find the current owner; historical files may now be packages.

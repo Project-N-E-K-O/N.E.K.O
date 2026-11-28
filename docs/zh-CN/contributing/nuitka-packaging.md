@@ -41,3 +41,16 @@ uv run pytest tests/unit/test_no_hyphen_python_packages.py -q
 ```
 
 确需运行打包产物时，记录精确 artifact/revision，并在重建前关闭所有子服务。不要用未经审查的递归删除处理被旧进程锁定的分发目录。
+
+## 本地 Nuitka 打包步骤
+
+桌面后端通常由 CI 构建，但同样的构建可以在本机复现。Nuitka 参数以 `.github/workflows/build-desktop.yml` 为准（`Build with Nuitka (Unix)` 与 `Build with Nuitka (Windows)` 两个步骤），下面只给出顺序。所有命令都在仓库根目录执行，需要 C 编译器（Windows 用 MSVC，其他平台用 gcc 或 clang）。
+
+1. 环境：`uv sync --group galgame`，再执行 `uv pip install --python .venv nuitka==4.2.2 ordered-set zstandard`。Nuitka 版本是锁死的，以 workflow 里写的为准。
+2. 前端：`./build_frontend.sh`（Linux/macOS）或 `.\build_frontend.bat`（Windows）。
+3. 离线资源与种子配置，与 workflow 一致：运行 `scripts/prepare_embedding_model.py`（参数见 `Prepare embedding model assets` 步骤）、`scripts/prepare_voice_turn_assets.py`、`scripts/prepare_speaker_model.py`；把 tiktoken 缓存预热到 `data/tiktoken_cache/`（命令见嵌入模型页面）；如果不存在，生成中性的 `config/characters.json`、`config/core_config.json`（`{"coreApi": "free", "assistApi": "free"}`，不写任何密钥）和 `config/user_preferences.json`（`[]`）。
+4. `uv run --no-sync python scripts/prepare_nuitka_plugins.py prepare` 准备内置插件的分阶段目录，并生成 `build_nuitka_launcher.py`。
+5. 删掉 `steamworks/` 里其他平台的原生库，然后编译：`uv run --no-sync python -m nuitka --standalone --output-dir=dist --output-filename=projectneko_server <workflow 里的参数> build_nuitka_launcher.py`。macOS 在 workflow 里用 `--mode=app --macos-app-mode=background` 代替 `--standalone`。
+6. 整理产物：把 `dist/build_nuitka_launcher.dist` 改名为 `dist/Xiao8`，执行 `uv run --no-sync python scripts/prepare_nuitka_plugins.py install --destination-dir dist/Xiao8/plugin/plugins`，最后用 `uv run --no-sync python scripts/check_nuitka_dist.py dist/Xiao8 --plugin-stage build/nuitka-plugins` 校验。
+
+三处 Nuitka 步骤（`build-desktop.yml` 的 Unix 和 Windows、`build-desktop-linux.yml`）里的参数要一起改；改动同时影响本机打包脚本时，在 PR 描述里写明。
