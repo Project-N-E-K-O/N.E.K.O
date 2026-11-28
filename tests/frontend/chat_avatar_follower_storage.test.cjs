@@ -31,15 +31,21 @@ function run(pathname, order, {cold = false, pngtuber = false, autoload = true, 
         }));
     }
     if (!cold) putOwner();
-    const stub = () => ({hidden: false, classList: {add() {}, remove() {}}, removeAttribute() {}});
+    const stub = () => ({
+        hidden: false, style: {}, classList: {add() {}, remove() {}},
+        removeAttribute(name) { delete this[name]; },
+    });
     const image = stub();
+    const status = {textContent: ''};
     const nodes = {
         'chat-avatar-preview-popup': stub(),
         'chat-avatar-preview-image': image,
         'chat-avatar-preview-image-shell': stub(),
         'chat-avatar-preview-placeholder': stub(),
+        'chat-avatar-preview-status': status,
     };
     const window = {
+        innerWidth: 960, innerHeight: 640,
         location: {pathname},
         appState: {dom: {}},
         lanlan_config: {lanlan_name: 'A', model_type: modelType, switch_revision: 83},
@@ -61,8 +67,8 @@ function run(pathname, order, {cold = false, pngtuber = false, autoload = true, 
     if (transport === 'ipc') {
         window.__NEKO_MULTI_WINDOW__ = true;
         window.__nekoRequestAvatarPreview = () => { requests++; };
-        releaseCapture = dataUrl => window.dispatchEvent({
-            type: 'neko:avatar-preview-ipc-result', detail: {dataUrl, modelType},
+        releaseCapture = (dataUrl, resultType = modelType) => window.dispatchEvent({
+            type: 'neko:avatar-preview-ipc-result', detail: {dataUrl, modelType: resultType},
         });
     } else if (transport === 'local') {
         window.avatarPortrait = {capture() {
@@ -93,9 +99,9 @@ function run(pathname, order, {cold = false, pngtuber = false, autoload = true, 
     if (order === 'after init') window.appChatAvatar.setExternalAvatar(mirrored, modelType);
     if (autoload) window.dispatchEvent({type: 'vrm-model-loaded'});
     return {
-        image, writes, stored, network, seen, window, putOwner, timers,
+        image, status, writes, stored, network, seen, window, putOwner, timers,
         requestCount: () => requests,
-        complete: dataUrl => { assert.ok(releaseCapture); releaseCapture(dataUrl); },
+        complete: (...args) => { assert.ok(releaseCapture); releaseCapture(...args); },
         fireCapture() {
             const entry = [...timers].find(([, timer]) => timer.delay === 180);
             assert.ok(entry, 'cold init must queue the real automatic preview timer');
@@ -241,3 +247,41 @@ test('an unbound early IPC portrait does not outrank a valid current stored fall
     h.stored.clear();
     assert.equal(w.appChatAvatar.getModelAvatarDataUrl(), mirrored, 'preserve legacy last-resort fallback');
 });
+
+for (const pathname of ['/chat', '/chat_full']) {
+    for (const outcome of ['failed', 'success', 'different role', 'new revision', 'different model path', 'unverified', 'new IPC receipt']) {
+        test(pathname + ': popup capture after same-model restart: ' + outcome, async () => {
+            const h = run(pathname, 'after init', {pngtuber: true, autoload: false, transport: 'ipc'});
+            const w = h.window;
+            if (outcome === 'unverified') {
+                w.lanlan_config.lanlan_name = '';
+                w.appChatAvatar.setExternalAvatar(mirrored, 'pngtuber');
+                w.lanlan_config.lanlan_name = 'A';
+            }
+            w.dispatchEvent({type: 'pngtuber-model-loading', detail: {loadToken: 1}});
+            w.dispatchEvent({type: 'pngtuber-model-loaded', detail: {loadToken: 1}});
+            assert.equal(w.appChatAvatar.getCachedPreview(), null);
+            if (outcome !== 'unverified') assert.equal(w.appChatAvatar.getModelAvatarDataUrl(), mirrored);
+            const pending = w.appChatAvatar.showPopup();
+            assert.equal(h.requestCount(), 1);
+            if (outcome === 'different role' || outcome === 'new IPC receipt') w.lanlan_config.lanlan_name = 'B';
+            if (outcome === 'new revision' || outcome === 'new IPC receipt') w.lanlan_config.switch_revision++;
+            if (outcome === 'different model path') w.pngtuberManager.config.idle_image = '/new-idle.png';
+            if (outcome === 'new IPC receipt') w.appChatAvatar.setExternalAvatar(captured, 'live2d');
+            h.complete(outcome === 'success' ? captured : '', 'mmd');
+            await pending;
+            const [result, type, status] = ({
+                failed: [mirrored, 'pngtuber', '生成头像失败 · PNGTuber'],
+                success: [captured, 'mmd', '头像已更新 · MMD'],
+                'new IPC receipt': [captured, 'live2d', '生成头像失败 · Live2D'],
+            })[outcome] || [undefined, undefined, '生成头像失败'];
+            assert.equal(h.image.src, result);
+            assert.equal(h.image.hidden, !result);
+            assert.equal(h.status.textContent, status);
+            if (type) assert.equal(w.appChatAvatar.getCurrentAvatarModelType(), type);
+            assert.deepEqual(h.writes, []);
+            assert.equal(JSON.parse(h.stored.get(cacheKey)).dataUrl, owner);
+            assert.deepEqual(h.network, []);
+        });
+    }
+}

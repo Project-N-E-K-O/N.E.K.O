@@ -1488,8 +1488,13 @@
             if (token !== activeCaptureToken) return;
 
             if (showCard || activeCaptureCardVisible) {
-                setPreviewImage('');
-                setPreviewStatus(translateLabel('chat.avatarPreviewFailed', '生成头像失败'), { background: !showCard });
+                // A failed capture must not erase a verified portrait from the current Pet owner.
+                const preview = isCardDropIdentityFollowerWindow() ? modelPreviewForDisplay() : null;
+                const fallback = getExternalAvatarScope(preview) === 'current' ? preview : null;
+                const failed = translateLabel('chat.avatarPreviewFailed', '生成头像失败');
+                setPreviewImage(fallback?.dataUrl || '');
+                setPreviewStatus(fallback ? failed + ' · ' + normalizeModelLabel(fallback.modelType) : failed,
+                    { background: !showCard });
                 setPreviewNote(getErrorMessage(error));
             }
             if (!silent && typeof window.showStatusToast === 'function') {
