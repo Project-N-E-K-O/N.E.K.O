@@ -33,6 +33,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "ci" / "main_red_reporter.py"
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "main-red-reporter.yml"
 UNIT_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "unit-tests.yml"
+PLUGIN_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "plugin-tests.yml"
 REPO = "owner/repo"
 
 
@@ -76,6 +77,22 @@ def test_rerun_marker_matches_the_unit_workflow():
     workflow = UNIT_WORKFLOW.read_bytes().decode("utf-8")
     assert f"{mr.RERUN_MARKER}=$verdict" in workflow
     assert "--lf --lfnf none" in workflow
+
+
+def test_every_plugin_job_reruns_its_failures_with_the_marker():
+    # rerun_state() only calls a run flaky when every failed job printed a
+    # verdict, so a plugin job without the step would turn a flaky run "partial".
+    jobs = yaml.safe_load(PLUGIN_WORKFLOW.read_bytes().decode("utf-8"))["jobs"]
+    assert jobs
+    for name, job in jobs.items():
+        steps = job["steps"]
+        full = [i for i, step in enumerate(steps) if step.get("id") == "full-suite"]
+        assert len(full) == 1, name
+        rerun = [step for step in steps[full[0] + 1 :] if "--lf --lfnf none" in step.get("run", "")]
+        assert len(rerun) == 1, name
+        assert rerun[0]["if"] == "failure() && steps.full-suite.outcome == 'failure'", name
+        assert f"{mr.RERUN_MARKER}=$verdict" in rerun[0]["run"], name
+        assert rerun[0]["run"].rstrip().endswith("exit 0"), name
 
 
 @pytest.mark.parametrize(
