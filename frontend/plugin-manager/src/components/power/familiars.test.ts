@@ -11,7 +11,8 @@ import FamiliarsPane from './space/FamiliarsPane.vue'
 
 const api = vi.hoisted(() => ({
   getTemplates: vi.fn(), draftFamiliar: vi.fn(), makeFamiliar: vi.fn(), pickDirectory: vi.fn(),
-  getProjectBoard: vi.fn(), writeCard: vi.fn(), tellCommission: vi.fn(), answerCommission: vi.fn(), stopCommission: vi.fn(),
+  getProjectBoard: vi.fn(), writeCard: vi.fn(), changeDuty: vi.fn(), tellCommission: vi.fn(), answerCommission: vi.fn(),
+  stopCommission: vi.fn(),
   getTranscript: vi.fn(), getSessionUsage: vi.fn(),
   consoleErrorCode: (error: unknown) => (error as { response?: { data?: { detail?: { code?: string } } } })?.response?.data?.detail?.code ?? null,
 }))
@@ -463,6 +464,66 @@ describe('a familiar up close', () => {
     await click(byTest('card-edit'))
     await click(byTest('card-save'))
     expect(api.writeCard).toHaveBeenCalledTimes(1)
+  })
+
+  it('makes a member another kind, says what that lets it do, and leaves a leader as it is', async () => {
+    const kind = (name: string, changes_files: boolean, needs_builtin: boolean) =>
+      ({ name, label: '', description: '', avatar: name, source: 'builtin', valid: true, error: '', changes_files, needs_builtin })
+    api.getTemplates.mockResolvedValue({ templates: [
+      kind('boss', false, true), kind('general', true, false), kind('scout', false, true),
+      { ...kind('translator', true, false), label: 'Translator', source: 'project' },
+      { ...kind('broken', true, false), valid: false, error: 'bad' },
+    ] })
+    const member = card({ kind: 'line', preset: 'scout', avatar: 'scout', leader: false, runtime: 'dsh' })
+    await show([member])
+    await click(byTest('card-edit'))
+    expect(api.getTemplates).toHaveBeenCalledWith('Ledger tool')
+    // Not the leader's, and none that cannot be used.
+    const offered = () => [...document.querySelectorAll('.el-select-dropdown__item')]
+    expect(offered().map(item => item.textContent?.trim())).toEqual([words.home.presets.general, words.home.presets.scout, 'Translator'])
+    expect(byTest('card-preset-widens')).toBeNull()
+    // Nothing chosen: nothing is changed.
+    await click(byTest('card-save'))
+    expect(api.changeDuty).not.toHaveBeenCalled()
+
+    await click(byTest('card-edit'))
+    await click(offered().find(item => item.textContent?.trim() === words.home.presets.general))
+    // From one that only reads to one that changes files: said before it is saved.
+    expect(byTest('card-preset-widens')?.textContent).toBe(words.space.familiars.presetWidens)
+    expect(byTest('card-preset-moves')).toBeNull()
+    api.changeDuty.mockRejectedValueOnce(refusal('tree_not_landed', {}, 409))
+    await click(byTest('card-save'))
+    expect(api.changeDuty).toHaveBeenCalledWith('s1', 'general')
+    // Not taken: the editor stays open, and why is said in it.
+    expect(byTest('card-error')?.textContent).toContain(words.errors.tree_not_landed)
+    api.changeDuty.mockResolvedValue({ session_id: 's1', preset: 'general', was: 'scout', seat: '', changed: true, widened: true, at_work: false })
+    await click(byTest('card-save'))
+    expect(api.changeDuty).toHaveBeenCalledTimes(2)
+    expect(byTest('card-error')).toBeNull()
+    expect(api.writeCard).not.toHaveBeenCalled()
+    cleanup?.()
+
+    // Made another kind since it last started work: said with it, by the names of both kinds.
+    await show([card({ kind: 'line', preset: 'scout', preset_was: 'general', leader: false, runtime: 'dsh' })])
+    expect(byTest('familiar-kind-pending')?.textContent).toContain(
+      words.space.familiars.presetPending.replace('{now}', words.home.presets.scout).replace('{was}', words.home.presets.general))
+    cleanup?.()
+
+    // Begun in the other runtime, and to be a kind that runs in the built-in one only: it starts anew there.
+    await show([card({ kind: 'single', preset: 'general', leader: false, runtime: 'dsh' })])
+    await click(byTest('card-edit'))
+    await click(offered().find(item => item.textContent?.trim() === words.home.presets.scout))
+    expect(byTest('card-preset-moves')?.textContent).toBe(words.space.familiars.presetMoves)
+    expect(byTest('card-preset-widens')).toBeNull()
+    cleanup?.()
+
+    // A leader, a copy and one another familiar started are no kind the user changes here.
+    api.getTemplates.mockClear()
+    await show([card()])
+    expect(byTest('familiar-kind-pending')).toBeNull()
+    await click(byTest('card-edit'))
+    expect(byTest('card-preset')).toBeNull()
+    expect(api.getTemplates).not.toHaveBeenCalled()
   })
 
   it('sends only the lines the user changed, though the card changed under the open editor', async () => {

@@ -422,7 +422,8 @@ def test_a_wrong_file_is_listed_with_what_is_wrong_and_takes_nothing_else_down(s
     assert listed["reviewer"].valid and all(listed[name].valid for name in PRESETS)
     assert listed["doc-writer"].to_json() == {
         "name": "doc-writer", "label": "", "description": "", "avatar": "general", "source": "global",
-        "read_only": None, "writes": None, "memory": None, "model": None, "valid": False,
+        "read_only": None, "writes": None, "memory": None, "model": None, "changes_files": None,
+        "needs_builtin": None, "valid": False,
         "error": "unknown fields: tools",
     }
     with pytest.raises(TemplateError, match="unknown fields: tools"):

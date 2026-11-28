@@ -65,6 +65,11 @@
         <div v-if="selected.context_tokens">
           <dt>{{ t('power.space.familiars.context') }}</dt><dd>{{ selected.context_tokens.toLocaleString() }}</dd>
         </div>
+        <!-- Made another kind since it last started work: it is that from its next start. -->
+        <div v-if="selected.preset_was" data-testid="familiar-kind-pending">
+          <dt>{{ t('power.home.preset') }}</dt>
+          <dd>{{ t('power.space.familiars.presetPending', { now: kindName(selected.preset), was: kindName(selected.preset_was) }) }}</dd>
+        </div>
       </dl>
 
       <!-- It works in a git worktree of its own, or left what it changed there for the user. -->
@@ -140,6 +145,15 @@
         <el-form-item :label="t('power.space.familiars.summary')">
           <el-input v-model="draft.summary" type="textarea" :autosize="{ minRows: 3, maxRows: 8 }" maxlength="600" data-testid="card-summary" />
         </el-form-item>
+        <!-- What kind of familiar it is: for one that works in a project or on its own, not a leader, a copy or one another started. -->
+        <el-form-item v-if="kindChanges" :label="t('power.home.preset')">
+          <el-select v-model="draft.preset" data-testid="card-preset" :loading="!kindsRead">
+            <el-option v-for="item in kinds" :key="item.name" :label="kindName(item.name, item.label)" :value="item.name" />
+          </el-select>
+          <p class="muted kind-hint">{{ t('power.space.familiars.presetHint') }}</p>
+          <p v-if="kindWidens" class="kind-hint" data-testid="card-preset-widens">{{ t('power.space.familiars.presetWidens') }}</p>
+          <p v-if="kindMoves" class="kind-hint" data-testid="card-preset-moves">{{ t('power.space.familiars.presetMoves') }}</p>
+        </el-form-item>
       </el-form>
       <!-- Said here as well: the page behind the editor is covered by it. -->
       <el-alert v-if="cardError" :title="cardError" type="error" :closable="false" show-icon data-testid="card-error" />
@@ -163,8 +177,8 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { getProjectBoard, stopCommission, tellCommission, writeCard } from '@/api/console'
-import type { Board, BoardCard } from '@/api/console'
+import { changeDuty, getProjectBoard, getTemplates, stopCommission, tellCommission, writeCard } from '@/api/console'
+import type { Board, BoardCard, FamiliarTemplate } from '@/api/console'
 import AskBox from '../AskBox.vue'
 import { answeringAs, describeAnswerError, rememberAsks, saysSomething } from '../ask'
 import type { GivenAnswer } from '../ask'
@@ -220,9 +234,29 @@ const PAST_VIEWS = ['talk', 'usage'] as const
 const pastView = ref<(typeof PAST_VIEWS)[number]>('talk')
 const editing = ref(false)
 const stopping = ref(false)
-const draft = reactive({ title: '', duty: '', summary: '' })
+const draft = reactive({ title: '', duty: '', summary: '', preset: '' })
 // The card as it was when the editor was opened, and whose it is.
-const opened = reactive({ id: '', title: '', duty: '', summary: '' })
+const opened = reactive({ id: '', title: '', duty: '', summary: '', preset: '', kind: '', runtime: '' })
+// The kinds a familiar can be made, read when the editor is opened: the project's own templates among them.
+const templates = ref<FamiliarTemplate[]>([])
+const kindsRead = ref(false)
+// Only one that works in a project or on its own is made another kind; a leader is no kind a member is made.
+const kindChanges = computed(() => opened.kind === 'line' || opened.kind === 'single')
+const kinds = computed(() => {
+  const offered = templates.value.filter(item => item.valid && item.name !== 'boss')
+  // The kind it is stays among them, also while the list is not read or its template cannot be used.
+  if (opened.preset && !offered.some(item => item.name === opened.preset)) {
+    offered.unshift({ name: opened.preset, label: '', description: '', avatar: 'general', source: '', valid: true, error: '' })
+  }
+  return offered
+})
+const kindOf = (name: string) => templates.value.find(item => item.name === name)
+// From a kind that changes no files to one that does: said before it is saved.
+const kindWidens = computed(() =>
+  draft.preset !== opened.preset && kindOf(draft.preset)?.changes_files === true && kindOf(opened.preset)?.changes_files === false)
+// Begun in the other runtime, and to be a kind that runs in the built-in one only: it starts anew there.
+const kindMoves = computed(() =>
+  draft.preset !== opened.preset && !!opened.runtime && opened.runtime !== 'builtin' && kindOf(draft.preset)?.needs_builtin === true)
 // Asked for as often as the home panel asks: it answers "unchanged" quickly.
 const POLL_MS = 2000
 const POLL_FAILED_MS = 15000
@@ -338,13 +372,36 @@ async function stop() {
   stopping.value = false
 }
 
+/** Return the name a kind of familiar is shown by: the page's own for a built-in one, else the template's. */
+function kindName(preset: string, label = ''): string {
+  const key = `power.home.presets.${preset}`
+  return te(key) ? t(key) : label || kindOf(preset)?.label || preset
+}
+
+async function readKinds(id: string) {
+  kindsRead.value = false
+  try {
+    const read = (await getTemplates(props.project)).templates
+    // The editor is another familiar's by now, or closed: what was read is not its list.
+    if (opened.id === id) templates.value = read
+  } catch {
+    // Not read: the kind it is stays the one choice, and its card can be written all the same.
+    if (opened.id === id) templates.value = []
+  }
+  if (opened.id === id) kindsRead.value = true
+}
+
 function edit() {
   const card = selected.value
   if (!card) return
-  Object.assign(opened, { id: card.id, title: card.title, duty: card.duty, summary: card.summary ?? '' })
-  Object.assign(draft, { title: opened.title, duty: opened.duty, summary: opened.summary })
+  Object.assign(opened, {
+    id: card.id, title: card.title, duty: card.duty, summary: card.summary ?? '', preset: card.preset, kind: card.kind,
+    runtime: card.runtime ?? '',
+  })
+  Object.assign(draft, { title: opened.title, duty: opened.duty, summary: opened.summary, preset: opened.preset })
   cardError.value = ''
   editing.value = true
+  if (kindChanges.value) void readKinds(card.id)
 }
 
 async function saveCard() {
@@ -361,6 +418,20 @@ async function saveCard() {
   if (Object.keys(lines).length && !(await act('card', () => writeCard(id, lines)))) {
     cardError.value = error.value
     return
+  }
+  if (kindChanges.value && draft.preset && draft.preset !== opened.preset) {
+    // After its card: a kind that is not taken leaves the lines that were, written.
+    let atWork = false
+    const change = async () => {
+      atWork = (await changeDuty(id, draft.preset)).at_work
+    }
+    if (!(await act('card', change))) {
+      cardError.value = error.value
+      // What was written of its card is the card's by now: not sent again with the next try.
+      Object.assign(opened, { title: draft.title, duty: draft.duty, summary: draft.summary })
+      return
+    }
+    note.value = t(atWork ? 'power.space.familiars.presetChangedAtWork' : 'power.space.familiars.presetChanged')
   }
   editing.value = false
 }
@@ -409,6 +480,7 @@ onBeforeUnmount(() => {
 .members { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px; }
 .members .chosen { border-color: var(--el-color-primary); box-shadow: 0 0 0 1px var(--el-color-primary); }
 .muted { color: var(--el-text-color-secondary); font-size: 13px; line-height: 1.6; margin: 0; }
+.kind-hint { width: 100%; margin: 4px 0 0; font-size: 13px; line-height: 1.6; }
 .detail { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--el-border-color-lighter); }
 .detail header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .detail h3 { margin: 0 0 2px; font-size: 17px; overflow-wrap: anywhere; }

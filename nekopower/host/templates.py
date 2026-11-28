@@ -325,6 +325,9 @@ class Listed:
             # Whether its sessions can change files, with a tool or through the shell
             # (``Template.changes_files``): what a page warns of before a session is made one.
             "changes_files": found.changes_files if found else None,
+            # Whether its sessions run in the built-in runtime only (``Template.needs_builtin``):
+            # one that was begun in the other runtime starts anew there when it is made one.
+            "needs_builtin": found.needs_builtin if found else None,
             "valid": found is not None,
             "error": self.error,
         }

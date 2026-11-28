@@ -917,19 +917,20 @@ async def test_the_presets_are_listed_with_what_each_is_and_the_wrong_ones_with_
 
     assert [item["name"] for item in everywhere] == ["boss", "worker", "scout", "inspector", "planner", "general", "broken", "doc-writer"]
     assert [item["name"] for item in here][-1] == "tester"
-    keys = {"name", "label", "description", "avatar", "source", "read_only", "writes", "memory", "model", "changes_files", "valid", "error"}
+    keys = {"name", "label", "description", "avatar", "source", "read_only", "writes", "memory", "model", "changes_files", "needs_builtin", "valid", "error"}
     assert all(set(item) == keys for item in here)
     found = {item["name"]: item for item in here}
     assert found["inspector"] == {
         "name": "inspector", "label": "", "avatar": "inspector", "source": "builtin", "read_only": False,
-        "writes": "none", "memory": "none", "model": "inherit", "changes_files": True, "valid": True, "error": "",
+        "writes": "none", "memory": "none", "model": "inherit", "changes_files": True, "needs_builtin": True,
+        "valid": True, "error": "",
         "description": found["inspector"]["description"],
     }
     assert (found["scout"]["read_only"], found["scout"]["writes"], found["boss"]["model"]) == (True, "none", "agent")
     assert found["doc-writer"] == {
         "name": "doc-writer", "label": "文档猫", "description": "When doc-writer fits.", "avatar": "planner",
         "source": "global", "read_only": False, "writes": "inherit", "memory": "none", "model": "agent",
-        "changes_files": True, "valid": True, "error": "",
+        "changes_files": True, "needs_builtin": True, "valid": True, "error": "",
     }
     assert (found["tester"]["source"], found["tester"]["read_only"], found["tester"]["writes"]) == ("project", True, "none")
     assert (found["broken"]["valid"], found["broken"]["error"]) == (False, "model is one of agent, inherit, advanced, not 'gpt-9'")
