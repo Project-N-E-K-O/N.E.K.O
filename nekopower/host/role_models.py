@@ -460,7 +460,9 @@ class RoleModels:
         """Return the advanced task agent model of the main app itself; raises ``SlotUnavailable``.
 
         ``MODEL_CONFIG_UNREADABLE`` where it cannot be read (or there are no
-        slots to read it by), ``HOST_API_NOT_CONFIGURED`` where it names no model.
+        slots to read it by), ``HOST_API_NOT_CONFIGURED`` where it names no
+        model, ``HOST_API_UNSUPPORTED`` where its address is not an HTTP one:
+        as a slot that follows it is refused (``materialize_host_slot``).
         """
         if self.slots is None:
             raise SlotUnavailable(MODEL_CONFIG_UNREADABLE)
@@ -472,6 +474,10 @@ class RoleModels:
             raise SlotUnavailable(MODEL_CONFIG_UNREADABLE) from None
         if not config or not config.get("model"):
             raise SlotUnavailable(HOST_API_NOT_CONFIGURED)
+        if not str(config.get("base_url") or "").strip().lower().startswith(("http://", "https://")):
+            # A WebSocket address, say: no session can be opened with it, and
+            # sent there a planner would only fail at its first request.
+            raise SlotUnavailable(HOST_API_UNSUPPORTED)
         return _choice("", False, config, tier=ADVANCED_TIER)
 
     async def advanced_default(self, fallback: str = "") -> Choice:

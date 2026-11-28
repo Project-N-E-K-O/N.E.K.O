@@ -2403,6 +2403,8 @@ async def test_a_planner_on_the_slot_that_follows_the_advanced_model_follows_tha
         ("not configured", "host_api_not_configured"),
         ("unreadable", "model_config_unreadable"),
         ("slot of a tier not configured", "host_api_not_configured"),
+        ("not an HTTP address", "host_api_unsupported"),
+        ("slot of a tier that is not an HTTP address", "host_api_unsupported"),
     ],
 )
 async def test_an_advanced_model_that_cannot_be_used_leaves_a_planner_with_the_task_agent_model_and_says_why(
@@ -2411,6 +2413,8 @@ async def test_an_advanced_model_that_cannot_be_used_leaves_a_planner_with_the_t
     tiers: dict[str, Any] = {}
     if how == "unreadable":
         tiers["agent_advanced"] = OSError("cannot be read")
+    if how.endswith("not an HTTP address"):
+        tiers["agent_advanced"] = {**ADVANCED_TIER, "base_url": "ws://advanced.test/v1"}
     slots = _with_advanced_slot() if how.startswith("slot") else _default_slots()
     manager = _manager(tmp_path, slots, **tiers)
     host = _host(hosts, tmp_path, lambda spec: ScriptedLLM(), manager)
