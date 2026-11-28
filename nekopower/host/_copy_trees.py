@@ -503,6 +503,7 @@ def scan_copy_directory(
     dep_names = frozenset(dependency_dirs)
     active_set = frozenset(active_dep_links)
     keep_large = frozenset(include_large)
+    tracked_dirs = {up for path in keep_large for up in _parents(path)}
     top = fs_path(root)
     files: dict[str, dict[str, Any]] = {}
     skipped: list[str] = []
@@ -522,6 +523,10 @@ def scan_copy_directory(
                 dirs.remove(dname)
                 continue
             if discover_dependencies and dname in dep_names:
+                if rel in tracked_dirs and not is_dir_link(full):
+                    # Baseline already tracks real files inside this directory (e.g. an agent-created
+                    # `vendor/` directory), so keep scanning it rather than treating it as a dep dir.
+                    continue
                 dirs.remove(dname)
                 if not is_dir_link(full):
                     found_deps.append(rel)

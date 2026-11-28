@@ -2260,8 +2260,12 @@ class WorktreeManager:
             "create",
         ]
         remote_url_run = await self._git(
-            request.repo_root, "remote", "get-url", "--", request.remote, check=False
+            request.repo_root, "remote", "get-url", "--push", "--", request.remote, check=False
         )
+        if not remote_url_run.ok:
+            remote_url_run = await self._git(
+                request.repo_root, "remote", "get-url", "--", request.remote, check=False
+            )
         repo_selector = (
             self._github_repo_from_remote_url(remote_url_run.decode())
             if remote_url_run.ok
@@ -2325,6 +2329,39 @@ class WorktreeManager:
 
     # -- non-git working copies ------------------------------------------------
 
+    @staticmethod
+    async def _run_copy_worker(
+        fn: Callable[..., Any], *args: Any, stop: threading.Event | None = None, **kwargs: Any
+    ) -> Any:
+        """Run ``fn`` in a worker thread and never return on cancellation until the thread exits.
+
+        ``asyncio.to_thread`` wraps ``run_in_executor`` without shielding it, so cancelling the
+        await can mark the outer task done while the worker thread is still mutating files.
+        Shielding the executor future and waiting until it finishes guarantees rollback/cleanup
+        and lock release never race with an in-flight worker thread.
+        """
+        loop = asyncio.get_running_loop()
+
+        def runner() -> Any:
+            if stop is not None and stop.is_set():
+                raise _copy_trees.CopyCancelled("copy operation cancelled before start")
+            return fn(*args, **kwargs)
+
+        fut = loop.run_in_executor(None, runner)
+        try:
+            return await asyncio.shield(fut)
+        except BaseException:
+            if stop is not None:
+                stop.set()
+            while not fut.done():
+                try:
+                    await asyncio.shield(fut)
+                except asyncio.CancelledError:
+                    pass
+                except Exception:
+                    break
+            raise
+
     def _copy_lock(self, project_dir: Path) -> asyncio.Lock:
         key = f"copy:{os.path.normcase(os.path.abspath(str(project_dir)))}"
         lock = self._locks.get(key)
@@ -2374,30 +2411,25 @@ class WorktreeManager:
         existed = not claiming.result()
         token = uuid.uuid4().hex
         stop = threading.Event()
-        populating: asyncio.Future[Any] | None = None
         try:
             identity = await asyncio.to_thread(_directory_identity, target)
-            populating = asyncio.ensure_future(
-                asyncio.to_thread(
-                    _copy_trees.populate_copy,
-                    project_dir,
-                    target,
-                    token=token,
-                    dependency_dirs=settings.WORKTREE_DEPENDENCY_DIRS,
-                    max_file_bytes=settings.WORKTREE_UNTRACKED_MAX_BYTES,
-                    max_files=settings.WORKTREE_COPY_MAX_FILES,
-                    max_total_bytes=settings.WORKTREE_COPY_MAX_BYTES,
-                    link_dependencies=link_dependencies,
-                    link_max=settings.WORKTREE_DEPENDENCY_LINK_MAX,
-                    identity=identity,
-                    cancel_event=stop,
-                )
+            start_digest, linked, _scan = await self._run_copy_worker(
+                _copy_trees.populate_copy,
+                project_dir,
+                target,
+                stop=stop,
+                token=token,
+                dependency_dirs=settings.WORKTREE_DEPENDENCY_DIRS,
+                max_file_bytes=settings.WORKTREE_UNTRACKED_MAX_BYTES,
+                max_files=settings.WORKTREE_COPY_MAX_FILES,
+                max_total_bytes=settings.WORKTREE_COPY_MAX_BYTES,
+                link_dependencies=link_dependencies,
+                link_max=settings.WORKTREE_DEPENDENCY_LINK_MAX,
+                identity=identity,
+                cancel_event=stop,
             )
-            start_digest, linked, _scan = await populating
         except BaseException as error:
             stop.set()
-            if populating is not None and not populating.done():
-                await _settle(populating)
 
             async def clean_copy() -> None:
                 try:
@@ -2481,30 +2513,23 @@ class WorktreeManager:
                     **counted,
                 )
             stop = threading.Event()
-            applying: asyncio.Future[Any] | None = None
-            verifying: asyncio.Future[Any] | None = None
             try:
-                applying = asyncio.ensure_future(
-                    asyncio.to_thread(
-                        _copy_trees.apply_copy_changes,
-                        project_dir,
-                        raw_changes,
-                        computed["merged_entries"],
-                        computed["merged_contents"],
-                        cancel_event=stop,
-                    )
+                await self._run_copy_worker(
+                    _copy_trees.apply_copy_changes,
+                    project_dir,
+                    raw_changes,
+                    computed["merged_entries"],
+                    computed["merged_contents"],
+                    stop=stop,
+                    cancel_event=stop,
                 )
-                await applying
-                verifying = asyncio.ensure_future(
-                    asyncio.to_thread(
-                        _copy_trees.verify_copy_changes,
-                        project_dir,
-                        raw_changes,
-                        computed["merged_entries"],
-                        computed["merged_contents"],
-                    )
+                ok = await self._run_copy_worker(
+                    _copy_trees.verify_copy_changes,
+                    project_dir,
+                    raw_changes,
+                    computed["merged_entries"],
+                    computed["merged_contents"],
                 )
-                ok = await verifying
                 if not ok:
                     detail = "the files did not read back as merged"
                 else:
@@ -2514,12 +2539,6 @@ class WorktreeManager:
                     return MergeResult("landed", **counted)
             except BaseException as error:
                 stop.set()
-                # Wait for any in-flight worker thread to exit before restoring backups
-                # so writes cannot continue after rollback or lock release.
-                if applying is not None and not applying.done():
-                    await _settle(applying)
-                if verifying is not None and not verifying.done():
-                    await _settle(verifying)
                 if isinstance(error, OSError):
                     detail = f"writing the changes failed: {error}"
                 else:
@@ -2553,10 +2572,11 @@ class WorktreeManager:
 
     async def _prepare_copy_conflicts(self, worktree: Worktree, conflict: MergeResult) -> Worktree:
         stop = threading.Event()
-        preparing = asyncio.ensure_future(
-            asyncio.to_thread(
+        try:
+            new_start, _conflicts = await self._run_copy_worker(
                 _copy_trees.prepare_copy_conflicts_sync,
                 worktree.path,
+                stop=stop,
                 expected_base=conflict.base,
                 expected_result=conflict.result_tree,
                 merge_id=conflict.merged_tree,
@@ -2564,16 +2584,8 @@ class WorktreeManager:
                 max_file_bytes=settings.WORKTREE_UNTRACKED_MAX_BYTES,
                 cancel_event=stop,
             )
-        )
-        try:
-            new_start, _conflicts = await preparing
         except ValueError as exc:
             raise WorktreeError(str(exc)) from exc
-        except BaseException:
-            stop.set()
-            if not preparing.done():
-                await _settle(preparing)
-            raise
         return replace(worktree, start=new_start)
 
     async def _remove_copy(self, path: Path, *, token: str = "") -> None:

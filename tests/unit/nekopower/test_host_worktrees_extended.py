@@ -889,12 +889,18 @@ async def test_copy_blocks_project_junction_skipped_files_and_drifted_saves(tmp_
         )
     assert not (outside / "pwn.txt").exists()
 
-    # 3. Newly created real `vendor/custom.py` in copy (not a linked dep) IS detected and lands.
+    # 3. Newly created real `vendor/custom.py` in copy (not a linked dep) IS detected and lands,
+    # AND subsequent edits to `vendor/custom.py` also land cleanly without conflicting as a dep dir.
     _write(copy.path / "vendor" / "custom.py", "print('ok')\n")
     assert await manager.has_changes(copy) is True
     landed_vendor = await manager.merge_back(copy)
     assert landed_vendor.status == "landed"
     assert (project / "vendor" / "custom.py").read_text(encoding="utf-8") == "print('ok')\n"
+
+    _write(copy.path / "vendor" / "custom.py", "print('ok-v2')\n")
+    landed_vendor_v2 = await manager.merge_back(copy)
+    assert landed_vendor_v2.status == "landed"
+    assert (project / "vendor" / "custom.py").read_text(encoding="utf-8") == "print('ok-v2')\n"
 
     # 4. If user edits a.txt between compute_copy_merge and apply_copy_changes, landing fails without clobbering.
     _write(copy.path / "a.txt", "from-agent\n")
@@ -969,10 +975,14 @@ async def test_copy_binary_conflict_preserves_both_versions_and_cancel_waits_for
     orig_restore = worktrees._restore
 
     def slow_apply(*args: Any, **kwargs: Any) -> None:
+        import time
+
         entered_apply.set()
         cancel_ev = kwargs.get("cancel_event")
         if cancel_ev is not None:
             cancel_ev.wait(5.0)
+        # Simulate in-flight I/O continuing briefly after cancellation was requested.
+        time.sleep(0.25)
         events.append("apply_exit")
         orig_apply(*args, **kwargs)
 
