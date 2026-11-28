@@ -87,10 +87,10 @@ def uv(monkeypatch, plugin_dir):
 
     monkeypatch.setattr(deps, "_tasks", {})
     monkeypatch.setattr(deps, "run_tool_command", fake)
-    monkeypatch.setattr(
-        deps, "prepare_tool_runtime",
-        lambda **_kwargs: ToolRuntime(sys.executable, "uv", {"UV_INDEX_URL": "https://dev.invalid"}, None, False),
-    )
+    async def runtime(**_kwargs):
+        return ToolRuntime(sys.executable, "uv", {"UV_INDEX_URL": "https://dev.invalid"}, None, False)
+
+    monkeypatch.setattr(deps, "ensure_tool_runtime", runtime)
     monkeypatch.setattr(deps, "_plugin_dir", lambda _plugin_id: plugin_dir)
     monkeypatch.setattr(deps, "_refresh_registry", refresh)
     monkeypatch.setattr(operation_lock, "serialized_plugin_operation", passthrough)
@@ -415,7 +415,11 @@ def test_plugin_dir_replaced_during_install_is_not_swapped_in(uv, plugin_dir):
 
 def test_lock_with_a_url_source_is_refused_before_any_uv_command(uv, plugin_dir, monkeypatch):
     prepared: list[object] = []
-    monkeypatch.setattr(deps, "prepare_tool_runtime", lambda **kwargs: prepared.append(kwargs))
+
+    async def runtime(**kwargs):
+        prepared.append(kwargs)
+
+    monkeypatch.setattr(deps, "ensure_tool_runtime", runtime)
     (plugin_dir / "uv.lock").write_text(
         _LOCK + '\n[[package]]\nname = "evil"\nversion = "1"\nsource = { url = "http://127.0.0.1/x.whl" }\n',
         encoding="utf-8",
@@ -514,3 +518,20 @@ def test_status_never_pairs_awaiting_confirmation_with_an_empty_list():
     sizes = [package["size"] for package in status["packages"]]
     assert status["total_size"] == sum(size for size in sizes if size is not None)
     assert status["size_complete"] is all(size is not None for size in sizes)
+
+
+def test_tools_are_prepared_from_the_event_loop_not_an_executor_worker(uv, plugin_dir, monkeypatch):
+    """Waiting for another preparation must not hold a worker the download itself needs."""
+    import threading
+
+    seen: list[threading.Thread] = []
+
+    async def runtime(**_kwargs):
+        seen.append(threading.current_thread())
+        return ToolRuntime(sys.executable, "uv", {}, None, False)
+
+    monkeypatch.setattr(deps, "ensure_tool_runtime", runtime)
+    planned = asyncio.run(_run())
+    asyncio.run(_run(planned["lock_sha256"]))
+
+    assert len(seen) == 2 and all(thread is threading.main_thread() for thread in seen)

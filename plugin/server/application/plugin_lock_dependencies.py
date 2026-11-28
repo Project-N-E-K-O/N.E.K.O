@@ -6,7 +6,7 @@ A plugin package may ship ``pyproject.toml`` + ``uv.lock`` instead of a
 module for the install plan (package names, versions and sizes), shows it to
 the user and, once confirmed, has it installed:
 
-1. ``prepare_tool_runtime`` provides uv and the Python the plugin runs on.
+1. ``ensure_tool_runtime`` provides uv and the Python the plugin runs on.
 2. ``uv export`` turns the lock into a hashed requirements list and
    ``uv pip install --dry-run`` says what this Python needs from it.
 3. ``uv pip install`` installs into a staging directory beside vendor/,
@@ -64,7 +64,7 @@ from plugin.server.infrastructure.plugin_tool_runtime import (
     ProgressEvent,
     ToolRuntime,
     ToolRuntimeError,
-    prepare_tool_runtime,
+    ensure_tool_runtime,
     run_tool_command,
 )
 from plugin.utils.source_paths import VENDOR_SYNC_BACKUP_PREFIX, VENDOR_SYNC_STAGING_PREFIX
@@ -261,16 +261,30 @@ def _run(task: _Task, runtime: ToolRuntime, command: list[str], label: str, dead
         raise _Failure("tools_failed", f"Could not run uv: {exc}") from exc
 
 
-def _prepare_runtime(task: _Task, deadline: float) -> ToolRuntime:
+async def _prepare_runtime(task: _Task, timeout: float) -> ToolRuntime:
+    """uv and Python via ensure_tool_runtime, on a thread of its own.
+
+    Not from a worker of the loop's default executor: a preparation that
+    waits for another one (the in-process flight) would hold that worker,
+    and the download itself needs the executor for its file operations, so
+    several plugins planning at once could stall every disk-backed request.
+    """
     def progress(event: ProgressEvent) -> None:
         task.phase = f"tools_{event.phase}"
         task.download = (event.downloaded_bytes, event.total_bytes)
 
     task.phase = "tools"
     try:
-        return prepare_tool_runtime(cancel=task.cancel, deadline=deadline, progress=progress)
+        return await ensure_tool_runtime(timeout=timeout, progress=progress)
     except ToolRuntimeError as exc:
         raise _Failure("canceled" if exc.code == "canceled" else "tools_failed", _redact(exc.detail)) from exc
+
+
+def _precheck(task: _Task) -> None:
+    """Refuse before any tool is prepared or run: not lock-installable, or non-index sources."""
+    if not lock_install_applies(task.plugin_dir):
+        raise _Failure("not_applicable", "The plugin has no uv.lock, or ships its own vendor/")
+    _checked_lock(task.plugin_dir)
 
 
 def _snapshot(plugin_dir: Path, work_dir: Path) -> tuple[Path, str]:
@@ -319,14 +333,11 @@ def _checked_lock(project: Path) -> dict[str, object]:
     return lock_data
 
 
-def _plan_sync(task: _Task, deadline: float) -> None:
-    if not lock_install_applies(task.plugin_dir):
-        raise _Failure("not_applicable", "The plugin has no uv.lock, or ships its own vendor/")
+def _plan_sync(task: _Task, runtime: ToolRuntime, deadline: float) -> None:
     with tempfile.TemporaryDirectory(prefix="neko-lock-plan-") as temporary:
         work_dir = Path(temporary)
         project, digest = _snapshot(task.plugin_dir, work_dir)
-        lock_data = _checked_lock(project)
-        runtime = _prepare_runtime(task, deadline)
+        lock_data = _checked_lock(project)  # the snapshot uv reads, checked again
         requirements = _export(task, runtime, project, work_dir, deadline)
         result = _run(
             task, runtime,
@@ -357,7 +368,7 @@ def _swap_in(plugin_dir: Path, staging: Path) -> None:
         shutil.rmtree(backup, ignore_errors=True)
 
 
-def _install_sync(task: _Task, deadline: float) -> Path:
+def _install_sync(task: _Task, runtime: ToolRuntime, deadline: float) -> Path:
     """Install into a staging directory beside vendor/; returns it, swap not done yet."""
     staging = task.plugin_dir / f"{VENDOR_SYNC_STAGING_PREFIX}{secrets.token_hex(4)}"
     try:
@@ -377,7 +388,6 @@ def _install_sync(task: _Task, deadline: float) -> Path:
             if digest != task.lock_sha256:
                 raise _Failure("lock_changed", "uv.lock changed after the user confirmed it")
             _checked_lock(project)
-            runtime = _prepare_runtime(task, deadline)
             requirements = _export(task, runtime, project, work_dir, deadline)
             task.phase = "installing"
             result = _run(
@@ -477,13 +487,17 @@ async def _execute(task: _Task, *, install: bool) -> None:
                 install = False
         if not install or task.lock_sha256 is None:
             task.state = "planning"
-            await asyncio.to_thread(_plan_sync, task, time.monotonic() + _PLAN_TIMEOUT_SECONDS)
+            await asyncio.to_thread(_precheck, task)
+            runtime = await _prepare_runtime(task, _PLAN_TIMEOUT_SECONDS)
+            await asyncio.to_thread(_plan_sync, task, runtime, time.monotonic() + _PLAN_TIMEOUT_SECONDS)
             if task.confirmed_lock_sha256 != task.lock_sha256:
                 task.state, task.phase = "awaiting_confirmation", None
                 return
         task.state = "installing"
         task.confirmed_lock_sha256 = task.lock_sha256
-        staging = await asyncio.to_thread(_install_sync, task, time.monotonic() + _INSTALL_TIMEOUT_SECONDS)
+        await asyncio.to_thread(_precheck, task)
+        runtime = await _prepare_runtime(task, _INSTALL_TIMEOUT_SECONDS)
+        staging = await asyncio.to_thread(_install_sync, task, runtime, time.monotonic() + _INSTALL_TIMEOUT_SECONDS)
         task.phase = "committing"
         await _commit(task, staging)
         task.phase = "verifying"

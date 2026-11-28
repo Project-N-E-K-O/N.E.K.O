@@ -4539,3 +4539,24 @@ def test_start_gate_treats_a_vendor_built_for_another_python_as_pending(tmp_path
 
     lock_install.write_lock_marker(tmp_path / "vendor", lock_install.lock_sha256(tmp_path), python="cp27-plan9")
     assert module._lock_dependencies_pending(tmp_path, False) is True
+
+
+@pytest.mark.plugin_unit
+def test_registry_flags_a_stale_lock_installed_vendor_without_missing_dependencies(tmp_path: Path) -> None:
+    from plugin.core.registry import lock_dependencies_stale, missing_dependencies_error_type
+    from plugin.neko_plugin_cli.core import uv_lock_install as lock_install
+
+    (tmp_path / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    (tmp_path / "vendor").mkdir()
+    lock_install.write_lock_marker(tmp_path / "vendor", lock_install.lock_sha256(tmp_path))
+    assert lock_dependencies_stale(tmp_path) is False
+
+    (tmp_path / "uv.lock").write_text("version = 1\n# edited\n", encoding="utf-8")
+    assert lock_dependencies_stale(tmp_path) is True
+    assert missing_dependencies_error_type(tmp_path) == "PythonDependenciesPending"
+
+    shipped = tmp_path / "shipped"
+    (shipped / "vendor").mkdir(parents=True)
+    (shipped / "vendor" / "dep.py").write_text("", encoding="utf-8")
+    (shipped / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    assert lock_dependencies_stale(shipped) is False

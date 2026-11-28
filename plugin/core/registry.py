@@ -212,6 +212,21 @@ def missing_dependencies_error_type(plugin_dir: Path) -> str:
     return PYTHON_DEPENDENCIES_PENDING if applies else "MissingPythonDependencies"
 
 
+def lock_dependencies_stale(plugin_dir: Path) -> bool:
+    """A lock-installed vendor/ made for another uv.lock, Python or platform.
+
+    Its versions may still satisfy the declared requirements, so the missing
+    check alone would list the plugin as stopped; the start gate refuses it
+    and the plugin manager offers to install again, so the list says so too.
+    """
+    from plugin.neko_plugin_cli.core.uv_lock_install import lock_install_applies, lock_vendor_stale
+
+    try:
+        return lock_install_applies(plugin_dir) and lock_vendor_stale(plugin_dir)
+    except OSError:
+        return False
+
+
 def _plugin_vendor_path(toml_path: Path) -> Path:
     return toml_path.parent / "vendor"
 
@@ -2271,9 +2286,9 @@ def load_plugins_from_roots(
             ctx.python_requirements,
             search_paths=ctx.python_requirement_paths,
         )
-        if unsatisfied_python_requirements and missing_dependencies_error_type(toml_path.parent) == (
+        if (unsatisfied_python_requirements and missing_dependencies_error_type(toml_path.parent) == (
             PYTHON_DEPENDENCIES_PENDING
-        ):
+        )) or (not unsatisfied_python_requirements and lock_dependencies_stale(toml_path.parent)):
             logger.info(
                 "Plugin {}: Python dependencies not installed yet; they install from its uv.lock on first start: {}",
                 pid,
@@ -2284,7 +2299,11 @@ def load_plugins_from_roots(
                 logger,
                 plugin_id=pid,
                 error_type=PYTHON_DEPENDENCIES_PENDING,
-                error_message=f"Python dependencies not installed yet: {unsatisfied_python_requirements}",
+                error_message=(
+                    f"Python dependencies not installed yet: {unsatisfied_python_requirements}"
+                    if unsatisfied_python_requirements
+                    else "Python dependencies need installing again: vendor/ was made for another uv.lock or Python"
+                ),
                 error_phase="python_requirements",
             )
             continue
