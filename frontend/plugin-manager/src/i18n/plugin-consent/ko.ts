@@ -188,6 +188,32 @@ const messages: PluginConsentMessages = {
       busy: "다른 플러그인 작업이 진행 중입니다. 잠시 후 다시 시도하세요.",
     },
   },
+  dialogs: {
+    decideItems: "항목별로 결정",
+    undeclared: "선언 없음, 스캔에서 발견",
+    start: "시작",
+    startUndecided: "시작 (미결정 {n}개)",
+    done: "완료",
+    doneUndecided: "완료 (미결정 {n}개)",
+    first: {
+      title: "「{name}」 시작 전에",
+      reviewTitle: "「{name}」에 필요한 권한",
+      intro: "아래 권한이 필요합니다. 항목별로 결정해 주세요. 나중에 「권한」 탭에서 언제든 바꿀 수 있습니다.",
+      later: "사용할 때 「처리 대기」에서 결정하도록 요청합니다: {names}",
+      notStart: "시작 안 함",
+    },
+    upgrade: {
+      title: "「{name}」이(가) {version}(으)로 업데이트됨",
+      intro: "새 버전에서 아래 권한을 추가로 요청합니다. 항목별로 결정해 주세요.",
+      unchanged: "기존 권한 {n}개는 그대로이며 다시 묻지 않습니다",
+      notStart: "나중에",
+    },
+    firstUse: {
+      title: "「{name}」이(가) 「{permission}」을(를) 사용하려 합니다",
+      when: "사용 가능한 때",
+      gone: "이 항목은 더 이상 결정할 필요가 없습니다.",
+    },
+  },
   privacy: {
     title: "개인정보",
     subtitle: "내 데이터와 컴퓨터 자원별로: 어떤 플러그인이 쓸 수 있는지, 최근 누가 썼는지",

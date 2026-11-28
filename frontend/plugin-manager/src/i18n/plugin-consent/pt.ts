@@ -188,6 +188,32 @@ const messages: PluginConsentMessages = {
       busy: "Outra operação de plugin está em andamento. Tente novamente mais tarde.",
     },
   },
+  dialogs: {
+    decideItems: "Decidir item por item",
+    undeclared: "Não declarado, encontrado pela análise",
+    start: "Iniciar",
+    startUndecided: "Iniciar ({n} ainda sem decisão)",
+    done: "Concluir",
+    doneUndecided: "Concluir ({n} ainda sem decisão)",
+    first: {
+      title: "Antes de iniciar “{name}”",
+      reviewTitle: "Permissões que “{name}” precisa",
+      intro: "Ele precisa das permissões abaixo. Decida cada uma. Você pode alterá-las a qualquer momento na aba Permissões.",
+      later: "Quando ele usar estas, elas aparecerão em “Aguardando você”: {names}",
+      notStart: "Não iniciar",
+    },
+    upgrade: {
+      title: "“{name}” atualizado para {version}",
+      intro: "A nova versão pede as permissões abaixo. Decida cada uma.",
+      unchanged: "As {n} permissões anteriores continuam iguais e não serão perguntadas de novo",
+      notStart: "Agora não",
+    },
+    firstUse: {
+      title: "“{name}” quer usar “{permission}”",
+      when: "Quando pode",
+      gone: "Este item não precisa mais de decisão.",
+    },
+  },
   privacy: {
     title: "Privacidade",
     subtitle: "Pelos seus dados e recursos do computador: quais plugins podem usá-los e quem os usou recentemente",

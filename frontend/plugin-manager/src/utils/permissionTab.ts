@@ -86,10 +86,12 @@ export function enforcementTag(row: Pick<PanelRow, 'enforced' | 'usage_tracked'>
  * The condition to grant with. A required item has no "when it may" control:
  * it is granted "any time" when the server allows it (the declaration covers
  * background use), so background use is not left off with no way to turn it on.
+ * A stored "any time" the server no longer allows falls back to "while in use".
  */
 export function grantCondition(row: PanelRow, chosen?: PermissionCondition): PermissionCondition {
   if (chosen) return chosen
-  if (row.declared?.level === 'require' && row.anytime_allowed === true) return 'anytime'
+  if (row.anytime_allowed !== true) return 'in_use'
+  if (row.declared?.level === 'require') return 'anytime'
   return row.condition ?? 'in_use'
 }
 
@@ -126,6 +128,8 @@ export function usageLine(
   lostAt: string | null,
 ): UsageLine {
   if (!row.usage_tracked) return null
+  // A system use reported lost after the last recorded one may be the real last use.
+  if (row.last_used && row.permission.startsWith('system.') && lostAt && isAfter(lostAt, row.last_used.at)) return null
   if (row.last_used) {
     return {
       kind: 'last',
@@ -144,6 +148,13 @@ export function usageLine(
     return granted ? null : { kind: 'unused30d' }
   }
   return history.last_use_since ? { kind: 'unusedSince', since: history.last_use_since } : null
+}
+
+function isAfter(a: string, b: string): boolean {
+  const left = Date.parse(a)
+  const right = Date.parse(b)
+  // An unreadable time cannot show the last use is complete.
+  return Number.isNaN(left) || Number.isNaN(right) || left > right
 }
 
 /** Uses while undecided: "N times" or "at least N times". */
@@ -288,7 +299,9 @@ const isObject = (value: unknown): value is Record<string, unknown> =>
 export function validPanel(value: unknown): value is PermissionPanel {
   return isObject(value) && Array.isArray(value.rows) && Array.isArray(value.tiers)
     && isObject(value.counts) && isObject(value.analysis) && isObject(value.source)
-    && isObject(value.blind_spots) && isObject(value.developer)
+    && isObject(value.blind_spots) && Array.isArray(value.blind_spots.files)
+    && isObject(value.developer) && isObject(value.developer.findings)
+    && Array.isArray(value.developer.blind_spots)
 }
 export function validCatalog(value: unknown): value is PermissionCatalog {
   return isObject(value) && Array.isArray(value.privacy_groups)

@@ -1,6 +1,5 @@
 <template>
   <section class="perm-tab perm-palette">
-    <PluginLegacyConsentBanner :plugin-id="pluginId" @changed="load()" />
     <div v-if="loading && !panel" class="perm-tab__state">{{ t('pluginConsent.tab.loading') }}</div>
     <div v-else-if="!panel" class="perm-tab__state">
       {{ t('pluginConsent.tab.loadFailed') }}
@@ -21,6 +20,15 @@
         <span v-if="isIncomplete" class="perm-tag" data-test="incomplete">
           {{ t('pluginConsent.tab.notices.incomplete') }}
         </span>
+        <el-button
+          v-if="nextDialog"
+          class="perm-summary__decide"
+          type="primary"
+          data-test="decide-items"
+          @click="openDialog(nextDialog)"
+        >
+          {{ t('pluginConsent.dialogs.decideItems') }}
+        </el-button>
         <el-button
           v-if="running"
           class="perm-summary__stop"
@@ -291,6 +299,15 @@
           </p>
         </div>
       </details>
+      <PluginPermissionDialog
+        v-if="dialog"
+        :key="dialogKey"
+        :panel="panel"
+        :pending="pending"
+        :request="dialog"
+        :plugin-name="pluginName"
+        @close="closeDialog"
+      />
     </template>
   </section>
 </template>
@@ -318,7 +335,8 @@ import {
 import { usePluginStore } from '@/stores/plugin'
 import { usePluginConsentState } from '@/stores/pluginConsentState'
 import { usePluginStopAction } from '@/composables/usePluginStopAction'
-import PluginLegacyConsentBanner from './PluginLegacyConsentBanner.vue'
+import PluginPermissionDialog from './PluginPermissionDialog.vue'
+import { dialogFor, type DialogRequest } from '@/utils/permissionDialogs'
 import { capabilityMessageKey } from '@/utils/pluginCapabilities'
 import {
   blindSpotFiles,
@@ -364,6 +382,19 @@ const expanded = reactive(new Set<string>())
 const openTiers = reactive(new Set<string>())
 
 const running = computed(() => store.getPluginById(props.pluginId)?.status === 'running')
+const pluginName = computed(() => store.getPluginById(props.pluginId)?.name || props.pluginId)
+/** What "Decide item by item" opens: ①, ③, or ② for the first item used while undecided. */
+const nextDialog = computed(() => (panel.value ? dialogFor(panel.value, pending.value) : null))
+const dialog = ref<DialogRequest | null>(null)
+let dialogKey = 0
+function openDialog(request: DialogRequest) {
+  dialogKey++
+  dialog.value = request
+}
+function closeDialog(result: { changed: boolean }) {
+  dialog.value = null
+  if (result.changed) void load()
+}
 const sections = computed(() => (panel.value ? tierSections(panel.value) : []))
 const spotFiles = computed(() => (panel.value ? blindSpotFiles(panel.value) : []))
 const isIncomplete = computed(() => (panel.value ? incomplete(panel.value, pending.value) : false))
@@ -466,6 +497,8 @@ async function load(timed = false) {
   }
 }
 onMounted(() => load())
+// Lets the detail page (and tests) read the tab again.
+defineExpose({ load })
 onBeforeUnmount(() => {
   unmounted = true
   stopPolling()
@@ -624,9 +657,11 @@ async function save(row: PanelRow, run: () => Promise<PermissionPanel>) {
   loading.value = false
   try {
     const next = await run()
-    if (validPanel(next)) shown(next)
-    // The plugin-wide consent line above reads the shared record: it may have moved too.
-    void consentState.load(props.pluginId).catch(() => undefined)
+    if (validPanel(next)) {
+      // The last-use history read before this answer may not match its rows.
+      audit.value = null
+      shown(next)
+    }
     // Uses while undecided count from the last answer, and the last-use
     // coverage may have moved: both are read again.
     const [nextPending, nextAudit] = await Promise.all([
@@ -651,6 +686,8 @@ async function save(row: PanelRow, run: () => Promise<PermissionPanel>) {
     audit.value = validHistory(nextAudit) ? nextAudit : null
   } catch (error) {
     ElMessage.error(t(decisionErrorKey(error)))
+    // The server may have stored the decision before the answer was lost: read what it holds.
+    reloadAfterSave = true
   } finally {
     saving--
     busy.value = null
@@ -739,11 +776,22 @@ const RowFacts = defineComponent({
       const uses = firstUse(pending.value, p.plugin_id, row)
       if (uses) {
         children.push(
-          h(
-            'p',
-            { class: 'perm-cell__line perm-muted', 'data-test': `first-use-${row.permission}` },
-            `${t(uses.atLeast ? 'pluginConsent.tab.firstUseAtLeast' : 'pluginConsent.tab.firstUse', { n: uses.count })} · ${t('pluginConsent.tab.wouldBlock')}`,
-          ),
+          h('p', { class: 'perm-cell__line perm-muted', 'data-test': `first-use-${row.permission}` }, [
+            `${t(uses.atLeast ? 'pluginConsent.tab.firstUseAtLeast' : 'pluginConsent.tab.firstUse', { n: uses.count })} · ${t('pluginConsent.tab.wouldBlock')} `,
+            h(
+              'a',
+              {
+                href: '#',
+                class: 'perm-link',
+                'data-test': `first-use-decide-${row.permission}`,
+                onClick: (event: Event) => {
+                  event.preventDefault()
+                  openDialog({ kind: 'firstUse', permission: row.permission })
+                },
+              },
+              `${t('pluginConsent.dialogs.decideItems')} ›`,
+            ),
+          ]),
         )
       }
       if (partialBlock(catalog.value, row.permission)) {
@@ -785,8 +833,12 @@ const RowFacts = defineComponent({
   margin-left: 4px;
   color: #c2410c;
 }
+.perm-summary__decide,
 .perm-summary__stop {
   margin-left: auto;
+}
+.perm-summary__decide + .perm-summary__stop {
+  margin-left: 0;
 }
 .perm-notice {
   margin: 0;

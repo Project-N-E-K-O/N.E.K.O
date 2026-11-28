@@ -187,6 +187,32 @@ const messages: PluginConsentMessages = {
       busy: "有其他外掛操作正在進行，請稍後再試。",
     },
   },
+  dialogs: {
+    decideItems: "逐項決定",
+    undeclared: "沒聲明，掃描發現",
+    start: "啟動",
+    startUndecided: "啟動（還有 {n} 項沒決定）",
+    done: "完成",
+    doneUndecided: "完成（還有 {n} 項沒決定）",
+    first: {
+      title: "啟動「{name}」之前",
+      reviewTitle: "「{name}」需要的權限",
+      intro: "它需要下面這些權限，請逐項決定。之後隨時可以在「權限」頁修改。",
+      later: "等它用到時，會在「待你處理」裡請你決定：{names}",
+      notStart: "不啟動",
+    },
+    upgrade: {
+      title: "「{name}」更新到 {version}",
+      intro: "新版本多要了下面的權限，請逐項決定。",
+      unchanged: "原有的 {n} 項權限不變，不再重複詢問",
+      notStart: "先不啟動",
+    },
+    firstUse: {
+      title: "「{name}」想用「{permission}」",
+      when: "何時可以",
+      gone: "這一項已經不需要決定了。",
+    },
+  },
   privacy: {
     title: "隱私",
     subtitle: "依你的資料和電腦資源看：哪些外掛能用、最近誰用過",

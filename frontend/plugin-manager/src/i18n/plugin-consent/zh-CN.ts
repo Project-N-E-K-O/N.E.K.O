@@ -187,6 +187,32 @@ const messages: PluginConsentMessages = {
       busy: "有别的插件操作正在进行，请稍后再试。",
     },
   },
+  dialogs: {
+    decideItems: "逐项决定",
+    undeclared: "没声明，扫描发现",
+    start: "启动",
+    startUndecided: "启动（还有 {n} 项没决定）",
+    done: "完成",
+    doneUndecided: "完成（还有 {n} 项没决定）",
+    first: {
+      title: "启动「{name}」之前",
+      reviewTitle: "「{name}」需要的权限",
+      intro: "它需要下面这些权限，请逐项决定。之后随时可以在「权限」页改。",
+      later: "等它用到时，会在「待你处理」里请你决定：{names}",
+      notStart: "不启动",
+    },
+    upgrade: {
+      title: "「{name}」更新到 {version}",
+      intro: "新版本多要了下面的权限，请逐项决定。",
+      unchanged: "原有的 {n} 项权限不变，不再重复问",
+      notStart: "先不启动",
+    },
+    firstUse: {
+      title: "「{name}」想用「{permission}」",
+      when: "何时可以",
+      gone: "这一项已经不需要决定了。",
+    },
+  },
   privacy: {
     title: "隐私",
     subtitle: "按你的数据和电脑资源看：哪些插件能用、最近谁用过",

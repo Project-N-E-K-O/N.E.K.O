@@ -188,6 +188,32 @@ const messages: PluginConsentMessages = {
       busy: "ほかのプラグイン操作が進行中です。後でもう一度お試しください。",
     },
   },
+  dialogs: {
+    decideItems: "項目ごとに決める",
+    undeclared: "宣言なし・スキャンで検出",
+    start: "起動",
+    startUndecided: "起動（未決定 {n} 件）",
+    done: "完了",
+    doneUndecided: "完了（未決定 {n} 件）",
+    first: {
+      title: "「{name}」を起動する前に",
+      reviewTitle: "「{name}」に必要な権限",
+      intro: "以下の権限が必要です。項目ごとに決めてください。あとから「権限」タブでいつでも変更できます。",
+      later: "使われたときに「対応待ち」で決めてもらいます：{names}",
+      notStart: "起動しない",
+    },
+    upgrade: {
+      title: "「{name}」が {version} に更新されました",
+      intro: "新しいバージョンでは以下の権限が追加で必要です。項目ごとに決めてください。",
+      unchanged: "既存の {n} 件の権限は変わらず、再確認しません",
+      notStart: "今は起動しない",
+    },
+    firstUse: {
+      title: "「{name}」が「{permission}」を使おうとしています",
+      when: "使用できるとき",
+      gone: "この項目はもう決める必要がありません。",
+    },
+  },
   privacy: {
     title: "プライバシー",
     subtitle: "あなたのデータとパソコンの資源ごとに：どのプラグインが使えるか、最近だれが使ったか",

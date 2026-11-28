@@ -190,6 +190,32 @@ const messages = {
       busy: "Another plugin operation is in progress. Please try again later.",
     },
   },
+  dialogs: {
+    decideItems: "Decide item by item",
+    undeclared: "Not declared, found by the scan",
+    start: "Start",
+    startUndecided: "Start ({n} not decided yet)",
+    done: "Done",
+    doneUndecided: "Done ({n} not decided yet)",
+    first: {
+      title: "Before starting “{name}”",
+      reviewTitle: "Permissions “{name}” needs",
+      intro: "It needs the permissions below. Please decide each one. You can change them any time on the Permissions tab.",
+      later: "When it uses these, they will wait for you under “Needs you”: {names}",
+      notStart: "Don't start",
+    },
+    upgrade: {
+      title: "“{name}” updated to {version}",
+      intro: "The new version asks for the permissions below. Please decide each one.",
+      unchanged: "The {n} earlier permission(s) stay as they are and are not asked again",
+      notStart: "Not now",
+    },
+    firstUse: {
+      title: "“{name}” wants to use “{permission}”",
+      when: "When it may",
+      gone: "This item no longer needs a decision.",
+    },
+  },
   privacy: {
     title: "Privacy",
     subtitle: "By your data and computer resources: which plugins can use them, who used them lately",

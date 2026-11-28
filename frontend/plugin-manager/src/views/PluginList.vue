@@ -521,7 +521,6 @@ import type { AxiosError } from 'axios'
 import { Refresh, RefreshRight, Box, Connection, Finished, Sort, CircleClose, Close, VideoPlay, VideoPause, Delete, Upload, Download, ShoppingCart, ArrowRight, ArrowLeft, User, Top, MoreFilled, Check } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { usePluginStartGate } from '@/composables/usePluginStartGate'
-import { usePluginConsentNotices } from '@/composables/pluginConsentNotices'
 import { usePluginStore } from '@/stores/plugin'
 import { useMetricsStore } from '@/stores/metrics'
 import { useMarketVersionsStore, type MarketVersionTarget } from '@/stores/marketVersions'
@@ -655,10 +654,6 @@ const dangerDialogMessage = computed(() => {
 
 const rawPlugins = computed(() => pluginStore.pluginSummariesWithStatus)
 
-// Each time this page is opened, list running plugins that still have
-// unconfirmed capabilities; dismissing the notice decides nothing, so it
-// reappears on the next open.
-usePluginConsentNotices()
 const duplicateDisplayNamePluginIds = computed(() => [
   ...findDuplicatePluginDisplayNameIds(rawPlugins.value, locale.value),
 ])
