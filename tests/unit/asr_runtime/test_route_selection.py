@@ -472,3 +472,96 @@ async def test_provider_preference_snapshot_beats_the_shared_field_and_sticks(
     # and reuses the accepted session choice, not the overwritten shared field.
     await runtime._start_independent_asr_if_enabled("audio")
     assert start_mock.await_args.kwargs["provider_preference"] == "faster_whisper"
+
+
+# Speech-recognition slot (API settings): it overrides the free Core and the
+# microphone panel's toggle.
+
+
+@pytest.mark.parametrize(
+    ("persisted_enabled", "handshake_enabled"),
+    [(False, None), (True, None), (False, False)],
+)
+async def test_asr_slot_routes_the_free_core_through_independent_asr(
+    monkeypatch,
+    persisted_enabled: bool,
+    handshake_enabled: bool | None,
+) -> None:
+    runtime = _Runtime()
+    runtime.core_api_type = "free"
+    runtime.asr_slot_override = object()
+    monkeypatch.setattr(
+        core_module,
+        "aload_global_conversation_settings",
+        AsyncMock(return_value={"independentAsrEnabled": persisted_enabled}),
+    )
+    start_mock = AsyncMock(
+        return_value=AsrStartResult(
+            status=AsrStartStatus.FAILED,
+            failure_code="ASR_START_STALE",
+        )
+    )
+    monkeypatch.setattr(runtime._asr_runtime, "start", start_mock)
+    runtime.set_independent_asr_handshake(handshake_enabled)
+
+    await runtime._start_independent_asr_if_enabled("audio")
+
+    start_mock.assert_awaited_once()
+    assert runtime._asr_route_mode != "native"
+
+
+async def test_asr_slot_starts_with_defaults_when_preferences_are_unreadable(
+    monkeypatch,
+) -> None:
+    # The slot's routing does not depend on user_preferences.json, so a broken
+    # file must not take the microphone away; it must not pick native either.
+    runtime = _Runtime()
+    runtime.core_api_type = "free"
+    runtime.asr_slot_override = object()
+    monkeypatch.setattr(
+        core_module,
+        "aload_global_conversation_settings",
+        AsyncMock(side_effect=OSError("preferences unavailable")),
+    )
+    start_mock = AsyncMock(
+        return_value=AsrStartResult(
+            status=AsrStartStatus.FAILED,
+            failure_code="ASR_START_STALE",
+        )
+    )
+    monkeypatch.setattr(runtime._asr_runtime, "start", start_mock)
+    runtime.set_independent_asr_handshake(False)
+
+    await runtime._start_independent_asr_if_enabled("audio")
+
+    start_mock.assert_awaited_once()
+    assert runtime._asr_route_mode != "native"
+
+
+async def test_unreadable_asr_slot_is_treated_as_active_never_native(
+    monkeypatch,
+) -> None:
+    # A slot read failure is "unknown", not "no slot": the free Core must not
+    # quietly use the native route. The start goes to the provider resolver,
+    # which admits only a route that keeps the audio on this machine.
+    runtime = _Runtime()
+    runtime.core_api_type = "free"
+    runtime.asr_slot_override = OSError("core config unreadable")
+    monkeypatch.setattr(
+        core_module,
+        "aload_global_conversation_settings",
+        AsyncMock(return_value={"independentAsrEnabled": False}),
+    )
+    start_mock = AsyncMock(
+        return_value=AsrStartResult(
+            status=AsrStartStatus.FAILED,
+            failure_code="ASR_START_STALE",
+        )
+    )
+    monkeypatch.setattr(runtime._asr_runtime, "start", start_mock)
+    runtime.set_independent_asr_handshake(False)
+
+    await runtime._start_independent_asr_if_enabled("audio")
+
+    start_mock.assert_awaited_once()
+    assert runtime._asr_route_mode != "native"

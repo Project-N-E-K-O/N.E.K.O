@@ -614,3 +614,24 @@ async def test_rejects_utterance_longer_than_28_seconds() -> None:
     await asyncio.wait_for(requests.join(), 1)
     assert client.models.calls == []
     await _shutdown(task, requests, responses)
+
+
+@pytest.mark.parametrize(
+    ("model", "expected"),
+    [
+        ("gemini-3.1-flash-lite", {"thinking_level": "minimal"}),
+        # 3.7 / 3.8 Flash reject "minimal"; their floor is "low".
+        ("gemini-3.8-flash", {"thinking_level": "low"}),
+        ("gemini-3.7-flash", {"thinking_level": "low"}),
+        # Pre-3 models do not know thinking_level at all.
+        ("gemini-2.5-flash", None),
+    ],
+)
+async def test_thinking_config_follows_the_selected_model(model: str, expected: Any) -> None:
+    client = _FakeClient(SimpleNamespace(parsed={"transcript": "ok"}))
+    text = await gemini.request_gemini_transcript(client, b"wav", model=model)
+
+    assert text == "ok"
+    call = client.models.calls[0]
+    assert call["model"] == model
+    assert call["config"].get("thinking_config") == expected

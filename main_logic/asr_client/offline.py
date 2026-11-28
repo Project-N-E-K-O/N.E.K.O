@@ -59,7 +59,10 @@ from . import (
     _optional_dependency_available,
     _resolve_asr_selection,
     _resolve_session_language,
+    _resolve_slot_selection,
     _resolve_user_selected_provider,
+    _runs_locally,
+    AsrConfigUnreadable,
 )
 from ._infra import AsrSessionConfig, RealtimeAsrSession
 from ._registry_meta import AsrOfflineSpec, AsrProviderMeta
@@ -75,6 +78,7 @@ from .workers._shared import (
 )
 from .workers.faster_whisper import transcribe_pcm16_locally
 from .workers.glm import request_glm_transcript
+from .workers.slot_request import request_slot_transcript
 
 
 logger = logging.getLogger(__name__)
@@ -131,6 +135,10 @@ _FAILURE_KIND_CODES: dict[AsrRequestFailureKind, str] = {
     "rate_limited": ASR_RATE_LIMITED,
     "timeout": ASR_OFFLINE_TIMEOUT,
     "invalid_response": ASR_OFFLINE_INVALID_RESPONSE,
+    # Voice messages keep one "provider failed" code for these; the split
+    # matters for the settings page's connectivity test.
+    "server_error": ASR_OFFLINE_PROVIDER_FAILED,
+    "unreachable": ASR_OFFLINE_PROVIDER_FAILED,
     "failed": ASR_OFFLINE_PROVIDER_FAILED,
 }
 
@@ -149,6 +157,7 @@ _AVAILABILITY_CODES: dict[_AsrProviderAvailability, str] = {
     _AsrProviderAvailability.BLOCKED_BACKEND: ASR_BACKEND_BLOCKED,
     _AsrProviderAvailability.MISSING_CREDENTIALS: ASR_CREDENTIALS_MISSING,
     _AsrProviderAvailability.MISSING_DEPENDENCY: ASR_DEPENDENCY_MISSING,
+    _AsrProviderAvailability.MISCONFIGURED: ASR_INVALID_CONFIG,
 }
 
 _OPENAI_TRANSCRIPTION_URL = "https://api.openai.com/v1/audio/transcriptions"
@@ -374,6 +383,24 @@ async def _request_faster_whisper(
     )
 
 
+async def _request_slot(
+    transcriber: "OfflineAsrTranscriber", pcm16: bytes, language: str, client: Any
+) -> str:
+    endpoint = transcriber._selection._slot_endpoint
+    if endpoint is None:
+        raise AsrRequestFailure(
+            "ASR_SLOT_NOT_CONFIGURED",
+            "speech-recognition slot has no endpoint",
+        )
+    return await request_slot_transcript(
+        client,
+        endpoint,
+        transcriber._api_key,
+        encode_pcm16_wav(pcm16),
+        language=language,
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class _RequestBackend:
     request: SegmentRequest
@@ -396,6 +423,13 @@ _REQUEST_BACKENDS: dict[str, _RequestBackend] = {
         concurrent=False,
         outer_timeout=False,
     ),
+    # Speech-recognition slot: the selection carries the URL and model.
+    "openai_request": _RequestBackend(_request_slot, client="http"),
+    "grok_request": _RequestBackend(_request_slot, client="http"),
+    "glm_request": _RequestBackend(_request_slot, client="http"),
+    "qwen_request": _RequestBackend(_request_slot, client="http"),
+    "custom": _RequestBackend(_request_slot, client="http"),
+    "gemini_request": _RequestBackend(_request_slot, client="gemini", outer_timeout=False),
 }
 
 
@@ -651,7 +685,7 @@ def _local_offline_selection() -> _AsrSelection | None:
     for provider_key, meta in _ASR_PROVIDER_REGISTRY.items():
         if not (
             meta.user_selectable
-            and not meta.requires_credential
+            and meta.runs_locally
             and meta.offline.supported
             and meta.availability is _AsrProviderAvailability.IMPLEMENTED
             and provider_key in _IMPLEMENTED_WORKERS
@@ -675,10 +709,11 @@ def resolve_offline_transcriber(
 ) -> OfflineAsrTranscriber:
     """Choose the offline route for the current Core and user settings.
 
-    Selection mirrors realtime ASR: an explicit user-selectable provider
-    (``independentAsrProviderPreference``) wins, then the region-driven
-    Soniox preference, then the Core's own provider. A Core without
-    independent ASR (``free``) has no cloud route; it may only use an
+    Selection mirrors realtime ASR: the speech-recognition slot wins on every
+    Core, then an explicit user-selectable provider
+    (``independentAsrProviderPreference``), then the region-driven Soniox
+    preference, then the Core's own provider. Without the slot, a Core
+    without independent ASR (``free``) has no cloud route; it may only use an
     installed local provider. Raises :class:`AsrOfflineError`.
 
     Reads the core config and probes optional packages (filesystem access):
@@ -691,20 +726,50 @@ def resolve_offline_transcriber(
         raise AsrOfflineError(ASR_UNKNOWN_CORE, core_key or "<empty>")
 
     try:
-        selection = _resolve_user_selected_provider(
-            route,
-            provider_preference,
-            ignore_route_capability=True,
+        # The speech-recognition slot wins over every other route, exactly as
+        # in realtime selection, so voice messages and the microphone never
+        # disagree about where audio is sent. Imported here so tests can
+        # replace the package's reader.
+        from . import _read_core_config
+
+        try:
+            slot_config: dict | None = _read_core_config()
+        except AsrConfigUnreadable:
+            # The slot is unknown: only a route that keeps the audio on this
+            # machine may run (same rule as realtime selection).
+            slot_config = None
+        selection = (
+            _resolve_slot_selection(slot_config) if slot_config is not None else None
         )
+        if selection is None:
+            selection = _resolve_user_selected_provider(
+                route,
+                provider_preference,
+                ignore_route_capability=True,
+            )
+            if (
+                slot_config is None
+                and selection is not None
+                and not _runs_locally(selection.provider_key)
+            ):
+                selection = None
         if selection is None and not route.capabilities.supports_independent_asr:
             selection = _local_offline_selection()
             if selection is None:
                 raise AsrOfflineError(
-                    ASR_OFFLINE_NOT_SUPPORTED,
-                    "this Core has no offline ASR route",
+                    ASR_INVALID_CONFIG if slot_config is None else ASR_OFFLINE_NOT_SUPPORTED,
+                    "core config unreadable"
+                    if slot_config is None
+                    else "this Core has no offline ASR route",
                     provider_key=route.provider_key,
                 )
         if selection is None:
+            if slot_config is None:
+                raise AsrOfflineError(
+                    ASR_INVALID_CONFIG,
+                    "core config unreadable",
+                    provider_key=route.provider_key,
+                )
             selection = _resolve_asr_selection(core_key, user_region=user_region)
     except AsrOfflineError:
         raise

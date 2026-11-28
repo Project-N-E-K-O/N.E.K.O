@@ -80,7 +80,7 @@ def test_lifecycle_blocked_clears_independent_asr_and_shows_failure_toast():
 def test_core_capability_refresh_failures_fail_open_and_coalesce_requests_harness():
     source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
     start = source.index(
-        "function publishCoreApiCapability(provider, capability, localAsrAvailable)"
+        "function publishCoreApiCapability(provider, capability, localAsrAvailable, asrSlot)"
     )
     end = source.index("// Prime the capability once", start)
     refresh_source = source[start:end]
@@ -90,6 +90,9 @@ def test_core_capability_refresh_failures_fail_open_and_coalesce_requests_harnes
           coreApiProvider: 'free',
           coreApiSupportsIndependentAsr: false,
           localAsrAvailable: null,
+          asrSlotActive: null,
+          asrSlotProvider: '',
+          asrSlotAvailability: '',
         };
         let _coreApiCapabilityRefreshPromise = null;
         let _coreApiCapabilityRequestGeneration = 0;
@@ -125,6 +128,7 @@ def test_core_capability_refresh_failures_fail_open_and_coalesce_requests_harnes
           await refreshCoreApiCapability({ force: true });
           assert(S.coreApiSupportsIndependentAsr === null, 'legacy response must fail open');
           assert(S.localAsrAvailable === null, 'legacy response leaves local ASR unknown');
+          assert(S.asrSlotActive === null, 'legacy response leaves the ASR slot unknown');
           assert(S.coreApiProvider === 'qwen', 'usable provider context should be retained');
 
           const validCapability = {
@@ -133,6 +137,9 @@ def test_core_capability_refresh_failures_fail_open_and_coalesce_requests_harnes
             effectiveCoreApi: 'qwen',
             supportsIndependentAsr: true,
             localAsrAvailable: true,
+            asrSlotActive: true,
+            asrSlotProvider: 'custom',
+            asrSlotAvailability: 'missing_credentials',
           };
           let fetchCalls = 0;
           let resolveShared;
@@ -151,6 +158,9 @@ def test_core_capability_refresh_failures_fail_open_and_coalesce_requests_harnes
           assert(S.coreApiSupportsIndependentAsr === true, 'shared success must publish capability');
           assert(S.coreApiProvider === 'qwen', 'effective provider must win');
           assert(S.localAsrAvailable === true, 'local ASR availability must be published');
+          assert(S.asrSlotActive === true, 'an active ASR slot must be published');
+          assert(S.asrSlotProvider === 'custom', 'the ASR slot provider must be published');
+          assert(S.asrSlotAvailability === 'missing_credentials', 'slot availability must be published');
 
           let resolveNext;
           window.fetch = () => {
@@ -162,8 +172,14 @@ def test_core_capability_refresh_failures_fail_open_and_coalesce_requests_harnes
           assert(fetchCalls === 2, 'force after settlement must issue a fresh fetch');
           resolveNext(response(validCapability));
           await nextRequest;
+
+          // Turning the slot off is a change the panel must hear about.
+          window.fetch = async () => response({ ...validCapability, asrSlotActive: false });
+          await refreshCoreApiCapability({ force: true });
+          assert(S.asrSlotActive === false, 'an inactive slot must be published');
+          assert(S.asrSlotProvider === '' && S.asrSlotAvailability === '', 'an inactive slot has no provider');
           assert(
-            events.length === 3
+            events.length === 4
               && events.every((event) => event.type === 'neko:core-api-capability-changed'),
             'capability changes should notify the shared UI exactly once per change'
           );

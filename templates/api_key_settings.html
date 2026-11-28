@@ -684,6 +684,62 @@
                                     </div>
                                 </div>
 
+                                <!-- 语音识别：覆盖语音模型供应商自带的识别（asr_slot_settings.js） -->
+                                <div class="model-config-container">
+                                    <button type="button" class="model-header" onclick="toggleModelConfig('asr')"
+                                        aria-controls="asr-model-content" aria-expanded="false"
+                                        style="width: 100%; border: 0; text-align: left; font: inherit;">
+                                        <span class="model-title">
+                                            <img src="/static/icons/mic_icon_on.png"
+                                                data-i18n-alt="api.asrModelConfig" class="model-title-icon">
+                                            <span data-i18n="api.asrModelConfig">语音识别</span>
+                                        </span>
+                                        <span class="toggle-icon">▼</span>
+                                    </button>
+                                    <div id="asr-model-content" class="model-content">
+                                        <div class="field-row">
+                                            <label for="asrModelProvider" data-i18n="api.providerLabel">服务商</label>
+                                            <select id="asrModelProvider" class="api-provider-select" style="max-width: 600px;">
+                                            </select>
+                                        </div>
+                                        <div id="asr-slot-hint" class="tips"
+                                            style="max-width: 600px; margin: 0; padding: 10px 16px 0; white-space: pre-line; color: var(--text-blue-sub); font-size: 0.88em; line-height: 1.5;"></div>
+                                        <div id="asr-slot-status" class="tips" role="status" hidden
+                                            style="max-width: 600px; margin: 0; padding: 8px 16px 0; color: #d35400; font-size: 0.88em; line-height: 1.5;"></div>
+                                        <div id="asr-endpoint-fields">
+                                            <div class="field-row">
+                                                <label for="asrModelUrl" data-i18n="api.apiUrl">API URL</label>
+                                                <input type="text" id="asrModelUrl"
+                                                    data-i18n-placeholder="api.asrSlot.urlPlaceholder"
+                                                    placeholder="e.g., http://192.168.1.5:8081/v1" value=""
+                                                    style="max-width: 600px;">
+                                            </div>
+                                            <div class="field-row">
+                                                <label for="asrModelId" data-i18n="api.modelId">模型ID</label>
+                                                <input type="text" id="asrModelId"
+                                                    data-i18n-placeholder="api.asrSlot.modelPlaceholder"
+                                                    placeholder="e.g., qwen3-asr-flash, whisper-large-v3" value=""
+                                                    style="max-width: 600px;">
+                                            </div>
+                                            <div class="field-row">
+                                                <label for="asrModelApiKey" data-i18n="api.apiKey">API Key</label>
+                                                <!-- 占位文字随服务商变化，由 asr_slot_settings.js 设置 -->
+                                                <input type="text" id="asrModelApiKey"
+                                                    placeholder="API Key" value=""
+                                                    style="max-width: 600px;">
+                                            </div>
+                                            <div class="field-row">
+                                                <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap; max-width: 600px;">
+                                                    <button type="button" id="asrSlotTestBtn" class="connectivity-mini-test-btn"
+                                                        style="margin-left: 0;" data-i18n="api.asrSlot.test">测试</button>
+                                                    <span id="asrSlotTestResult" role="status" aria-live="polite"
+                                                        style="font-size: 0.88em; line-height: 1.5;"></span>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+
                                 <!-- 使魔模型·高级 -->
                                 <div class="model-config-container">
                                     <button type="button" class="model-header" onclick="toggleModelConfig('agent-advanced')"
@@ -1044,6 +1100,7 @@
     <!-- Independent revision forces existing clients off the previously cached
          API-key settings script after a settings-display behavior change. -->
     <script src="/static/js/api_key_settings.js?v={{ static_asset_version }}-api-key-mask-v10"></script>
+    <script src="/static/js/asr_slot_settings.js?v={{ static_asset_version }}"></script>
 
 
     <script src="/static/tutorial/core/guide-helpers.js?v={{ static_asset_version }}"></script>

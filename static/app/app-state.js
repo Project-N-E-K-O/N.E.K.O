@@ -109,6 +109,11 @@
         // /api/config/core_api. Tri-state like coreApiSupportsIndependentAsr;
         // only an explicit true offers the local-recognition option.
         localAsrAvailable: null,
+        // Speech-recognition slot from API settings (/api/config/core_api).
+        // When active it overrides the Core route and the panel's ASR choices.
+        asrSlotActive: null,
+        asrSlotProvider: '',
+        asrSlotAvailability: '',
         // 设置是否已"水合"：server GET 合并成功或用户显式改过设置后才为 true。
         // 在此之前两个 true 都只是启动默认值，不代表服务器权威偏好；
         // independentAsrEnabled 尤其不能提前进入会话握手，

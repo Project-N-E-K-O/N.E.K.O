@@ -274,7 +274,8 @@ def test_local_asr_toggle_follows_the_independent_asr_gate() -> None:
     assert "'microphone.localAsr'" in local_setting
     assert "'microphone.localAsrHint'" in local_setting
     assert "? 'faster_whisper'" in local_setting
-    assert "localAsrToggle.setDisabled(!enabled && !localAsrChosen);" in source
+    # A speech-recognition slot from API settings also makes it inapplicable.
+    assert "(slotActive || !enabled) && !localAsrChosen" in source
     # A saved "on" choice can always be switched off.
     assert "if (enabled && !localAsrChoiceActionable())" in local_setting
     # Hidden unless the dependency is installed or the preference is already on.
@@ -464,3 +465,26 @@ def test_adopted_server_provider_preference_reconciles_the_open_panel() -> None:
         source.index("if (providerPreferenceChangedByOtherWindow) {"):gate_start
     ]
     assert "providerPreferenceAdoptedFromServer" not in authority
+
+
+def test_asr_slot_overrides_the_voice_panel_switches() -> None:
+    """A slot from API settings runs on every Core; the panel says so and its
+    independent-ASR switches stop looking like they choose the route."""
+    source = APP_AUDIO_CAPTURE.read_text(encoding="utf-8")
+    ui = source.split("function updateVoiceRecognitionUi()", maxsplit=1)[1].split(
+        "function onVoiceLifecycleChanged()", maxsplit=1
+    )[0]
+
+    assert "var slotActive = S.asrSlotActive === true;" in ui
+    assert "asrToggle.setDisabled(capabilityUnavailable || slotActive);" in ui
+    assert "optimizationToggle.setDisabled(!enabled && !slotActive);" in ui
+    assert "'microphone.asrSlotSummary'" in ui
+    # An unusable slot is reported before any other status: voice will stop.
+    assert ui.index("if (slotUnavailable)") < ui.index("'microphone.voiceRecognitionSettingsPending'")
+    state = APP_STATE.read_text(encoding="utf-8")
+    assert "asrSlotActive: null" in state
+    for locale in LOCALES:
+        strings = json.loads((LOCALE_DIR / f"{locale}.json").read_text(encoding="utf-8"))["microphone"]
+        for key in ("asrSlotSummary", "asrSlotHint", "asrSlotUnavailable", "asrSlotCustom"):
+            assert strings.get(key), (locale, key)
+        assert "{{provider}}" in strings["asrSlotSummary"], locale

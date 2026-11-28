@@ -257,6 +257,10 @@ async def test_segmented_routes_use_smart_turn_and_openai_uses_provider_vad(
     import utils.config_manager as config_manager
 
     class _ConfigManager:
+        # The ASR route read checks the raw file first (strict read).
+        def load_json_config(self, filename, default_value=None):
+            return {}
+
         def get_core_config(self):
             return {
                 "ASSIST_API_KEY_OPENAI": "openai-key",

@@ -363,11 +363,12 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
             decision: rect(cards[3]),
             omni: rect(cards[4]),
             tts: rect(cards[5]),
-            agentAdvanced: rect(cards[6]),
-            agent: rect(cards[7]),
-            agentSmall: rect(cards[8]),
-            game: rect(cards[9]),
-            image: rect(cards[10]),
+            asr: rect(cards[6]),
+            agentAdvanced: rect(cards[7]),
+            agent: rect(cards[8]),
+            agentSmall: rect(cards[9]),
+            game: rect(cards[10]),
+            image: rect(cards[11]),
             cardCount: cards.length,
         };
     }""")
@@ -381,6 +382,7 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
         "decision-model-content",
         "omni-model-content",
         "tts-model-content",
+        "asr-model-content",
         "agent-advanced-model-content",
         "agent-model-content",
         "agent-small-model-content",
@@ -394,6 +396,7 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
         "api.decisionModelConfig",
         "api.realtimeModelConfig",
         "api.ttsModelConfig",
+        "api.asrModelConfig",
         "api.agentAdvancedApiConfigTitle",
         "api.agentApiConfigTitle",
         "api.agentSmallApiConfigTitle",
@@ -421,10 +424,12 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
         "decision": "recognition",
         "omni": "tts",
         "tts": "omni",
-        "agent-advanced": "agent",
-        "agent": "agent-advanced",
-        "agent-small": "game",
-        "game": "agent-small",
+        "asr": "agent-advanced",
+        "agent-advanced": "asr",
+        "agent": "agent-small",
+        "agent-small": "agent",
+        "game": "image",
+        "image": "game",
     }
     assert desktop["conversation"]["top"] == desktop["memory"]["top"]
     assert desktop["conversation"]["left"] < desktop["memory"]["left"]
@@ -433,16 +438,19 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
     assert desktop["recognition"]["left"] < desktop["decision"]["left"]
     assert abs(desktop["recognition"]["width"] - desktop["decision"]["width"]) <= 1
     assert desktop["omni"]["top"] == desktop["tts"]["top"]
-    assert desktop["agentAdvanced"]["top"] == desktop["agent"]["top"]
-    assert desktop["agentAdvanced"]["left"] < desktop["agent"]["left"]
-    assert desktop["agentAdvanced"]["top"] > desktop["omni"]["top"]
-    assert desktop["agentSmall"]["top"] == desktop["game"]["top"]
-    assert desktop["agentSmall"]["left"] < desktop["game"]["left"]
-    # Image generation is the odd card out and sits alone on the last row.
-    assert desktop["image"]["top"] > desktop["game"]["top"]
+    # Speech recognition follows realtime voice and TTS, on the row below them.
+    assert desktop["asr"]["top"] > desktop["omni"]["top"]
+    assert desktop["asr"]["top"] == desktop["agentAdvanced"]["top"]
+    assert desktop["asr"]["left"] < desktop["agentAdvanced"]["left"]
+    assert desktop["agent"]["top"] > desktop["asr"]["top"]
+    assert desktop["agent"]["top"] == desktop["agentSmall"]["top"]
+    assert desktop["agent"]["left"] < desktop["agentSmall"]["left"]
+    assert desktop["game"]["top"] > desktop["agent"]["top"]
+    assert desktop["game"]["top"] == desktop["image"]["top"]
+    assert desktop["game"]["left"] < desktop["image"]["left"]
     # The retired vision slot has no card any more (stored settings are kept); the
     # minigame recognition slot lives inside the minigame card.
-    assert desktop["cardCount"] == 11
+    assert desktop["cardCount"] == 12
 
     mock_page.evaluate("toggleModelConfig('conversation')")
     mock_page.wait_for_timeout(350)

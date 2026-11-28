@@ -31,7 +31,8 @@ from typing import Any, Protocol
 import httpx
 
 from ._shared import (
-    RETRY_LATER_STATUSES,
+    http_failure_kind,
+    transport_failure_kind,
     AsrRequestFailure,
     is_auth_rejection,
     provider_status_code,
@@ -75,7 +76,9 @@ async def post_wav_transcription(
     try:
         response = await client.post(
             url,
-            headers={"Authorization": f"Bearer {api_key}"},
+            # A self-hosted server may run without a key; some reject an
+            # empty bearer token, so send no Authorization header at all.
+            headers={"Authorization": f"Bearer {api_key}"} if api_key.strip() else {},
             data=dict(form_fields),
             files={"file": ("audio.wav", wav_audio, "audio/wav")},
         )
@@ -95,13 +98,7 @@ async def post_wav_transcription(
         raise AsrRequestFailure(
             f"{code_prefix}_ERROR",
             f"{provider_label} transcription request was rejected",
-            kind=(
-                "rate_limited"
-                if status in RETRY_LATER_STATUSES
-                else "rejected"
-                if status is not None and 400 <= status < 500
-                else "failed"
-            ),
+            kind=http_failure_kind(status),
         ) from exc
     except httpx.TimeoutException as exc:
         raise AsrRequestFailure(
@@ -113,6 +110,7 @@ async def post_wav_transcription(
         raise AsrRequestFailure(
             f"{code_prefix}_WORKER_FAILED",
             f"{provider_label} transcription request failed",
+            kind=transport_failure_kind(exc),
         ) from exc
 
     try:

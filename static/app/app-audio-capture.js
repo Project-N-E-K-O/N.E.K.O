@@ -4134,10 +4134,17 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
             var voiceStatus = null;
 
             function providerDisplayName(provider) {
-                var value = String(provider || '').trim();
+                // Slot sessions report "<vendor>_request" or "custom".
+                var value = String(provider || '').trim().replace(/_request$/i, '');
                 if (!value) return '';
+                if (value.toLowerCase() === 'custom') {
+                    return window.t
+                        ? window.t('microphone.asrSlotCustom')
+                        : '自定义端点';
+                }
                 var known = {
                     qwen: 'Qwen',
+                    qwen_intl: 'Qwen',
                     soniox: 'Soniox',
                     glm: 'GLM',
                     gemini: 'Gemini',
@@ -4278,6 +4285,12 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
 
             function updateVoiceRecognitionUi() {
                 var capabilityUnavailable = coreApiDisablesIndependentAsr();
+                // A speech-recognition slot set in API settings overrides the
+                // Core route and these switches on every Core, free included.
+                var slotActive = S.asrSlotActive === true;
+                var slotUnavailable = slotActive
+                    && !!S.asrSlotAvailability
+                    && S.asrSlotAvailability !== 'implemented';
                 var enabled = !capabilityUnavailable
                     && S.independentAsrEnabled === true;
                 if (
@@ -4299,8 +4312,14 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 var provider = providerDisplayName(S.independentAsrProvider);
                 var blocked = S.voiceInputLifecycleState === 'blocked';
                 asrToggle.setChecked(enabled);
-                asrToggle.setDisabled(capabilityUnavailable);
-                if (asrSummary) {
+                asrToggle.setDisabled(capabilityUnavailable || slotActive);
+                if (asrSummary && slotActive) {
+                    asrSummary.textContent = window.t
+                        ? window.t('microphone.asrSlotSummary', {
+                            provider: providerDisplayName(S.asrSlotProvider)
+                        })
+                        : ('语音识别 · ' + providerDisplayName(S.asrSlotProvider));
+                } else if (asrSummary) {
                     asrSummary.textContent = summaryUsesIndependentAsr
                         ? (
                             window.t
@@ -4329,7 +4348,7 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 // RNNoise is local PCM preprocessing shared by both the
                 // independent-ASR and Omni-native routes.
                 noiseToggle.setDisabled(false);
-                optimizationToggle.setDisabled(!enabled);
+                optimizationToggle.setDisabled(!enabled && !slotActive);
                 // Local recognition is an independent-ASR provider choice, so
                 // it follows the same Core capability gate and master switch.
                 if (localAsrToggle) {
@@ -4338,9 +4357,20 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                     var localAsrChosen =
                         S.independentAsrProviderPreference === 'faster_whisper';
                     localAsrToggle.setChecked(localAsrChosen);
-                    localAsrToggle.setDisabled(!enabled && !localAsrChosen);
+                    localAsrToggle.setDisabled(
+                        (slotActive || !enabled) && !localAsrChosen
+                    );
                 }
-                if (capabilityUnavailable) {
+                if (slotUnavailable) {
+                    voiceStatus.textContent = window.t
+                        ? window.t('microphone.asrSlotUnavailable')
+                        : 'API 设置里指定的语音识别还不能用（缺少 Key 或配置无效），开启语音时会报错';
+                } else if (slotActive && S.voiceSettingsPendingUntilEpoch === null
+                    && !blocked && !S.independentAsrActive) {
+                    voiceStatus.textContent = window.t
+                        ? window.t('microphone.asrSlotHint')
+                        : '语音识别已在 API 设置里单独指定，这里的识别开关不影响它';
+                } else if (capabilityUnavailable && !slotActive) {
                     voiceStatus.textContent = window.t
                         ? window.t('microphone.voiceRecognitionNativeCoreHint')
                         : '当前语音模型供应商是免费版，独立 ASR 相关开关不适用';
@@ -4348,7 +4378,7 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                     voiceStatus.textContent = window.t
                         ? window.t('microphone.voiceRecognitionSettingsPending')
                         : '◐ 设置将在下次语音会话生效';
-                } else if (!enabled) {
+                } else if (!enabled && !slotActive) {
                     voiceStatus.textContent = window.t
                         ? window.t('microphone.voiceRecognitionDisabledHint')
                         : '独立 ASR 已关闭；语音输入使用 Omni 原生语音识别';
@@ -4365,12 +4395,12 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                         ? window.t('microphone.voiceRecognitionSettingsPending')
                         : '◐ 设置将在下次语音会话生效';
                 }
-                var optimizationEnabled = !capabilityUnavailable
+                var optimizationEnabled = (!capabilityUnavailable || slotActive)
                     && S.voiceInputResourceOptimizationEnabled !== false;
                 optimizationToggle.setChecked(optimizationEnabled);
                 optimizationHint.textContent = window.t
                     ? window.t(
-                        capabilityUnavailable
+                        capabilityUnavailable && !slotActive
                             ? 'microphone.voiceRecognitionNativeCoreHint'
                             : (
                                 optimizationEnabled
@@ -4379,7 +4409,7 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                             )
                     )
                     : (
-                        capabilityUnavailable
+                        capabilityUnavailable && !slotActive
                             ? '当前核心使用免费API；独立 ASR 相关开关不适用'
                             : (
                                 optimizationEnabled

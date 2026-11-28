@@ -105,6 +105,16 @@ class _Runtime(AsrRuntimeMixin):
     _collect_turn_context = _TurnContextMixin._collect_turn_context
     del _TurnContextMixin
 
+    # No speech-recognition slot unless a test installs one; the production
+    # method would read the developer's real core_config.json.
+    asr_slot_override = None
+
+    def _read_asr_slot_override(self):
+        # An exception instance simulates an unreadable core config.
+        if isinstance(self.asr_slot_override, BaseException):
+            raise self.asr_slot_override
+        return self.asr_slot_override
+
     def __init__(self) -> None:
         self._init_asr_runtime_state()
         self._voice_lease_synchronized = True
