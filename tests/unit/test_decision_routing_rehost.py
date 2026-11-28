@@ -599,3 +599,22 @@ async def test_warm_pool_returns_the_raced_client_even_if_dropped_while_closing_
             await warm_pool.close_warm_chat_llms()
     assert got is fast
     made[0].aclose.assert_awaited_once()
+
+
+@pytest.mark.unit
+def test_site_question_would_send_skips_chat_routes_and_native_cooldowns():
+    from utils.decision_client import client, site_question_would_send
+
+    client.clear_native_cooldown()
+    try:
+        assert site_question_would_send(SITE_MASTER_EMOTION, decision_config=BAILIAN, chat_config=None)
+        assert site_question_would_send(SITE_MASTER_EMOTION, decision_config=CHAT_FALLBACK, chat_config=DOUBAO_CHAT)
+        assert not site_question_would_send(SITE_MASTER_EMOTION, decision_config=CHAT_FALLBACK, chat_config=DOUBAO_CHAT,
+                                            rehost=False)
+        # After a native error the client skips requests for a while: nothing would be sent.
+        endpoint = BAILIAN["decision_url"]
+        client._mark_native_cooldown(("systemone", endpoint, BAILIAN["model"], client._api_key_fingerprint("k")))
+        assert client.native_decision_in_cooldown(BAILIAN)
+        assert not site_question_would_send(SITE_MASTER_EMOTION, decision_config=BAILIAN, chat_config=None)
+    finally:
+        client.clear_native_cooldown()
