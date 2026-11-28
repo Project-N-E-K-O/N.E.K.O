@@ -107,7 +107,17 @@ export interface PermissionAuditPage {
   lost_at: string | null
 }
 
+/** A plugin and the items it still needs decided (first start, or more after an update). */
+export interface PendingPluginItems {
+  plugin_id: string
+  items: string[]
+}
+
 export interface PendingPermissions {
+  /** Plugins never decided, or decided under a source since replaced; older servers omit it. */
+  to_confirm?: PendingPluginItems[]
+  /** Plugins with earlier decisions that still have items to decide; older servers omit it. */
+  upgraded?: PendingPluginItems[]
   first_use: Array<{
     plugin_id: string
     permission: string

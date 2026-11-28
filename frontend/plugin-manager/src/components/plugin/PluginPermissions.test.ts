@@ -22,19 +22,36 @@ const pluginStore = vi.hoisted(() => ({
   stop: vi.fn().mockResolvedValue(undefined),
 }))
 vi.mock('@/api/pluginPermissions', () => api)
-const consentStore = vi.hoisted(() => ({
-  details: {} as Record<string, unknown>,
-  analyze: vi.fn().mockResolvedValue(undefined),
-  load: vi.fn().mockResolvedValue(undefined),
+const scanApi = vi.hoisted(() => ({
+  getPluginScan: vi.fn(),
+  rescanPlugin: vi.fn(),
 }))
-vi.mock('@/stores/pluginConsentState', () => ({ usePluginConsentState: () => consentStore }))
-// The earlier plugin-wide consent line has its own tests.
+vi.mock('@/api/pluginScan', () => scanApi)
+// The earlier plugin-wide line has its own tests.
 vi.mock('./PluginLegacyConsentBanner.vue', async () => {
   const { defineComponent, h } = await import('vue')
   return {
     default: defineComponent({
       emits: ['changed'],
       setup: (_, { emit }) => () => h('button', { 'data-test': 'banner-changed', onClick: () => emit('changed') }),
+    }),
+  }
+})
+// The dialogs have their own tests: here only what opens them and what closing does.
+const dialogStub = vi.hoisted(() => ({ props: [] as Array<Record<string, unknown>> }))
+vi.mock('./PluginPermissionDialog.vue', async () => {
+  const { defineComponent, h } = await import('vue')
+  return {
+    default: defineComponent({
+      props: ['panel', 'pending', 'request', 'pluginName', 'start', 'catalog'],
+      emits: ['result'],
+      setup: (props, { emit }) => () => {
+        dialogStub.props.push({ ...props })
+        return h('div', { 'data-test': 'dialog-stub', 'data-kind': (props.request as { kind: string }).kind }, [
+          h('button', { 'data-test': 'dialog-close', onClick: () => emit('result', { start: false, changed: false }) }),
+          h('button', { 'data-test': 'dialog-changed', onClick: () => emit('result', { start: false, changed: true }) }),
+        ])
+      },
     }),
   }
 })
@@ -94,11 +111,14 @@ async function mount() {
         }),
     }),
   )
-  app.mount(root)
+  current = app.mount(root) as unknown as { load: () => Promise<void> }
   apps.push(app)
   await flush()
   return root
 }
+let current: { load: () => Promise<void> } | null = null
+/** Reads the tab again, as the detail page can. */
+const reload = () => void current!.load()
 const q = (root: HTMLElement, test: string) => root.querySelector(`[data-test="${test}"]`) as HTMLElement | null
 
 function serve(data: PermissionPanel, extras: { history?: object; lostAt?: string | null; pending?: object } = {}) {
@@ -132,7 +152,9 @@ function failure(status: number, code: string) {
 
 beforeEach(() => {
   vi.clearAllMocks()
-  consentStore.details = {}
+  dialogStub.props.length = 0
+  scanApi.getPluginScan.mockResolvedValue({ plugin_id: 'demo', version: '1.0.0', analysis: { status: 'completed', capabilities: [], evidence: [], warnings: [] } })
+  scanApi.rescanPlugin.mockResolvedValue(null)
   pluginStore.status = 'running'
   vi.spyOn(ElMessage, 'error').mockImplementation(() => ({ close: () => {} }) as never)
 })
@@ -269,7 +291,7 @@ describe('PluginPermissions tab', () => {
       await flush()
       expect(api.getPermissionPanel).toHaveBeenCalledTimes(2)
       // The timed read moved the backoff to 10 s; a reload asked for by the user starts it over.
-      q(root, 'banner-changed')!.click()
+      reload()
       await flush()
       expect(api.getPermissionPanel).toHaveBeenCalledTimes(3)
       await vi.advanceTimersByTimeAsync(5000)
@@ -304,16 +326,152 @@ describe('PluginPermissions tab', () => {
     }
   })
 
-  it('reads the shared plugin-wide consent again after a decision, not after a failed one', async () => {
-    serve(panel({ rows: [row({ state: 'undecided', condition: null })] }))
-    api.decidePermission.mockRejectedValueOnce(new Error('x')).mockResolvedValue(panel())
+  describe('"Decide item by item"', () => {
+    const undecided = () => panel({ rows: [row({ state: 'undecided', condition: null })] })
+    it.each([
+      ['first', { to_confirm: [{ plugin_id: 'demo', items: [NET] }], upgraded: [] }],
+      ['upgrade', { to_confirm: [{ plugin_id: 'other', items: [NET] }], upgraded: [{ plugin_id: 'demo', items: [NET] }] }],
+      ['firstUse', { first_use: [{ plugin_id: 'demo', permission: NET, at: localDay(2026, 11, 27), count: 2, count_is_lower_bound: false }] }],
+    ])('opens dialog %s for what is waiting', async (kind, extra) => {
+      serve(undecided(), { pending: { first_use: [], incomplete: [], ...extra } })
+      const root = await mount()
+      expect(q(root, 'dialog-stub')).toBeNull()
+      q(root, 'decide-items')!.click()
+      await flush()
+      expect(q(root, 'dialog-stub')!.dataset.kind).toBe(kind)
+      expect(dialogStub.props.at(-1)!.pluginName).toBe('demo')
+    })
+
+    it('is not offered when nothing is waiting, or the pending list cannot be read', async () => {
+      serve(undecided(), { pending: { first_use: [], incomplete: [], to_confirm: [], upgraded: [] } })
+      const root = await mount()
+      expect(q(root, 'decide-items')).toBeNull()
+      api.getPendingPermissions.mockRejectedValue(new Error('offline'))
+      serve(undecided())
+      api.getPendingPermissions.mockRejectedValue(new Error('offline'))
+      const other = await mount()
+      expect(q(other, 'decide-items')).toBeNull()
+    })
+
+    it('opens dialog ② for a row used while undecided, from that row', async () => {
+      serve(undecided(), {
+        pending: { first_use: [{ plugin_id: 'demo', permission: NET, at: localDay(2026, 11, 27), count: 2, count_is_lower_bound: false }], incomplete: [] },
+      })
+      const root = await mount()
+      q(root, `first-use-decide-${NET}`)!.click()
+      await flush()
+      expect(dialogStub.props.at(-1)!.request).toEqual({ kind: 'firstUse', permission: NET })
+      // The catalog goes along, for what cannot be blocked yet.
+      expect((dialogStub.props.at(-1)!.catalog as { privacy_groups: unknown[] }).privacy_groups).toHaveLength(2)
+    })
+
+    it('is no longer offered when the pending list cannot be read again', async () => {
+      serve(undecided(), { pending: { first_use: [], incomplete: [], to_confirm: [{ plugin_id: 'demo', items: [NET] }] } })
+      const root = await mount()
+      expect(q(root, 'decide-items')).not.toBeNull()
+      api.getPendingPermissions.mockRejectedValue(new Error('offline'))
+      reload()
+      await flush()
+      expect(q(root, 'decide-items')).toBeNull()
+    })
+
+    it('is no longer offered when the pending list and the panel both cannot be read again', async () => {
+      serve(undecided(), { pending: { first_use: [], incomplete: [], to_confirm: [{ plugin_id: 'demo', items: [NET] }] } })
+      const root = await mount()
+      api.getPendingPermissions.mockRejectedValue(new Error('offline'))
+      api.getPermissionPanel.mockRejectedValue(new Error('offline'))
+      reload()
+      await flush()
+      expect(q(root, `row-${NET}`)).not.toBeNull()
+      expect(q(root, 'decide-items')).toBeNull()
+    })
+
+    it('is no longer offered after a save when the pending list cannot be read again', async () => {
+      serve(undecided(), { pending: { first_use: [], incomplete: [], upgraded: [{ plugin_id: 'demo', items: [NET] }] } })
+      const root = await mount()
+      expect(q(root, 'decide-items')).not.toBeNull()
+      api.getPendingPermissions.mockRejectedValue(new Error('offline'))
+      api.decidePermission.mockResolvedValue(panel())
+      q(root, `switch-${NET}`)!.dispatchEvent(new Event('change'))
+      await flush()
+      expect(q(root, 'decide-items')).toBeNull()
+    })
+
+    it('reads the tab again only when the dialog saved something', async () => {
+      serve(undecided(), { pending: { first_use: [], incomplete: [], to_confirm: [{ plugin_id: 'demo', items: [NET] }] } })
+      const root = await mount()
+      q(root, 'decide-items')!.click()
+      await flush()
+      q(root, 'dialog-close')!.click()
+      await flush()
+      expect(q(root, 'dialog-stub')).toBeNull()
+      expect(api.getPermissionPanel).toHaveBeenCalledTimes(1)
+      q(root, 'decide-items')!.click()
+      await flush()
+      q(root, 'dialog-changed')!.click()
+      await flush()
+      expect(api.getPermissionPanel).toHaveBeenCalledTimes(2)
+    })
+  })
+
+  it('reads the tab again when the dialog before a start saved something', async () => {
+    serve(panel())
+    await mount()
+    const { usePermissionStartDialog } = await import('@/stores/permissionStartDialog')
+    const store = usePermissionStartDialog()
+    store.answer(false)
+    store.answer(true, undefined, 'other')
+    await flush()
+    expect(api.getPermissionPanel).toHaveBeenCalledTimes(1)
+    store.answer(true, undefined, 'demo')
+    await flush()
+    expect(api.getPermissionPanel).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps the shown table when a refresh answers without the developer lists', async () => {
+    serve(panel())
     const root = await mount()
+    api.getPermissionPanel.mockResolvedValue({ ...panel(), developer: {} })
+    reload()
+    await flush()
+    expect(q(root, `row-${NET}`)).not.toBeNull()
+    expect(q(root, 'developer')).not.toBeNull()
+  })
+
+  it('reads the panel again after a failed save, which the server may have stored', async () => {
+    serve(panel({ rows: [row({ state: 'undecided', condition: null })] }))
+    const root = await mount()
+    expect(api.getPermissionPanel).toHaveBeenCalledTimes(1)
+    api.decidePermission.mockRejectedValueOnce(new Error('lost'))
+    // The server did store it: the read after the failure shows it.
+    api.getPermissionPanel.mockResolvedValue(panel({ rows: [row({ state: 'granted' })] }))
     q(root, `switch-${NET}`)!.dispatchEvent(new Event('change'))
     await flush()
-    expect(consentStore.load).not.toHaveBeenCalled()
+    expect(ElMessage.error).toHaveBeenCalled()
+    expect(api.getPermissionPanel).toHaveBeenCalledTimes(2)
+    expect((q(root, `switch-${NET}`) as HTMLInputElement).checked).toBe(true)
+  })
+
+  it('does not show the history read before a save with the rows that save returned', async () => {
+    serve(panel({ rows: [row({ state: 'undecided', condition: null })] }), {
+      history: { since: null, covers_30d: false, last_use_since: localDay(2026, 11, 20), last_use_covers_30d: false },
+    })
+    const root = await mount()
+    expect(q(root, `usage-${NET}`)!.textContent).toContain('pluginConsent.tab.unusedSince')
+    let finishAudit: (value: unknown) => void = () => {}
+    api.getPermissionAuditHistory.mockImplementationOnce(() => new Promise((resolve) => { finishAudit = resolve }))
+    api.decidePermission.mockResolvedValue(panel({ rows: [row({ state: 'granted', unused_30d: null })] }))
     q(root, `switch-${NET}`)!.dispatchEvent(new Event('change'))
     await flush()
-    expect(consentStore.load).toHaveBeenCalledWith('demo')
+    // The new rows are shown; the old history is not claimed for them meanwhile.
+    expect((q(root, `switch-${NET}`) as HTMLInputElement).checked).toBe(true)
+    expect(q(root, `usage-${NET}`)).toBeNull()
+    finishAudit({
+      history: { since: '2026-10-01T00:00:00Z', covers_30d: true, last_use_since: '2026-10-01T00:00:00Z', last_use_covers_30d: false },
+      lost_at: null,
+    })
+    await flush()
+    expect(q(root, `usage-${NET}`)).not.toBeNull()
   })
 
   it('drops the counts of uses while undecided when a refresh cannot read them', async () => {
@@ -327,7 +485,7 @@ describe('PluginPermissions tab', () => {
     expect(q(root, `first-use-${NET}`)).not.toBeNull()
     expect(q(root, 'incomplete')).not.toBeNull()
     api.getPendingPermissions.mockRejectedValue(new Error('offline'))
-    q(root, 'banner-changed')!.click()
+    reload()
     await flush()
     expect(q(root, `first-use-${NET}`)).toBeNull()
     expect(q(root, 'incomplete')).toBeNull()
@@ -510,7 +668,7 @@ describe('PluginPermissions tab', () => {
     serve(panel())
     const root = await mount()
     expect(api.getPermissionPanel).toHaveBeenCalledTimes(1)
-    q(root, 'banner-changed')!.click()
+    reload()
     await flush()
     expect(api.getPermissionPanel).toHaveBeenCalledTimes(2)
   })
@@ -557,9 +715,11 @@ describe('PluginPermissions tab', () => {
       api.decidePermission.mockRejectedValue(new Error('x'))
       q(root, `switch-${NET}`)!.dispatchEvent(new Event('change'))
       await flush()
+      // Read again right after the failure, then the running scan is followed again.
+      expect(api.getPermissionPanel).toHaveBeenCalledTimes(2)
       await vi.advanceTimersByTimeAsync(5000)
       await flush()
-      expect(api.getPermissionPanel).toHaveBeenCalledTimes(2)
+      expect(api.getPermissionPanel).toHaveBeenCalledTimes(3)
     } finally {
       vi.useRealTimers()
     }
@@ -642,19 +802,43 @@ describe('PluginPermissions tab', () => {
     api.getPermissionPanel.mockResolvedValue(panel())
     q(root, 'rescan')!.click()
     await flush()
-    expect(consentStore.analyze).toHaveBeenCalledWith('demo')
+    expect(scanApi.rescanPlugin).toHaveBeenCalledWith('demo')
     expect(q(root, 'notice-scan-failed')).toBeNull()
   })
 
   it('shows the warnings of the last scan in the developer details', async () => {
-    consentStore.details = {
-      demo: { analysis: { warnings: [{ code: 'budget_exceeded' }, { code: 'source_unreadable', file: 'a.py' }] } },
-    }
     serve(panel())
+    scanApi.getPluginScan.mockResolvedValue({
+      plugin_id: 'demo', version: '1.0.0',
+      analysis: { status: 'partial', capabilities: [], evidence: [], warnings: [{ code: 'budget_exceeded' }, { code: 'source_unreadable', file: 'a.py' }] },
+    })
     const root = await mount()
     const warnings = q(root, 'scan-warnings')!.textContent!
     expect(warnings).toContain('pluginConsent.warnings.budget_exceeded')
     expect(warnings).toContain('pluginConsent.warnings.source_unreadable (a.py)')
+  })
+
+  it('shows the warnings of a new scan after "Analyze again", and reads the tab again', async () => {
+    serve(panel({ analysis: { ...panel().analysis, status: 'failed' } }))
+    const root = await mount()
+    expect(q(root, 'scan-warnings')).toBeNull()
+    scanApi.rescanPlugin.mockResolvedValue({
+      plugin_id: 'demo', version: '1.0.0',
+      analysis: { status: 'queued', capabilities: [], evidence: [], warnings: [{ code: 'analysis_failed' }] },
+    })
+    scanApi.getPluginScan.mockRejectedValue(new Error('offline'))
+    q(root, 'rescan')!.click()
+    await flush()
+    expect(api.getPermissionPanel).toHaveBeenCalledTimes(2)
+    expect(q(root, 'scan-warnings')!.textContent).toContain('pluginConsent.warnings.analysis_failed')
+  })
+
+  it('reads the tab again after the earlier plugin-wide line changed', async () => {
+    serve(panel())
+    const root = await mount()
+    q(root, 'banner-changed')!.click()
+    await flush()
+    expect(api.getPermissionPanel).toHaveBeenCalledTimes(2)
   })
 
   it('reads the last-use coverage again after a decision', async () => {
@@ -680,7 +864,7 @@ describe('PluginPermissions tab', () => {
     api.decidePermission.mockImplementation(() => new Promise((resolve) => { finishSave = resolve }))
     q(root, `switch-${NET}`)!.dispatchEvent(new Event('change'))
     await flush()
-    q(root, 'banner-changed')!.click()
+    reload()
     await flush()
     // Not sent during the save: its answer could arrive later and predate it.
     expect(api.getPermissionPanel).toHaveBeenCalledTimes(1)
@@ -697,15 +881,20 @@ describe('PluginPermissions tab', () => {
     const root = await mount()
     let finishLoad: (value: PermissionPanel) => void = () => {}
     api.getPermissionPanel.mockImplementationOnce(() => new Promise((resolve) => { finishLoad = resolve }))
-    q(root, 'banner-changed')!.click()
+    reload()
     await flush()
     api.decidePermission.mockResolvedValue(panel({ rows: [row({ state: 'granted' })] }))
+    // The load run again after the save reads what the server holds now.
+    api.getPermissionPanel.mockResolvedValue(panel({ rows: [row({ state: 'granted' })] }))
     q(root, `switch-${NET}`)!.dispatchEvent(new Event('change'))
     await flush()
+    expect(api.getPermissionPanel).toHaveBeenCalledTimes(3)
+    expect((q(root, `switch-${NET}`) as HTMLInputElement).checked).toBe(true)
+    // The dropped load answers late with the state before the save: not shown.
     finishLoad(panel({ rows: [row({ state: 'undecided', condition: null })] }))
     await flush()
-    // The dropped load ran again after the save, and the old answer was not shown.
     expect(api.getPermissionPanel).toHaveBeenCalledTimes(3)
+    expect((q(root, `switch-${NET}`) as HTMLInputElement).checked).toBe(true)
   })
 
   it('stops claiming unused time when the last-use history cannot be read again', async () => {
@@ -713,7 +902,7 @@ describe('PluginPermissions tab', () => {
     const root = await mount()
     expect(q(root, `usage-${NET}`)!.querySelector('[data-test="unused30d"]')).not.toBeNull()
     api.getPermissionAuditHistory.mockRejectedValue(new Error('offline'))
-    q(root, 'banner-changed')!.click()
+    reload()
     await flush()
     expect(q(root, `usage-${NET}`)).toBeNull()
   })
@@ -724,7 +913,7 @@ describe('PluginPermissions tab', () => {
       serve(panel())
       const root = await mount()
       api.getPermissionPanel.mockRejectedValueOnce(new Error('offline'))
-      q(root, 'banner-changed')!.click()
+      reload()
       await flush()
       expect(api.getPermissionPanel).toHaveBeenCalledTimes(2)
       expect(q(root, `row-${NET}`)).not.toBeNull()
@@ -769,24 +958,22 @@ describe('PluginPermissions tab', () => {
     expect(q(root, 'incomplete')).toBeNull()
   })
 
-  it('resumes retrying a failed refresh after a failed save', async () => {
+  it('reads again right after a failed save, also while a failed refresh waits for its retry', async () => {
     vi.useFakeTimers()
     try {
       serve(panel({ rows: [row({ state: 'undecided', condition: null })] }))
       const root = await mount()
       api.getPermissionPanel.mockRejectedValueOnce(new Error('offline'))
-      q(root, 'banner-changed')!.click()
+      reload()
       await flush()
       expect(api.getPermissionPanel).toHaveBeenCalledTimes(2)
-      // A save before the retry pauses it, and fails.
+      // A save before the retry pauses it, and fails: the panel is read at once.
       api.decidePermission.mockRejectedValueOnce(new Error('x'))
       q(root, `switch-${NET}`)!.dispatchEvent(new Event('change'))
       await flush()
-      // The retry comes back with its backoff (10 s), not the scan interval.
-      await vi.advanceTimersByTimeAsync(5000)
-      expect(api.getPermissionPanel).toHaveBeenCalledTimes(2)
-      await vi.advanceTimersByTimeAsync(5000)
-      await flush()
+      expect(api.getPermissionPanel).toHaveBeenCalledTimes(3)
+      // That read worked: no retry is left waiting.
+      await vi.advanceTimersByTimeAsync(60000)
       expect(api.getPermissionPanel).toHaveBeenCalledTimes(3)
     } finally {
       vi.useRealTimers()

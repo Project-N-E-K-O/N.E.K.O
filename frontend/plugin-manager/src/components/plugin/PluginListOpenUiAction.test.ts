@@ -294,9 +294,9 @@ describe('permission marks', () => {
     for (const [consent, pending, partial] of consents) {
       const { container } = await mountEntry(component, { ...makePlugin(null), consent })
       const label = JSON.stringify(consent)
-      const pendingTag = container.querySelector('[data-testid="plugin-permission-review"]')
-      expect(Boolean(pendingTag), label).toBe(pending)
-      if (pendingTag) expect(pendingTag.textContent).toBe('pluginConsent.pending')
+      // The earlier plugin-wide "pending confirmation" mark is gone.
+      void pending
+      expect(container.querySelector('[data-testid="plugin-permission-review"]'), label).toBeNull()
       const partialTag = container.querySelector('[data-testid="plugin-blind-spots"]')
       expect(Boolean(partialTag), label).toBe(partial)
       if (partialTag) {

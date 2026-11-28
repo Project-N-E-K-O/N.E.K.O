@@ -151,6 +151,16 @@ describe('switchRequest', () => {
     expect(switchRequest({ permission: MEMORY }, false)).toEqual({ kind: 'decide', state: 'denied', condition: 'in_use' })
     expect(switchRequest({ permission: PUSH }, false)).toEqual({ kind: 'clear' })
   })
+
+  it('keeps a stored "any time" while the declaration cannot be read', () => {
+    const held = row({ permission: MEMORY, state: 'denied', condition: 'anytime', anytime_allowed: null })
+    expect(switchRequest({ permission: MEMORY }, true, held)).toEqual({ kind: 'decide', state: 'granted', condition: 'anytime' })
+  })
+
+  it('does not send a stored "any time" the server no longer allows', () => {
+    const legacy = row({ permission: MEMORY, state: 'denied', condition: 'anytime', anytime_allowed: false, legacy_any: true })
+    expect(switchRequest({ permission: MEMORY }, true, legacy)).toEqual({ kind: 'decide', state: 'granted', condition: 'in_use' })
+  })
 })
 
 describe('recentUses', () => {

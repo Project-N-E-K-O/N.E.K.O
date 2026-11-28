@@ -1,52 +1,15 @@
 <template>
-  <div v-if="banner" class="legacy-consent" :data-tone="banner.tone" data-test="legacy-consent">
+  <div v-if="denied" class="legacy-consent" data-tone="danger" data-test="legacy-consent">
     <el-icon class="legacy-consent__icon" :size="16">
-      <component :is="banner.icon" />
+      <CircleCloseFilled />
     </el-icon>
-    <strong class="legacy-consent__title">{{ banner.title }}</strong>
-    <span v-if="banner.description" class="legacy-consent__desc" :title="banner.description">
-      {{ banner.description }}
+    <strong class="legacy-consent__title">{{ t('pluginConsent.decision.denied') }}</strong>
+    <span class="legacy-consent__desc" :title="t('pluginConsent.banner.deniedDesc')">
+      {{ t('pluginConsent.banner.deniedDesc') }}
     </span>
     <span class="legacy-consent__actions">
-      <template v-if="banner.kind === 'confirm' || banner.kind === 'denied'">
-        <el-button
-          size="small"
-          type="primary"
-          :loading="busy === 'approve'"
-          :disabled="busy !== null"
-          @click="approve"
-        >
-          {{ running ? t('pluginConsent.approve') : t('pluginConsent.approveAndStart') }}
-        </el-button>
-        <el-button
-          v-if="banner.kind === 'confirm'"
-          size="small"
-          :loading="busy === 'reject'"
-          :disabled="busy !== null"
-          @click="reject"
-        >
-          {{ t('pluginConsent.reject') }}
-        </el-button>
-        <el-button
-          v-else
-          size="small"
-          text
-          :loading="busy === 'revoke'"
-          :disabled="busy !== null"
-          @click="revoke"
-        >
-          {{ t('pluginConsent.revokeDecision') }}
-        </el-button>
-      </template>
-      <el-button
-        v-else
-        size="small"
-        text
-        :loading="busy === 'revoke'"
-        :disabled="busy !== null"
-        @click="revoke"
-      >
-        {{ t('pluginConsent.revoke') }}
+      <el-button size="small" text :loading="busy" :disabled="busy" data-test="legacy-revoke" @click="revoke">
+        {{ t('pluginConsent.revokeDecision') }}
       </el-button>
     </span>
   </div>
@@ -54,141 +17,48 @@
 
 <script setup lang="ts">
 /**
- * The plugin-wide consent of the earlier flow, kept as one line above the
- * permission tab until the per-permission dialogs replace it. Same actions
- * and messages as before; analysis results are shown by the tab itself.
+ * An earlier plugin-wide "deny", shown as one line above the permission tab
+ * with a way to withdraw it. Nothing else of the earlier decision is shown.
  */
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
-import type { Component } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import dayjs from 'dayjs'
 import { ElMessage } from 'element-plus'
-import { CircleCheckFilled, CircleCloseFilled, WarningFilled } from '@element-plus/icons-vue'
-import { usePluginStore } from '@/stores/plugin'
-import { usePluginConsentState } from '@/stores/pluginConsentState'
-import { usePluginStartGate } from '@/composables/usePluginStartGate'
-import { consentSaveErrorKey, consentSnapshot } from '@/utils/pluginCapabilities'
+import { CircleCloseFilled } from '@element-plus/icons-vue'
+import { getPluginConsent, revokePluginConsent, type PluginConsent } from '@/api/pluginConsent'
+import { consentSaveErrorKey } from '@/utils/pluginCapabilities'
 
 const props = defineProps<{ pluginId: string }>()
 const emit = defineEmits<{ changed: [] }>()
 const { t } = useI18n()
-const store = usePluginStore()
-const consentState = usePluginConsentState()
-const startGate = usePluginStartGate()
-const record = computed(() => consentState.details[props.pluginId] ?? null)
-const running = computed(() => store.getPluginById(props.pluginId)?.status === 'running')
-const busy = ref<'approve' | 'reject' | 'revoke' | null>(null)
-
-const banner = computed<{
-  kind: 'confirm' | 'denied' | 'approved'
-  tone: 'warning' | 'danger' | 'success'
-  icon: Component
-  title: string
-  description: string | null
-} | null>(() => {
-  const r = record.value
-  if (!r || r.state === 'analyzing') return null
-  if (r.decision === 'denied')
-    return {
-      kind: 'denied',
-      tone: 'danger',
-      icon: CircleCloseFilled,
-      title: t('pluginConsent.decision.denied'),
-      description: t('pluginConsent.banner.deniedDesc'),
-    }
-  if (r.state === 'confirm') {
-    const count = r.unconfirmed.length
-    return {
-      kind: 'confirm',
-      tone: 'warning',
-      icon: WarningFilled,
-      title: count
-        ? t(r.upgraded ? 'pluginConsent.banner.upgradedConfirm' : 'pluginConsent.banner.confirm', { n: count })
-        : t('pluginConsent.banner.incompleteTitle'),
-      description: count ? t('pluginConsent.banner.capabilitiesDesc') : t('pluginConsent.banner.incompleteDesc'),
-    }
-  }
-  if (r.decision === 'approved') {
-    const decided = dayjs(r.decided_at)
-    return {
-      kind: 'approved',
-      tone: 'success',
-      icon: CircleCheckFilled,
-      title: t('pluginConsent.decision.approved'),
-      description:
-        r.decided_at && decided.isValid()
-          ? t('pluginConsent.banner.approvedAt', { date: decided.format('YYYY-MM-DD HH:mm') })
-          : null,
-    }
-  }
-  return null
-})
+const record = ref<PluginConsent | null>(null)
+const busy = ref(false)
+const denied = computed(() => record.value?.decision === 'denied')
+let sequence = 0
 
 async function load() {
+  const seq = ++sequence
+  const id = props.pluginId
   try {
-    await consentState.load(props.pluginId)
+    const next = await getPluginConsent(id)
+    if (seq === sequence) record.value = next
   } catch {
     // The tab works without it; the line just stays hidden.
+    if (seq === sequence) record.value = null
   }
 }
-watch(
-  () => props.pluginId,
-  (id, previous) => {
-    if (previous) consentState.unwatchPlugin(previous)
-    consentState.watchPlugin(id)
-    void load()
-  },
-  { immediate: true },
-)
-onBeforeUnmount(() => consentState.unwatchPlugin(props.pluginId))
+watch(() => props.pluginId, () => void load(), { immediate: true })
 
-async function approve() {
-  const details = record.value
-  if (!details) return
-  busy.value = 'approve'
-  let saved = false
-  try {
-    await consentState.approve(props.pluginId, consentSnapshot(details))
-    saved = true
-    if (!running.value && (await startGate.startWithConsent(props.pluginId))) {
-      ElMessage.success(t('messages.pluginStarted'))
-    }
-  } catch (error) {
-    ElMessage.error(t(saved ? 'messages.startFailed' : consentSaveErrorKey(error)))
-  } finally {
-    busy.value = null
-    void load()
-    emit('changed')
-  }
-}
-async function reject() {
-  busy.value = 'reject'
-  try {
-    await consentState.reject(props.pluginId)
-    // Rejecting stops the plugin server-side; refresh so the header shows it.
-    await store.fetchPluginStatus()
-    try {
-      await store.refreshLoadedPluginData()
-    } catch {
-      // A refresh failure must not hide a recorded decision.
-    }
-  } catch (error) {
-    ElMessage.error(t(consentSaveErrorKey(error)))
-  } finally {
-    busy.value = null
-    void load()
-    emit('changed')
-  }
-}
 async function revoke() {
-  busy.value = 'revoke'
+  busy.value = true
   try {
-    await consentState.revoke(props.pluginId)
+    const next = await revokePluginConsent(props.pluginId)
+    sequence++
+    record.value = next
   } catch (error) {
     ElMessage.error(t(consentSaveErrorKey(error)))
-  } finally {
-    busy.value = null
     void load()
+  } finally {
+    busy.value = false
     emit('changed')
   }
 }

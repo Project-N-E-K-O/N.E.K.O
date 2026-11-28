@@ -11,6 +11,7 @@ import {
   permissionsToml,
   scanNotice,
   validPanel,
+  validPending,
   enforcementTag,
   firstUse,
   incomplete,
@@ -90,6 +91,17 @@ describe('usageLine', () => {
     expect(
       usageLine(row({ permission: 'plugin_sdk.models:invoke', state: 'undecided' }), covered, '2026-11-25T00:00:00Z'),
     ).toEqual({ kind: 'unused30d' })
+  })
+
+  it('does not show a last use older than lost system entries as the last one', () => {
+    const used = { at: '2026-11-20T10:00:00Z', origin_kind: null, outcome: 'allowed' as const }
+    expect(usageLine(row({ last_used: used }), covered, '2026-11-25T00:00:00Z')).toBeNull()
+    // Lost before the last use: that use is still the last one.
+    expect(usageLine(row({ last_used: used }), covered, '2026-11-19T00:00:00Z')).toMatchObject({ kind: 'last' })
+    // Lost system entries say nothing about a non-system permission.
+    expect(
+      usageLine(row({ permission: 'plugin_sdk.models:invoke', last_used: used }), covered, '2026-11-25T00:00:00Z'),
+    ).toMatchObject({ kind: 'last' })
   })
 
   it('claims nothing without a history or a start time', () => {
@@ -276,6 +288,17 @@ describe('grantCondition', () => {
     expect(grantCondition(row({ condition: null }))).toBe('in_use')
     expect(grantCondition(row({ condition: 'anytime' }))).toBe('anytime')
   })
+
+  it('falls back to "while in use" for a stored "any time" the server does not allow', () => {
+    expect(grantCondition(row({ condition: 'anytime', anytime_allowed: false }))).toBe('in_use')
+    // Unreadable for now: the stored condition is sent, and the server asks to retry.
+    expect(grantCondition(row({ condition: 'anytime', anytime_allowed: null }))).toBe('anytime')
+    expect(grantCondition(row({ condition: null, anytime_allowed: null }))).toBe('in_use')
+    const required = row({ declared: { ...row().declared!, level: 'require' }, condition: null, anytime_allowed: null })
+    expect(grantCondition(required)).toBe('in_use')
+    // An explicit choice is still sent as chosen.
+    expect(grantCondition(row({ condition: 'anytime', anytime_allowed: false }), 'anytime')).toBe('anytime')
+  })
 })
 
 describe('scan-wide state', () => {
@@ -308,10 +331,25 @@ describe('permissionsToml', () => {
   })
 })
 
+describe('validPending', () => {
+  it('rejects a list with items of another shape', () => {
+    expect(validPending({ first_use: [], incomplete: [] })).toBe(true)
+    expect(validPending({ first_use: [null], incomplete: [] })).toBe(false)
+    expect(validPending({ first_use: ['x'], incomplete: [] })).toBe(false)
+  })
+})
+
 describe('validPanel', () => {
   it('rejects responses of another shape', () => {
     expect(validPanel({})).toBe(false)
     expect(validPanel(null)).toBe(false)
     expect(validPanel(panel())).toBe(true)
+  })
+
+  it('rejects a panel without the nested lists it renders', () => {
+    expect(validPanel({ ...panel(), developer: {} })).toBe(false)
+    expect(validPanel({ ...panel(), developer: { ...panel().developer, findings: null } })).toBe(false)
+    expect(validPanel({ ...panel(), developer: { ...panel().developer, blind_spots: null } })).toBe(false)
+    expect(validPanel({ ...panel(), blind_spots: { counted: 0, not_analyzed_files: 0 } })).toBe(false)
   })
 })

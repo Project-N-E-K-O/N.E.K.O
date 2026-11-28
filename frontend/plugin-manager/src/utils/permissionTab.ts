@@ -86,9 +86,13 @@ export function enforcementTag(row: Pick<PanelRow, 'enforced' | 'usage_tracked'>
  * The condition to grant with. A required item has no "when it may" control:
  * it is granted "any time" when the server allows it (the declaration covers
  * background use), so background use is not left off with no way to turn it on.
+ * A stored "any time" the server no longer allows falls back to "while in use";
+ * while the declaration cannot be read (``null``) the stored condition is
+ * sent as it is, and the server asks to try again later.
  */
 export function grantCondition(row: PanelRow, chosen?: PermissionCondition): PermissionCondition {
   if (chosen) return chosen
+  if (row.anytime_allowed === false) return 'in_use'
   if (row.declared?.level === 'require' && row.anytime_allowed === true) return 'anytime'
   return row.condition ?? 'in_use'
 }
@@ -126,6 +130,8 @@ export function usageLine(
   lostAt: string | null,
 ): UsageLine {
   if (!row.usage_tracked) return null
+  // A system use reported lost after the last recorded one may be the real last use.
+  if (row.last_used && row.permission.startsWith('system.') && lostAt && isAfter(lostAt, row.last_used.at)) return null
   if (row.last_used) {
     return {
       kind: 'last',
@@ -146,6 +152,13 @@ export function usageLine(
   return history.last_use_since ? { kind: 'unusedSince', since: history.last_use_since } : null
 }
 
+function isAfter(a: string, b: string): boolean {
+  const left = Date.parse(a)
+  const right = Date.parse(b)
+  // An unreadable time cannot show the last use is complete.
+  return Number.isNaN(left) || Number.isNaN(right) || left > right
+}
+
 /** Uses while undecided: "N times" or "at least N times". */
 export function firstUse(
   pending: PendingPermissions | null,
@@ -157,6 +170,19 @@ export function firstUse(
     (use) => use.plugin_id === pluginId && use.permission === row.permission,
   )
   return item ? { count: item.count, atLeast: item.count_is_lower_bound } : null
+}
+
+/**
+ * The plugin's entries of "never decided" and "more after an update", left
+ * out when the list could not be read again: they belong to an older answer.
+ */
+export function withoutStartEntries(
+  pending: PendingPermissions,
+  pluginId: string,
+): Pick<PendingPermissions, 'to_confirm' | 'upgraded'> {
+  const keep = (entries: unknown) =>
+    Array.isArray(entries) ? entries.filter((entry) => entry?.plugin_id !== pluginId) : []
+  return { to_confirm: keep(pending.to_confirm), upgraded: keep(pending.upgraded) }
 }
 
 /** The declaration is unknown this time: the tab is incomplete. */
@@ -288,13 +314,16 @@ const isObject = (value: unknown): value is Record<string, unknown> =>
 export function validPanel(value: unknown): value is PermissionPanel {
   return isObject(value) && Array.isArray(value.rows) && Array.isArray(value.tiers)
     && isObject(value.counts) && isObject(value.analysis) && isObject(value.source)
-    && isObject(value.blind_spots) && isObject(value.developer)
+    && isObject(value.blind_spots) && Array.isArray(value.blind_spots.files)
+    && isObject(value.developer) && isObject(value.developer.findings)
+    && Array.isArray(value.developer.blind_spots)
 }
 export function validCatalog(value: unknown): value is PermissionCatalog {
   return isObject(value) && Array.isArray(value.privacy_groups)
 }
 export function validPending(value: unknown): value is PendingPermissions {
-  return isObject(value) && Array.isArray(value.first_use) && Array.isArray(value.incomplete)
+  return isObject(value) && Array.isArray(value.first_use) && value.first_use.every(isObject)
+    && Array.isArray(value.incomplete)
 }
 export function validHistory(value: unknown): value is { history: UsageHistory; lost_at: string | null } {
   return isObject(value) && isObject(value.history)

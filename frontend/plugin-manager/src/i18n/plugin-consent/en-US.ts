@@ -3,58 +3,16 @@ import { withPermissionLabels } from '../plugin-permissions/shared'
 
 const messages = {
   title: 'Permissions',
-  dialogTitle: 'Confirm plugin capabilities',
-  introduction:
-    'This plugin can use the capabilities below while it runs. Confirm them to start it.',
-  analysisPending:
-    'Capability analysis is not finished yet. Click start again to start directly: {names}',
-  incomplete: 'Capability analysis is incomplete. You can still confirm and start this plugin.',
-  upgraded: 'Added after upgrade',
-  pending: 'Pending confirmation',
   decision: {
-    approved: 'Approved',
     denied: 'Denied',
   },
   banner: {
-    confirm: '{n} capabilities need confirmation',
-    upgradedConfirm: '{n} new capabilities added after upgrade need confirmation',
-    capabilitiesDesc:
-      'The plugin may read your conversations or memory, or send content to N.E.K.O. Once confirmed you will not be asked again until an upgrade adds new capabilities.',
-    incompleteTitle: 'Capability analysis did not finish completely',
-    incompleteDesc:
-      'Results may be incomplete. You can still approve and keep using the plugin.',
-    deniedDesc: 'Autostart will skip this plugin; starting it manually asks again.',
-    approvedAt: 'Confirmed {date}',
-    analyzingTitle: 'Analyzing plugin capabilities…',
-    analyzingDesc: 'Results will appear here automatically once the analysis finishes.',
+    deniedDesc: 'Autostart will skip this plugin.',
   },
-  approve: 'Approve',
-  reject: 'Deny',
-  approveAndStart: 'Approve and start',
-  revoke: 'Revoke confirmation',
   revokeDecision: 'Withdraw decision',
-  evidenceToggle: 'Code locations ({n})',
-  meta: {
-    analyzed: 'Analyzed {date}',
-    version: 'Version {version}',
-    files: '{n} files',
-  },
-  noticesTitle: 'Plugin capabilities need confirmation',
-  loading: 'Loading capability information…',
-  loadFailed: 'Capability information could not be loaded.',
   saveFailed: 'The decision could not be saved. Please retry.',
-  unknown:
-    'Its exact data use is not yet known. Plugin SDKs can read conversations and memory, and send content to N.E.K.O.',
-  noneFound: 'No issues found: the code scan found no permission use and no code it could not confirm.',
   retry: 'Analyze again',
   findings: {
-    usedTitle: 'Permissions this plugin uses',
-    usedBanner: 'This plugin uses {n} permission(s)',
-    declared: 'Declared by the author',
-    detected: 'Found in code',
-    blindSpotsTitle: '{n} place(s) could not be confirmed by static analysis',
-    blindSpotsDesc: 'These places load code dynamically, use reflection or run generated code, or were not analyzed. What they do cannot be determined without running the plugin.',
-    unlocated: 'Part of the plugin (no single file)',
     partialTag: 'Partly unconfirmable',
     partialTagHint: 'Some code could not be analyzed statically. See the details page.',
   },
@@ -188,6 +146,32 @@ const messages = {
       manifestUnusable: "The plugin's manifest cannot be used, so only “Only while I use it” is possible.",
       backgroundNotDeclared: "The plugin does not declare background use of this permission, so only “Only while I use it” is possible.",
       busy: "Another plugin operation is in progress. Please try again later.",
+    },
+  },
+  dialogs: {
+    decideItems: "Decide item by item",
+    undeclared: "Not declared, found by the scan",
+    start: "Start",
+    startUndecided: "Start ({n} not decided yet)",
+    done: "Done",
+    doneUndecided: "Done ({n} not decided yet)",
+    first: {
+      title: "Before starting “{name}”",
+      reviewTitle: "Permissions “{name}” needs",
+      intro: "It needs the permissions below. Please decide each one. You can change them any time on the Permissions tab.",
+      later: "When it uses these, they will wait for you under “Needs you”: {names}",
+      notStart: "Don't start",
+    },
+    upgrade: {
+      title: "“{name}” has permissions not decided yet",
+      intro: "The permissions below are not decided yet. Please decide each one.",
+      unchanged: "The {n} decided permission(s) stay as they are and are not asked again",
+      notStart: "Not now",
+    },
+    firstUse: {
+      title: "“{name}” wants to use “{permission}”",
+      when: "When it may",
+      gone: "This item no longer needs a decision.",
     },
   },
   privacy: {

@@ -46,10 +46,6 @@ vi.mock('@/stores/plugin', () => ({
   }),
 }))
 
-vi.mock('@/stores/pluginConsentState', () => ({
-  usePluginConsentState: () => ({ forget: vi.fn() }),
-}))
-
 vi.mock('@/api/plugins', () => ({ deletePlugin: vi.fn() }))
 vi.mock('@/api/pluginCli', () => ({ buildPluginCli: vi.fn() }))
 vi.mock('@/utils/openExternal', async (importOriginal) => ({

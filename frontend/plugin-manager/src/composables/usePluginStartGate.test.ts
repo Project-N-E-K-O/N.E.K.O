@@ -1,284 +1,192 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
-import { usePluginStore } from '@/stores/plugin'
-import { startPlugin, reloadPlugin } from '@/api/plugins'
-import { getPluginConsent, approvePluginConsent } from '@/api/pluginConsent'
-import { usePluginConsentState } from '@/stores/pluginConsentState'
-import { usePluginStartGate } from './usePluginStartGate'
-import { ElMessage } from 'element-plus'
-import type { PluginConsent } from '@/api/pluginConsent'
+import { panel, row } from '@/utils/permissionTab.fixtures'
+import { usePermissionStartDialog } from '@/stores/permissionStartDialog'
+import { START_REVIEW_TIMEOUT_MS, readStartReview, usePluginStartGate } from './usePluginStartGate'
 
-vi.mock('@/i18n', () => ({
-  getLocale: () => 'en-US',
-  i18n: { global: { t: (key: string) => key } },
+const api = vi.hoisted(() => ({
+  getPendingPermissions: vi.fn(),
+  getPermissionPanel: vi.fn(),
 }))
-vi.mock('element-plus', async (original) => ({
-  ...(await original<object>()),
-  ElMessage: { warning: vi.fn(), error: vi.fn(), success: vi.fn(), info: vi.fn() },
+vi.mock('@/api/pluginPermissions', () => api)
+const dialogModule = vi.hoisted(() => ({ preload: vi.fn() }))
+vi.mock('@/components/plugin/permissionStartDialog', () => ({ PermissionStartDialog: dialogModule }))
+const pluginStore = vi.hoisted(() => ({
+  start: vi.fn(),
+  getPluginById: vi.fn((id: string) => ({ id, name: `Plugin ${id}` })),
 }))
-vi.mock('@/api/plugins', () => ({
-  getPlugins: vi.fn(),
-  getPlugin: vi.fn(),
-  getPluginSummaries: vi.fn(),
-  getPluginStatus: vi.fn(),
-  startPlugin: vi.fn(),
-  stopPlugin: vi.fn(),
-  reloadPlugin: vi.fn(),
-  reloadAllPlugins: vi.fn(),
-  refreshPluginsRegistry: vi.fn(),
-  setPluginAutoStart: vi.fn(),
-}))
-vi.mock('@/api/pluginConsent', () => ({
-  getPluginConsent: vi.fn(),
-  approvePluginConsent: vi.fn(),
-  rejectPluginConsent: vi.fn(),
-  revokePluginConsent: vi.fn(),
-  getPluginConsentNotices: vi.fn(),
-  analyzePluginCapabilities: vi.fn(),
-}))
-vi.mock('@/api/config', () => ({
-  getPluginConfigApplicationState: vi.fn().mockResolvedValue({ config_state: 'matched' }),
-}))
+vi.mock('@/stores/plugin', () => ({ usePluginStore: () => pluginStore }))
 
-function consent(state: PluginConsent['state'], extras: Partial<PluginConsent> = {}): PluginConsent {
-  return {
-    plugin_id: 'demo',
-    version: '1',
-    decision: null,
-    decided_at: null,
-    approved_capabilities: [],
-    unconfirmed: state === 'confirm' ? ['memory.read'] : [],
-    state,
-    upgraded: false,
-    analysis: { status: 'completed', capabilities: [], evidence: [], warnings: [] },
-    ...extras,
-  }
-}
-
-function analyzing(analysisId?: string, status: 'queued' | 'running' = 'queued') {
-  return consent('analyzing', {
-    analysis: { status, analysis_id: analysisId, capabilities: [], evidence: [], warnings: [] },
-  })
-}
-
-function fixture(consentState: PluginConsent['state'] | null) {
-  const store = usePluginStore()
-  store.pluginSummaries = [
-    {
-      id: 'demo',
-      name: 'Demo',
-      description: '',
-      version: '1',
-      consent:
-        consentState === null
-          ? undefined
-          : { state: consentState, decision: null, upgraded: false },
-    },
-  ]
-  return store
-}
-
-function mockConfirmation(approved: boolean) {
-  return vi
-    .spyOn(usePluginConsentState(), 'requestConfirmation')
-    .mockImplementation(async (plugins) => {
-      if (!approved) return false
-      for (const plugin of plugins) {
-        await usePluginConsentState().approve(plugin.id, {
-          version: '1',
-          unconfirmed: ['memory.read'],
-          analysis_status: 'completed',
-        })
-      }
-      return true
-    })
+const NET = 'system.network:connect'
+const pending = (over = {}) => ({ first_use: [], incomplete: [], to_confirm: [], upgraded: [], ...over })
+const flush = async () => {
+  for (let n = 0; n < 10; n++) await Promise.resolve()
 }
 
 beforeEach(() => {
   setActivePinia(createPinia())
   vi.clearAllMocks()
-  vi.mocked(startPlugin)
-    .mockReset()
-    .mockResolvedValue({ success: true, plugin_id: 'demo', message: '' })
-  vi.mocked(reloadPlugin).mockReset().mockResolvedValue({ success: true, plugin_id: 'demo', message: '' })
-  vi.mocked(getPluginConsent).mockImplementation(async (id: string) => ({
-    ...consent('confirm'),
-    plugin_id: id,
-  }))
-  vi.mocked(approvePluginConsent).mockImplementation(async (id: string) => ({
-    ...consent('clear', { decision: 'approved', decided_at: 'now' }),
-    plugin_id: id,
-  }))
+  pluginStore.start.mockResolvedValue(undefined)
+  dialogModule.preload.mockResolvedValue({ default: {} })
+  api.getPermissionPanel.mockResolvedValue(panel({ rows: [row({ state: 'undecided', condition: null })] }))
 })
 afterEach(() => {
   vi.useRealTimers()
 })
 
-describe('manual start consent gate', () => {
-  it('a clear plugin starts without a consent request', async () => {
-    vi.mocked(getPluginConsent).mockResolvedValue(consent('clear'))
-    fixture('clear')
-    const request = vi.spyOn(usePluginConsentState(), 'requestConfirmation')
-    await expect(usePluginStartGate().startWithConsent('demo')).resolves.toBe(true)
-    expect(startPlugin).toHaveBeenCalledOnce()
-    expect(request).not.toHaveBeenCalled()
+describe('readStartReview', () => {
+  it('asks ① for a plugin never decided and ③ for one an update asks more of', async () => {
+    api.getPendingPermissions.mockResolvedValue(pending({ to_confirm: [{ plugin_id: 'demo', items: [NET] }] }))
+    expect((await readStartReview('demo'))?.request).toEqual({ kind: 'first', items: [NET] })
+    api.getPendingPermissions.mockResolvedValue(pending({ upgraded: [{ plugin_id: 'demo', items: [NET] }] }))
+    expect((await readStartReview('demo'))?.request).toEqual({ kind: 'upgrade', items: [NET] })
+    expect(dialogModule.preload).toHaveBeenCalled()
   })
 
-  it.each([false, true])('cancels a start whose consent read predates a reinstall (rejected=$rejected)', async (rejected) => {
-    const pluginStore = fixture('clear')
-    const consentState = usePluginConsentState()
-    let finishOld!: () => void
-    vi.mocked(getPluginConsent).mockReturnValueOnce(
-      new Promise((resolve, reject) => {
-        finishOld = () => {
-          if (rejected) reject(new Error('old plugin no longer exists'))
-          else resolve(consent('clear'))
-        }
-      }),
-    )
-    const gate = usePluginStartGate()
-    const oldStart = gate.startWithConsent('demo')
-    consentState.forget('demo')
-    pluginStore.pluginSummaries[0] = { ...pluginStore.pluginSummaries[0]!, version: '2' }
-    vi.mocked(getPluginConsent).mockResolvedValue(consent('confirm', { version: '2' }))
-    await consentState.load('demo')
-
-    finishOld()
-    await expect(oldStart).resolves.toBe(false)
-    expect(startPlugin).not.toHaveBeenCalled()
-    const confirmation = mockConfirmation(false)
-    await expect(gate.startWithConsent('demo')).resolves.toBe(false)
-    expect(confirmation).toHaveBeenCalledWith([{ id: 'demo', name: 'Demo', version: '2' }])
-  })
-
-  it('first click on an analyzing plugin warns and does not start; a second within 30s starts', async () => {
-    vi.useFakeTimers()
-    vi.mocked(getPluginConsent)
-      .mockResolvedValueOnce(analyzing('first', 'queued'))
-      .mockResolvedValueOnce(analyzing('first', 'running'))
-    fixture('analyzing')
-    const gate = usePluginStartGate()
-    await expect(gate.startWithConsent('demo')).resolves.toBe(false)
-    expect(startPlugin).not.toHaveBeenCalled()
-    expect(ElMessage.warning).toHaveBeenCalledOnce()
-
-    await expect(gate.startWithConsent('demo')).resolves.toBe(true)
-    expect(startPlugin).toHaveBeenCalledOnce()
-  })
-
-  it('warns again for a replacement scan even while the plugin remains analyzing', async () => {
-    fixture('analyzing')
-    vi.mocked(getPluginConsent)
-      .mockResolvedValueOnce(analyzing('first'))
-      .mockResolvedValue(analyzing('replacement'))
-    const gate = usePluginStartGate()
-    await expect(gate.startWithConsent('demo')).resolves.toBe(false)
-    await expect(gate.startWithConsent('demo')).resolves.toBe(false)
-    expect(ElMessage.warning).toHaveBeenCalledTimes(2)
-    expect(startPlugin).not.toHaveBeenCalled()
-    await expect(gate.startWithConsent('demo')).resolves.toBe(true)
-  })
-
-  it('clears the bypass when a summary says analysis finished', async () => {
-    fixture('analyzing')
-    vi.mocked(getPluginConsent).mockResolvedValue(analyzing())
-    const gate = usePluginStartGate()
-    await expect(gate.startWithConsent('demo')).resolves.toBe(false)
-    usePluginConsentState().seedSummaries([
-      { id: 'demo', version: '1', consent: consent('clear') },
-    ])
-    await expect(gate.startWithConsent('demo')).resolves.toBe(false)
-    expect(ElMessage.warning).toHaveBeenCalledTimes(2)
-    expect(startPlugin).not.toHaveBeenCalled()
-  })
-
-  it('clears the bypass when the same plugin is reinstalled between clicks', async () => {
-    fixture('analyzing')
-    vi.mocked(getPluginConsent).mockResolvedValue(analyzing())
-    const gate = usePluginStartGate()
-    await expect(gate.startWithConsent('demo')).resolves.toBe(false)
-    usePluginConsentState().forget('demo')
-    await expect(gate.startWithConsent('demo')).resolves.toBe(false)
-    expect(ElMessage.warning).toHaveBeenCalledTimes(2)
-    expect(startPlugin).not.toHaveBeenCalled()
-  })
-
-  it('warns again once the 30 second bypass expires', async () => {
-    vi.useFakeTimers()
-    vi.mocked(getPluginConsent).mockResolvedValue(consent('analyzing'))
-    fixture('analyzing')
-    const gate = usePluginStartGate()
-    await expect(gate.startWithConsent('demo')).resolves.toBe(false)
-    vi.setSystemTime(Date.now() + 31_000)
-    await expect(gate.startWithConsent('demo')).resolves.toBe(false)
-    expect(startPlugin).not.toHaveBeenCalled()
-    expect(ElMessage.warning).toHaveBeenCalledTimes(2)
-  })
-
-  it('confirm plugins go through one dialog and start on approve', async () => {
-    fixture('confirm')
-    const request = mockConfirmation(true)
-    const gate = usePluginStartGate()
-    await expect(gate.startWithConsent('demo')).resolves.toBe(true)
-    expect(request).toHaveBeenCalledWith([
-      { id: 'demo', name: 'Demo', version: '1' },
-    ])
-    expect(approvePluginConsent).toHaveBeenCalledWith('demo', expect.objectContaining({ unconfirmed: ['memory.read'] }))
-    expect(startPlugin).toHaveBeenCalledOnce()
-  })
-
-  it('does not start when the dialog is cancelled', async () => {
-    fixture('confirm')
-    mockConfirmation(false)
-    await expect(usePluginStartGate().startWithConsent('demo')).resolves.toBe(false)
-    expect(startPlugin).not.toHaveBeenCalled()
-  })
-
-  it('batch preparation partitions clear, analyzing, and confirm plugins', async () => {
-    const store = fixture('confirm')
-    store.pluginSummaries.push(
-      { id: 'analyzing', name: 'Analyzing', description: '', version: '1', consent: { state: 'analyzing', decision: null, upgraded: false } },
-      { id: 'clear', name: 'Clear', description: '', version: '1', consent: { state: 'clear', decision: null, upgraded: false } },
-    )
-    vi.mocked(getPluginConsent).mockImplementation(async (id: string) => ({
-      ...consent(id === 'analyzing' ? 'analyzing' : id === 'clear' ? 'clear' : 'confirm'),
-      plugin_id: id,
+  it('asks nothing for a plugin not listed, or only used while undecided', async () => {
+    api.getPendingPermissions.mockResolvedValue(pending({
+      to_confirm: [{ plugin_id: 'other', items: [NET] }],
+      first_use: [{ plugin_id: 'demo', permission: NET, at: '2026-11-27T10:00:00Z', count: 1, count_is_lower_bound: false }],
     }))
-    const request = mockConfirmation(true)
-    const { allowed, confirmed } = await usePluginStartGate().prepareBatchStart([
-      'demo', 'analyzing', 'clear',
-    ])
-    expect(confirmed).toBe(true)
-    expect(allowed.sort()).toEqual(['clear', 'demo'])
-    expect(request).toHaveBeenCalledWith([
-      { id: 'demo', name: 'Demo', version: '1' },
-    ])
-    for (const id of allowed) await store.start(id, { refresh: false })
-    expect(startPlugin).toHaveBeenCalledTimes(2)
+    expect(await readStartReview('demo')).toBeNull()
+    expect(api.getPermissionPanel).not.toHaveBeenCalled()
   })
 
-  it('a cancelled batch dialog still starts the clear plugins', async () => {
-    const store = fixture('confirm')
-    store.pluginSummaries.push({
-      id: 'clear', name: 'Clear', description: '', version: '1',
-      consent: { state: 'clear', decision: null, upgraded: false },
-    })
-    mockConfirmation(false)
-    vi.mocked(getPluginConsent).mockImplementation(async (id: string) => ({
-      ...consent(id === 'clear' ? 'clear' : 'confirm'),
-      plugin_id: id,
-    }))
-    const { allowed } = await usePluginStartGate().prepareBatchStart(['demo', 'clear'])
-    expect(allowed).toEqual(['clear'])
+  it.each([
+    ['the pending list fails', () => api.getPendingPermissions.mockRejectedValue(new Error('offline'))],
+    ['the pending list has another shape', () => api.getPendingPermissions.mockResolvedValue({})],
+    ['the panel fails', () => {
+      api.getPendingPermissions.mockResolvedValue(pending({ to_confirm: [{ plugin_id: 'demo', items: [NET] }] }))
+      api.getPermissionPanel.mockRejectedValue(new Error('offline'))
+    }],
+    ['the panel has another shape', () => {
+      api.getPendingPermissions.mockResolvedValue(pending({ to_confirm: [{ plugin_id: 'demo', items: [NET] }] }))
+      api.getPermissionPanel.mockResolvedValue({ rows: [] })
+    }],
+    ['the entry\'s items are not a list', () => {
+      api.getPendingPermissions.mockResolvedValue(pending({ to_confirm: [{ plugin_id: 'demo', items: 'network' }] }))
+    }],
+    ['the lists are not lists', () => {
+      api.getPendingPermissions.mockResolvedValue(pending({ to_confirm: 'demo', upgraded: { demo: [NET] } }))
+    }],
+    ['the dialog cannot be loaded', () => {
+      api.getPendingPermissions.mockResolvedValue(pending({ to_confirm: [{ plugin_id: 'demo', items: [NET] }] }))
+      dialogModule.preload.mockRejectedValue(new Error('chunk'))
+    }],
+  ])('asks nothing when %s', async (_case, arrange) => {
+    arrange()
+    expect(await readStartReview('demo')).toBeNull()
   })
 
-  it('store.start and reload never consult consent', async () => {
-    const store = fixture('confirm')
-    await store.start('demo', { refresh: false })
-    await store.reload('demo', { refresh: false })
-    expect(startPlugin).toHaveBeenCalledOnce()
-    expect(reloadPlugin).toHaveBeenCalledOnce()
-    expect(getPluginConsent).not.toHaveBeenCalled()
+  it('gives up after a fixed short time', async () => {
+    expect(START_REVIEW_TIMEOUT_MS).toBe(3000)
+    vi.useFakeTimers()
+    api.getPendingPermissions.mockReturnValue(new Promise(() => {}))
+    const result = readStartReview('demo')
+    await vi.advanceTimersByTimeAsync(START_REVIEW_TIMEOUT_MS - 1)
+    let settled = false
+    void result.then(() => { settled = true })
+    await flush()
+    expect(settled).toBe(false)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(await result).toBeNull()
+  })
+})
+
+describe('usePluginStartGate', () => {
+  it('starts at once when nothing waits', async () => {
+    api.getPendingPermissions.mockResolvedValue(pending())
+    expect(await usePluginStartGate().startWithReview('demo')).toBe(true)
+    expect(pluginStore.start).toHaveBeenCalledWith('demo')
+    expect(usePermissionStartDialog().active).toBeNull()
+  })
+
+  it('starts when the reads fail', async () => {
+    api.getPendingPermissions.mockRejectedValue(new Error('offline'))
+    expect(await usePluginStartGate().startWithReview('demo')).toBe(true)
+    expect(pluginStore.start).toHaveBeenCalledWith('demo')
+  })
+
+  it('starts when the reads time out', async () => {
+    vi.useFakeTimers()
+    api.getPendingPermissions.mockReturnValue(new Promise(() => {}))
+    const started = usePluginStartGate().startWithReview('demo')
+    await vi.advanceTimersByTimeAsync(START_REVIEW_TIMEOUT_MS)
+    expect(await started).toBe(true)
+    expect(pluginStore.start).toHaveBeenCalledWith('demo')
+  })
+
+  it('shows the dialog first and starts when the user chooses to', async () => {
+    api.getPendingPermissions.mockResolvedValue(pending({ to_confirm: [{ plugin_id: 'demo', items: [NET] }] }))
+    const started = usePluginStartGate().startWithReview('demo')
+    await flush()
+    const dialog = usePermissionStartDialog()
+    expect(dialog.active?.request).toEqual({ kind: 'first', items: [NET] })
+    expect(dialog.active?.pluginName).toBe('Plugin demo')
+    expect(pluginStore.start).not.toHaveBeenCalled()
+    dialog.answer(true)
+    expect(await started).toBe(true)
+    expect(pluginStore.start).toHaveBeenCalledTimes(1)
+  })
+
+  it('sends no start when the user chooses not to start', async () => {
+    api.getPendingPermissions.mockResolvedValue(pending({ upgraded: [{ plugin_id: 'demo', items: [NET] }] }))
+    const started = usePluginStartGate().startWithReview('demo')
+    await flush()
+    usePermissionStartDialog().answer(false)
+    expect(await started).toBe(false)
+    expect(pluginStore.start).not.toHaveBeenCalled()
+  })
+
+  it('sends one start for clicks repeated while the dialog is open', async () => {
+    api.getPendingPermissions.mockResolvedValue(pending({ to_confirm: [{ plugin_id: 'demo', items: [NET] }] }))
+    const gate = usePluginStartGate()
+    const first = gate.startWithReview('demo')
+    await flush()
+    expect(await gate.startWithReview('demo')).toBe(false)
+    expect(await usePluginStartGate().startWithReview('demo')).toBe(false)
+    usePermissionStartDialog().answer(true)
+    expect(await first).toBe(true)
+    expect(pluginStore.start).toHaveBeenCalledTimes(1)
+    expect(api.getPendingPermissions).toHaveBeenCalledTimes(1)
+    // Once done, the plugin can be started again.
+    api.getPendingPermissions.mockResolvedValue(pending())
+    expect(await gate.startWithReview('demo')).toBe(true)
+    expect(pluginStore.start).toHaveBeenCalledTimes(2)
+  })
+
+  it('lets the start fail as before, and a later click try again', async () => {
+    api.getPendingPermissions.mockResolvedValue(pending())
+    pluginStore.start.mockRejectedValueOnce(new Error('boom'))
+    const gate = usePluginStartGate()
+    await expect(gate.startWithReview('demo')).rejects.toThrow('boom')
+    expect(await gate.startWithReview('demo')).toBe(true)
+  })
+})
+
+describe('usePermissionStartDialog', () => {
+  it('a new request answers the open one with "don\'t start"; a stale answer is dropped', async () => {
+    const dialog = usePermissionStartDialog()
+    const base = { panel: panel(), pending: pending(), pluginName: 'x' }
+    const first = dialog.ask({ ...base, request: { kind: 'first', items: [NET] } })
+    const firstKey = dialog.active!.key
+    const second = dialog.ask({ ...base, request: { kind: 'upgrade', items: [NET] } })
+    expect(await first).toBe(false)
+    dialog.answer(true, firstKey)
+    expect(dialog.active?.request.kind).toBe('upgrade')
+    dialog.answer(true, dialog.active!.key)
+    expect(await second).toBe(true)
+    expect(dialog.active).toBeNull()
+  })
+
+  it('names the plugin an answer saved something for, also from a replaced dialog', () => {
+    const dialog = usePermissionStartDialog()
+    dialog.answer(false)
+    expect(dialog.saved).toBeNull()
+    dialog.answer(false, 99, 'demo')
+    expect(dialog.saved).toEqual({ pluginId: 'demo', revision: 1 })
+    dialog.answer(false, 99, 'demo')
+    expect(dialog.saved).toEqual({ pluginId: 'demo', revision: 2 })
   })
 })
