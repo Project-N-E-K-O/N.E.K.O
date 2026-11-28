@@ -39,6 +39,7 @@ took. No sentence is kept there, only names and numbers.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import time
 from collections.abc import Awaitable, Callable
@@ -56,7 +57,20 @@ logger = logging.getLogger(__name__)
 
 # Asked with the request that says which candidate a sentence belongs with;
 # returns what the small model answered, None when it could not be asked.
-Judge = Callable[[list[dict[str, Any]]], Awaitable["str | None"]]
+def _takes_candidates(judge: Any) -> bool:
+    """Whether a judge can be told how many candidates the request shows."""
+    try:
+        # The whole call must bind: a judge whose one parameter happens to be
+        # called "candidates" is still asked with the messages only.
+        inspect.signature(judge).bind([], candidates=0)
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
+# Asked with the request and how many candidates it shows (``candidates=``);
+# answers the raw answer, or the answer and how many requests it made.
+Judge = Callable[..., Awaitable["str | tuple[str | None, int] | None"]]
 
 # Why a project got its leader.
 # The presets of a member that works: the one a member has that nobody
@@ -382,8 +396,16 @@ class Families:
             standing,
             line_max_tokens=settings.ORCHESTRATOR_CANDIDATE_MAX_TOKENS,
         )
+        calls = 1
         try:
-            raw = await self._judge(messages)
+            if _takes_candidates(self._judge):
+                raw = await self._judge(messages, candidates=len(keys))
+            else:
+                # A judge of the older form, asked with the messages only.
+                raw = await self._judge(messages)
+            if isinstance(raw, tuple):
+                # A judge that counts its requests (``LexicalDecisionModel.belongs_counted``).
+                raw, calls = raw
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - not told: a new loose commission
@@ -391,8 +413,8 @@ class Families:
             raw = None
         answer = orch.read_answer(raw or "", keys)
         if answer is None:
-            return settled(None, orch.NEW, "unreadable", 1)
-        return settled(answer[0], answer[1], "model", 1)
+            return settled(None, orch.NEW, "unreadable", calls)
+        return settled(answer[0], answer[1], "model", calls)
 
     # -- setting it up ----------------------------------------------------
 

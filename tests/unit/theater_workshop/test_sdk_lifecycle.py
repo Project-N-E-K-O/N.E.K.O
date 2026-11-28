@@ -9,6 +9,7 @@ from copy import deepcopy
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 from threading import Barrier, Event
@@ -1092,7 +1093,12 @@ def test_release_smoke_runs_from_source_and_sdk_stays_out_of_frozen_builds(tmp_p
     repo = Path(__file__).resolve().parents[3]
     for filename in ("build-desktop.yml", "build-desktop-linux.yml"):
         workflow = (repo / ".github/workflows" / filename).read_text(encoding="utf-8")
-        include_lines = [line for line in workflow.splitlines() if "--include-package=services" in line]
+        # Count the complete parent-package argument. Explicit child includes
+        # such as services.knowledge do not require another workshop exclusion.
+        include_lines = [
+            line for line in workflow.splitlines()
+            if re.search(r"--include-package=services(?:\s|[\"']|$)", line)
+        ]
         assert include_lines
         assert workflow.count("--nofollow-import-to=services.theater_workshop") == len(include_lines)
         assert "--include-package=services.theater_workshop" not in workflow

@@ -55,6 +55,12 @@ class Modules:
     # background tasks, so an older readiness check must not overwrite a newer
     # toggle (or restart the lifecycle after the master switch was turned off).
     user_plugin_lifecycle_seq: int = 0
+    # The task that brings the plugins up after the switch was put on (``set_agent_flags``): what
+    # a task agent that asked for the plugins waits for (``nekopower_mount``).
+    user_plugin_enable_task: Optional[Any] = None
+    # How many times the plugins switch was put off from on (``_put_switch_off``): a start that came up is
+    # followed to a newer one only if the switch went off in between (``nekopower_mount``).
+    user_plugin_switch_offs: int = 0
     # The master switch. The name is the one the persisted intent file and the
     # status snapshot use; nothing is "analyzed" any more.
     analyzer_enabled: bool = False
@@ -115,16 +121,18 @@ def _bump_state_revision() -> int:
 
 
 def _put_switch_off(key: str) -> None:
-    """Put a capability switch off, and drop what was kept for task agents if it was the last one on.
+    """Put a capability switch off, and drop what was kept for task agents if NekoPower is off now.
 
-    In one go, with nothing awaited in between: NekoPower is off the
-    moment its last capability switch is (``nekopower_on``), and
-    what was kept of the main dialogue goes then. Not after
+    In one go, with nothing awaited in between: NekoPower is on with the
+    master switch alone (``nekopower_on``), so what was kept of the main
+    dialogue goes only if the master switch is off. Not after
     whatever the caller waits for next (a browser that is being
     closed, a plugin host that is being stopped): the switch may
     be on again by then, or the caller cancelled. Every place
     that puts one of them off does it by this.
     """
+    if key == "user_plugin_enabled" and Modules.agent_flags.get(key, False):
+        Modules.user_plugin_switch_offs += 1
     Modules.agent_flags[key] = False
     try:
         # Resolved when called: that module imports this one.

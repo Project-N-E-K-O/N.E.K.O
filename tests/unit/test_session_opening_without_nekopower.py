@@ -101,11 +101,12 @@ async def test_a_capability_on_with_the_master_switch_off_is_still_off(capabilit
     assert prompt == SESSION_INIT_PROMPT["zh"].format(name=NAME) + SESSION_INIT_NO_NEKOPOWER["zh"] + PERSONA
 
 
-async def test_the_master_switch_on_adds_nothing_whatever_capability_is_on():
-    # Only the master switch is looked at: with it on and no capability, the opening is
-    # the plain one, as it was before.
+async def test_the_master_switch_on_gives_the_opening_of_nekopower_whatever_capability_is_on():
+    # Only the master switch is looked at: with it on and no capability, NekoPower is on, and
+    # the opening is its own, with no note that she cannot act.
     prompt = await _opening(_flags(True))
-    assert prompt == SESSION_INIT_PROMPT["zh"].format(name=NAME) + PERSONA
+    assert prompt == SESSION_INIT_PROMPT_AGENT["zh"].format(name=NAME) + PERSONA
+    assert SESSION_INIT_NO_NEKOPOWER["zh"] not in prompt
 
 
 @pytest.mark.parametrize("capability", CAPABILITIES)

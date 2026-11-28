@@ -268,7 +268,7 @@ def test_function_scoped_import_is_collected(script_module) -> None:
 
 @pytest.mark.unit
 def test_relative_imports_are_skipped(script_module) -> None:
-    """All relative imports must be ignored — both ``from . import foo`` and
+    """Without file context, relative imports must be ignored — both ``from . import foo`` and
     ``from .foo import bar``. The risk: a sibling submodule whose name
     collides with a top-level layered package (e.g. ``plugin/core/bus`` has
     a ``memory`` submodule, plus the repo also has a top-level ``memory/``
@@ -316,11 +316,11 @@ def test_public_knowledge_boundaries_are_forbidden_edges(script_module) -> None:
         edge("main_routers/public_knowledge_router.py", "knowledge"),
         edge("app/main_server/web_app.py", "knowledge"),
         edge("plugin/server/routes/knowledge_bridge.py", "knowledge"),
-        edge("knowledge/service.py", "memory"),
+        edge("services/knowledge/service.py", "memory"),
         # Allowed: the Memory Server hosts the subsystem.
         edge("app/memory_server/knowledge_routes.py", "knowledge"),
         edge("app/memory_server/knowledge_routes.py", "memory"),
-        edge("knowledge/service.py", "utils"),
+        edge("services/knowledge/service.py", "utils"),
     ]
     flagged = {
         found[0][0].relative_to(root).as_posix()
@@ -331,7 +331,7 @@ def test_public_knowledge_boundaries_are_forbidden_edges(script_module) -> None:
         "main_routers/public_knowledge_router.py",
         "app/main_server/web_app.py",
         "plugin/server/routes/knowledge_bridge.py",
-        "knowledge/service.py",
+        "services/knowledge/service.py",
     }
 
 
@@ -394,6 +394,79 @@ def test_services_theater_workshop_and_launcher_core_are_layered(script_module) 
     inversions, cycles = script_module.find_violations(edges)
     assert [(e[3], e[4]) for e in inversions] == [("services", "main_routers")]
     assert cycles == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("source", [
+    "import services.knowledge.service as ks",
+    "from services.knowledge.service import KnowledgeService",
+    "from services import knowledge as ks",
+    "importlib.import_module('services.knowledge.service')",
+    "__import__('services.knowledge.service')",
+    "importlib.import_module('.knowledge.service', 'services')",
+    "import_module('.knowledge.service', package='services')",
+])
+def test_nested_knowledge_cannot_bypass_main_boundary(script_module, tmp_path, monkeypatch, source):
+    """The nested namespace must retain Main's HTTP-only boundary in every form."""
+    monkeypatch.setattr(script_module, "REPO_ROOT", tmp_path)
+    path = tmp_path / "main_logic" / "probe.py"
+    path.parent.mkdir()
+    path.write_text(source, encoding="utf-8")
+    edges = script_module.collect_edges([path])
+    forbidden = script_module.find_forbidden_edges(edges)
+    assert len(forbidden) == 1
+    assert forbidden[0][0][4] == "knowledge"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("source", [
+    "from ..knowledge.service import KnowledgeService",
+    "from .. import knowledge as ks",
+    "importlib.import_module('..knowledge.service', __package__)",
+])
+def test_peer_service_cannot_import_knowledge_relatively(script_module, tmp_path, monkeypatch, source):
+    """A relative import through services cannot hide a forbidden peer edge."""
+    monkeypatch.setattr(script_module, "REPO_ROOT", tmp_path)
+    path = tmp_path / "services" / "chat_sync" / "probe.py"
+    path.parent.mkdir(parents=True)
+    path.write_text(source, encoding="utf-8")
+    forbidden = script_module.find_forbidden_edges(script_module.collect_edges([path]))
+    assert len(forbidden) == 1
+    assert forbidden[0][0][4] == "knowledge"
+
+
+@pytest.mark.unit
+def test_nested_knowledge_still_cannot_import_memory(script_module, tmp_path, monkeypatch):
+    """Knowledge keeps its own logical node instead of inheriting services' permissions."""
+    monkeypatch.setattr(script_module, "REPO_ROOT", tmp_path)
+    path = tmp_path / "services" / "knowledge" / "service.py"
+    path.parent.mkdir(parents=True)
+    path.write_text("from memory import FactStore", encoding="utf-8")
+    edges = script_module.collect_edges([path])
+    assert edges[0][3] == "knowledge"
+    assert len(script_module.find_forbidden_edges(edges)) == 1
+
+
+@pytest.mark.unit
+def test_memory_host_can_import_nested_knowledge(script_module, tmp_path, monkeypatch):
+    """The owning HTTP adapter may import the core without a false services cycle."""
+    monkeypatch.setattr(script_module, "REPO_ROOT", tmp_path)
+    path = tmp_path / "app" / "memory_server" / "knowledge_routes.py"
+    path.parent.mkdir(parents=True)
+    path.write_text("from services.knowledge.service import KnowledgeService", encoding="utf-8")
+    edges = script_module.collect_edges([path])
+    assert [edge[4] for edge in edges] == ["knowledge"]
+    assert script_module.find_forbidden_edges(edges) == []
+
+
+@pytest.mark.unit
+def test_relative_sibling_name_does_not_fabricate_top_level_edge(script_module, tmp_path, monkeypatch):
+    """A plugin-local memory name remains plugin-local after relative resolution."""
+    monkeypatch.setattr(script_module, "REPO_ROOT", tmp_path)
+    path = tmp_path / "plugin" / "core" / "bus" / "probe.py"
+    path.parent.mkdir(parents=True)
+    path.write_text("from .memory import MemoryClient", encoding="utf-8")
+    assert script_module.collect_edges([path]) == []
 
 
 # ---------------------------------------------------------------------------

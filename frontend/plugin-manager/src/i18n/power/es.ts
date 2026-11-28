@@ -517,6 +517,9 @@ const messages: PowerMessages = {
       mcp_server: 'Usar un servidor MCP',
       usage_limit: 'Seguir después de alcanzar el límite de uso',
       browser_reopen: 'Volver a abrir el navegador',
+      enable_browser: 'Activar el control del navegador',
+      enable_keyboard_mouse: 'Activar el control de teclado y ratón',
+      enable_plugins: 'Activar los plugins de usuario',
       session_action: 'Actuar sobre otro familiar',
     },
     facts: {
@@ -574,6 +577,7 @@ const messages: PowerMessages = {
     default: 'Predeterminado ({what})',
     inherit: 'El modelo de quien lo envía',
     agentModel: 'modelo de los familiares',
+    advancedModel: 'modelo avanzado de los familiares',
     free: 'gratis',
     noModel: 'sin modelo',
     slotEmpty: 'aún sin modelo',

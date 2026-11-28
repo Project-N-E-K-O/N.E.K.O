@@ -15,6 +15,9 @@
 
 """``/internal/knowledge/*``: the public-knowledge subsystem's HTTP surface.
 
+The domain implementation lives in services.knowledge; this module retains the
+Memory Server adapter and its injected shared encoder, not the domain's state.
+
 Data isolation, process co-location: the subsystem lives in the Memory Server
 process but owns its own root (``<app docs>/knowledge``), its own database, its
 own router and its own background tasks, and never touches memory data. It
@@ -55,9 +58,9 @@ from starlette.datastructures import UploadFile
 from starlette.requests import ClientDisconnect
 from starlette.formparsers import MultiPartParser, MultiPartException
 
-from knowledge.service import MAX_PENDING_IMPORTS, KnowledgeService, KnowledgeUnavailable
-from knowledge.models import KnowledgePackError
-from knowledge.subscriptions import (
+from services.knowledge.service import MAX_PENDING_IMPORTS, KnowledgeService, KnowledgeUnavailable
+from services.knowledge.models import KnowledgePackError
+from services.knowledge.subscriptions import (
     SUBSCRIPTION_PROTOCOL_VERSION,
     SubscriptionError,
     parse_expected_identity,

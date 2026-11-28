@@ -241,7 +241,7 @@ JSON 객체만 반환하세요.""",
 - Плагины с пометкой [KEYWORD MATCH] прошли отбор по ключевым словам; рассмотрите их первыми.
 Верните только объект JSON, больше ничего.""",
 
-    'es': """Eres un User Plugin automation assessment agent que enruta tareas. PLUGINS DISPONIBLES:
+    'es': """Eres un User Plugin automation assessment agent, que enruta tareas. PLUGINS DISPONIBLES:
 {plugins_desc}
 
 El mensaje del usuario trae TASK (lo que hay que hacer) y USER_SAID (las palabras del propio usuario), y puede traer ACTIVE_TASKS y PREFERENCES.
@@ -275,7 +275,7 @@ MUY IMPORTANTE:
 - Los plugins marcados con [KEYWORD MATCH] pasaron un prefiltro de palabras clave; considéralos primero.
 Devuelve solo el objeto JSON, nada más.""",
 
-    'pt': """Você é um User Plugin automation assessment agent que roteia tarefas. PLUGINS DISPONÍVEIS:
+    'pt': """Você é um User Plugin automation assessment agent, que roteia tarefas. PLUGINS DISPONÍVEIS:
 {plugins_desc}
 
 A mensagem do usuário traz TASK (o que precisa ser feito) e USER_SAID (as palavras do próprio usuário), e pode trazer ACTIVE_TASKS e PREFERENCES.
@@ -415,7 +415,7 @@ JSON 배열만 반환하세요.""",
 
 Инструкции: Верните JSON-массив всех возможно релевантных ID плагинов. Если нет релевантных, верните [].
 Верните ТОЛЬКО JSON-массив, ничего больше.""",
-    'es': """Eres un agentic automation assessment agent en etapa de filtrado grueso. Dada la solicitud del usuario, selecciona TODOS los IDs de plugins posiblemente relevantes de la lista siguiente.
+    'es': """Eres un agentic automation assessment agent, en etapa de filtrado grueso. Dada la solicitud del usuario, selecciona TODOS los IDs de plugins posiblemente relevantes de la lista siguiente.
 
 Plugins disponibles (id: descripción breve):
 {plugin_summaries}
@@ -424,7 +424,7 @@ Solicitud del usuario: {user_text}
 
 Instrucciones: Devuelve un array JSON con todos los IDs de plugins posiblemente relevantes. Si ninguno es relevante, devuelve [].
 Devuelve SOLO el array JSON, nada más.""",
-    'pt': """Você é um agentic automation assessment agent na etapa de triagem grosseira. Dada a solicitação do usuário, selecione TODOS os IDs de plugins possivelmente relevantes da lista abaixo.
+    'pt': """Você é um agentic automation assessment agent, na etapa de triagem grosseira. Dada a solicitação do usuário, selecione TODOS os IDs de plugins possivelmente relevantes da lista abaixo.
 
 Plugins disponíveis (id: breve descrição):
 {plugin_summaries}
@@ -949,7 +949,7 @@ JSON만 반환하세요: {"verdict": "...", "task": "요청된 작업을 한 문
 Не судите, выполнимо ли действие.
 Верните только JSON: {"verdict": "...", "task": "действие одним предложением на языке пользователя; пусто для none"}""",
 
-    'es': """Eres un agentic automation assessment agent en etapa de contraste entre lo dicho y lo hecho. Abajo están lo que el usuario dijo en este turno y la respuesta del personaje. En este turno el personaje no llamó a ninguna herramienta de tareas. Decide cuál es la respuesta; elige exactamente una:
+    'es': """Eres un agentic automation assessment agent, en etapa de contraste entre lo dicho y lo hecho. Abajo están lo que el usuario dijo en este turno y la respuesta del personaje. En este turno el personaje no llamó a ninguna herramienta de tareas. Decide cuál es la respuesta; elige exactamente una:
 - "none": el usuario no pidió ninguna acción real fuera de la conversación; o el personaje solo charló, preguntó de vuelta o respondió con lo que sabe; o se negó a propósito (no quiere, le parece inapropiado).
 - "unable": el usuario pidió una acción real (manejar el ordenador, un navegador, un dispositivo, un plugin, buscar información actual, poner un recordatorio...) y el personaje dijo que no puede o que no tiene cómo.
 - "promised": el usuario pidió una acción real y el personaje aceptó hacerla, o dijo que la está haciendo.
@@ -957,7 +957,7 @@ JSON만 반환하세요: {"verdict": "...", "task": "요청된 작업을 한 문
 No juzgues si la acción es posible.
 Devuelve solo JSON: {"verdict": "...", "task": "la acción en una frase, en el idioma del usuario; vacío para none"}""",
 
-    'pt': """Você é um agentic automation assessment agent na etapa de conferir o dito com o feito. Abaixo estão o que o usuário disse neste turno e a resposta da personagem. Neste turno a personagem não chamou nenhuma ferramenta de tarefas. Decida qual é a resposta; escolha exatamente uma:
+    'pt': """Você é um agentic automation assessment agent, na etapa de conferir o dito com o feito. Abaixo estão o que o usuário disse neste turno e a resposta da personagem. Neste turno a personagem não chamou nenhuma ferramenta de tarefas. Decida qual é a resposta; escolha exatamente uma:
 - "none": o usuário não pediu nenhuma ação real fora da conversa; ou a personagem só conversou, perguntou de volta ou respondeu com o que sabe; ou recusou de propósito (não quer, acha inadequado).
 - "unable": o usuário pediu uma ação real (operar o computador, um navegador, um dispositivo, um plugin, buscar informação atual, criar um lembrete...) e a personagem disse que não consegue ou que não tem como.
 - "promised": o usuário pediu uma ação real e a personagem aceitou fazer, ou disse que está fazendo.
@@ -1140,6 +1140,10 @@ PERMISSION_DETAIL_CUT_HINT = {
 # it used and ``{more}`` what it gets when the user allows it. Nor is
 # ``dsh_plugin_add``: the words a ``run_command`` question is put in when the
 # command may add a dsh plugin (``nekopower.dsh.plugin_command.adds_plugin``).
+# Nor are ``enable_browser``, ``enable_keyboard_mouse`` and ``enable_plugins``:
+# asked each time a task agent that finds one of those switched off asks the
+# user to turn it on (``nekopower.host.gateway``, ``enable_capability``); they
+# name no ``{detail}``, as nothing a task agent wrote is part of the question.
 PERMISSION_CATEGORY_TEXTS = {
     'zh': {"run_command": "运行命令 {detail}", "outside_write": "在工作目录以外写文件 {detail}",
            "outside_read": "读取工作目录以外的文件 {detail}", "workdir_files": "读写工作目录里的文件 {detail}",
@@ -1149,7 +1153,8 @@ PERMISSION_CATEGORY_TEXTS = {
            "usage_limit": "再用约 {more} token 接着办，用到了会再问一次（这件事已经用了 {used} token，到了一件事的用量上限）",
            "open_session": "另开一只能改文件的使魔来办这件事：{detail}", "open_session_tree": "另开一只能改文件的使魔来办这件事，它在一份独立的副本里改，做完合回项目目录（副本建不成时排队在项目目录里改）：{detail}", "open_beside": "另开一只能改文件的使魔同时办这件事，在独立副本里改，做完合回项目目录（副本建不成时排队在项目目录里改）：{detail}",
            "open_session_team": "为这件事组一支队伍：{count} 只使魔同时改文件，各在独立的副本里改，做完合回项目目录（{detail}）",
-           "plugin_entry": "调用 {detail}", "other": "使用 {detail}"},
+           "plugin_entry": "调用 {detail}", "other": "使用 {detail}",
+           "enable_browser": "开启浏览器控制", "enable_keyboard_mouse": "开启键鼠控制", "enable_plugins": "开启用户插件"},
     'zh-TW': {"run_command": "執行命令 {detail}", "outside_write": "在工作目錄以外寫檔案 {detail}",
               "outside_read": "讀取工作目錄以外的檔案 {detail}", "workdir_files": "讀寫工作目錄裡的檔案 {detail}",
               "keyboard_mouse": "操作鍵盤和滑鼠", "browser": "操作瀏覽器", "browser_reopen": "重新開啟瀏覽器（之前開的那個被關掉了）", "space_command": "執行命令 {detail}（這條命令會碰到使魔的長期記憶檔案）", "dsh_plugin_add": "執行命令 {detail}（會讓 dsh 載入外掛：外掛在 dsh 裡擁有全部權限，沒有沙箱）", "mcp_server": "使用 MCP 服務 {detail}",
@@ -1158,7 +1163,8 @@ PERMISSION_CATEGORY_TEXTS = {
               "usage_limit": "再用約 {more} token 接著辦，用到了會再問一次（這件事已經用了 {used} token，到了一件事的用量上限）",
               "open_session": "另開一隻能改檔案的使魔來辦這件事：{detail}", "open_session_tree": "另開一隻能改檔案的使魔辦這件事，在獨立副本裡改，做完合回專案目錄（建不成副本就在專案目錄裡排隊改）：{detail}", "open_beside": "另開一隻使魔同時辦這件事，在獨立副本裡改，做完合回專案目錄（建不成副本就在專案目錄裡排隊改）：{detail}",
               "open_session_team": "為這件事組一支隊伍：{count} 隻使魔同時改檔案，各在獨立的副本裡改，做完合回專案目錄（{detail}）",
-              "plugin_entry": "呼叫 {detail}", "other": "使用 {detail}"},
+              "plugin_entry": "呼叫 {detail}", "other": "使用 {detail}",
+              "enable_browser": "開啟瀏覽器控制", "enable_keyboard_mouse": "開啟鍵鼠控制", "enable_plugins": "開啟使用者外掛"},
     'en': {"run_command": "run the command {detail}", "outside_write": "write the file {detail} outside the working directory",
            "outside_read": "read the file {detail} outside the working directory",
            "workdir_files": "read or write {detail} in the working directory",
@@ -1170,7 +1176,9 @@ PERMISSION_CATEGORY_TEXTS = {
            "usage_limit": "go on with about {more} more tokens, after which it asks again (it has used {used} tokens, the limit set for one task)",
            "mcp_server": "use the MCP server {detail}", "open_session": "start another familiar that can change files for this task: {detail}", "open_session_tree": "start another familiar that can change files for this task; it works in a copy of its own, merged back into the project folder when it is done (in the project folder itself, in its turn, where no copy can be made): {detail}", "open_beside": "start another familiar beside the busy one for this task; it works in a copy of its own, merged back into the project folder when it is done (in the project folder itself, in its turn, where no copy can be made): {detail}",
            "open_session_team": "form a team for this task: {count} familiars change files at the same time, each in a copy of its own, merged back into the project folder when done ({detail})",
-           "plugin_entry": "call {detail}", "other": "use {detail}"},
+           "plugin_entry": "call {detail}", "other": "use {detail}",
+           "enable_browser": "turn on browser control", "enable_keyboard_mouse": "turn on keyboard and mouse control",
+           "enable_plugins": "turn on user plugins"},
     'ja': {"run_command": "コマンド {detail} の実行", "outside_write": "作業ディレクトリ外のファイル {detail} への書き込み",
            "outside_read": "作業ディレクトリ外のファイル {detail} の読み取り", "workdir_files": "作業ディレクトリ内の {detail} の読み書き",
            "keyboard_mouse": "キーボードとマウスの操作", "browser": "ブラウザの操作", "browser_reopen": "ブラウザをもう一度開くこと（開いていたブラウザは閉じられました）", "space_command": "コマンド {detail} の実行（このコマンドは使い魔の長期記憶ファイルに触れます）", "dsh_plugin_add": "コマンド {detail} の実行（dsh にプラグインを読み込ませます：dsh 内で全権限を持ち、サンドボックスなし）", "mcp_server": "MCP サーバー {detail} の利用",
@@ -1179,7 +1187,9 @@ PERMISSION_CATEGORY_TEXTS = {
            "usage_limit": "さらに約 {more} token を使って続けること（使い切ったらもう一度確認します。この用件はすでに {used} token を使い、1 件あたりの使用量の上限に達しました）",
            "open_session": "ファイルを変更できる使い魔をもう一体呼んでこの件を任せること：{detail}", "open_session_tree": "ファイルを変更できる使い魔をもう一体呼ぶこと（専用のコピーで作業し終われば反映。作れなければプロジェクトのフォルダーで順番に変更）：{detail}", "open_beside": "使い魔をもう一体呼んで並行して任せること（専用のコピーで作業し終われば反映。作れなければプロジェクトのフォルダーで順番に変更）：{detail}",
            "open_session_team": "チームを組むこと：使い魔 {count} 体が各自のコピーで同時にファイルを変更し、終われば反映（{detail}）",
-           "plugin_entry": "{detail} の呼び出し", "other": "{detail} の利用"},
+           "plugin_entry": "{detail} の呼び出し", "other": "{detail} の利用",
+           "enable_browser": "ブラウザ操作をオンにすること", "enable_keyboard_mouse": "キーボード・マウス操作をオンにすること",
+           "enable_plugins": "ユーザープラグインをオンにすること"},
     'ko': {"run_command": "명령 {detail} 실행", "outside_write": "작업 디렉터리 밖의 파일 {detail} 쓰기",
            "outside_read": "작업 디렉터리 밖의 파일 {detail} 읽기", "workdir_files": "작업 디렉터리 안의 {detail} 읽기/쓰기",
            "keyboard_mouse": "키보드와 마우스 조작", "browser": "브라우저 조작", "browser_reopen": "브라우저 다시 열기(열려 있던 브라우저가 닫혔습니다)", "space_command": "명령 {detail} 실행(이 명령은 사역마의 장기 기억 파일을 건드립니다)", "dsh_plugin_add": "명령 {detail} 실행(dsh가 플러그인을 불러오게 함: dsh 안에서 모든 권한을 가지며 샌드박스 없음)", "mcp_server": "MCP 서버 {detail} 사용",
@@ -1188,7 +1198,9 @@ PERMISSION_CATEGORY_TEXTS = {
            "usage_limit": "약 {more} token을 더 써서 계속하기(다 쓰면 다시 묻습니다. 이 일은 이미 {used} token을 써서 한 건의 사용량 한도에 이르렀습니다)",
            "open_session": "파일을 바꿀 수 있는 사역마를 하나 더 불러 이 일을 맡기기: {detail}", "open_session_tree": "파일을 바꿀 수 있는 사역마를 하나 더 부르기(자기 사본에서 작업하고 끝나면 프로젝트 폴더에 반영, 사본을 못 만들면 프로젝트 폴더에서 차례대로 작업): {detail}", "open_beside": "사역마를 하나 더 불러 동시에 맡기기(자기 사본에서 작업하고 끝나면 프로젝트 폴더에 반영, 사본을 못 만들면 프로젝트 폴더에서 차례대로 작업): {detail}",
            "open_session_team": "이 일을 위해 팀 꾸리기: 사역마 {count}마리가 동시에 파일을 바꾸며, 각자 자기 사본에서 작업하고 끝나면 프로젝트 폴더에 반영합니다({detail})",
-           "plugin_entry": "{detail} 호출", "other": "{detail} 사용"},
+           "plugin_entry": "{detail} 호출", "other": "{detail} 사용",
+           "enable_browser": "브라우저 제어 켜기", "enable_keyboard_mouse": "키보드·마우스 제어 켜기",
+           "enable_plugins": "사용자 플러그인 켜기"},
     'ru': {"run_command": "выполнить команду {detail}", "outside_write": "записать файл {detail} вне рабочего каталога",
            "outside_read": "прочитать файл {detail} вне рабочего каталога", "workdir_files": "читать или записывать {detail} в рабочем каталоге",
            "keyboard_mouse": "управлять клавиатурой и мышью", "browser": "управлять браузером",
@@ -1199,7 +1211,9 @@ PERMISSION_CATEGORY_TEXTS = {
            "usage_limit": "продолжить, израсходовав ещё около {more} токенов, после чего будет новый запрос (на задачу уже ушло {used} токенов, это предел для одной задачи)",
            "mcp_server": "использовать MCP-сервер {detail}", "open_session": "вызвать ещё одного фамильяра, который может менять файлы, для этой задачи: {detail}", "open_session_tree": "вызвать ещё одного фамильяра, который может менять файлы, для этой задачи; он работает в собственной копии, а по окончании изменения вносятся в папку проекта (если копию создать нельзя, он работает в папке проекта в свою очередь): {detail}", "open_beside": "вызвать ещё одного фамильяра параллельно с занятым для этой задачи; он работает в собственной копии, а по окончании изменения вносятся в папку проекта (если копию создать нельзя, он работает в папке проекта в свою очередь): {detail}",
            "open_session_team": "собрать для этой задачи команду: {count} фамильяров одновременно меняют файлы, каждый в собственной копии, а по окончании изменения вносятся в папку проекта ({detail})",
-           "plugin_entry": "вызвать {detail}", "other": "использовать {detail}"},
+           "plugin_entry": "вызвать {detail}", "other": "использовать {detail}",
+           "enable_browser": "включить управление браузером", "enable_keyboard_mouse": "включить управление клавиатурой и мышью",
+           "enable_plugins": "включить пользовательские плагины"},
     'es': {"run_command": "ejecutar el comando {detail}", "outside_write": "escribir el archivo {detail} fuera del directorio de trabajo",
            "outside_read": "leer el archivo {detail} fuera del directorio de trabajo",
            "workdir_files": "leer o escribir {detail} en el directorio de trabajo",
@@ -1211,7 +1225,9 @@ PERMISSION_CATEGORY_TEXTS = {
            "usage_limit": "seguir gastando unos {more} tokens más, tras lo cual volverá a preguntar (ya ha gastado {used} tokens, el límite fijado para una tarea)",
            "mcp_server": "usar el servidor MCP {detail}", "open_session": "iniciar otro familiar que puede cambiar archivos para esta tarea: {detail}", "open_session_tree": "iniciar otro familiar que puede cambiar archivos para esta tarea; trabaja en una copia propia que se fusiona en la carpeta del proyecto al terminar (si no se puede crear la copia, trabaja en la carpeta del proyecto cuando le toque): {detail}", "open_beside": "iniciar otro familiar junto al ocupado para esta tarea; trabaja en una copia propia que se fusiona en la carpeta del proyecto al terminar (si no se puede crear la copia, trabaja en la carpeta del proyecto cuando le toque): {detail}",
            "open_session_team": "formar un equipo para esta tarea: {count} familiares cambian archivos a la vez, cada uno en una copia propia que se fusiona en la carpeta del proyecto al terminar ({detail})",
-           "plugin_entry": "llamar a {detail}", "other": "usar {detail}"},
+           "plugin_entry": "llamar a {detail}", "other": "usar {detail}",
+           "enable_browser": "activar el control del navegador", "enable_keyboard_mouse": "activar el control de teclado y ratón",
+           "enable_plugins": "activar los plugins de usuario"},
     'pt': {"run_command": "executar o comando {detail}", "outside_write": "gravar o arquivo {detail} fora do diretório de trabalho",
            "outside_read": "ler o arquivo {detail} fora do diretório de trabalho",
            "workdir_files": "ler ou gravar {detail} no diretório de trabalho",
@@ -1223,7 +1239,9 @@ PERMISSION_CATEGORY_TEXTS = {
            "usage_limit": "continuar gastando cerca de mais {more} tokens, e depois perguntará de novo (já gastou {used} tokens, o limite definido para uma tarefa)",
            "mcp_server": "usar o servidor MCP {detail}", "open_session": "iniciar outro familiar que pode alterar arquivos para esta tarefa: {detail}", "open_session_tree": "iniciar outro familiar que pode alterar arquivos para esta tarefa; ele trabalha em uma cópia própria, mesclada na pasta do projeto ao terminar (se a cópia não puder ser criada, trabalha na pasta do projeto na sua vez): {detail}", "open_beside": "iniciar outro familiar junto ao ocupado para esta tarefa; ele trabalha em uma cópia própria, mesclada na pasta do projeto ao terminar (se a cópia não puder ser criada, trabalha na pasta do projeto na sua vez): {detail}",
            "open_session_team": "formar uma equipe para esta tarefa: {count} familiares alteram arquivos ao mesmo tempo, cada um em uma cópia própria, mesclada na pasta do projeto ao terminar ({detail})",
-           "plugin_entry": "chamar {detail}", "other": "usar {detail}"},
+           "plugin_entry": "chamar {detail}", "other": "usar {detail}",
+           "enable_browser": "ativar o controle do navegador", "enable_keyboard_mouse": "ativar o controle de teclado e mouse",
+           "enable_plugins": "ativar os plugins de usuário"},
 }
 
 # =====================================================================
@@ -2279,3 +2297,107 @@ TASK_AGENT_FORKED_WORK_HANDED_ITEM = (
     '- The user asked "{asked}" (it needs a change, in session {session}): handed back to this '
     "session, it waits until you are through with what you are at, and comes with what the copy found."
 )
+
+
+# ---------------------------------------------------------------------------
+# Decision questions (owner decisions D16, D19, D28)
+# ---------------------------------------------------------------------------
+# Asked on a native decision model, or rehosted on a chat model that returns
+# token probabilities, in place of (or, for the turn check, after) the chat
+# prompts above. English for every language: the decision models judged worse
+# with translated questions (D9). Not system prompts of their own, so they are
+# not under the opening-words check above.
+
+# The coarse screen as one single choice over the plugins (q_onec, D16).
+COARSE_SCREEN_DECISION_STATE = "User request:\n{user_text}"
+COARSE_SCREEN_DECISION_INSTRUCTIONS = "Which plugin best fits the user request? Pick none only if no plugin relates."
+COARSE_SCREEN_DECISION_NONE = "no plugin relates to the request"
+
+# Whether a commission is a side question, as the kind of request it is (q2, D19).
+SIDE_QUESTION_DECISION_INSTRUCTIONS = (
+    "A request was handed to an agent that is busy with something else in the same project. Read the "
+    "request together with what the user said and anything added after it, and say what kind of "
+    "request it is. If it mixes a question with something to change, run, send or decide, pick that "
+    "other kind. When unsure, do not pick look."
+)
+SIDE_QUESTION_DECISION_OPTIONS = {
+    "look": (
+        "Only asks to be told something: how things stand, where something is, what something does, why "
+        "something was done, what was found, or what a change would involve. Answered by reading what was "
+        "said and the files; nothing is changed, run or sent."
+    ),
+    "change": (
+        "Asks to write, edit, fix, create, delete, rename, move, install, translate or otherwise change "
+        "something, even politely or as a question (\"can you add ...\"), or together with a question."
+    ),
+    "run_or_send": (
+        "Asks to run a command, script, build, server or test, or to send, post, upload, deploy or publish "
+        "something to someone, or to use a tool or service that acts."
+    ),
+    "decide": "Asks the agent to make a choice or decision for the user and go by it.",
+}
+# Offered only while the session waits for the user to answer a question.
+SIDE_QUESTION_DECISION_PENDING = (
+    "Answers, goes on with, or depends on the question the agent is waiting for the user to answer "
+    "(including asking about the options of that question)."
+)
+
+# Where a commission belongs (q1, D19): none, or a candidate with the relation.
+ORCHESTRATOR_DECISION_TAIL = (
+    "\nChoose the one option that says where the request goes: none of the candidates, or one candidate "
+    "together with how the request relates to that candidate's work."
+)
+ORCHESTRATOR_DECISION_NONE = (
+    "It belongs with none of the candidates: a separate errand that only looks alike (the same kind of task "
+    "about another thing: another parcel, another trip, another product), or one that only shares a topic, a "
+    "tool, a file type or a few words with a candidate; or it is unclear. Starting fresh is the safe answer."
+)
+# Rendered with str.format (k).
+ORCHESTRATOR_DECISION_FOLLOW_UP = (
+    "It belongs with candidate {k} and follows its work up: it changes, fixes, extends or asks about "
+    "what candidate {k} made or found."
+)
+ORCHESTRATOR_DECISION_RECURRENCE = (
+    "It belongs with candidate {k} as the next round of the same recurring job candidate {k} does, done "
+    "the same way and kept in the same place (the report for the next week, the changelog for the next "
+    "version, one more piece in a series candidate {k} started)."
+)
+
+# The second look of the turn check (r1, D7, D28): asked only when the chat
+# check found something to act on; each option counts for one verdict.
+TURN_CHECK_DECISION_INSTRUCTIONS = (
+    "Below are what the user said this turn (USER) and the character's reply (REPLY). "
+    "The character called no tool this turn. Judge only what the reply says, not whether the action is possible. "
+    "A real action means something outside the conversation: operating the computer, a browser, an app, files, "
+    "a device or smart home, a plugin; looking up live or personal information; setting a reminder, alarm or timer; "
+    "sending a message; ordering, booking or buying; playing or downloading media. "
+    "Which option best describes the reply?"
+)
+TURN_CHECK_DECISION_OPTIONS = {
+    "done_action": ("She says a real action is already finished (it is set, sent, turned off, paused, downloaded, "
+                    "booked, the volume is down now), whether or not the user asked. If she adds that the alarm or "
+                    "timer she set will ring or that she will tell the user then, it is still this option."),
+    "live_fact": ("She states as fact a result only a real lookup could give: the current weather, today's news, a "
+                  "live price or exchange rate, a delivery status, details of a specific shop she says she found, "
+                  "or the user's own calendar, email or files. General knowledge that never changes is not this."),
+    "will_do": ("She agrees to do a real action, says she will do it or is doing it now, or says she will remind or "
+                "notify the user later ('let me check', 'playing it now', 'I'll remind you', 'leave it to me'), even "
+                "if she also asks for a detail. If she says she cannot do one request but commits to another, choose this."),
+    "cannot": ("She says she cannot do the requested real action: no ability, no permission, no access, cannot reach "
+               "or connect to it, does not know how. Still this if she apologizes, says she tried first, or suggests "
+               "the user do it themselves."),
+    "decline": ("She refuses on purpose without saying she is unable: she does not want to, or thinks it is wrong, "
+                "unfair or bad for the user (cheating, hacking someone, staying up all night)."),
+    "ask_or_offer": ("She only asks back for missing details without committing ('sure, which city?'), only offers "
+                     "('want me to check?'), or the user only asked whether she could do something and she says yes "
+                     "or 'just tell me when'; nothing is agreed to be done now."),
+    "knowledge": ("She answers from general knowledge that does not change (history, geography, who wrote a book, how "
+                  "tall a mountain is), even if the user said 'look it up'; or she writes the translation, summary, "
+                  "poem or email draft directly in the reply."),
+    "chat": ("Only chatting, comforting, giving advice, role-play or a story, an openly marked guess, or 'I will "
+             "remember that'; no real action is requested or claimed."),
+}
+TURN_CHECK_DECISION_VERDICT_OF = {
+    "done_action": "claimed_done", "live_fact": "claimed_done", "will_do": "promised", "cannot": "unable",
+    "decline": "none", "ask_or_offer": "none", "knowledge": "none", "chat": "none",
+}
