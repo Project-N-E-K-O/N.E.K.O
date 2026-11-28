@@ -519,26 +519,27 @@ def scan_copy_directory(
         for dname in list(dirs):
             rel = f"{prefix}{dname}"
             full = os.path.join(current, dname)
-            if rel in active_set and is_dir_link(full):
+            link = is_dir_link(full)
+            if rel in active_set and link:
                 dirs.remove(dname)
                 continue
+            if not link and os.path.lexists(os.path.join(full, ".git")):
+                dirs.remove(dname)
+                skipped.append(rel + "/")
+                continue
             if discover_dependencies and dname in dep_names:
-                if rel in tracked_dirs and not is_dir_link(full):
+                if rel in tracked_dirs and not link:
                     # Baseline already tracks real files inside this directory (e.g. an agent-created
                     # `vendor/` directory), so keep scanning it rather than treating it as a dep dir.
                     continue
                 dirs.remove(dname)
-                if not is_dir_link(full):
+                if not link:
                     found_deps.append(rel)
                 elif os.path.isdir(full):
                     # Existing valid directory link in source project: link its resolved target too.
                     found_deps.append(rel)
                 continue
-            if os.path.lexists(os.path.join(full, ".git")):
-                dirs.remove(dname)
-                skipped.append(rel + "/")
-                continue
-            if is_dir_link(full):
+            if link:
                 dirs.remove(dname)
                 if os.path.islink(full):
                     files[rel] = {"kind": "symlink", "target": os.readlink(full)}

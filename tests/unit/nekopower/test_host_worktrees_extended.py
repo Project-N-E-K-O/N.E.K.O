@@ -902,6 +902,15 @@ async def test_copy_blocks_project_junction_skipped_files_and_drifted_saves(tmp_
     assert landed_vendor_v2.status == "landed"
     assert (project / "vendor" / "custom.py").read_text(encoding="utf-8") == "print('ok-v2')\n"
 
+    # If the user later turns that tracked `vendor/` directory into a nested Git repo,
+    # subsequent edits in the copy must conflict instead of overwriting files inside it.
+    (project / "vendor" / ".git").mkdir()
+    _write(copy.path / "vendor" / "custom.py", "print('overwrite-repo')\n")
+    clash_nested_git = await manager.merge_back(copy)
+    assert clash_nested_git.status == "conflict" and "vendor/custom.py" in clash_nested_git.conflicts
+    assert (project / "vendor" / "custom.py").read_text(encoding="utf-8") == "print('ok-v2')\n"
+    _write(copy.path / "vendor" / "custom.py", "print('ok-v2')\n")
+
     # 4. If user edits a.txt between compute_copy_merge and apply_copy_changes, landing fails without clobbering.
     _write(copy.path / "a.txt", "from-agent\n")
     orig_compute = _copy_trees.compute_copy_merge
