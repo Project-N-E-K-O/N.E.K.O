@@ -1845,7 +1845,7 @@ def prepare_copy_conflicts_sync(
     # descendants (e.g. copy replaced dir `d/` with file `d` while project edited `d/a`), relocate the
     # colliding file to a sibling conflict path so both sides survive and `d/a` can be written cleanly.
     colliding_relocations: list[tuple[str, str]] = []
-    reserved_paths = set(merged_keys) | held
+    reserved_paths = set(merged_keys) | merged_parents | held
     for parent_rel in sorted(merged_parents):
         parent_fs = fs_path(copy_path / parent_rel)
         if os.path.isfile(parent_fs) or os.path.islink(parent_fs):

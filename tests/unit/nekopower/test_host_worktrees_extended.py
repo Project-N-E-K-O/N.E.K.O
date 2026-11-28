@@ -2831,3 +2831,123 @@ async def test_round15_coderabbit_copy_followup_fixes(tmp_path: Path, monkeypatc
     assert res_ub.status == "failed" and "vanished" in res_ub.detail
     assert _copy_trees.read_base_manifest(wt_ub.path) == old_base
     await mgr.remove(wt_ub)
+
+
+async def test_round16_greptile_and_coderabbit_followup_fixes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify conflict relocation avoids merged_parents, SSH scp/url distinction, recovered ownership persistence, and PR revalidation on unchanged/cancel."""
+    mgr = WorktreeManager()
+
+    # 1. _normalize_push_target distinguishes SCP-relative vs URL-absolute SSH paths on non-GitHub hosts
+    # while preserving GitHub equivalence.
+    assert WorktreeManager._normalize_push_target("git@forge.example:team/repo.git", "origin") != (
+        WorktreeManager._normalize_push_target("ssh://git@forge.example/team/repo.git", "origin")
+    )
+    assert WorktreeManager._normalize_push_target("git@forge.example:/team/repo.git", "origin") == (
+        WorktreeManager._normalize_push_target("ssh://git@forge.example/team/repo.git", "origin")
+    )
+    assert WorktreeManager._normalize_push_target("git@github.com:Org/Repo.git", "origin") == (
+        WorktreeManager._normalize_push_target("ssh://git@github.com/org/repo.git", "origin")
+    )
+
+    # 2. File-vs-dir relocation skips candidate names needed as parent dirs by merged files.
+    proj = tmp_path / "reloc_parent_proj"
+    _write(proj / "d" / "a", "base-a\n")
+    wt_c = await mgr.create(proj, tmp_path / "copies" / "rp1")
+    shutil.rmtree(wt_c.path / "d")
+    _write(wt_c.path / "d", "copy-file-d\n")
+    _write(proj / "d" / "a", "proj-a\n")
+    _write(proj / "d.nekopower-conflict" / "x", "proj-x\n")
+    conf = await mgr.merge_back(wt_c)
+    assert conf.status == "conflict"
+    await mgr.prepare_conflicts(wt_c, conf)
+    assert (wt_c.path / "d" / "a").read_text(encoding="utf-8") == "proj-a\n"
+    assert (wt_c.path / "d.nekopower-conflict" / "x").read_text(encoding="utf-8") == "proj-x\n"
+    assert (wt_c.path / "d.nekopower-conflict.2").read_text(encoding="utf-8") == "copy-file-d\n"
+    await mgr.remove(wt_c)
+
+    if REAL_GIT_TOO_OLD:
+        return
+
+    # 3. Cancelling find_pr after pushing new edits when the cached PR is closed preserves pr_pending;
+    # and closing a PR then retrying with NO further edits still revalidates via find_pr and opens a new PR.
+    local, bare, _other = _make_repo_with_remote(tmp_path / "cancel_find_pr")
+    wt = await mgr.create(local, tmp_path / "wt" / "cfp1", RemoteDefaultBranch(fetch=False))
+    _write(wt.path / "a.txt", "v1\nline2\nline3\nline4\nline5\n")
+    state: dict[str, Any] = {"open": None, "cancel_find": False, "created": []}
+
+    async def create_cb(_req: PRRequest) -> PRInfo:
+        num = 700 + len(state["created"]) + 1
+        info = PRInfo(url=f"https://github.com/org/repo/pull/{num}", number=num)
+        state["created"].append(info)
+        state["open"] = info
+        return info
+
+    async def find_cb(_req: PRRequest) -> PRInfo | None:
+        if state["cancel_find"]:
+            state["cancel_find"] = False
+            raise asyncio.CancelledError
+        return state["open"]
+
+    cfg = PullRequest(
+        title="Cancel Find PR",
+        branch="feat/cancel-find",
+        remote="origin",
+        base_branch="main",
+        create_pr=create_cb,
+        find_pr=find_cb,
+    )
+    first = await mgr.merge_back(wt, cfg)
+    assert first.status == "landed" and first.pr_number == 701
+    # Close PR #701 and retry with NO file edits -> unchanged branch still revalidates and opens #702.
+    state["open"] = None
+    reopened = await mgr.merge_back(wt, cfg)
+    assert reopened.status == "landed", reopened.detail
+    assert reopened.pr_number == 702 and len(state["created"]) == 2
+    assert await mgr.has_pending_delivery(wt) is False
+    # Close PR #702, push new edit, and cancel during find_pr -> pr_pending stays True; retry opens #703.
+    state["open"] = None
+    state["cancel_find"] = True
+    _write(wt.path / "a.txt", "v2\nline2\nline3\nline4\nline5\n")
+    with pytest.raises(asyncio.CancelledError):
+        await mgr.merge_back(wt, cfg)
+    assert await mgr.has_pending_delivery(wt) is True
+    retried = await mgr.merge_back(wt, cfg)
+    assert retried.status == "landed", retried.detail
+    assert retried.pr_number == 703 and len(state["created"]) == 3
+    assert await mgr.has_pending_delivery(wt) is False
+    await mgr.remove(wt)
+
+    # 4. Push A succeeds on remote then cancels; user edits to B and push B cancels BEFORE remote receives B:
+    # persisted recovered ownership of A lets the next retry push B cleanly instead of rejecting A as foreign.
+    wt_ab = await mgr.create(local, tmp_path / "wt" / "ab_cancel", RemoteDefaultBranch(fetch=False))
+    _write(wt_ab.path / "a.txt", "commit-A\nline2\nline3\nline4\nline5\n")
+    orig_git = mgr._git
+    phase = {"step": "cancel_after_A"}
+
+    async def scripted_git(cwd: Path, *args: str, **kwargs: Any) -> Any:
+        if args and args[0] == "push":
+            if phase["step"] == "cancel_after_A":
+                res = await orig_git(cwd, *args, **kwargs)
+                phase["step"] = "cancel_before_B"
+                raise asyncio.CancelledError
+            if phase["step"] == "cancel_before_B":
+                phase["step"] = "allow"
+                raise asyncio.CancelledError
+        return await orig_git(cwd, *args, **kwargs)
+
+    with monkeypatch.context() as mp:
+        mp.setattr(mgr, "_git", scripted_git)
+        with pytest.raises(asyncio.CancelledError):
+            await mgr.merge_back(wt_ab, BranchCommit(branch="feat/ab-recover", remote="origin", message="A"))
+        oid_a = _git(bare, "rev-parse", "refs/heads/feat/ab-recover").strip()
+        assert oid_a != ""
+        _write(wt_ab.path / "b.txt", "commit-B\n")
+        with pytest.raises(asyncio.CancelledError):
+            await mgr.merge_back(wt_ab, BranchCommit(branch="feat/ab-recover", remote="origin", message="B"))
+        assert _git(bare, "rev-parse", "refs/heads/feat/ab-recover").strip() == oid_a
+    # Retry with normal git: remote is still at A while local/pending is B; must succeed and advance bare to B.
+    final_ab = await mgr.merge_back(wt_ab, BranchCommit(branch="feat/ab-recover", remote="origin", message="B retry"))
+    assert final_ab.status == "landed", final_ab.detail
+    assert _git(bare, "rev-parse", "refs/heads/feat/ab-recover").strip() == final_ab.commit
+    assert final_ab.commit != oid_a
+    await mgr.remove(wt_ab)
