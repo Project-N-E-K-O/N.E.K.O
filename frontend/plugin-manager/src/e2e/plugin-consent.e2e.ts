@@ -146,6 +146,76 @@ async function fixture(page: Page, options: Options = {}) {
     }
     await route.fulfill({ json: consent() })
   })
+  // Permission tab data, derived from the same scan the consent record reports.
+  const panel = () => {
+    const rows = Object.entries(permissions).map(([permission, item]) => ({
+      permission,
+      tier: 'high',
+      reconcile: item.declared ? (item.findings.length ? 'matched' : 'unscanned') : 'undeclared',
+      declared: item.declared
+        ? { level: 'ask', reason: null, background: false, background_reason: null, hosts: [] }
+        : null,
+      scan: item.findings.length
+        ? {
+            files: new Set(item.findings.map((f) => f.file)).size,
+            sites: item.findings.length,
+            basis: 'direct',
+            possible_only: false,
+          }
+        : null,
+      state: 'undecided',
+      condition: null,
+      condition_basis: 'plugin_reported',
+      anytime_allowed: true,
+      legacy_any: false,
+      enforced: true,
+      usage_tracked: true,
+      last_used: null,
+      unused_30d: null,
+    }))
+    const counted = blindSpots.filter((spot) => spot.type !== 'not_analyzed' && spot.file)
+    const files = [...new Set(counted.map((spot) => spot.file as string))].map((file) => {
+      const types: Record<string, number> = {}
+      for (const spot of counted.filter((item) => item.file === file)) types[spot.type] = (types[spot.type] ?? 0) + 1
+      return { file, count: Object.values(types).reduce((a, b) => a + b, 0), types, high_risk: false }
+    })
+    return {
+      plugin_id: 'consent_demo',
+      version: '1.0.0',
+      source: { channel: 'local', fingerprint8: null, confirmed: true },
+      grants_reset: null,
+      checks_disabled: false,
+      manifest: 'read',
+      analysis: {
+        status: analysisStatus,
+        analyzer_version: '1',
+        analyzed_at: '2026-11-10T09:00:00Z',
+        declarations: 'none',
+      },
+      counts: {
+        total: rows.length,
+        granted: 0,
+        denied: 0,
+        undecided: rows.length,
+        undeclared_found: rows.filter((row) => row.reconcile === 'undeclared').length,
+      },
+      rows,
+      tiers: ['high', 'medium', 'low'].map((tier) => ({
+        tier,
+        count: rows.filter((row) => row.tier === tier).length,
+        collapsed: false,
+      })),
+      blind_spots: {
+        files,
+        counted: files.reduce((sum, file) => sum + file.count, 0),
+        not_analyzed_files: blindSpots.filter((spot) => spot.type === 'not_analyzed').length,
+      },
+      developer: { findings: {}, blind_spots: [], not_analyzed: [], manifest_permissions: null },
+    }
+  }
+  await page.route('**/plugin-permissions/plugins/consent_demo/panel', (route) =>
+    route.fulfill({ json: panel() })
+  )
   await page.route('**/plugin/consent_demo/start', async (route) => {
     running = true
     calls.started++
@@ -166,8 +236,8 @@ const startButton = (page: Page) =>
 test('clean analysis is disclosed in Permissions and starts without a decision', async ({ page }) => {
   const calls = await fixture(page, { capabilities: [] })
   await page.goto(`${PREVIEW_ORIGIN}/ui/plugins/consent_demo?tab=permissions`)
-  const permissions = page.locator('.plugin-permissions')
-  await expect(permissions).toContainText('No issues found')
+  const permissions = page.locator('.perm-tab')
+  await expect(permissions).toContainText('No files the scan cannot see into')
   await expect(permissions.getByRole('button', { name: 'Approve and start' })).toHaveCount(0)
   await startButton(page).click()
   await expect.poll(() => calls.started).toBe(1)
@@ -189,11 +259,13 @@ test('used permissions and blind spots are disclosed instead of nothing found', 
     ],
   })
   await page.goto(`${PREVIEW_ORIGIN}/ui/plugins/consent_demo?tab=permissions`)
-  const permissions = page.locator('.plugin-permissions')
-  await expect(permissions).toContainText('This plugin uses 1 permission(s)')
-  await expect(permissions).toContainText('Connect to the internet')
-  await expect(permissions).toContainText('2 place(s) could not be confirmed by static analysis')
-  await expect(permissions).not.toContainText('No issues found')
+  const permissions = page.locator('.perm-tab')
+  await expect(permissions.locator('[data-test="row-system.network:connect"]')).toContainText(
+    'Connect to the internet'
+  )
+  await expect(permissions).toContainText('The plugin does not say why it needs this')
+  await expect(permissions).toContainText('1 file(s) the scan cannot see into')
+  await expect(permissions).toContainText('1 more test and interface file(s) are outside the scan')
   await page.screenshot({ path: testInfo.outputPath('blind-spots-detail.png'), fullPage: true })
 
   await page.goto(`${PREVIEW_ORIGIN}/ui/plugins`)
@@ -210,7 +282,9 @@ test('discloses capabilities, saves the decision once, and starts without asking
   const calls = await fixture(page)
   await page.goto(`${PREVIEW_ORIGIN}/ui/plugins/consent_demo?tab=permissions`)
   await expect(page.getByRole('tab', { name: 'Permissions', exact: true })).toBeVisible()
-  await expect(page.locator('.plugin-permissions')).toContainText('Read conversations')
+  await expect(page.locator('[data-test="legacy-consent"]')).toContainText(
+    '3 capabilities need confirmation'
+  )
   await page.screenshot({ path: testInfo.outputPath('permissions.png'), fullPage: true })
   await startButton(page).click()
   const dialog = page.getByRole('dialog', { name: 'Confirm plugin capabilities' })
@@ -222,7 +296,7 @@ test('discloses capabilities, saves the decision once, and starts without asking
   await dialog.getByRole('button', { name: 'Approve', exact: true }).click()
   await expect(dialog).toBeHidden()
   await expect.poll(() => calls.started).toBe(1)
-  await expect(page.locator('.plugin-permissions')).toContainText('Approved')
+  await expect(page.locator('[data-test="legacy-consent"]')).toContainText('Approved')
   const actions = page.locator('[data-yui-guide-id="plugin-detail-actions"]')
   await actions.getByRole('button', { name: 'Stop', exact: true }).click()
   await page
