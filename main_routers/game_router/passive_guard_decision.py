@@ -197,6 +197,13 @@ def _probabilities(answer: Any) -> Dict[str, float]:
     return probs
 
 
+def _user_stage_options(data: Dict[str, Any]) -> frozenset:
+    """The options of this game's user-stage question (the same in every wording)."""
+    from config.prompts.prompts_soccer import SOCCER_PASSIVE_GUARD_DECISION_TEXT as text
+
+    return frozenset(text["us" if _prompt_type(data) == "rest" else "ur"])
+
+
 def action_from_answer(answer: Any, data: Dict[str, Any], route_state: Any = None) -> Optional[str]:
     """The recommended action for the ``situation`` answer at this stage, or ``None``."""
     probs = _probabilities(answer)
@@ -204,7 +211,13 @@ def action_from_answer(answer: Any, data: Dict[str, Any], route_state: Any = Non
         # No probability on any option (none at all, or all zero): the chat prompt decides.
         return None
     if _is_user_stage(data):
-        helps = sum(p for k, p in probs.items() if k in _SPEECH_HELPS)
+        # Only this question's own options count (the rest question's "comfort"
+        # says nothing in an ordinary game).
+        options = _user_stage_options(data)
+        own = {k: p for k, p in probs.items() if k in options and p > 0}
+        if not own:
+            return None
+        helps = sum(p for k, p in own.items() if k in _SPEECH_HELPS)
         return CANCEL if helps >= CANCEL_THRESHOLD else OBSERVE
     stage8 = _stage_number(data.get("stage")) >= 8
     if _prompt_type(data) == "rest":

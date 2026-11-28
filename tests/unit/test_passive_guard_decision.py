@@ -238,3 +238,28 @@ def test_probability_only_on_an_unknown_option_means_the_chat_prompt():
     assert pgd.action_from_answer(mixed, {"stage": 8}) is None
     assert pgd.action_from_answer(mixed, {"stage": 8, "promptType": "rest"}) is None
 
+
+@pytest.mark.unit
+def test_a_user_stage_reads_only_its_own_question_options():
+    def ans(dist):
+        return SimpleNamespace(value=max(dist, key=dist.get), probability=max(dist.values()), probabilities=dist)
+
+    ordinary = {"stage": "user_recovery", "promptType": "surrender"}
+    rest = {"stage": "user_soothing", "promptType": "rest"}
+    assert pgd.action_from_answer(ans({"unexpected": 1.0}), ordinary) is None
+    # The rest question's option means nothing in an ordinary game, and the other way round.
+    assert pgd.action_from_answer(ans({"comfort": 1.0}), ordinary) is None
+    assert pgd.action_from_answer(ans({"encourage": 1.0}), rest) is None
+    assert pgd.action_from_answer(ans({"encourage": 0.6, "comfort": 0.4}), ordinary) == pgd.CANCEL
+    assert pgd.action_from_answer(ans({"comfort": 0.6, "send_rest": 0.4}), rest) == pgd.CANCEL
+
+
+@pytest.mark.unit
+def test_the_easing_options_are_options_of_the_questions():
+    from config.prompts.prompts_soccer import SOCCER_PASSIVE_GUARD_DECISION_TEXT as EN
+    from config.prompts.prompts_soccer import SOCCER_PASSIVE_GUARD_REHOST_TEXT_ZH as ZH
+
+    for text in (EN, ZH):
+        assert pgd._SPEECH_HELPS <= set(text["ur"]) | set(text["us"])
+        assert set(text["ur"]) == set(EN["ur"]) and set(text["us"]) == set(EN["us"])
+
