@@ -71,6 +71,7 @@ import contextlib
 import dataclasses
 import json
 import logging
+import os
 import sqlite3
 import uuid
 from collections import deque
@@ -1225,6 +1226,11 @@ class TaskAgentManager(TreeWork):
         # (``hold_files``); a commission is started in one of them once that
         # is done.
         self._clearing: dict[str, asyncio.Event] = {}
+        # Working directories currently being removed (``hold_workdir``), and
+        # working directories already claimed by starting/running commissions
+        # so directory cleanup and ``_start`` cannot overlap on the same path.
+        self._clearing_workdirs: dict[str, asyncio.Event] = {}
+        self._starting_workdirs: dict[str, str] = {}
         # Commissions whose next start has its first model request counted
         # already: counted before they were woken, so that one whose quota
         # is used up is left to rest instead of failing on the way up.
@@ -3597,16 +3603,33 @@ class TaskAgentManager(TreeWork):
             )
             from nekopower.runtime.protocol import GatewaySpec
 
-            def prepare() -> tuple[str, str, str | None]:
-                # In here: where the session is kept, and which runtime holds
-                # what was said in it, is told by what is on the disk.
-                session_dir = self._session_dir_of(place)
-                session_dir.mkdir(parents=True, exist_ok=True)
-                workdir = self._workdir_of(place, session_dir)
-                workdir.mkdir(parents=True, exist_ok=True)
-                return str(session_dir), str(workdir), _begun_in(place, session_dir)
+            async def prepare_place(target_place: Any) -> tuple[str, str, str | None] | None:
+                def resolve_paths() -> tuple[Any, Any]:
+                    session_dir = self._session_dir_of(target_place)
+                    return session_dir, self._workdir_of(target_place, session_dir)
 
-            session_path, workdir, begun_in = await asyncio.to_thread(prepare)
+                while True:
+                    session_dir_path, workdir_path = await asyncio.to_thread(resolve_paths)
+                    if self._closed or self._sessions.get(commission_id) is not session:
+                        return None
+                    if not await self._claim_workdir_for_start(commission_id, workdir_path):
+                        continue
+                    break
+
+                def _mkdir_and_probe() -> tuple[str, str, str | None]:
+                    # In here: where the session is kept, and which runtime holds
+                    # what was said in it, is told by what is on the disk.
+                    session_dir_path.mkdir(parents=True, exist_ok=True)
+                    workdir_path.mkdir(parents=True, exist_ok=True)
+                    return str(session_dir_path), str(workdir_path), _begun_in(target_place, session_dir_path)
+
+                return await asyncio.to_thread(_mkdir_and_probe)
+
+            prepared = await prepare_place(place)
+            if prepared is None:
+                self._starting_workdirs.pop(commission_id, None)
+                return False
+            session_path, workdir, begun_in = prepared
             # Where its session works; the commission itself may be worked on
             # in a git worktree of that directory, made now or found again
             # (``tree_work.py``). The session keeps the directory it has on
@@ -3736,7 +3759,11 @@ class TaskAgentManager(TreeWork):
                 place = dataclasses.replace(
                     kept, workdir=kept.workdir, project=kept.project or commission.project
                 )
-                session_path, workdir, begun_in = await asyncio.to_thread(prepare)
+                prepared = await prepare_place(place)
+                if prepared is None:
+                    self._starting_workdirs.pop(commission_id, None)
+                    return False
+                session_path, workdir, begun_in = prepared
                 home = workdir
                 commission = await self._ledger.update(commission.id, workdir=workdir) or commission
             # (A session of one commission may have been made a project's member since it
@@ -4487,6 +4514,7 @@ class TaskAgentManager(TreeWork):
         """
         self._cancel_control_calls(commission_id)
         session = self._sessions.pop(commission_id, None)
+        self._starting_workdirs.pop(commission_id, None)
         if session is not None:
             self._close_answer_receipts(session)
         self._candidates.pop(commission_id, None)
@@ -4658,6 +4686,7 @@ class TaskAgentManager(TreeWork):
             if session is not None:
                 self._close_answer_receipts(session)
             self._sessions.pop(commission_id, None)
+            self._starting_workdirs.pop(commission_id, None)
             if (
                 session is not None
                 and session.session_id
@@ -8514,6 +8543,44 @@ class TaskAgentManager(TreeWork):
         if clearing is not None:
             clearing.set()
 
+    @staticmethod
+    def _dirs_overlap(a: str, b: str) -> bool:
+        """Return whether two normalized directory paths are equal or nested inside each other."""
+        if a == b:
+            return True
+        pa = a if a.endswith(os.sep) else a + os.sep
+        pb = b if b.endswith(os.sep) else b + os.sep
+        return a.startswith(pb) or b.startswith(pa)
+
+    def hold_workdir(self, workdir: Any) -> str | None:
+        """Claim a working directory for removal. Returns the hold key, or None if overlapping work is active."""
+        norm = os.path.normcase(os.path.normpath(str(workdir)))
+        if any(self._dirs_overlap(norm, held) for held in self._clearing_workdirs):
+            return None
+        if any(self._dirs_overlap(norm, active) for active in self._starting_workdirs.values()):
+            return None
+        self._clearing_workdirs[norm] = asyncio.Event()
+        return norm
+
+    def release_workdir(self, key: str) -> None:
+        """Release a working-directory hold claimed via ``hold_workdir``."""
+        ev = self._clearing_workdirs.pop(key, None)
+        if ev is not None:
+            ev.set()
+
+    async def _claim_workdir_for_start(self, commission_id: str, workdir: Any) -> bool:
+        """Claim ``workdir`` for a starting commission, waiting if an overlapping directory is being cleared."""
+        norm = os.path.normcase(os.path.normpath(str(workdir)))
+        ev = next(
+            (event for held, event in self._clearing_workdirs.items() if self._dirs_overlap(norm, held)),
+            None,
+        )
+        if ev is not None:
+            await ev.wait()
+            return False
+        self._starting_workdirs[commission_id] = norm
+        return True
+
     def hold_session(self, commission_id: str) -> bool:
         """Claim a commission for writing its review down. False when the commission is in use.
 
@@ -10521,6 +10588,7 @@ class TaskAgentManager(TreeWork):
         """Let go of a commission's place in a copy it is not carried on in after all, and queue it for the session itself again."""
         # Its place and the copy are let go of.
         self._sessions.pop(commission_id, None)
+        self._starting_workdirs.pop(commission_id, None)
         if self._held_by.get(copy.id) == commission_id:
             del self._held_by[copy.id]
         self._session_of[commission_id] = main
@@ -11782,12 +11850,17 @@ class TaskAgentManager(TreeWork):
         from config.nekopower_settings import TASK_AGENT_IDLE_COMPACT_ENABLED, TASK_AGENT_IDLE_COMPACT_SECONDS
         from nekopower.runtime.protocol import GatewaySpec
 
-        clearing = self._clearing.get(session_id)
-        if clearing is not None:
+        while not self._closed:
+            if stops is not None and stops != self._idle_stops:
+                # Everything was stopped between the timer and this.
+                return False
+            clearing = self._clearing.get(session_id)
+            if clearing is None:
+                break
             # Wait for a concurrent non-transcript file hold (e.g. work_dir check/cleanup)
             # before deciding whether the session can still be idle-compacted.
             await clearing.wait()
-        if not TASK_AGENT_IDLE_COMPACT_ENABLED or not self._idle_now(session_id):
+        if self._closed or not TASK_AGENT_IDLE_COMPACT_ENABLED or not self._idle_now(session_id):
             return False
         if stops is not None and stops != self._idle_stops:
             # Everything was stopped between the timer and this.

@@ -842,7 +842,15 @@ class WorktreeManager:
         async with await self._lock(root):
             if await asyncio.to_thread(os.path.lexists, _fs(target)):
                 raise WorktreeError(f"{target} still exists; use remove() instead of forget_gone()")
-            await self._forget(root, target, worktree_id, remove_directory=False)
+            outcome = await self._forget(
+                root,
+                target,
+                worktree_id,
+                remove_directory=False,
+                before_delete=lambda _p: not os.path.lexists(_fs(target)),
+            )
+            if outcome == "aborted":
+                raise WorktreeError(f"{target} reappeared during forget_gone(); it is left: use remove() instead")
 
     async def reconcile(
         self, project_dir: Path | str, base_dir: Path | str, known: Iterable[str]
@@ -1496,8 +1504,8 @@ class WorktreeManager:
         """Drop a worktree's registration, its directory when registered (or ``remove_directory``), and its refs.
 
         Returns ``"removed"`` when the worktree was deleted (or already gone),
-        ``"record_only"`` when ``_whose`` determined another directory stands at
-        ``path`` so only stale registration and refs were dropped, or
+        ``"record_only"`` when another directory stands at ``path`` and was left
+        untouched while stale registration and/or refs were dropped, or
         ``"aborted"`` when ``before_delete`` rejected deletion.
         """
         listed = await self._registered(repo_root)
@@ -1533,8 +1541,11 @@ class WorktreeManager:
         # The directory goes first; the registration only once it is gone.
         # Ours: registered (and known to be ours above), made by this call,
         # or its .git file still points here.
+        entered_delete = False
         deleted_directory = False
         if registered or remove_directory or await asyncio.to_thread(_points_into, path, common):
+            entered_delete = True
+
             def _check_and_remove() -> tuple[bool, bool]:
                 if before_delete is not None and not before_delete(path):
                     return False, False
@@ -1562,6 +1573,8 @@ class WorktreeManager:
                     f"{path} was removed, but dropping its registration or refs failed: {exc}"
                 ) from exc
             raise
+        if not entered_delete and await asyncio.to_thread(os.path.lexists, _fs(path)):
+            return "record_only"
         return "removed"
 
     async def _delete_refs(self, repo_root: Path, worktree_id: str) -> None:

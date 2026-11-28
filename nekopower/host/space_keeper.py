@@ -1747,6 +1747,7 @@ class SpaceKeeper:
             # is looked at again next round; one that went on to work and
             # was closed anew is dropped then, being young.
             return _NOT_REMOVED, 0
+        copies_freed = 0
         try:
             current = await self._ledger.get_session(session_id)
             if current is None or current.status == "cleared" or current.last_active_at > until:
@@ -1781,7 +1782,7 @@ class SpaceKeeper:
             return outcome, copies_freed
         except (OSError, ValueError):
             logger.warning("an old session could not be looked at", exc_info=True)
-            return _NOT_REMOVED, 0
+            return _NOT_REMOVED, copies_freed
         finally:
             if self._release_files is not None:
                 self._release_files(session_id)

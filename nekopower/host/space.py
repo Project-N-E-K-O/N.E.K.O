@@ -5963,7 +5963,11 @@ class TaskAgentSpace:
                 data, ok = self._project_data(item)
                 if not ok:
                     readable = False
-                active.append(self._project_of(data, item, None))
+                try:
+                    active.append(self._project_of(data, item, None))
+                except (ValueError, TypeError, OverflowError):
+                    readable = False
+                    continue
             projects = list(active)
             if include_archived:
                 projects.extend(self._archived_projects())

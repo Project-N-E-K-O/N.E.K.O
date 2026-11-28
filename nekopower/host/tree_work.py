@@ -502,6 +502,19 @@ class TreeWork:
         except Exception:  # noqa: BLE001 - not known: taken for one that is there
             return False
 
+    async def _repo_root_gone(self, repo_root: str) -> bool:
+        """Whether ``repo_root`` itself is gone or is no longer a git repository."""
+        from nekopower.host.worktrees import NOT_A_REPOSITORY
+
+        if not await asyncio.to_thread(Path(repo_root).is_dir):
+            return True
+        try:
+            return (await self.worktrees.probe(repo_root)).reason == NOT_A_REPOSITORY
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - unknown state: treat repository as present so metadata cleanup retries
+            return False
+
     async def _remove_what_is_left(self, row: Tree, *, before_delete: Any = None) -> bool | None | str:
         """Remove the directory of a worktree git no longer knows (its repository is gone).
 
@@ -513,6 +526,8 @@ class TreeWork:
         nothing in it: another directory put in its place since is not what the
         user discarded.
         """
+        from utils.asyncio_executor import to_thread_through_cancellation
+
         base, path = self._paths.worktrees_dir(), Path(row.path)
 
         def remove() -> bool | str:
@@ -549,7 +564,7 @@ class TreeWork:
                 pass
             return True
 
-        status = await asyncio.to_thread(remove)
+        status = await to_thread_through_cancellation(remove)
         if status == "aborted":
             return "aborted"
         if not status:
@@ -750,7 +765,7 @@ class TreeWork:
         else:
             # Directory is already gone; retry cleaning up lingering git registration and refs if repo exists.
             repo_root = row.repo_root or row.project_dir
-            if repo_root and not await self._repository_gone(row):
+            if repo_root and not await self._repo_root_gone(repo_root):
                 try:
                     await self.worktrees.forget_gone(repo_root, row.path, row.id)
                 except asyncio.CancelledError:
@@ -2359,7 +2374,7 @@ class TreeWork:
             else:
                 # Directory is already gone; drop lingering git registration/refs if repository still exists.
                 repo_root = row.repo_root or row.project_dir
-                if repo_root and not await self._repository_gone(row):
+                if repo_root and not await self._repo_root_gone(repo_root):
                     try:
                         await self.worktrees.forget_gone(repo_root, row.path, row.id)
                     except asyncio.CancelledError:

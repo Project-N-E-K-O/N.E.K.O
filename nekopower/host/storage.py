@@ -835,6 +835,10 @@ class StorageManager:
         else:
             trees = []
 
+        for starting_wd in getattr(self._task_agents, "_starting_workdirs", {}).values():
+            if starting_wd:
+                live_workdirs.add(os.path.normcase(os.path.normpath(starting_wd)))
+
         projects_by_name, maybe_proj_workdirs, projects_readable = await self._read_projects_checked(
             include_archived=True
         )
@@ -993,6 +997,9 @@ class StorageManager:
                 for backing in (row.repo_root, row.project_dir, row.path, row.workdir):
                     if backing:
                         live_workdirs.add(os.path.normcase(os.path.normpath(backing)))
+        for starting_wd in getattr(self._task_agents, "_starting_workdirs", {}).values():
+            if starting_wd:
+                live_workdirs.add(os.path.normcase(os.path.normpath(starting_wd)))
         _projects, active_project_workdirs, _readable = await self._read_projects_checked(include_archived=False)
         return active_sessions, live_workdirs, active_project_workdirs
 
@@ -1492,6 +1499,7 @@ class StorageManager:
                                 not session_active
                                 and in_ledger
                                 and sess_status != "cleared"
+                                and sess_id not in busy_fork_sources
                                 and sess_last_active is not None
                                 and sess_last_active <= transcript_cutoff
                             )
@@ -1778,6 +1786,9 @@ class StorageManager:
             async with self._project_lock, placing_cm:
                 if await self._project_busy(project) is not None:
                     return "in_use", 0
+                workdir_hold = self._task_agents.hold_workdir(target)
+                if workdir_hold is None:
+                    return "in_use", 0
                 held_sids: list[str] = []
                 try:
                     if await asyncio.to_thread(self._paths.ledger_db().is_file):
@@ -1813,15 +1824,19 @@ class StorageManager:
                 finally:
                     for sid in held_sids:
                         self._task_agents.release_files(sid)
+                    self._task_agents.release_workdir(workdir_hold)
 
         assert session_id is not None
         target = self._paths.work_dir(session_id, project)
         norm_target = os.path.normcase(os.path.normpath(str(target)))
-        held_sids: list[str] = []
-        if not self._task_agents.hold_files(session_id, drop_idle_timer=False):
+        workdir_hold = self._task_agents.hold_workdir(target)
+        if workdir_hold is None:
             return "in_use", 0
-        held_sids.append(session_id)
+        held_sids: list[str] = []
         try:
+            if not self._task_agents.hold_files(session_id, drop_idle_timer=False):
+                return "in_use", 0
+            held_sids.append(session_id)
             has_ledger = await asyncio.to_thread(self._paths.ledger_db().is_file)
             if has_ledger:
                 # Hold every descendant fork of this session and every other session whose
@@ -1919,6 +1934,7 @@ class StorageManager:
         finally:
             for sid in held_sids:
                 self._task_agents.release_files(sid)
+            self._task_agents.release_workdir(workdir_hold)
 
     # -- manual cleanup: worktrees ----------------------------------------
 
