@@ -73,8 +73,17 @@ On Windows, run the same warm-up in PowerShell:
 
 ```powershell
 New-Item -ItemType Directory -Force data/tiktoken_cache | Out-Null
-$env:TIKTOKEN_CACHE_DIR = "$(Get-Location)\data\tiktoken_cache"
-uv run python -c "import tiktoken; tiktoken.get_encoding('o200k_base')"
+$prevTiktokenCacheDir = $env:TIKTOKEN_CACHE_DIR
+try {
+    $env:TIKTOKEN_CACHE_DIR = "$(Get-Location)\data\tiktoken_cache"
+    uv run python -c "import tiktoken; tiktoken.get_encoding('o200k_base')"
+} finally {
+    if ($null -eq $prevTiktokenCacheDir) {
+        Remove-Item Env:TIKTOKEN_CACHE_DIR -ErrorAction SilentlyContinue
+    } else {
+        $env:TIKTOKEN_CACHE_DIR = $prevTiktokenCacheDir
+    }
+}
 ```
 
 `scripts/check_nuitka_dist.py` verifies `tokenizer.json` and the INT8 model with its sidecar in the finished distribution (not the FP32 files, which only CI enforces), and does not check the tiktoken cache or the inference modules compiled into the executable. After a local build, check that `data/tiktoken_cache/` in the runtime directory holds at least one blob (the workflow makes the same check) and start the app once to confirm vector memory loads: shipping weights without the runtime that loads them would silently sticky-disable vectors at first use.
