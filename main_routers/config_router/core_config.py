@@ -46,6 +46,9 @@ CORE_CONFIG_SECRET_SENTINEL = "__NEKO_SECRET_MASKED__"
 CORE_CONFIG_MODEL_TYPES = (
     'conversation', 'memory', 'gameMain', 'gameSummary', 'recognition',
     'decision', 'vision', 'agent', 'agentAdvanced', 'agentSmall', 'gameRecognition', 'omni', 'tts', 'image',
+    # Speech-recognition slot (main_logic/asr_client/slot.py). Its transport
+    # is stored separately in asrModelTransport.
+    'asr',
 )
 
 # Model types merged away; their saved fields are dropped on the next save.
@@ -263,9 +266,15 @@ async def get_core_config_api():
             get_asr_core_capabilities,
             is_local_asr_available,
         )
+        from main_logic.asr_client.slot import resolve_asr_slot
         _core_asr_capabilities = get_asr_core_capabilities(
             _effective_core_api_provider
         )
+        try:
+            _asr_slot = resolve_asr_slot(runtime_core_config)
+        except Exception:
+            logger.warning('Unable to resolve the speech-recognition slot', exc_info=True)
+            _asr_slot = None
         try:
             # find_spec walks sys.path finders; keep it off the event loop.
             _local_asr_available = await asyncio.to_thread(is_local_asr_available)
@@ -300,6 +309,11 @@ async def get_core_config_api():
             # Whether the optional local ASR dependency is installed. Packaged
             # builds do not ship it, so the settings UI hides the option.
             "localAsrAvailable": _local_asr_available,
+            # The speech-recognition slot, when it overrides the Core's ASR
+            # (on every Core, the free Core included). The microphone panel
+            # shows it instead of the Core route and the local-ASR choice.
+            "asrSlotActive": _asr_slot is not None,
+            "asrSlotProvider": _asr_slot.vendor if _asr_slot is not None else None,
             "assistApi": _assist_api_provider,
             "assistApiKeyQwen": core_cfg.get('assistApiKeyQwen', '') or _fb('qwen'),
             "assistApiKeyQwenIntl": core_cfg.get('assistApiKeyQwenIntl', '') or _fb('qwen_intl'),
@@ -353,6 +367,7 @@ async def get_core_config_api():
                 for mt in CORE_CONFIG_MODEL_TYPES
                 for suffix in ('Provider', 'Url', 'Id', 'ApiKey')
             },
+            "asrModelTransport": core_cfg.get('asrModelTransport', ''),
             "gptsovitsEnabled": core_cfg.get('gptsovitsEnabled'),
             "ttsProvider": core_cfg.get('ttsProvider', ''),
             "ttsVoiceId": core_cfg.get('ttsVoiceId', ''),
@@ -725,6 +740,12 @@ async def update_core_config(request: Request):
             core_cfg['openclawDefaultSenderId'] = data['openclawDefaultSenderId']
         if 'enableCustomApi' in data:
             core_cfg['enableCustomApi'] = data['enableCustomApi']
+        if 'asrModelTransport' in data:
+            from main_logic.asr_client.slot import ASR_SLOT_TRANSPORTS
+            transport = data['asrModelTransport']
+            if transport not in ('', *ASR_SLOT_TRANSPORTS):
+                return {"success": False, "error": "Unsupported speech-recognition transport"}
+            core_cfg['asrModelTransport'] = transport
         if 'useMimoTokenPlan' in data:
             if not isinstance(data['useMimoTokenPlan'], bool):
                 return {"success": False, "error": "useMimoTokenPlan must be a boolean"}

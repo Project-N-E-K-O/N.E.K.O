@@ -1477,6 +1477,16 @@ class CoreConfigMixin:
         config['ttsModelId'] = str(core_cfg.get('ttsModelId', '') or '')
         config['ttsVoiceId'] = str(core_cfg.get('ttsVoiceId', '') or '')
 
+        # Speech-recognition slot, resolved by main_logic/asr_client/slot.py.
+        # It deliberately stays out of the per-slot LLM derivation loop below:
+        # that loop applies chat-endpoint follow/region rules that mean
+        # nothing for a transcription endpoint. Named vendors read their Key
+        # Book entry (ASSIST_API_KEY_*); only the custom endpoint's own key is
+        # carried here.
+        for _asr_field in ('asrModelProvider', 'asrModelTransport', 'asrModelUrl', 'asrModelId'):
+            config[_asr_field] = str(core_cfg.get(_asr_field, '') or '').strip()
+        config['ASR_MODEL_API_KEY'] = str(core_cfg.get('asrModelApiKey', '') or '').strip()
+
         # Disable TTS.
         _raw_disable_tts = core_cfg.get('disableTts', False)
         if isinstance(_raw_disable_tts, bool):

@@ -169,6 +169,15 @@ def _resolve_custom_target(req: ModelListRequest, core_cfg: dict) -> dict[str, A
     else:
         api_key = submitted_key.strip()
 
+    if (req.model_type or "").strip() == "asr":
+        # The slot may hold the full transcription URL; /models hangs off the
+        # OpenAI-compatible base (.../v1).
+        from main_logic.asr_client.slot import custom_asr_models_base_url
+
+        url = custom_asr_models_base_url(url)
+        if not url:
+            return _failure("unsupported", "只有 HTTP(S) 端点支持拉取模型列表")
+
     provider_type = _normalize_provider_type({"provider_type": req.provider_type}, url)
     return {
         "urls": [url],
@@ -277,6 +286,23 @@ def _with_openrouter_decision_models(
     return _tag_decision_models({"success": True, "models": merged, "resolved_url": resolved_url}, resolved_url)
 
 
+def _tag_asr_models(result: dict[str, Any], vendor: str) -> dict[str, Any]:
+    """Mark the entries that look like non-streaming ASR models and list them first.
+
+    Vendors' /models lists every model (chat, embedding, TTS...) without a
+    capability flag, so the speech-recognition picker shows the tagged ones
+    by default and keeps the rest behind "show all".
+    """
+    from main_logic.asr_client.slot import is_asr_model_candidate
+
+    models = [dict(entry) for entry in result.get("models") or []]
+    for entry in models:
+        if is_asr_model_candidate(vendor, entry["id"]):
+            entry["asr"] = True
+    models.sort(key=lambda entry: (not entry.get("asr"), entry["id"].lower()))
+    return {**result, "models": models}
+
+
 def _tag_decision_models(result: dict[str, Any], url: str) -> dict[str, Any]:
     """Mark models that use a native decision API on *url* with ``decision: true`` and list them first.
 
@@ -340,6 +366,8 @@ async def list_models(req: ModelListRequest) -> dict:
             result = _with_openrouter_decision_models(result, target["urls"][0], await decision_task)
         elif (req.model_type or "").strip() == "decision":
             result = _tag_decision_models(result, result.get("resolved_url") or target["urls"][0])
+        elif (req.model_type or "").strip() == "asr" and result.get("success"):
+            result = _tag_asr_models(result, (req.provider_key or "").strip() or "custom")
     finally:
         if decision_task is not None and not decision_task.done():
             decision_task.cancel()

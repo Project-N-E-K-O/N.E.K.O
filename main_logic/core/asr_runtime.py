@@ -24,6 +24,7 @@ from websockets import exceptions as web_exceptions
 from main_logic.asr_client import (
     VoiceIdentityActivationResult,
     get_asr_core_capabilities,
+    get_asr_slot_override,
 )
 from main_logic.asr_client.runtime import (
     ASR_CONNECT_TOTAL_BUDGET_SECONDS,
@@ -2725,6 +2726,12 @@ class AsrRuntimeMixin:
             normalize_independent_asr_provider_preference_handshake(value)
         )
 
+    @staticmethod
+    def _read_asr_slot_override():
+        """The active speech-recognition slot, or ``None`` (reads config from disk)."""
+
+        return get_asr_slot_override()
+
     async def _start_independent_asr_if_enabled(
         self,
         input_mode: str,
@@ -2820,6 +2827,15 @@ class AsrRuntimeMixin:
                 ),
             )
             return
+        # The speech-recognition slot (API settings) overrides the Core's ASR
+        # on every Core, the free Core included, and does not depend on the
+        # microphone panel's independent-ASR toggle: configuring it is the
+        # user's choice to route the microphone through it.
+        asr_slot_active = (
+            await asyncio.to_thread(self._read_asr_slot_override)
+        ) is not None
+        if not core_start_is_current():
+            return
         try:
             # strict=True or this except branch is unreachable for the failure
             # it exists to catch: the plain read swallows every IO/JSON error
@@ -2847,7 +2863,9 @@ class AsrRuntimeMixin:
                 if handshake_override is ...
                 else handshake_override
             )
-            if not supports_independent_asr or unreadable_handshake is False:
+            if not asr_slot_active and (
+                not supports_independent_asr or unreadable_handshake is False
+            ):
                 if not core_start_is_current():
                     return
                 # Same landing as the ordinary `not enabled` path below.
@@ -2904,7 +2922,11 @@ class AsrRuntimeMixin:
             if handshake_override is ...
             else handshake_override
         )
-        if not supports_independent_asr:
+        if asr_slot_active:
+            # An active slot requires independent ASR regardless of the Core
+            # capability and the handshake; it never falls back to native.
+            enabled = True
+        elif not supports_independent_asr:
             # Some Core routes own speech recognition natively. Their route
             # capability takes precedence over both the persisted preference
             # and the per-session handshake, so a stale enabled toggle cannot

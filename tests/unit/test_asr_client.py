@@ -145,6 +145,7 @@ def test_public_exports_are_frozen():
         "VoiceIdentityActivationResult",
         "create_asr_session",
         "get_asr_core_capabilities",
+        "get_asr_slot_override",
         "is_local_asr_available",
     ]
     assert not hasattr(asr_client, "get_asr_worker")
@@ -224,6 +225,13 @@ def test_phase2_registry_routes_and_capabilities():
         "gemini",
         "soniox",
         "faster_whisper",
+        # Speech-recognition slot keys (non-streaming, see slot.py).
+        "openai_request",
+        "grok_request",
+        "glm_request",
+        "gemini_request",
+        "qwen_request",
+        "custom",
     }
     assert CORE_ASR_ROUTES["qwen"].provider_key == "qwen"
     assert CORE_ASR_ROUTES["qwen"].credential_field == "ASSIST_API_KEY_QWEN"

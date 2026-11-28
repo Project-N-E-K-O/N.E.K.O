@@ -75,7 +75,9 @@ async def post_wav_transcription(
     try:
         response = await client.post(
             url,
-            headers={"Authorization": f"Bearer {api_key}"},
+            # A self-hosted server may run without a key; some reject an
+            # empty bearer token, so send no Authorization header at all.
+            headers={"Authorization": f"Bearer {api_key}"} if api_key.strip() else {},
             data=dict(form_fields),
             files={"file": ("audio.wav", wav_audio, "audio/wav")},
         )

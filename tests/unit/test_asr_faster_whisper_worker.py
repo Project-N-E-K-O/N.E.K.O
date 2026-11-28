@@ -707,9 +707,13 @@ def test_registry_meta_and_policy_for_local_provider() -> None:
     assert {
         key for key, value in ASR_PROVIDER_REGISTRY.items() if value.user_selectable
     } == {"faster_whisper"}
+    # The speech-recognition slot's self-hosted endpoint may run without a
+    # key; it is chosen in the API settings slot, never as a user preference.
     for key, value in ASR_PROVIDER_REGISTRY.items():
-        if key not in {"faster_whisper"}:
+        if key not in {"faster_whisper", "custom"}:
             assert value.requires_credential is True, key
+    assert ASR_PROVIDER_REGISTRY["custom"].requires_credential is False
+    assert ASR_PROVIDER_REGISTRY["custom"].user_selectable is False
 
     policy = resolve_provider_policy("faster_whisper", "manual")
     assert policy.transport == "segmented"

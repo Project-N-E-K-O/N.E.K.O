@@ -443,6 +443,44 @@ ASR_PROVIDER_REGISTRY: dict[str, AsrProviderMeta] = {
             request_timeout_ms=120_000,
         ),
     ),
+    # Speech-recognition slot keys (see ``slot.py``). They are never Core
+    # routes: the API settings slot selects them, and they override the Core
+    # route when active. Every one is non-streaming (one request per sealed
+    # utterance), kept apart from the streaming keys above on purpose.
+    **{
+        provider_key: AsrProviderMeta(
+            provider_key=provider_key,
+            category="segmented_request",
+            worker_input_sample_rate_hz=16_000,
+            wire_sample_rate_hz=16_000,
+            supported_endpointing_modes=frozenset({"manual"}),
+            implementation_status="implemented",
+            supports_interception_delivery=True,
+            requires_smart_turn=True,
+            max_segment_ms=27_000,
+            warm_transport_ms=0,
+            replay_policy="none",
+            # The request starts at the turn seal; the watchdog must outlast
+            # the worker's own request timeout (35 s vendors, 55 s custom).
+            provider_final_timeout_ms=final_timeout_ms,
+            # A self-hosted server may run without a key.
+            requires_credential=provider_key != "custom",
+            # The model and URL come from the slot, not from this spec.
+            offline=AsrOfflineSpec(
+                mode="request",
+                max_segment_ms=27_000,
+                request_timeout_ms=final_timeout_ms - 5_000,
+            ),
+        )
+        for provider_key, final_timeout_ms in (
+            ("openai_request", 40_000),
+            ("grok_request", 40_000),
+            ("glm_request", 40_000),
+            ("gemini_request", 40_000),
+            ("qwen_request", 40_000),
+            ("custom", 60_000),
+        )
+    },
     "free": AsrProviderMeta(
         provider_key="free",
         category="segmented_request",

@@ -59,6 +59,7 @@ from . import (
     _optional_dependency_available,
     _resolve_asr_selection,
     _resolve_session_language,
+    _resolve_slot_selection,
     _resolve_user_selected_provider,
 )
 from ._infra import AsrSessionConfig, RealtimeAsrSession
@@ -75,6 +76,7 @@ from .workers._shared import (
 )
 from .workers.faster_whisper import transcribe_pcm16_locally
 from .workers.glm import request_glm_transcript
+from .workers.slot_request import request_slot_transcript
 
 
 logger = logging.getLogger(__name__)
@@ -374,6 +376,24 @@ async def _request_faster_whisper(
     )
 
 
+async def _request_slot(
+    transcriber: "OfflineAsrTranscriber", pcm16: bytes, language: str, client: Any
+) -> str:
+    endpoint = transcriber._selection._slot_endpoint
+    if endpoint is None:
+        raise AsrRequestFailure(
+            "ASR_SLOT_NOT_CONFIGURED",
+            "speech-recognition slot has no endpoint",
+        )
+    return await request_slot_transcript(
+        client,
+        endpoint,
+        transcriber._api_key,
+        encode_pcm16_wav(pcm16),
+        language=language,
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class _RequestBackend:
     request: SegmentRequest
@@ -396,6 +416,13 @@ _REQUEST_BACKENDS: dict[str, _RequestBackend] = {
         concurrent=False,
         outer_timeout=False,
     ),
+    # Speech-recognition slot: the selection carries the URL and model.
+    "openai_request": _RequestBackend(_request_slot, client="http"),
+    "grok_request": _RequestBackend(_request_slot, client="http"),
+    "glm_request": _RequestBackend(_request_slot, client="http"),
+    "qwen_request": _RequestBackend(_request_slot, client="http"),
+    "custom": _RequestBackend(_request_slot, client="http"),
+    "gemini_request": _RequestBackend(_request_slot, client="gemini", outer_timeout=False),
 }
 
 
@@ -675,10 +702,11 @@ def resolve_offline_transcriber(
 ) -> OfflineAsrTranscriber:
     """Choose the offline route for the current Core and user settings.
 
-    Selection mirrors realtime ASR: an explicit user-selectable provider
-    (``independentAsrProviderPreference``) wins, then the region-driven
-    Soniox preference, then the Core's own provider. A Core without
-    independent ASR (``free``) has no cloud route; it may only use an
+    Selection mirrors realtime ASR: the speech-recognition slot wins on every
+    Core, then an explicit user-selectable provider
+    (``independentAsrProviderPreference``), then the region-driven Soniox
+    preference, then the Core's own provider. Without the slot, a Core
+    without independent ASR (``free``) has no cloud route; it may only use an
     installed local provider. Raises :class:`AsrOfflineError`.
 
     Reads the core config and probes optional packages (filesystem access):
@@ -691,11 +719,18 @@ def resolve_offline_transcriber(
         raise AsrOfflineError(ASR_UNKNOWN_CORE, core_key or "<empty>")
 
     try:
-        selection = _resolve_user_selected_provider(
-            route,
-            provider_preference,
-            ignore_route_capability=True,
-        )
+        # The speech-recognition slot wins over every other route, exactly as
+        # in realtime selection, so voice messages and the microphone never
+        # disagree about where audio is sent.
+        from . import _load_core_config
+
+        selection = _resolve_slot_selection(_load_core_config())
+        if selection is None:
+            selection = _resolve_user_selected_provider(
+                route,
+                provider_preference,
+                ignore_route_capability=True,
+            )
         if selection is None and not route.capabilities.supports_independent_asr:
             selection = _local_offline_selection()
             if selection is None:
