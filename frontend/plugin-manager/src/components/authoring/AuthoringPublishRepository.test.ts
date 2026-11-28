@@ -71,6 +71,26 @@ describe('AuthoringPublishRepository workflow update', () => {
     expect(container.querySelector('.el-alert--error')).not.toBeNull()
   })
 
+  it('refreshes the parent and the preview when the apply itself fails', async () => {
+    // The server writes file by file: a failed apply may have changed some.
+    const created = vi.fn()
+    api.previewProjectWorkflows
+      .mockResolvedValueOnce([{ path: '.github/workflows/release.yml', status: 'UPGRADE' }])
+      .mockResolvedValueOnce([{ path: '.github/workflows/release.yml', status: 'CURRENT' }])
+    api.applyProjectWorkflows.mockRejectedValue(new Error('disk full'))
+    const container = mount(created)
+
+    button(container, authoringEnUs.workflowPreview).click()
+    await settle()
+    button(container, authoringEnUs.workflowApply).click()
+    await settle()
+
+    expect(created).toHaveBeenCalledTimes(1)
+    expect(api.previewProjectWorkflows).toHaveBeenCalledTimes(2)
+    expect(container.textContent).toContain('CURRENT')
+    expect(container.querySelector('.el-alert--error')).not.toBeNull()
+  })
+
   it('does not refresh the parent when the update stops on a conflict', async () => {
     const created = vi.fn()
     api.previewProjectWorkflows.mockResolvedValue([{ path: '.github/workflows/release.yml', status: 'UPGRADE' }])

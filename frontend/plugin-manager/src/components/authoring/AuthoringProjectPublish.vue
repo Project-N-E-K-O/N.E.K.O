@@ -351,20 +351,23 @@ const toolchainFailure = useLocalizedError(describeError, 'toolchainLoadFailed')
 const toolchainError = toolchainFailure.message
 /** Reads overlap (Refresh, reload, polling): only the latest one started may apply. */
 let latestToolchainRead = 0
-/** Resolves to whether the toolchain was read; a failed read keeps the previous state. */
-async function loadToolchain(): Promise<boolean> {
+/**
+ * `applied`: this read set the state. `discarded`: a newer read was started
+ * (or the panel closed), so this answer was dropped. `failed`: the previous
+ * state is kept.
+ */
+async function loadToolchain(): Promise<'applied' | 'discarded' | 'failed'> {
   toolchainFailure.clear()
   const read = ++latestToolchainRead
   try {
     const next = await getPluginToolchain(props.projectId)
-    if (!disposed && read === latestToolchainRead) {
-      toolchain.value = next
-      if (next.tool_environment === 'preparing') pollToolEnvironment()
-    }
-    return true
+    if (disposed || read !== latestToolchainRead) return 'discarded'
+    toolchain.value = next
+    if (next.tool_environment === 'preparing') pollToolEnvironment()
+    return 'applied'
   } catch (error) {
     if (!disposed && read === latestToolchainRead) toolchainFailure.set(error)
-    return false
+    return 'failed'
   }
 }
 
@@ -380,11 +383,14 @@ function pollToolEnvironment() {
     let failedReads = 0
     while (!disposed) {
       await new Promise((resolve) => setTimeout(resolve, 2_000))
-      if (!(await loadToolchain())) {
+      const outcome = await loadToolchain()
+      if (outcome === 'failed') {
         if (++failedReads >= MAX_FAILED_ENVIRONMENT_READS) return
         continue
       }
       failedReads = 0
+      // A discarded read says nothing about the state: keep polling.
+      if (outcome === 'discarded') continue
       if (disposed || toolchain.value?.tool_environment !== 'preparing') return
     }
   })().finally(() => {

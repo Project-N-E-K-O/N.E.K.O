@@ -111,19 +111,41 @@ async function previewWorkflows() {
 async function updateWorkflows() {
   updating.value = true
   workflowFailure.clear()
+  let applied: ProjectWorkflowChange[]
   try {
-    const applied = await applyProjectWorkflows(props.projectId)
-    if (applied.some(change => change.status === 'CONFLICT')) {
-      changes.value = applied
-      return
-    }
-    // The files changed: refresh the parent even if the follow-up preview fails.
+    applied = await applyProjectWorkflows(props.projectId)
+  } catch (error) {
+    // The server writes file by file without rolling back: a failed apply may
+    // still have changed some of them, so the parent and preview re-read.
+    workflowFailure.set(error)
     emit('created')
+    await refreshPreview()
+    updating.value = false
+    return
+  }
+  if (applied.some(change => change.status === 'CONFLICT')) {
+    // A conflict writes nothing.
+    changes.value = applied
+    updating.value = false
+    return
+  }
+  // The files changed: refresh the parent even if the follow-up preview fails.
+  emit('created')
+  try {
     changes.value = await previewProjectWorkflows(props.projectId)
   } catch (error) {
     workflowFailure.set(error)
   } finally {
     updating.value = false
+  }
+}
+
+/** Re-read the preview after a failed apply; keep the apply's error if this fails too. */
+async function refreshPreview() {
+  try {
+    changes.value = await previewProjectWorkflows(props.projectId)
+  } catch {
+    changes.value = undefined
   }
 }
 

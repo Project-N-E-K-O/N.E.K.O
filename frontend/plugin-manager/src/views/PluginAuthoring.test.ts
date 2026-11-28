@@ -1086,6 +1086,32 @@ describe('authoring workbench backed by the server project list', () => {
     expect(tools.textContent).not.toContain(en.toolEnvironmentMissing)
   })
 
+  it('keeps polling when a poll read is overtaken by a newer read that fails', async () => {
+    api.route.query = { project: 'p1' }
+    api.listPluginProjects.mockResolvedValue([listed])
+    api.getPluginProjectPublishStatus.mockResolvedValue(publishStatus())
+    let answerPoll: (value: Toolchain) => void = () => {}
+    api.getPluginToolchain
+      .mockResolvedValueOnce(readyToolchain({ tool_environment: 'missing' }))
+      .mockReturnValueOnce(new Promise<Toolchain>((resolve) => { answerPoll = resolve }))
+      .mockRejectedValueOnce(new Error('temporarily unavailable'))
+      .mockResolvedValue(readyToolchain({ tool_environment: 'ready' }))
+    api.preparePluginToolEnvironment.mockResolvedValue(preparing)
+    const container = await mount()
+    await openPublish(container)
+    const tools = page('toolchain')
+    await click(en.toolEnvironmentPrepare)
+    await new Promise((resolve) => setTimeout(resolve, 2_300)) // the poll read is pending
+    await click(en.publishRefresh) // a newer read, which fails
+    await settle()
+    answerPoll(readyToolchain({ tool_environment: 'preparing' })) // dropped: overtaken
+    await settle()
+    expect(tools.textContent).toContain(en.toolEnvironmentMissing)
+    await new Promise((resolve) => setTimeout(resolve, 2_300))
+    await settle()
+    expect(tools.textContent).toContain(en.toolEnvironmentReady)
+  }, 10_000)
+
   it('polls the toolchain when it loads while the environment is preparing', async () => {
     api.route.query = { project: 'p1' }
     api.listPluginProjects.mockResolvedValue([listed])
