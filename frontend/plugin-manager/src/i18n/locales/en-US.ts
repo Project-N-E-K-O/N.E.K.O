@@ -584,6 +584,8 @@ export default {
     specified: 'Choose a proxy',
     source: 'Source',
     autoPending: 'Routes are selected using the actual package and adjusted during download.',
+    githubSource: 'GitHub proxy',
+    pypiSource: 'PyPI mirror (plugin dependencies)',
     resetHistory: 'Choose sources again on next install',
     resetSuccess: 'Recent transfer history cleared; the next install will select sources again.',
     resetFailed: 'Could not clear the recent transfer history.',

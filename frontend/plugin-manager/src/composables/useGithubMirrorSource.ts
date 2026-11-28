@@ -24,9 +24,22 @@ export const GITHUB_PROXY_SOURCES = [
 
 export type GithubProxySourceId = (typeof GITHUB_PROXY_SOURCES)[number]['id']
 
+/** PyPI index mirrors the backend can hand to uv; same ids as the mirrors in
+ *  ``PYPI_INDEX_SOURCES`` in ``plugin/server/infrastructure/package_sources.py``. */
+export const PYPI_INDEX_SOURCES = [
+  { id: 'pypi-tuna', label: 'https://pypi.tuna.tsinghua.edu.cn/simple' },
+  { id: 'pypi-aliyun', label: 'https://mirrors.aliyun.com/pypi/simple' },
+  { id: 'pypi-ustc', label: 'https://mirrors.ustc.edu.cn/pypi/simple' },
+  { id: 'pypi-tencent', label: 'https://mirrors.cloud.tencent.com/pypi/simple' },
+] as const
+
+export type PypiIndexSourceId = (typeof PYPI_INDEX_SOURCES)[number]['id']
+
+/** One mode for every source family, one specified mirror per family. */
 interface DownloadPreferences {
   mode: GithubMirrorMode
   specified_source_id: GithubProxySourceId
+  specified_pypi_source_id: PypiIndexSourceId
 }
 
 interface ServerDownloadPreferences extends DownloadPreferences {
@@ -37,6 +50,7 @@ interface ServerDownloadPreferences extends DownloadPreferences {
 const DEFAULT_PREFERENCES: DownloadPreferences = {
   mode: 'auto',
   specified_source_id: 'gh-proxy-com',
+  specified_pypi_source_id: 'pypi-tuna',
 }
 
 function isMode(value: unknown): value is GithubMirrorMode {
@@ -45,6 +59,15 @@ function isMode(value: unknown): value is GithubMirrorMode {
 
 function isProxySourceId(value: unknown): value is GithubProxySourceId {
   return GITHUB_PROXY_SOURCES.some((source) => source.id === value)
+}
+
+function isPypiSourceId(value: unknown): value is PypiIndexSourceId {
+  return PYPI_INDEX_SOURCES.some((source) => source.id === value)
+}
+
+/** A missing or unknown PyPI mirror (a setting from before it existed) is the default. */
+function pypiSourceIdOr(value: unknown): PypiIndexSourceId {
+  return isPypiSourceId(value) ? value : DEFAULT_PREFERENCES.specified_pypi_source_id
 }
 
 /**
@@ -60,12 +83,17 @@ function loadCachedPreferences(): DownloadPreferences {
         ? { ...DEFAULT_PREFERENCES, mode: 'specified' }
         : DEFAULT_PREFERENCES
     }
-    const parsed = JSON.parse(raw) as { mode?: unknown; specifiedSourceId?: unknown }
+    const parsed = JSON.parse(raw) as {
+      mode?: unknown
+      specifiedSourceId?: unknown
+      specifiedPypiSourceId?: unknown
+    }
     return {
       mode: isMode(parsed.mode) ? parsed.mode : DEFAULT_PREFERENCES.mode,
       specified_source_id: isProxySourceId(parsed.specifiedSourceId)
         ? parsed.specifiedSourceId
         : DEFAULT_PREFERENCES.specified_source_id,
+      specified_pypi_source_id: pypiSourceIdOr(parsed.specifiedPypiSourceId),
     }
   } catch {
     // Unavailable or malformed storage: the server setting still applies.
@@ -78,6 +106,7 @@ function cachePreferences(preferences: DownloadPreferences) {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({
       mode: preferences.mode,
       specifiedSourceId: preferences.specified_source_id,
+      specifiedPypiSourceId: preferences.specified_pypi_source_id,
     }))
   } catch {
     // Storage is optional; the server keeps the setting.
@@ -87,6 +116,7 @@ function cachePreferences(preferences: DownloadPreferences) {
 const cached = loadCachedPreferences()
 const mode = ref<GithubMirrorMode>(cached.mode)
 const specifiedSourceId = ref<GithubProxySourceId>(cached.specified_source_id)
+const specifiedPypiSourceId = ref<PypiIndexSourceId>(cached.specified_pypi_source_id)
 const saveFailed = ref(false)
 /** Set on the first edit, so a late server answer cannot revert the form. */
 let edited = false
@@ -97,6 +127,7 @@ let writes: Promise<void> = Promise.resolve()
 function apply(preferences: DownloadPreferences) {
   mode.value = preferences.mode
   specifiedSourceId.value = preferences.specified_source_id
+  specifiedPypiSourceId.value = preferences.specified_pypi_source_id
   cachePreferences(preferences)
 }
 
@@ -112,6 +143,7 @@ async function requestPreferences(init?: RequestInit): Promise<ServerDownloadPre
   return {
     mode: value.mode,
     specified_source_id: value.specified_source_id,
+    specified_pypi_source_id: pypiSourceIdOr(value.specified_pypi_source_id),
     configured: value.configured === true,
   }
 }
@@ -160,12 +192,24 @@ function save(next: DownloadPreferences): Promise<void> {
   return writes
 }
 
+function current(): DownloadPreferences {
+  return {
+    mode: mode.value,
+    specified_source_id: specifiedSourceId.value,
+    specified_pypi_source_id: specifiedPypiSourceId.value,
+  }
+}
+
 function setMode(next: GithubMirrorMode) {
-  void save({ mode: next, specified_source_id: specifiedSourceId.value })
+  void save({ ...current(), mode: next })
 }
 
 function setSpecifiedSourceId(next: GithubProxySourceId) {
-  void save({ mode: mode.value, specified_source_id: next })
+  void save({ ...current(), specified_source_id: next })
+}
+
+function setSpecifiedPypiSourceId(next: PypiIndexSourceId) {
+  void save({ ...current(), specified_pypi_source_id: next })
 }
 
 /** Resolve once the server holds the setting shown in the form, since every
@@ -174,7 +218,7 @@ async function ensureDownloadPreferences(): Promise<void> {
   await settleWrites()
   if (saveFailed.value) {
     // Retry the latest edit; the form still shows it.
-    void save({ mode: mode.value, specified_source_id: specifiedSourceId.value })
+    void save(current())
     await settleWrites()
   }
   if (saveFailed.value) throw new Error('download_preferences_save_failed')
@@ -202,10 +246,13 @@ export function useGithubMirrorSource() {
   return {
     mode,
     specifiedSourceId,
+    specifiedPypiSourceId,
     saveFailed,
     sources: GITHUB_PROXY_SOURCES,
+    pypiSources: PYPI_INDEX_SOURCES,
     setMode,
     setSpecifiedSourceId,
+    setSpecifiedPypiSourceId,
     ensureDownloadPreferences,
     resetDownloadHistory,
   }

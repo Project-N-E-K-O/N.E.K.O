@@ -1,8 +1,15 @@
-"""GitHub package routes, user preferences and persistent route observations."""
+"""Package source families, user preferences and persistent route observations.
+
+A source family is one kind of origin and the mirrors that can stand in for
+it: GitHub release downloads, reached through prefix proxies, and the PyPI
+simple index, which only picks the index address handed to uv. Routes of
+every family share one statistics file, keyed by route id.
+"""
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+import asyncio
+from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass
 import math
 from pathlib import Path
@@ -12,34 +19,146 @@ from typing import Any, Literal
 from urllib.parse import urlparse
 
 from plugin.logging_config import get_logger
-from plugin.server.infrastructure.package_download import run_file_operation
+from plugin.server.infrastructure.package_download import package_http_client, run_file_operation
+from plugin.utils.http_imports import ensure_httpx
 from utils.file_utils import atomic_write_json, read_json_tolerating_replace
 
 logger = get_logger("server.infrastructure.package_sources")
 
+# The route to github.com itself; every other route is a mirror.
+GITHUB_DIRECT_SOURCE_ID = "github-direct"
 GITHUB_DOWNLOAD_SOURCES = (
-    ("github-direct", "https://github.com/"),
+    (GITHUB_DIRECT_SOURCE_ID, "https://github.com/"),
     ("gh-proxy-com", "https://gh-proxy.com/"),
     ("gh-proxy-org", "https://gh-proxy.org/"),
     ("cdn-gh-proxy-org", "https://cdn.gh-proxy.org/"),
     ("edgeone-gh-proxy-org", "https://edgeone.gh-proxy.org/"),
 )
-_MIRRORS = GITHUB_DOWNLOAD_SOURCES[1:]
-_MIRROR_IDS = frozenset(source_id for source_id, _ in _MIRRORS)
-# Mirrors that were offered once and have since gone away. A preference that
-# still names one falls back to the default mirror instead of being rejected,
-# so a saved setting or an old page keeps working.
-_RETIRED_MIRROR_IDS = frozenset({"hk-gh-proxy-org"})
+# The official index first, then mirrors that serve the same simple pages and
+# link files by the same /packages/ paths, so uv checks the same hashes.
+PYPI_DIRECT_SOURCE_ID = "pypi-direct"
+PYPI_INDEX_SOURCES = (
+    (PYPI_DIRECT_SOURCE_ID, "https://pypi.org/simple/"),
+    ("pypi-tuna", "https://pypi.tuna.tsinghua.edu.cn/simple/"),
+    ("pypi-aliyun", "https://mirrors.aliyun.com/pypi/simple/"),
+    ("pypi-ustc", "https://mirrors.ustc.edu.cn/pypi/simple/"),
+    ("pypi-tencent", "https://mirrors.cloud.tencent.com/pypi/simple/"),
+)
 DownloadMode = Literal["auto", "direct", "specified"]
+
+
+def is_github_release(url: str) -> bool:
+    parsed = urlparse(url)
+    return (
+        parsed.scheme == "https" and parsed.hostname == "github.com"
+        and parsed.username is None and parsed.password is None
+        and "/releases/download/" in parsed.path
+    )
+
+
+def is_pypi_simple(url: str) -> bool:
+    parsed = urlparse(url)
+    return (
+        parsed.scheme == "https" and parsed.hostname == "pypi.org"
+        and parsed.username is None and parsed.password is None
+        and parsed.path.startswith("/simple/")
+    )
+
+
+@dataclass(frozen=True)
+class SourceFamily:
+    """One kind of origin and the mirrors that can stand in for it."""
+
+    family_id: str
+    # (route id, base URL); the first is the origin itself.
+    sources: tuple[tuple[str, str], ...]
+    default_mirror_id: str
+    # Mirrors that were offered once and have since gone away. A preference
+    # that still names one falls back to the default mirror instead of being
+    # rejected, so a saved setting or an old page keeps working.
+    retired_ids: frozenset[str]
+    matches: Callable[[str], bool]
+    # "prefix": the mirror base is put in front of the whole origin URL.
+    # "rebase": the origin base is replaced by the mirror base.
+    rewrite: Literal["prefix", "rebase"]
+
+    @property
+    def direct_id(self) -> str:
+        return self.sources[0][0]
+
+    @property
+    def mirrors(self) -> tuple[tuple[str, str], ...]:
+        return self.sources[1:]
+
+    def mirror_url(self, source_id: str, url: str) -> str:
+        """``url`` as reached through mirror ``source_id``."""
+        base = dict(self.mirrors)[source_id]
+        if self.rewrite == "prefix":
+            return base + url
+        origin = self.sources[0][1]
+        if not url.startswith(origin):
+            raise ValueError(f"{url!r} is not under {origin!r}")
+        return base + url[len(origin):]
+
+    def resolve_mirror_id(self, source_id: Any) -> str:
+        """A mirror id this family offers; a retired one maps to the default."""
+        if not isinstance(source_id, str):
+            raise TypeError(f"{self.family_id} download source is not a string")
+        if source_id in self.retired_ids:
+            return self.default_mirror_id
+        if source_id not in {key for key, _ in self.mirrors}:
+            raise ValueError(f"Unknown {self.family_id} download source")
+        return source_id
+
+
+GITHUB_FAMILY = SourceFamily(
+    family_id="github",
+    sources=GITHUB_DOWNLOAD_SOURCES,
+    default_mirror_id="gh-proxy-com",
+    retired_ids=frozenset({"hk-gh-proxy-org"}),
+    matches=is_github_release,
+    rewrite="prefix",
+)
+PYPI_FAMILY = SourceFamily(
+    family_id="pypi",
+    sources=PYPI_INDEX_SOURCES,
+    default_mirror_id="pypi-tuna",
+    retired_ids=frozenset(),
+    matches=is_pypi_simple,
+    rewrite="rebase",
+)
+SOURCE_FAMILIES = (GITHUB_FAMILY, PYPI_FAMILY)
+# Kept for callers of the GitHub-only table this module started with.
+_MIRRORS = GITHUB_FAMILY.mirrors
+_MIRROR_IDS = frozenset(source_id for source_id, _ in _MIRRORS)
+_RETIRED_MIRROR_IDS = GITHUB_FAMILY.retired_ids
+
+
+def _retired_route_ids() -> frozenset[str]:
+    return frozenset().union(*(family.retired_ids for family in SOURCE_FAMILIES))
+
+
+def family_for(url: str) -> SourceFamily | None:
+    return next((family for family in SOURCE_FAMILIES if family.matches(url)), None)
 
 
 @dataclass(frozen=True)
 class DownloadPreferences:
+    """One mode for every family, and one specified mirror per family.
+
+    ``specified_source_id`` is the GitHub mirror: the name predates the
+    families and stays, so a file or page from before them still reads.
+    """
+
     mode: DownloadMode = "auto"
-    specified_source_id: str = "gh-proxy-com"
+    specified_source_id: str = GITHUB_FAMILY.default_mirror_id
+    specified_pypi_source_id: str = PYPI_FAMILY.default_mirror_id
+
+    def specified_for(self, family: SourceFamily) -> str:
+        return self.specified_pypi_source_id if family is PYPI_FAMILY else self.specified_source_id
 
 
-_DEFAULT_MIRROR_ID = DownloadPreferences.specified_source_id
+_DEFAULT_MIRROR_ID = GITHUB_FAMILY.default_mirror_id
 
 
 def preferences_path() -> Path:
@@ -54,41 +173,46 @@ def load_preferences() -> tuple[DownloadPreferences, bool]:
     A file that exists but cannot be read still counts, so a browser seeding
     the server cannot replace a choice that is only temporarily unreadable.
     One whose content is invalid does not: that choice is already lost.
+    A file from before the PyPI family has no PyPI mirror and gets the
+    default one; an unusable PyPI mirror alone does not cost the GitHub one.
     """
     try:
         raw = read_json_tolerating_replace(preferences_path())
-        return validate_preferences(raw["mode"], raw["specified_source_id"]), True
+        preferences = validate_preferences(raw["mode"], raw["specified_source_id"])
+        pypi_source_id = raw.get("specified_pypi_source_id")
     except FileNotFoundError:
         return DownloadPreferences(), False
     except OSError as exc:
         logger.warning("ignoring unreadable package download preferences: {}", exc)
         return DownloadPreferences(), True
-    except (ValueError, KeyError, TypeError) as exc:
+    except (ValueError, KeyError, TypeError, AttributeError) as exc:
         logger.warning("ignoring invalid package download preferences: {}", exc)
         return DownloadPreferences(), False
+    if pypi_source_id is not None:
+        try:
+            preferences = DownloadPreferences(
+                mode=preferences.mode, specified_source_id=preferences.specified_source_id,
+                specified_pypi_source_id=PYPI_FAMILY.resolve_mirror_id(pypi_source_id),
+            )
+        except (ValueError, TypeError) as exc:
+            logger.warning("ignoring invalid PyPI index preference: {}", exc)
+    return preferences, True
 
 
-def validate_preferences(mode: str, source_id: str) -> DownloadPreferences:
+def validate_preferences(
+    mode: str, source_id: str, pypi_source_id: str | None = None,
+) -> DownloadPreferences:
     if mode not in ("auto", "direct", "specified"):
         raise ValueError("Unknown package download mode")
-    if source_id in _RETIRED_MIRROR_IDS:
-        source_id = _DEFAULT_MIRROR_ID
-    if source_id not in _MIRROR_IDS:
-        raise ValueError("Unknown GitHub download source")
-    return DownloadPreferences(mode=mode, specified_source_id=source_id)  # type: ignore[arg-type]
+    github = GITHUB_FAMILY.resolve_mirror_id(source_id)
+    pypi = PYPI_FAMILY.default_mirror_id if pypi_source_id is None else PYPI_FAMILY.resolve_mirror_id(pypi_source_id)
+    return DownloadPreferences(mode=mode, specified_source_id=github, specified_pypi_source_id=pypi)  # type: ignore[arg-type]
 
 
 def save_preferences(preferences: DownloadPreferences) -> None:
+    # Versions before the PyPI family read only the first two keys and
+    # ignore the third, so a file written here still reads there.
     atomic_write_json(preferences_path(), asdict(preferences))
-
-
-def is_github_release(url: str) -> bool:
-    parsed = urlparse(url)
-    return (
-        parsed.scheme == "https" and parsed.hostname == "github.com"
-        and parsed.username is None and parsed.password is None
-        and "/releases/download/" in parsed.path
-    )
 
 
 # Observations are kept per route rather than per package, so every package
@@ -184,9 +308,10 @@ def _ensure_loaded() -> None:
         logger.warning("ignoring unreadable package route statistics: {}", exc)
         return
     now = time.time()
+    retired = _retired_route_ids()
     for source_id, values in routes:
         source_id = str(source_id)
-        if source_id in _RETIRED_MIRROR_IDS:
+        if source_id in retired:
             continue
         try:
             _routes[source_id] = _parse_route(source_id, values, now)
@@ -378,8 +503,9 @@ def _delete_stats_file(generation: int) -> None:
 
 async def reset_transfer_history() -> None:
     """Forget every route observation, including those of transfers in progress."""
-    global _loaded, _generation
+    global _loaded, _generation, _last_pypi_probe
     _routes.clear()
+    _last_pypi_probe = None
     _reported_routes.clear()
     _generation += 1
     _loaded = True
@@ -388,16 +514,21 @@ async def reset_transfer_history() -> None:
 
 def download_candidates(url: str, preferences: DownloadPreferences) -> list[tuple[str, str]]:
     """Routes for one package, best expected completion time first in auto mode."""
-    if not is_github_release(url):
+    family = family_for(url)
+    if family is None:
         return [(urlparse(url).hostname or "origin", url)]
-    direct = ("github-direct", url)
+    direct = (family.direct_id, url)
     if preferences.mode == "direct":
         return [direct]
-    mirrors = [(key, prefix + url) for key, prefix in _MIRRORS]
+    mirrors = [(key, family.mirror_url(key, url)) for key, _ in family.mirrors]
     if preferences.mode == "specified":
-        return [next(item for item in mirrors if item[0] == preferences.specified_source_id)]
+        specified = preferences.specified_for(family)
+        return [next(item for item in mirrors if item[0] == specified)]
+    return _rank([direct, *mirrors])
+
+
+def _rank(candidates: list[tuple[str, str]]) -> list[tuple[str, str]]:
     now = time.time()
-    candidates = [direct, *mirrors]
     # Scored before sorting: estimate_route never raises, and a failure inside
     # a sort key would abort the whole ranking rather than one route.
     seconds = {key: estimate_route(key, now=now).seconds_for(TYPICAL_PACKAGE_BYTES)
@@ -408,9 +539,106 @@ def download_candidates(url: str, preferences: DownloadPreferences) -> list[tupl
     return sorted(candidates, key=lambda candidate: seconds[candidate[0]])
 
 
+# The PyPI family is never downloaded through here: uv fetches and checks
+# every file. Its routes are measured by fetching one small simple page.
+PYPI_PROBE_PROJECT = "iniconfig"
+PYPI_PROBE_TIMEOUT = 5.0
+_PYPI_PROBE_MAX_BYTES = 256 * 1024
+# A measurement this recent is still used as it is.
+PYPI_PROBE_FRESH_SECONDS = 6 * 3600.0
+# After a probe, however it went, the next one waits at least this long.
+PYPI_PROBE_RETRY_SECONDS = 10 * 60.0
+_last_pypi_probe: float | None = None
+_pypi_probe_lock: tuple[asyncio.AbstractEventLoop, asyncio.Lock] | None = None
+
+
+def pypi_index_url(source_id: str) -> str:
+    """The simple index address of one PyPI route, as uv takes it."""
+    return dict(PYPI_FAMILY.sources)[source_id].rstrip("/")
+
+
+async def select_pypi_index_url(preferences: DownloadPreferences | None = None) -> str:
+    """The PyPI simple index that should be used now, for uv's default index.
+
+    Direct mode is the official index and specified mode the chosen mirror.
+    Auto mode measures every PyPI route when the recorded measurements are
+    stale and the last probe is long enough ago, then takes the route
+    expected to answer first. Probing has a timeout and stops when the caller
+    is cancelled. Must run on the loop that owns the route statistics.
+    """
+    if preferences is None:
+        preferences, _ = await run_file_operation(load_preferences)
+    if preferences.mode == "direct":
+        return pypi_index_url(PYPI_FAMILY.direct_id)
+    if preferences.mode == "specified":
+        return pypi_index_url(preferences.specified_pypi_source_id)
+    await refresh_pypi_routes()
+    best, _ = _rank(list(PYPI_FAMILY.sources))[0]
+    return pypi_index_url(best)
+
+
+def _pypi_probe_due(now: float) -> bool:
+    if _last_pypi_probe is not None and now - _last_pypi_probe < PYPI_PROBE_RETRY_SECONDS:
+        return False
+    _ensure_loaded()
+    # Only a route that answered counts: a probe that failed everywhere
+    # (offline, say) is retried after the retry interval.
+    measured = [stats.updated for key, _ in PYPI_FAMILY.sources
+                if (stats := _routes.get(key)) is not None and stats.latency is not None]
+    return not measured or now - max(measured) >= PYPI_PROBE_FRESH_SECONDS
+
+
+def _probe_lock() -> asyncio.Lock:
+    global _pypi_probe_lock
+    loop = asyncio.get_running_loop()
+    if _pypi_probe_lock is None or _pypi_probe_lock[0] is not loop:
+        _pypi_probe_lock = (loop, asyncio.Lock())
+    return _pypi_probe_lock[1]
+
+
+async def refresh_pypi_routes() -> None:
+    """Probe the PyPI routes if that is due; concurrent callers share one probe."""
+    global _last_pypi_probe
+    async with _probe_lock():
+        if not _pypi_probe_due(time.time()):
+            return
+        generation = route_generation()
+        observations = await _probe_pypi_routes()
+        _last_pypi_probe = time.time()
+        await commit_route_observations(observations, generation)
+
+
+async def _probe_pypi_routes() -> list[RouteObservation]:
+    httpx = await ensure_httpx()
+    client = await package_http_client()
+    marker = f"{PYPI_PROBE_PROJECT}-".encode()
+
+    async def probe(source_id: str, base: str) -> RouteObservation:
+        url = f"{base}{PYPI_PROBE_PROJECT}/"
+        started = time.monotonic()
+        body = b""
+        try:
+            async with asyncio.timeout(PYPI_PROBE_TIMEOUT):
+                async with client.stream("GET", url, headers={"Accept": "text/html"}) as response:
+                    if response.status_code != 200:
+                        raise ValueError(f"status {response.status_code}")
+                    async for chunk in response.aiter_bytes():
+                        body += chunk
+                        if len(body) > _PYPI_PROBE_MAX_BYTES:
+                            raise ValueError("simple page too large")
+            if marker not in body:
+                raise ValueError("not a simple page of the probe project")
+        except Exception as exc:  # CancelledError is not an Exception and still stops the probe.
+            logger.info("PyPI index probe failed route={} error={}", source_id, type(exc).__name__)
+            return RouteObservation(source_id, failed=True)
+        return RouteObservation(source_id, latency=time.monotonic() - started)
+
+    return list(await asyncio.gather(*(probe(key, base) for key, base in PYPI_FAMILY.sources)))
+
+
 def warmup_urls(candidates: list[tuple[str, str]]) -> list[str]:
     """Every origin a download over these routes connects to before its first byte."""
     urls = [url for _, url in candidates]
-    if any(source_id == "github-direct" for source_id, _ in candidates):
+    if any(source_id == GITHUB_DIRECT_SOURCE_ID for source_id, _ in candidates):
         urls.append(_GITHUB_ASSET_ORIGIN)
     return urls

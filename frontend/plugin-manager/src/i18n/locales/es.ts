@@ -584,6 +584,8 @@ export default {
     specified: 'Elegir un proxy',
     source: 'Fuente',
     autoPending: 'Las rutas se seleccionan con el paquete real y se ajustan durante la descarga.',
+    githubSource: 'Proxy de GitHub',
+    pypiSource: 'Réplica de PyPI (dependencias de plugins)',
     resetHistory: 'Elegir fuentes de nuevo en la próxima instalación',
     resetSuccess: 'Historial reciente borrado; la próxima instalación elegirá las fuentes de nuevo.',
     resetFailed: 'No se pudo borrar el historial reciente de descargas.',

@@ -584,6 +584,8 @@ export default {
     specified: 'プロキシを指定',
     source: 'ミラーソース',
     autoPending: '実際のパッケージで経路を選択し、ダウンロード中も調整します。',
+    githubSource: 'GitHub プロキシ',
+    pypiSource: 'PyPI ミラー（プラグインの依存関係）',
     resetHistory: '次回のインストールで経路を再選択',
     resetSuccess: '履歴を消去しました。次回のインストールで経路を再選択します。',
     resetFailed: '最近の転送履歴を消去できませんでした。',

@@ -431,5 +431,6 @@ async def test_a_retired_mirror_in_saved_or_sent_preferences_falls_back():
     assert response.status_code == 200
     assert response.json()["specified_source_id"] == "gh-proxy-com"
     saved = json.loads(sources.preferences_path().read_text(encoding="utf-8"))
-    assert saved == {"mode": "specified", "specified_source_id": "gh-proxy-com"}
+    assert saved == {"mode": "specified", "specified_source_id": "gh-proxy-com",
+                     "specified_pypi_source_id": "pypi-tuna"}
     assert all(key != "hk-gh-proxy-org" for key, _ in sources.download_candidates(URL, sources.DownloadPreferences()))

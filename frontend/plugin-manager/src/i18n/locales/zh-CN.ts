@@ -584,6 +584,8 @@ export default {
     specified: '指定代理',
     source: '镜像源',
     autoPending: '安装时按实际插件包选择线路；下载中会调整。',
+    githubSource: 'GitHub 代理',
+    pypiSource: 'PyPI 镜像（插件依赖）',
     resetHistory: '下次安装重新选源',
     resetSuccess: '已清除短期记录，下次安装将重新选源。',
     resetFailed: '无法清除短期下载记录。',

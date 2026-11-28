@@ -584,6 +584,8 @@ export default {
     specified: '프록시 지정',
     source: '미러 소스',
     autoPending: '실제 패키지로 경로를 선택하고 다운로드 중에도 조정합니다.',
+    githubSource: 'GitHub 프록시',
+    pypiSource: 'PyPI 미러(플러그인 종속성)',
     resetHistory: '다음 설치 시 경로 다시 선택',
     resetSuccess: '최근 기록을 지웠습니다. 다음 설치 시 경로를 다시 선택합니다.',
     resetFailed: '최근 전송 기록을 지우지 못했습니다.',

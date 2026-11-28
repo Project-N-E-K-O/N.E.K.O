@@ -1543,12 +1543,17 @@ async def _measure_github_proxy_sources() -> tuple[dict[str, object], ...]:
 class MarketDownloadPreferences(BaseModel):
     mode: Literal["auto", "direct", "specified"] = "auto"
     specified_source_id: str = "gh-proxy-com"
+    # None (a page from before the PyPI family) keeps the saved PyPI mirror.
+    specified_pypi_source_id: str | None = None
     initialize_only: bool = False
 
     @model_validator(mode="after")
     def _validate_preferences(self) -> "MarketDownloadPreferences":
         # A retired mirror sent by an old page maps to the default one.
-        self.specified_source_id = validate_preferences(self.mode, self.specified_source_id).specified_source_id
+        validated = validate_preferences(self.mode, self.specified_source_id, self.specified_pypi_source_id)
+        self.specified_source_id = validated.specified_source_id
+        if self.specified_pypi_source_id is not None:
+            self.specified_pypi_source_id = validated.specified_pypi_source_id
         return self
 
 
@@ -1569,6 +1574,9 @@ async def update_market_download_preferences(
         if not (payload.initialize_only and configured):
             preferences = DownloadPreferences(
                 mode=payload.mode, specified_source_id=payload.specified_source_id,
+                specified_pypi_source_id=(
+                    payload.specified_pypi_source_id or preferences.specified_pypi_source_id
+                ),
             )
             await asyncio.to_thread(save_preferences, preferences)
     return {**dataclasses.asdict(preferences), "configured": True}

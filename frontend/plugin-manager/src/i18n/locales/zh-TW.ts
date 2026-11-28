@@ -584,6 +584,8 @@ export default {
     specified: '指定代理',
     source: '鏡像來源',
     autoPending: '安裝時依實際外掛套件選擇線路；下載中會調整。',
+    githubSource: 'GitHub 代理',
+    pypiSource: 'PyPI 鏡像（外掛相依套件）',
     resetHistory: '下次安裝重新選源',
     resetSuccess: '已清除短期記錄，下次安裝將重新選源。',
     resetFailed: '無法清除短期下載記錄。',
