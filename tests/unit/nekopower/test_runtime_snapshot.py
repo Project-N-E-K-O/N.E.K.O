@@ -1287,29 +1287,32 @@ async def test_what_a_refusal_teaches_about_the_window(tmp_path: Path, said: str
         await session.close()
 
 
-@pytest.mark.parametrize("told", ["changed", "unchanged", "summing_up"])
-async def test_a_session_whose_preset_was_changed_has_the_head_of_its_requests_put_together_anew(
-    tmp_path: Path, told: str
+@pytest.mark.parametrize("opened_as", ["another", "the_same", "another_for_a_summary", "nothing_said", "after_a_build_without"])
+async def test_a_session_opened_as_another_preset_has_the_head_of_its_requests_put_together_anew(
+    tmp_path: Path, opened_as: str
 ) -> None:
+    # What the head is for is kept with it, unless the host names nothing (as a build before this one did).
+    first_as = "" if opened_as == "after_a_build_without" else "worker"
     first_llm = ScriptedLLM([[say("ok"), finish()]])
-    session, events = await open_session(make_spec(tmp_path, instructions="Your role: worker."), first_llm)
+    first = make_spec(tmp_path, instructions="Your role: worker.").model_copy(update={"head_of": first_as})
+    session, events = await open_session(first, first_llm)
     await _ask(session, events, "First commission.")
     await session.close()
     before = _saved(make_spec(tmp_path))
-    assert "write" in [tool["name"] for tool in before["tools"]]
+    assert "write" in [tool["name"] for tool in before["tools"]] and before.get("head_of", "") == first_as
 
-    # Opened again as another preset: without the tools that write, and told another role.
+    # Opened again without the tools that write, and told another role.
     spec = make_spec(tmp_path, instructions="Your role: scout.").model_copy(
         update={
             "disabled_tools": ["write", "edit"],
-            "renew_head": told != "unchanged",
-            "idle_compaction": told == "summing_up",
+            "head_of": {"the_same": "worker", "nothing_said": ""}.get(opened_as, "scout"),
+            "idle_compaction": opened_as == "another_for_a_summary",
         }
     )
     llm = ScriptedLLM([[say("ok"), finish()]])
     session, events = await open_session(spec, llm)
     try:
-        if told == "summing_up":
+        if opened_as == "another_for_a_summary":
             # The host's own summary of an idle session reads the head the provider kept:
             # it is put together anew when the session is next given work.
             assert "Your role: worker." in session._system and _saved(spec) == before
@@ -1317,16 +1320,18 @@ async def test_a_session_whose_preset_was_changed_has_the_head_of_its_requests_p
         await _ask(session, events, "Second commission.")
         system = _system_of(llm.requests[0])
         offered = {tool["function"]["name"] for tool in llm.overrides[0]["tools"]}
-        if told == "changed":
+        if opened_as in ("another", "after_a_build_without"):
+            # (One that does not say what it was for is not taken to be for this.)
             assert "Your role: scout." in system and "Your role: worker." not in system
             assert not {"write", "edit"} & offered
             saved = _saved(spec)
-            assert saved["reason"] == REASON_PRESET and "write" not in [tool["name"] for tool in saved["tools"]]
+            assert (saved["reason"], saved["head_of"]) == (REASON_PRESET, "scout")
+            assert "write" not in [tool["name"] for tool in saved["tools"]]
             # What was said before is all there.
             assert "First commission." in json.dumps(llm.requests[0])
         else:
-            # Nothing says its preset is another: it begins as it did, and a tool it is
-            # still told of and no longer has is answered for when it is called.
+            # For the preset it is opened as, or nothing is said of that: it begins as it did, and a
+            # tool it is still told of and no longer has is answered for when it is called.
             assert system == _system_of(first_llm.requests[0]) and {"write", "edit"} <= offered
             assert _saved(spec) == before
     finally:

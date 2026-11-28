@@ -3689,11 +3689,11 @@ class TaskAgentManager(TreeWork):
             # What the session may do and is told of its role. One whose
             # preset cannot be used fails here, with the reason.
             template = await self._template_of(kept)
-            # Its preset is another than the one its task agent was last started under: the
-            # head of its requests is put together anew for this start, and it is told of the
-            # change with the first message (``duty_note`` below), once. What this start opens
-            # it as is the preset read here, whatever it is changed to while the start is
-            # under way: that is put on record once it is opened (``preset_was_told`` below).
+            # What this start opens it as is the preset read here, whatever it is changed to
+            # while the start is under way: the runtime is told (``head_of``), and puts the head
+            # of its requests together anew where the one it kept was made for another. Where
+            # its task agent last knew itself as another (``preset_told``), it is told of the
+            # change with the first message (``duty_note`` below), once.
             now_as, last_as = kept.preset, kept.preset_told
             told_as = last_as if last_as and last_as != now_as else ""
             if (
@@ -3869,7 +3869,7 @@ class TaskAgentManager(TreeWork):
             # opening brief can reserve a call against the new run.
             spec = await self._spec(
                 commission, kept, model, workdir=workdir, session_dir=session_path, gateway=gateway_spec,
-                template=template, renew_head=bool(told_as),
+                template=template, head_of=now_as,
             )
             session.changes_files = not _CHANGING_TOOLS <= set(spec.disabled_tools)
             if session.changes_files and kept.kind == "child" and kept.parent_id and tree is None:
@@ -4195,7 +4195,7 @@ class TaskAgentManager(TreeWork):
 
     async def _spec(
         self, commission: Commission, kept: Session, model: Any, *, workdir: str, session_dir: str, gateway: Any,
-        idle_compaction: bool = False, template: Any = None, renew_head: bool = False,
+        idle_compaction: bool = False, template: Any = None, head_of: str = "",
     ) -> Any:
         """Return what a runtime is given to open a session with, for the commission that is worked on in it.
 
@@ -4203,10 +4203,10 @@ class TaskAgentManager(TreeWork):
         looked up here when it is not given): the tools it withholds are
         withheld besides those below, its sessions make no more requests
         in one run than it allows, and what it says of the role is in the
-        instructions. ``renew_head`` says that the session's preset was
-        changed since its task agent was last given work: the runtime
-        puts the system prompt and the tool definitions it kept together
-        anew, for the preset it has now.
+        instructions. ``head_of`` is the preset this start opens it as:
+        where the system prompt and the tool definitions the runtime kept
+        were put together for another, it puts them together anew. Left
+        out for a copy, which is opened with what it was copied with.
 
         ``kept`` is the session as the ledger has it. One that was made
         from another by copying what was said in it is opened without the
@@ -4257,7 +4257,7 @@ class TaskAgentManager(TreeWork):
                 commission, with_gateway=gateway is not None, template=template, roster=roster
             ),
             idle_compaction=idle_compaction,
-            renew_head=renew_head,
+            head_of="" if kept.kind == "fork" else head_of,
             top_level=commission.parent_id is None,
             disabled_tools=sorted(withheld),
             image_retention=image_retention,

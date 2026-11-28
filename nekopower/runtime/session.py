@@ -534,6 +534,8 @@ class TaskAgentSession(SessionInbox):
         # moment it is handed over until it is in the transcript.
         self._opening_entry_id: str | None = None
         self._opening_message: AgentMessage | None = None
+        # What the head of its requests was put together for (``SystemSnapshot.head_of``).
+        self._head_of = ""
         # Whether the last request of the conversation the session was
         # opened with failed (``_restore``); looked at before its first one.
         self._last_request_failed = False
@@ -685,13 +687,20 @@ class TaskAgentSession(SessionInbox):
             self._compaction_due = snapshot.compactions is not None and snapshot.compactions != self._compactions
             if snapshot.refresh_on_resume and not spec.idle_compaction and not self._compaction_due:
                 await self._renew_snapshot(REASON_COMPACTED)
-            elif spec.renew_head and not spec.idle_compaction and not self._compaction_due:
-                # Its preset is another than the one this was put together
-                # for: what it is told of its role and the tools it has are
-                # the new one's from its first request. (Not for the host's
-                # own summary of an idle session, which reads the head the
-                # provider kept; nor before a summary that is still owed,
-                # after which it is put together anew in any case.)
+            elif (
+                spec.head_of and snapshot.head_of != spec.head_of
+                and not spec.idle_compaction and not self._compaction_due
+            ):
+                # Put together for another preset than the one it is opened
+                # as (also one that does not say what it was for): what it
+                # is told of its role and the tools it has are this one's
+                # from its first request. Told by what is kept with it, so
+                # however the session came to be opened as another, and
+                # whatever became of the start that made this. (Not for the
+                # host's own summary of an idle session, which reads the
+                # head the provider kept; nor before a summary that is
+                # still owed, after which it is put together anew in any
+                # case.)
                 await self._renew_snapshot(REASON_PRESET)
             else:
                 self._adopt(snapshot)
@@ -786,6 +795,7 @@ class TaskAgentSession(SessionInbox):
                 dataclasses.replace(tool, description=definition.description, parameters=definition.parameters)
             )
         self._system = snapshot.system
+        self._head_of = snapshot.head_of
         self._wire_tools = [*wire, *self._visible_commission_tools()]
 
     def _visible_commission_tools(self) -> list[AgentTool]:
@@ -849,6 +859,9 @@ class TaskAgentSession(SessionInbox):
                 instructions=spec.instructions,
             )
             self._wire_tools = [*baseline, *self._visible_commission_tools()]
+            # What it is put together for from here on. (Kept as it was above:
+            # the head is the one the summary request used.)
+            self._head_of = spec.head_of
         snapshot = SystemSnapshot(
             self._system,
             definitions_of(baseline),
@@ -857,6 +870,7 @@ class TaskAgentSession(SessionInbox):
             workdir=str(self._workdir),
             compactions=self._compactions,
             refresh_on_resume=spec.idle_compaction or spec.workspace_brief_unavailable,
+            head_of=self._head_of,
         )
         try:
             await asyncio.to_thread(write_snapshot, self._session_dir, snapshot)

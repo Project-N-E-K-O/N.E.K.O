@@ -651,13 +651,15 @@ class Session:
     # that was a session of its own before it became a project's, whose
     # directory stays where it is when the project is given another.
     seat: str = ""
-    # The preset its task agent was last started under: what the head of
-    # its requests (its system prompt and its tools) was put together for.
-    # Written by every start, with what that start opened it as
-    # (``Ledger.preset_was_told``), and by nothing else: where it is not the
-    # preset the session has, the preset was changed since, and the next
-    # start puts the head together anew and tells the task agent so
-    # (``TaskAgentManager._start``). "" for a session that was never
+    # The preset its task agent last knew itself as: what it was first
+    # started under, and after a change the one it was told of. Written by
+    # starts alone, with what the start opened it as, once its task agent
+    # has it (``Ledger.preset_was_told``): where it is not the preset the
+    # session has, the next start tells the task agent of the change
+    # (``TaskAgentManager._start``). What the head of its requests was put
+    # together for is kept with that head, by the runtime
+    # (``SystemSnapshot.head_of``): a start may renew the head and end
+    # before its task agent took a word. "" for a session that was never
     # started (and one last started by a build that did not keep it).
     preset_told: str = ""
 

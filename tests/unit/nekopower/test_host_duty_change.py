@@ -277,7 +277,7 @@ async def test_after_a_change_the_next_start_puts_the_head_of_its_requests_toget
     second = await _done(host, "look at the footer of the shop site")
 
     assert second.session_id == host.member
-    assert [spec.renew_head for spec in specs] == [False, True]
+    assert [spec.head_of for spec in specs] == ["general", "scout"]
     assert {"write", "edit", "pwsh", "bash", "capability_call", "subagent"} <= set(specs[1].disabled_tools)
     before, after = llm.requests[1], llm.requests[2]
     # Its system prompt and its tools are the new preset's, in the conversation it had.
@@ -286,14 +286,17 @@ async def test_after_a_change_the_next_start_puts_the_head_of_its_requests_toget
     assert "write" in _tools(llm.overrides[1]) and not {"write", "edit", "subagent"} & _tools(llm.overrides[2])
     assert "header" in _said(after) and _said(after).count(CHANGED) == 1 and CHANGED not in _said(before)
     kept = await host.ledger.get_session(host.member)
-    assert read_snapshot(Path(kept.session_dir)).reason == REASON_PRESET
+    made = read_snapshot(Path(kept.session_dir))
+    assert (made.reason, made.head_of) == (REASON_PRESET, "scout")
     # Told, and its requests begin as its preset has them: nothing more to tell.
     assert kept.preset_told == "scout"
     assert (await host.board())["projects"][0]["members"][0]["preset_was"] is None
 
     await _done(host, "look at the fonts of the shop site")
 
-    assert [spec.renew_head for spec in specs] == [False, True, False]
+    # Opened as the preset its head was put together for: that is used as it is.
+    assert [spec.head_of for spec in specs] == ["general", "scout", "scout"]
+    assert read_snapshot(Path(kept.session_dir)) == made
     assert _system(llm.requests[3]) == _system(after) and llm.overrides[3]["tools"] == llm.overrides[2]["tools"]
     assert _said(llm.requests[3]).count(CHANGED) == 1
 
@@ -322,8 +325,8 @@ async def test_a_run_under_way_goes_on_as_it_was_opened_and_the_change_holds_fro
 
     await _done(host, "look at the footer of the shop site")
 
-    assert [spec.renew_head for spec in specs] == [False, True] and "write" in specs[1].disabled_tools
-    assert _said(llm.requests[2]).count(CHANGED) == 1
+    assert [spec.head_of for spec in specs] == ["general", "scout"] and "write" in specs[1].disabled_tools
+    assert "Your role: scout." in _system(llm.requests[2]) and _said(llm.requests[2]).count(CHANGED) == 1
     assert host.member not in host.task_agents._writes_in
 
 
@@ -339,7 +342,7 @@ async def test_a_session_that_was_never_opened_is_told_of_nothing(hosts, tmp_pat
     await _done(host, "look at the footer of the shop site")
 
     # Opened as what it is, for the first time: nothing was said under another preset.
-    assert [spec.renew_head for spec in specs] == [False]
+    assert [spec.head_of for spec in specs] == ["scout"]
     assert "Your role: scout." in _system(llm.requests[0]) and "preset was changed" not in _said(llm.requests[0])
     assert (await host.ledger.get_session(host.member)).preset_told == "scout"
 
@@ -375,7 +378,7 @@ async def test_a_change_made_while_its_first_start_is_under_way_is_told_with_the
 
     await _done(host, "look at the footer of the shop site")
 
-    assert [spec.renew_head for spec in specs] == [False, True] and "write" in specs[1].disabled_tools
+    assert [spec.head_of for spec in specs] == ["general", "scout"] and "write" in specs[1].disabled_tools
     assert "Your role: scout." in _system(llm.requests[2]) and _said(llm.requests[2]).count(CHANGED) == 1
     assert (await host.ledger.get_session(host.member)).preset_told == "scout"
 
@@ -393,14 +396,14 @@ async def test_changed_back_while_the_start_that_opens_it_anew_is_under_way_it_i
 
     await _done(host, "look at the footer of the shop site")
 
-    assert [spec.renew_head for spec in specs] == [False, True] and "write" in specs[1].disabled_tools
+    assert [spec.head_of for spec in specs] == ["general", "scout"] and "write" in specs[1].disabled_tools
     kept = await host.ledger.get_session(host.member)
     # What that start opened it as is on record, and not the preset it has by now.
     assert (kept.preset, kept.preset_told) == ("general", "scout")
 
     await _done(host, "fix the footer of the shop site")
 
-    assert [spec.renew_head for spec in specs] == [False, True, True] and "write" not in specs[2].disabled_tools
+    assert [spec.head_of for spec in specs] == ["general", "scout", "general"] and "write" not in specs[2].disabled_tools
     assert "Your role:" not in _system(llm.requests[2]) and (host.workdir / "b.txt").exists()
     back = presets.PRESET_CHANGED.format(was="scout", now="general")
     assert _said(llm.requests[2]).count(back) == 1 and _said(llm.requests[2]).count(CHANGED) == 1
@@ -425,19 +428,64 @@ async def test_it_is_on_record_as_told_of_a_change_only_once_its_session_took_th
         receipt = await _dispatch(host, "look at the footer of the shop site")
         await wait_until(lambda: bool(sent), what="the first message being sent")
         await asyncio.sleep(0.2)
-        assert CHANGED in sent[0] and specs[-1].renew_head
-        # Not on record as started under the preset it was not told of.
-        assert (await host.ledger.get_session(host.member)).preset_told == "general"
+        assert CHANGED in sent[0] and specs[-1].head_of == "scout"
+        # Not on record as knowing itself as the preset it was not told of.
+        kept = await host.ledger.get_session(host.member)
+        assert kept.preset_told == "general"
+        # The head of its requests is that preset's by now, and says so itself.
+        made = read_snapshot(Path(kept.session_dir))
+        assert (made.reason, made.head_of) == (REASON_PRESET, "scout")
         await host.abort(receipt.commission_id, reason="test")
         await let_go(host)
     assert (await host.ledger.get_session(host.member)).preset_told == "general"
 
     await _done(host, "look at the fonts of the shop site")
 
-    # Said again, with the head of its requests put together anew once more: now it is taken.
-    assert [spec.renew_head for spec in specs] == [False, True, True]
-    assert _said(llm.requests[1]).count(CHANGED) == 1
+    # Said again, now that it is taken; the head was put together for this preset already, and is used.
+    assert read_snapshot(Path(kept.session_dir)) == made
+    assert "Your role: scout." in _system(llm.requests[1]) and _said(llm.requests[1]).count(CHANGED) == 1
     assert (await host.ledger.get_session(host.member)).preset_told == "scout"
+
+
+async def test_changed_back_before_it_took_a_word_of_the_change_it_begins_as_it_was_and_is_told_nothing(
+    hosts, tmp_path
+):
+    llm = ScriptedLLM([_report("header fixed"), _write("b.txt"), _report("footer fixed")])
+    specs: list[Any] = []
+    host = await _shop(hosts, tmp_path, llm, specs)
+    await _done(host, "fix the header of the shop site")
+    before = _system(llm.requests[0])
+    await host.change_duty(host.member, "scout")
+    runtime = host.task_agents._runtimes.builtin()
+    sent: list[str] = []
+
+    async def never_arrives(_session_id: str, text: str, **_how: Any) -> None:
+        sent.append(text)
+
+    with pytest.MonkeyPatch.context() as patched:
+        # Opened as the other preset, with the head of its requests put together for that one; the
+        # message that tells it so never arrives, and its preset is changed back before the start is over.
+        patched.setattr(runtime, "prompt", never_arrives)
+        receipt = await _dispatch(host, "look at the footer of the shop site")
+        await wait_until(lambda: bool(sent), what="the first message being sent")
+        kept = await host.ledger.get_session(host.member)
+        assert read_snapshot(Path(kept.session_dir)).head_of == "scout"
+        await host.change_duty(host.member, "general")
+        await host.abort(receipt.commission_id, reason="test")
+        await let_go(host)
+    kept = await host.ledger.get_session(host.member)
+    assert (kept.preset, kept.preset_told) == ("general", "general")
+
+    await _done(host, "fix the footer of the shop site")
+
+    # The head kept with it was the other preset's: not used, though nothing on record says it was changed.
+    assert [spec.head_of for spec in specs] == ["general", "scout", "general"]
+    made = read_snapshot(Path(kept.session_dir))
+    assert (made.reason, made.head_of) == (REASON_PRESET, "general")
+    assert _system(llm.requests[1]) == before and "write" in _tools(llm.overrides[1])
+    assert (host.workdir / "b.txt").exists()
+    # It never knew itself as anything else: there is nothing to tell it.
+    assert "preset was changed" not in _said(llm.requests[1])
 
 
 # ---------------------------------------------------------------------------
