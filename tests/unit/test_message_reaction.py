@@ -169,7 +169,9 @@ def test_model_can_choose_every_candidate_across_emotion_categories(emotion, mon
 
 
 @pytest.mark.parametrize("emoji", [None, True, 1, ["😊"], {}, "", " ", "😊😄", "A", "1", "ok", "😊x", ":)", "none",
-                                   "\u00a9", "\u00ae", "\u2122", "\u203c"])
+                                   "\u00a9", "\u00ae", "\u2122", "\u203c",
+                                   # A plain letter or digit with the selector is not an emoji.
+                                   "A\ufe0f", "1\ufe0f"])
 def test_unusable_model_emoji_uses_existing_rule(emotion, monkeypatch, emoji):
     monkeypatch.setattr(emotion.random, "choice", lambda items: items[-1])
     result = emotion._emotion_response("sad", 0.9, "NEKO", emoji)

@@ -1377,6 +1377,20 @@ def test_config_manager_decision_slot_defaults_and_cross_provider(clean_user_dat
     rq_dec = cm.get_model_api_config("decision")
     assert rq_dec["api_key"] == "sk-requesty-book"
     assert rq_dec["decision_protocol"] == "systemone"
+    # The same route with the model left empty takes Requesty's decision model,
+    # not the assist provider's.
+    _set_cfg({
+        "coreApi": "qwen",
+        "assistApi": "deepseek",
+        "assistApiKeyDeepseek": "sk-ds",
+        "assistApiKeyRequesty": "sk-requesty-book",
+        "enableCustomApi": True,
+        "decisionModelProvider": "requesty",
+        "decisionModelUrl": "https://router.requesty.ai/v1/systemone",
+        "decisionModelId": "",
+        "decisionModelApiKey": "",
+    })
+    assert cm.get_model_api_config("decision")["model"] == "typesafe/jev-1.14.0"
     # Another provider's route still gets no key from this provider's book.
     _set_cfg({
         "coreApi": "qwen",

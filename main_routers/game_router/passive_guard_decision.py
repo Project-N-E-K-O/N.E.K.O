@@ -201,7 +201,8 @@ def _probabilities(answer: Any) -> Dict[str, float]:
 def action_from_answer(answer: Any, data: Dict[str, Any], route_state: Any = None) -> Optional[str]:
     """The recommended action for the ``situation`` answer at this stage, or ``None``."""
     probs = _probabilities(answer)
-    if not probs:
+    if not any(p > 0 for p in probs.values()):
+        # No probability on any option (none at all, or all zero): the chat prompt decides.
         return None
     if _is_user_stage(data):
         helps = sum(p for k, p in probs.items() if k in _SPEECH_HELPS)

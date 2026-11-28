@@ -289,6 +289,23 @@ async def start_first_token_reading(messages: list[dict], *, chat_config) -> Opt
 _pending: dict[str, tuple[Callable[[], Awaitable[Optional[dict]]], float, Optional[Callable[[], None]]]] = {}
 
 
+# The timer that drops each uncollected reaction when its time is up.
+_expiry: dict[str, asyncio.TimerHandle] = {}
+
+
+def _cancel_expiry(token: str) -> None:
+    handle = _expiry.pop(token, None)
+    if handle is not None:
+        handle.cancel()
+
+
+def _expire(token: str) -> None:
+    _expiry.pop(token, None)
+    entry = _pending.pop(token, None)
+    if entry is not None:
+        _drop(entry)
+
+
 def _drop(entry) -> None:
     _make, _made_at, on_drop = entry
     if on_drop is not None:
@@ -312,18 +329,27 @@ def register_pending_reaction(
     now = time.monotonic()
     for token, entry in list(_pending.items()):
         if now - entry[1] > PENDING_REACTION_TTL_SECONDS:
+            _cancel_expiry(token)
             _drop(_pending.pop(token))
     while len(_pending) >= _MAX_PENDING_REACTIONS:
         oldest = min(_pending, key=lambda t: _pending[t][1])
+        _cancel_expiry(oldest)
         _drop(_pending.pop(oldest))
     token = secrets.token_urlsafe(12)
     _pending[token] = (make, now, on_drop)
+    try:
+        # Dropped on time even when nothing else registers or collects.
+        _expiry[token] = asyncio.get_running_loop().call_later(PENDING_REACTION_TTL_SECONDS, _expire, token)
+    except RuntimeError:
+        pass  # no running loop: the next registration or collection drops it
     return token
 
 
 async def collect_pending_reaction(token: str) -> Optional[dict]:
     """Make the reaction for *token* now (``None`` when unknown, expired, failed or too slow); once per token."""
-    entry = _pending.pop(str(token or ""), None)
+    token = str(token or "")
+    _cancel_expiry(token)
+    entry = _pending.pop(token, None)
     if entry is None:
         return None
     make, made_at, _on_drop = entry
@@ -338,6 +364,8 @@ async def collect_pending_reaction(token: str) -> Optional[dict]:
 
 
 def clear_pending_reactions() -> None:
+    for token in list(_expiry):
+        _cancel_expiry(token)
     for entry in list(_pending.values()):
         _drop(entry)
     _pending.clear()

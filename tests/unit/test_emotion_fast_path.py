@@ -173,11 +173,16 @@ def test_decision_miss_uses_the_chat_prompt(em, monkeypatch):
 
 
 def test_request_with_its_own_model_keeps_the_chat_prompt(em, monkeypatch):
+    decided: list = []
+
     async def _decide(*a, **k):
-        raise AssertionError("an explicit model must not be routed")
+        # Recorded, not raised: the fast path would swallow an error and fall back.
+        decided.append(a)
+        return "happy", 0.9
 
     monkeypatch.setattr(em.ed, "decide_emotion", _decide)
     resp = asyncio.run(em.module.emotion_analysis(_Request({"text": "hi", "lanlan_name": "NEKO", "model": "m"})))
+    assert decided == []
     assert em.chat_calls == 1 and resp["emotion"] == "sad"
 
 
@@ -484,3 +489,34 @@ def test_a_slow_model_emoji_still_leaves_one_picked_for_the_emotion(em, monkeypa
     got = asyncio.run(_run())
     assert got["reaction"] == {"emoji": em.module.MESSAGE_REACTION_EMOJIS_BY_EMOTION["sad"][0], "author": "NEKO"}
     assert em.ed.REACTION_EMOJI_WAIT_SECONDS < em.ed.PENDING_REACTION_WAIT_SECONDS
+
+
+def test_an_uncollected_reaction_is_dropped_on_time(em, monkeypatch):
+    monkeypatch.setattr(em.ed, "PENDING_REACTION_TTL_SECONDS", 0.05)
+    dropped: list = []
+
+    async def _make():
+        raise AssertionError("never made")
+
+    async def _run():
+        token = em.ed.register_pending_reaction(_make, on_drop=lambda: dropped.append(1))
+        await asyncio.sleep(0.2)
+        return token
+
+    token = asyncio.run(_run())
+    # Dropped by its own timer, with nothing else registered or collected.
+    assert dropped == [1] and token not in em.ed._pending and token not in em.ed._expiry
+
+
+def test_a_collected_reaction_cancels_its_timer(em, monkeypatch):
+    async def _make():
+        return {"emoji": "🫠", "author": "NEKO"}
+
+    async def _run():
+        token = em.ed.register_pending_reaction(_make)
+        assert token in em.ed._expiry
+        got = await em.ed.collect_pending_reaction(token)
+        return token, got
+
+    token, got = asyncio.run(_run())
+    assert got == {"emoji": "🫠", "author": "NEKO"} and token not in em.ed._expiry

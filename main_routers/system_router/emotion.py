@@ -615,11 +615,14 @@ def _push_emotion_update(lanlan_name, emotion, confidence):
 
 
 # One emoji grapheme shown as an emoji: a pictograph with emoji presentation
-# (with any modifiers or joiners), one made an emoji by its variation selector
-# (keycaps included), or a flag. Plain letters, digits, text and text-style
-# symbols such as the copyright or trademark sign without the selector are not.
+# (with any modifiers or joiners), a pictograph made an emoji by its variation
+# selector, a keycap, or a flag. Plain letters and digits (even with the
+# selector), text and text-style symbols such as the copyright or trademark
+# sign without the selector are not.
 _SINGLE_GRAPHEME_RE = regex.compile(r"\X")
-_EMOJI_MARK_RE = regex.compile(r"\p{Emoji_Presentation}|️|\p{Regional_Indicator}")
+_EMOJI_MARK_RE = regex.compile(
+    r"\p{Emoji_Presentation}|\p{Extended_Pictographic}\uFE0F|[0-9#*]\uFE0F?\u20E3|\p{Regional_Indicator}"
+)
 
 
 def _is_single_emoji(value):

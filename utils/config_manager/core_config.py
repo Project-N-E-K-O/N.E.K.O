@@ -1584,6 +1584,9 @@ class CoreConfigMixin:
                 candidates = self._provider_url_candidates(
                     named_profile, 'OPENROUTER_URL', 'OPENROUTER_URLS'
                 )
+                if prefix == 'decision' and named_profile.get('DECISION_URL'):
+                    # The provider's own decision route (e.g. Requesty /v1/systemone).
+                    candidates = [*candidates, str(named_profile['DECISION_URL'])]
                 if not slot_url or not any(same_endpoint(slot_url, c) for c in candidates):
                     return ''
                 return str(named_profile.get(profile_key)

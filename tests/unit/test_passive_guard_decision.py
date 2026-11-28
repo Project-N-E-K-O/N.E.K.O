@@ -212,3 +212,10 @@ def test_a_teaching_game_kept_on_the_route_never_opens_the_exit_window():
     # The request's own context comes first.
     own = {"stage": 8, "preGameContext": {"gameStance": "normal"}}
     assert pgd.action_from_answer(_answer({"giving_up": 1.0}), own, route) == pgd.PREPARE
+
+
+@pytest.mark.unit
+def test_all_zero_probabilities_mean_the_chat_prompt():
+    zero = SimpleNamespace(value="giving_up", probability=0.0, probabilities={"giving_up": 0.0})
+    assert pgd.action_from_answer(zero, {"stage": 8}) is None
+    assert pgd.action_from_answer(zero, {"stage": "user_recovery"}) is None
