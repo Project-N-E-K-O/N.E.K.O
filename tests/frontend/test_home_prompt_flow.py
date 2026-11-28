@@ -48,10 +48,7 @@ _PAGE_BOOTSTRAP_TEMPLATE = """
         return typeof fallback === 'string' ? fallback : key;
     };
     window.showStatusToast = function() {};
-    window.pageConfigReady = Promise.resolve({
-        success: true,
-        autostart_csrf_token: 'test-token',
-    });
+    window.pageConfigReady = Promise.resolve(true);
     window.universalTutorialManager = {
         currentPage: 'home',
         isTutorialRunning: false,
@@ -87,6 +84,9 @@ __SETUP_JS__
 
 __FETCH_JS__
 
+        if (new URL(requestUrl, window.location.href).pathname === '/api/config/page_config') {
+            return jsonResponse({ success: true, autostart_csrf_token: 'test-token' });
+        }
         throw new Error('Unexpected request: ' + method + ' ' + requestUrl);
     };
 }
@@ -15740,10 +15740,6 @@ def test_mutation_requests_refresh_csrf_token_once_after_validation_failure(
         mock_page,
         include_autostart_provider=True,
         setup_js="""
-            window.pageConfigReady = Promise.resolve({
-                success: true,
-                autostart_csrf_token: 'stale-token',
-            });
             window.__pageConfigFetchCount = 0;
             window.__mutationTokens = [];
             window.__autostartHeartbeatBodies = [];
@@ -15775,7 +15771,7 @@ def test_mutation_requests_refresh_csrf_token_once_after_validation_failure(
                     master_profile_name: '',
                     master_nickname: '',
                     master_display_name: '',
-                    autostart_csrf_token: 'fresh-token',
+                    autostart_csrf_token: window.__pageConfigFetchCount === 1 ? 'stale-token' : 'fresh-token',
                     model_path: '',
                     model_type: 'live2d',
                 });
@@ -15815,7 +15811,7 @@ def test_mutation_requests_refresh_csrf_token_once_after_validation_failure(
 
     mock_page.wait_for_function(
         """
-        () => window.__mutationTokens.length > 0
+        () => window.__autostartHeartbeatBodies.length > 0
         """,
         timeout=5000,
     )
@@ -15830,8 +15826,8 @@ def test_mutation_requests_refresh_csrf_token_once_after_validation_failure(
         """
     )
 
-    assert result["pageConfigFetchCount"] >= 1
-    assert "fresh-token" in result["mutationTokens"]
+    assert result["pageConfigFetchCount"] == 2
+    assert result["mutationTokens"] == ["stale-token", "fresh-token"]
     assert result["autostartHeartbeatBodies"]
 
 
@@ -15862,7 +15858,9 @@ def test_fire_and_forget_json_uses_cached_csrf_token_without_awaiting_during_unl
                 headers: headers,
                 body: body,
             });
-            return jsonResponse({ ok: true });
+            return requestUrl === '/api/config/page_config'
+                ? jsonResponse({ success: true, autostart_csrf_token: 'test-token' })
+                : jsonResponse({ ok: true });
         """,
         script_names=("app/app-prompt-shared.js",),
     )
@@ -15896,7 +15894,9 @@ def test_fire_and_forget_json_uses_cached_csrf_token_without_awaiting_during_unl
         """
     )
 
-    assert result["fetchCalls"] == []
+    assert result["fetchCalls"] == [
+        {"url": "/api/config/page_config", "method": "GET", "headers": {}, "body": None}
+    ]
     assert result["beacon"]["url"] == "/api/autostart-prompt/heartbeat"
     assert '"_csrf_token":"test-token"' in result["beacon"]["body"]
 

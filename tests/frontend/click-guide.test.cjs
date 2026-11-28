@@ -2359,14 +2359,14 @@ test('chat state module makes no startup request: ' + chatPath, async () => {
 test('click mutations reuse CSRF token and retry a CSRF rejection exactly once', async () => {
     const { dom } = setup();
     const root = dom.window;
-    root.pageConfigReady = Promise.resolve({ autostart_csrf_token: 'initial' });
+    root.pageConfigReady = Promise.resolve(true);
     const saved = { choice: 'click', pending: true, revision: 1 };
     const tokens = [];
     let configReads = 0;
     root.fetch = async (url, options = {}) => {
         if (url === '/api/config/page_config') {
             configReads++;
-            return { ok: true, json: async () => ({ autostart_csrf_token: 'refreshed' }) };
+            return { ok: true, json: async () => ({ autostart_csrf_token: configReads === 1 ? 'initial' : 'refreshed' }) };
         }
         if (options.method !== 'POST') return { ok: true, json: async () => saved };
         tokens.push(options.headers['X-CSRF-Token']);
@@ -2379,7 +2379,7 @@ test('click mutations reuse CSRF token and retry a CSRF rejection exactly once',
     await root.NekoClickGuideState.update('reset');
     await root.NekoClickGuideState.update('reset');
     assert.deepEqual(tokens, ['initial', 'refreshed', 'refreshed']);
-    assert.equal(configReads, 1);
+    assert.equal(configReads, 2);
     dom.window.close();
 });
 

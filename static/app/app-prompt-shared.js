@@ -226,7 +226,7 @@
     // `autostart_csrf_token` field of /api/config/page_config.
     //
     // Contract exercised by tests/frontend/test_home_prompt_flow.py:
-    //   - On first mutation, read token from `window.pageConfigReady`.
+    //   - On first mutation, read the token after the storage startup barrier.
     //   - If the server responds 403 with `error_code: 'csrf_validation_failed'`,
     //     refetch /api/config/page_config once, pick up the fresh token, and
     //     retry the original request exactly once. Subsequent requests reuse
@@ -253,9 +253,7 @@
 
     function createLocalMutationSecurity() {
         let cachedToken = '';
-        let initialTokenPromise = null;
         let refreshPromise = null;
-        let readReadyOnce = false;
 
         function resolveLanlanNameParam() {
             try {
@@ -268,9 +266,19 @@
         }
 
         const TOKEN_REQUEST_TIMEOUT_MS = 10000;
-        const INITIAL_TOKEN_READY_WAIT_MS = 3000;
 
         async function fetchPageConfigToken() {
+            // Storage selection owns startup; unrelated renderer readiness does not.
+            const storageBarrier = window.__nekoStorageLocationStartupBarrier;
+            if (storageBarrier && typeof storageBarrier.then === 'function') {
+                try {
+                    const decision = await storageBarrier;
+                    if (decision?.canContinue === false) return '';
+                } catch (_) {
+                    return '';
+                }
+            }
+
             const controller = typeof AbortController === 'function' ? new AbortController() : null;
             let timer;
             const deadline = new Promise(resolve => {
@@ -297,54 +305,13 @@
             }
         }
 
-        async function readReadyToken() {
-            const ready = window.pageConfigReady;
-            if (!ready || typeof ready.then !== 'function') {
-                console.warn(
-                    '[LocalMutationSecurity] window.pageConfigReady missing; '
-                    + 'will refetch /api/config/page_config for CSRF token.'
-                );
-                return '';
-            }
-            let timer;
-            try {
-                // Model startup may stay pending through unrelated recovery.
-                return extractAutostartCsrfToken(await Promise.race([ready, new Promise(resolve => {
-                    timer = setTimeout(resolve, INITIAL_TOKEN_READY_WAIT_MS);
-                })]));
-            } catch (_) {
-                return '';
-            } finally {
-                if (timer !== undefined) clearTimeout(timer);
-            }
-        }
-
-        function readInitialToken() {
-            if (!initialTokenPromise) {
-                initialTokenPromise = (async () => {
-                    if (!readReadyOnce) {
-                        readReadyOnce = true;
-                        const initial = await readReadyToken();
-                        // An explicit refresh can win while the page snapshot is pending.
-                        if (refreshPromise) return refreshPromise;
-                        if (!cachedToken && initial) cachedToken = initial;
-                    }
-                    return cachedToken || refreshToken();
-                })().finally(() => {
-                    // Only the valid token is cached; failed reads are retryable.
-                    initialTokenPromise = null;
-                });
-            }
-            return initialTokenPromise;
-        }
-
         async function getToken() {
-            return refreshPromise || cachedToken || readInitialToken();
+            return refreshPromise || cachedToken || refreshToken();
         }
 
         async function refreshToken() {
             if (!refreshPromise) {
-                // Initial fallback and explicit refresh share the same direct read.
+                // Bootstrap and explicit refresh share the same direct read.
                 refreshPromise = fetchPageConfigToken().then(token => {
                     if (token) cachedToken = token;
                     return cachedToken;
