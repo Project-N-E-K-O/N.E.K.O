@@ -760,6 +760,12 @@ def _fetch_uv(
     digest pinned in this module is the only trust anchor.
     """
     _check(cancel, deadline)
+    if _UV_ARCHIVE_SHA256_VERSION != PINNED_UV_VERSION:
+        # Digests of another release would reject every download as tampered.
+        raise ToolRuntimeError(
+            "internal_error",
+            f"The pinned uv digests are for {_UV_ARCHIVE_SHA256_VERSION}, not uv {PINNED_UV_VERSION}",
+        )
     target = _uv_target()
     if target is None:
         raise ToolRuntimeError("unsupported_platform", f"uv {PINNED_UV_VERSION} has no build for this platform")

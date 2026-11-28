@@ -1515,3 +1515,12 @@ def test_staged_file_that_cannot_be_removed_neither_fails_nor_falls_back(root, m
     _prepare(uv)
     assert uv.mirrored == [b"tampered", PYTHON_BODY]
     assert _plain_installs(uv) == []
+
+
+def test_digests_of_another_uv_release_download_nothing(root, monkeypatch):
+    release = FakeRelease().install(monkeypatch)
+    monkeypatch.setattr(module, "_UV_ARCHIVE_SHA256_VERSION", "0.0.1")
+    monkeypatch.setattr(module, "_system_uv_candidates", lambda: ["/new/uv"])
+    error = _expect_failure(FakeUv(root, versions={"/new/uv": "99.0.0"}), "internal_error")
+    assert "0.0.1" in error.detail
+    assert release.requests == []
