@@ -2444,8 +2444,10 @@ test('initial preload completion preserves a newer pending emotion and active tr
     m.canvasElement={style:{},getContext:()=>f.context};m.initializeLayeredToggleState=()=>{};m.startLayeredBlinkLoop=()=>{};m.attachLayeredHotkeys=m.attachLayeredPlayEvent=m.attachLayeredPointerTracking=()=>{};
     let finish;m.prepareReviewedEntry=()=>new Promise(resolve=>finish=resolve);const loading=m.setupLayeredAdapter();await flushReviewed();f.images.at(-1).onload();await flushReviewed();
     const finishInitial=finish;m.isSpeaking=true;m.setEmotion('happy');const pending=m.pendingEmotion;assert.ok(pending);
-    const slots=m.layeredTransientSlots;m.activeLayeredEmotionIndex=2;
+    delete m.syncLayeredSpeechSlot;m.syncLayeredSpeechSlot();
+    const slots=m.layeredTransientSlots;assert.equal(slots.at(-1).kind,'talking');assert.equal(slots.at(-1).index,1);const finishTalking=finish;m.activeLayeredEmotionIndex=2;
     finishInitial([{image:{}}]);assert.equal(await loading,true);assert.equal(m.pendingEmotion,pending);assert.equal(m.layeredTransientSlots,slots);assert.equal(m.activeLayeredEmotionIndex,2);
+    finishTalking([{image:{}}]);await flushReviewed();assert.equal(m.layeredStateIndex,1);assert.equal(m.layeredTransientSlots.at(-1).kind,'talking');assert.equal(m.isSpeaking,true);
 });
 
 for(const delay of [1000,60000,0]) test(`reviewed leisure uses configured idle threshold ${delay}`, () => {
@@ -2504,4 +2506,71 @@ test('releasing an old drag does not cancel a newer emotion preparation', async 
 test('releasing an absent gesture is a no-op even while non-drag work is preparing', () => {
     const {manager:m}=reviewedFixture();m._reviewedPreparing=true;m._reviewedPreparingDrag=null;const token=m._reviewedRequest;
     m.releaseReviewedDrag(undefined);m.releaseReviewedDrag(null);assert.equal(m._reviewedPreparing,true);assert.equal(m._reviewedRequest,token);
+});
+
+for (const method of ['setLayeredStateIndex', 'playLayeredAnimation']) test(`explicit idle through ${method} cancels an older pending emotion without restarting idle`, async t => {
+    const {manager:m}=timedReviewedFixture();t.after(()=>m.clearLayeredTimers());
+    const start=m.layeredAnimationStart;let finish;
+    m.prepareReviewedEntry=()=>new Promise(resolve=>finish=resolve);
+    m.requestReviewedState(2,{emotion:'happy'});assert.equal(m._reviewedPreparing,true);
+    m[method](0);assert.equal(m._reviewedPreparing,false);
+    finish([{image:{}}]);await flushReviewed();
+    assert.equal(m.layeredStateIndex,0);assert.equal(m.currentEmotion,null);assert.equal(m.layeredAnimationStart,start);
+});
+
+test('trimmed idle prewarms alternate only when all loop and crossfade samples are cached', () => {
+    const {manager:m}=reviewedFixture();const p=m._trackedPlayback;
+    p.data.duration_ms=8000;p.data.loop={start_ms:1000,end_ms:7000,crossfade_ms:250};
+    p.data.frames=Array.from({length:80},(_,i)=>({time_ms:i*100,duration_ms:100}));p.cache.clear();
+    for(let i=10;i<70;i++)p.cache.set(i,{});
+    const calls=[];m.warmReviewedIdle=i=>calls.push(i);
+    p.cache.delete(10);m.reviewedPlaybackTick(100);assert.deepEqual(calls,[]);
+    p.cache.set(10,{});m.reviewedPlaybackTick(101);assert.deepEqual(calls,[1]);
+});
+
+test('active guest snapshot restores marker without departure and permits exactly one real return', async t => {
+    const {bridge,window,messages}=visitBridgeFixture();const {manager:m}=timedReviewedFixture();t.after(()=>m.clearLayeredTimers());
+    const id='a'.repeat(22);bridge._state.visitId=id;
+    window.pngtuberManager.handleReviewedVisit=msg=>{messages.push(msg);return m.handleReviewedVisit(msg)};
+    window.nekoLocalMutationSecurity={getMutationHeaders:async()=>({'X-CSRF-Token':'token'})};
+    window.fetch=async()=>({ok:true,json:async()=>({active:true,visit_id:id,side:'guest',phase:'active'})});
+    const calls=[];m.requestReviewedState=i=>{calls.push(i);return true};
+    assert.equal(await bridge.recoverAfterReload('YUI',10000),true);
+    assert.equal(m._reviewedVisit,id);assert.deepEqual(calls,[]);
+    assert.equal(m.reviewedLeisureEligible({proactiveEnabled:false,owner:true,busy:false}),false);
+    m.handleReviewedVisit({action:'ended',side:'guest',visit_id:id});m.handleReviewedVisit({action:'ended',side:'guest',visit_id:id});
+    assert.deepEqual(calls,[6]);assert.equal(m._reviewedVisit,null);
+});
+
+for(const newer of [false,true]) test(`initial idle failure schedules alternate recovery without overriding newer work (${newer})`, async t => {
+    const f=realReviewedFixture({fakeTimers:true}),m=f.manager;t.after(()=>m.clearLayeredTimers());
+    const md=JSON.parse(JSON.stringify(m.layeredMetadata));md.runtime='layered_canvas';md.layers=[{image:'first.webp'}];md.canvas={width:720,height:960};
+    f.setFetch(async()=>({ok:true,json:async()=>md}));m.config={...m.config,adapter:'layered_canvas_v1',layered_metadata:'/meta.json'};
+    m.canvasElement={style:{},getContext:()=>f.context};m.initializeLayeredToggleState=()=>{};m.startLayeredBlinkLoop=()=>{};m.attachLayeredHotkeys=m.attachLayeredPlayEvent=m.attachLayeredPointerTracking=()=>{};
+    let rejectInitial;m.prepareReviewedEntry=()=>new Promise((_,reject)=>rejectInitial=reject);
+    const loading=m.setupLayeredAdapter();await flushReviewed();f.images.at(-1).onload();await flushReviewed();
+    const reject=rejectInitial;
+    if(newer){m.prepareReviewedEntry=async()=>[{image:{}}];m.requestReviewedState(2,{emotion:'happy'});await flushReviewed();}
+    reject(Error('permanent missing idle'));assert.equal(await loading,true);assert.equal(m.hasReviewedActions(),true);
+    if(newer){assert.equal(m.layeredStateIndex,2);assert.equal(m._reviewedRecovery,null);return;}
+    assert.ok(m._reviewedRecovery);delete m.reviewedChooseIdle;m.prepareReviewedEntry=async()=>[{image:{}}];
+    f.advance(351);m.reviewedPlaybackTick(351);await flushReviewed();assert.equal(m.layeredStateIndex,1);
+});
+
+test('recovered visit marker remains gated to reviewed models and recovery notifications', () => {
+    const {manager:m}=reviewedFixture();const calls=[];m.requestReviewedState=i=>calls.push(i);
+    m.handleReviewedVisit({action:'restored',visit_id:'guest',side:'host',recovery:true});assert.equal(m._reviewedVisit,null);
+    m.handleReviewedVisit({action:'restored',visit_id:'guest',side:'guest'});assert.equal(m._reviewedVisit,null);
+    m.layeredMetadata.reviewed_actions=null;
+    m.handleReviewedVisit({action:'restored',visit_id:'guest',side:'guest',recovery:true});assert.equal(m._reviewedVisit,null);assert.deepEqual(calls,[]);
+});
+
+test('new live visit invalidates an older in-flight recovery snapshot before marker restoration', async () => {
+    const {bridge,window,messages}=visitBridgeFixture();const old='a'.repeat(22),next='b'.repeat(22);bridge._state.visitId=old;
+    window.nekoLocalMutationSecurity={getMutationHeaders:async()=>({'X-CSRF-Token':'token'})};
+    let complete;window.fetch=()=>new Promise(resolve=>complete=resolve);
+    const recovery=bridge.recoverAfterReload('YUI',10000);await flushReviewed();
+    bridge.onStateChange({type:'visit_state_change',action:'pending',visit_id:next,side:'guest'});
+    complete({ok:true,json:async()=>({active:true,visit_id:old,side:'guest',phase:'active'})});
+    assert.equal(await recovery,false);assert.equal(messages.some(msg=>msg.action==='restored'),false);
 });

@@ -1263,6 +1263,10 @@
         if (auxGen.crop === state.auxGen.crop && (room.peer_crop === 'upper' || room.peer_crop === 'full')) state.peerCrop = room.peer_crop;
         if (auxGen.away !== state.auxGen.away) setAway(live.away);
         else if (snap.side === 'guest' && ACTIVE_PHASES[snap.phase]) setAway(true);
+        if (snap.side === 'guest' && ACTIVE_PHASES[state.phase] && state.away) {
+          // Restore ownership without replaying a departure animation.
+          notifyReviewedVisit('restored', snap.visit_id, 'guest', true);
+        }
         if (auxGen.hidden !== state.auxGen.hidden) setPeerHidden(live.hidden);
         else if (snap.peer && snap.peer.hidden) setPeerHidden(true);
         syncCapture();

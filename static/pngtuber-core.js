@@ -1004,8 +1004,17 @@
                 this.layeredStateIndex = this.hasReviewedActions() ? this.reviewedChooseIdle() : 0;
                 this.initializeTrackedPlayback(metadata, config.layered_metadata);
                 if (this.hasReviewedActions()) {
-                    try { await this.prepareReviewedEntry(this.layeredStateIndex); }
-                    catch (error) { console.warn('[PNGTuber] reviewed idle entry deferred; continuing layered playback', error); }
+                    const initialIndex = this.layeredStateIndex;
+                    const initialRequest = this._reviewedRequest;
+                    try { await this.prepareReviewedEntry(initialIndex); }
+                    catch (error) {
+                        if (isCurrentLoad() && this.layeredMetadata === metadata && this._reviewedRequest === initialRequest) {
+                            this._reviewedIdleEntryFailures ??= new Map();
+                            this._reviewedIdleEntryFailures.set(initialIndex, { metadata, expires: performance.now() + 30000 });
+                            this._reviewedRecovery = { at: performance.now() + (this.reviewedIdleChoices(true).length ? 250 : 5000) };
+                        }
+                        console.warn('[PNGTuber] reviewed idle entry deferred; continuing layered playback', error);
+                    }
                     if (!isCurrentLoad()) return false;
                 }
                 this.initializeLayeredToggleState(layers);
@@ -1566,7 +1575,7 @@
             }
             const current = this._trackedPlayback;
             if (!options.force && index === this.layeredStateIndex && current?.data === data) {
-                if ((options.emotion || options.returnToDefaultAfterMs !== undefined)
+                if ((options.reviewedIdleEntry || options.emotion || options.returnToDefaultAfterMs !== undefined)
                     && (this._reviewedPreparing || this._reviewedRetry || this._reviewedRecovery || this._reviewedQueued)) this.cancelReviewedRequests();
                 this.applyReviewedPlaybackOptions(options);
                 return true;
@@ -1858,7 +1867,12 @@
             if (idle && !this._dragState && !this._touchZoomState) {
                 const list = this.layeredMetadata.reviewed_actions.groups.idle || [];
                 // Warm the other variant only after the active loop is fully resident.
-                if (playback.cache.size === playback.data.frames.length) {
+                const data = playback.data, loop = data.loop || {};
+                const end = Math.max(1, Math.min(data.duration_ms, Number(loop.end_ms) || data.duration_ms));
+                const start = Math.max(0, Math.min(end - 1, Number(loop.start_ms) || 0));
+                // Include the head samples used by crossfade, excluding trimmed tails.
+                if (data.frames.every((frame, index) => frame.time_ms >= end
+                    || frame.time_ms + frame.duration_ms <= start || playback.cache.has(index))) {
                     for (const index of list) if (index !== this.layeredStateIndex) this.warmReviewedIdle(index);
                 }
                 // The selected idle loops until an actual action/model change.
@@ -1880,6 +1894,10 @@
         handleReviewedVisit(msg) {
             if (!this.hasReviewedActions() || !msg?.visit_id || msg.side !== 'guest') return false;
             if (msg.recovery) {
+                if (msg.action === 'restored') {
+                    this._reviewedVisit = msg.visit_id;
+                    this._reviewedVisitPermit = null;
+                }
                 if (msg.action === 'ended' && this._reviewedVisit === msg.visit_id) {
                     this._reviewedVisit = null; this._reviewedVisitPermit = null;
                 }
