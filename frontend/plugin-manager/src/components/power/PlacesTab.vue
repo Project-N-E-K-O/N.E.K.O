@@ -558,7 +558,12 @@
           <div class="policy-row">
             <div class="policy-info">
               <div class="policy-title-line">
-                <el-switch v-model="policyDraft.auto_clean_work_dirs" :disabled="savingPolicy" data-testid="policy-workdirs-enabled" />
+                <el-switch
+                  v-model="policyDraft.auto_clean_work_dirs"
+                  :disabled="savingPolicy"
+                  :aria-label="t('power.runtime.storage.policy.workDirsTitle')"
+                  data-testid="policy-workdirs-enabled"
+                />
                 <strong>{{ t('power.runtime.storage.policy.workDirsTitle') }}</strong>
               </div>
               <p class="muted">{{ t('power.runtime.storage.policy.workDirsHint') }}</p>
@@ -573,6 +578,7 @@
                 :precision="0"
                 size="small"
                 :disabled="!policyDraft.auto_clean_work_dirs || savingPolicy"
+                :aria-label="`${t('power.runtime.storage.policy.workDirsTitle')} (${t('power.runtime.storage.policy.days')})`"
                 data-testid="policy-workdirs-days"
               />
               <span class="muted">{{ t('power.runtime.storage.policy.days') }}</span>
@@ -582,7 +588,12 @@
           <div class="policy-row">
             <div class="policy-info">
               <div class="policy-title-line">
-                <el-switch v-model="policyDraft.auto_clean_worktrees" :disabled="savingPolicy" data-testid="policy-worktrees-enabled" />
+                <el-switch
+                  v-model="policyDraft.auto_clean_worktrees"
+                  :disabled="savingPolicy"
+                  :aria-label="t('power.runtime.storage.policy.worktreesTitle')"
+                  data-testid="policy-worktrees-enabled"
+                />
                 <strong>{{ t('power.runtime.storage.policy.worktreesTitle') }}</strong>
               </div>
               <p class="muted">{{ t('power.runtime.storage.policy.worktreesHint') }}</p>
@@ -597,6 +608,7 @@
                 :precision="0"
                 size="small"
                 :disabled="!policyDraft.auto_clean_worktrees || savingPolicy"
+                :aria-label="`${t('power.runtime.storage.policy.worktreesTitle')} (${t('power.runtime.storage.policy.days')})`"
                 data-testid="policy-worktrees-days"
               />
               <span class="muted">{{ t('power.runtime.storage.policy.days') }}</span>
@@ -774,7 +786,7 @@ const policyDraft = reactive<StorageSettingsValues>({
 
 function formatMaybeBound(bytes: number | null | undefined, whole: boolean): string {
   const size = formatBytes(bytes)
-  if (!size) return '0 B'
+  if (!size) return '—'
   return whole ? size : t('power.runtime.places.atLeast', { size })
 }
 
@@ -1031,6 +1043,9 @@ const policyIsDefault = computed(() => {
   )
 })
 
+let storageLoadSeq = 0
+let hasLoadedPolicy = false
+
 async function savePolicy() {
   const current = overview.value?.settings
   if (!current || savingPolicy.value || !policyDirty.value) return
@@ -1044,12 +1059,15 @@ async function savePolicy() {
   error.value = ''
   try {
     const res = await setStorageSettings(changes)
+    // Invalidate any earlier in-flight load before applying saved settings.
+    storageLoadSeq += 1
     if (overview.value && res?.settings) {
       overview.value = { ...overview.value, settings: res.settings }
       syncPolicyDraft(res.settings)
+      hasLoadedPolicy = true
     }
     policyNote.value = t('power.runtime.storage.policy.saved')
-    await load(true)
+    await load({ preserveBanner: true, forceSyncPolicy: true })
   } catch (failure) {
     error.value = describeConsoleError(failure, t, te)
   } finally {
@@ -1068,15 +1086,28 @@ async function resetPolicy() {
 
 // -- Loading & fallback ------------------------------------------------------
 
-async function load(preserveBanner = false) {
+interface LoadOptions {
+  preserveBanner?: boolean
+  preserveError?: boolean
+  forceSyncPolicy?: boolean
+}
+
+async function load(options: boolean | LoadOptions = false) {
+  const opts: LoadOptions = typeof options === 'boolean' ? { preserveBanner: options } : options
+  const mySeq = ++storageLoadSeq
   loading.value = true
-  if (!preserveBanner) banner.value = null
+  if (!opts.preserveBanner) banner.value = null
   try {
     const data = await getStorage()
+    if (mySeq !== storageLoadSeq) return
     if (data && Array.isArray(data.places)) {
+      const shouldSyncPolicy = opts.forceSyncPolicy || !hasLoadedPolicy || !policyDirty.value
       overview.value = data
       places.value = data.places
-      syncPolicyDraft(data.settings)
+      if (shouldSyncPolicy) {
+        syncPolicyDraft(data.settings)
+        hasLoadedPolicy = true
+      }
       const validWt = new Set(data.worktrees.filter(w => w.can_clean).map(w => w.id))
       selectedWorktrees.value = selectedWorktrees.value.filter(id => validWt.has(id))
       const validWd = new Set(data.work_dirs.filter(d => d.can_clean).map(d => d.id))
@@ -1085,29 +1116,34 @@ async function load(preserveBanner = false) {
         hasPickedInitialTab.value = true
         if (data.worktrees.length === 0 && data.work_dirs.length > 0) section.value = 'work_dirs'
       }
-      error.value = ''
+      if (!opts.preserveError) error.value = ''
       return
     }
     // Older backend or partial mock: fall back to /console/places.
-    places.value = (await getPlaces()).places
+    const fallback = (await getPlaces()).places
+    if (mySeq !== storageLoadSeq) return
+    places.value = fallback
     overview.value = null
-    error.value = ''
+    if (!opts.preserveError) error.value = ''
   } catch (failure) {
+    if (mySeq !== storageLoadSeq) return
     const status = (failure as { response?: { status?: number } })?.response?.status
     if (status === 404) {
       try {
-        places.value = (await getPlaces()).places
+        const fallback = (await getPlaces()).places
+        if (mySeq !== storageLoadSeq) return
+        places.value = fallback
         overview.value = null
-        error.value = ''
+        if (!opts.preserveError) error.value = ''
         return
       } catch (fallbackErr) {
-        error.value = describeConsoleError(fallbackErr, t, te)
+        if (mySeq === storageLoadSeq && !opts.preserveError) error.value = describeConsoleError(fallbackErr, t, te)
         return
       }
     }
-    error.value = describeConsoleError(failure, t, te)
+    if (!opts.preserveError) error.value = describeConsoleError(failure, t, te)
   } finally {
-    loading.value = false
+    if (mySeq === storageLoadSeq) loading.value = false
   }
 }
 
@@ -1157,7 +1193,8 @@ function describeLanding(result: Landing, state: string): { type: 'success' | 'w
     if (result.resolving) return { type: 'warning', text: t('power.trees.resolving') }
     return { type: 'warning', text: state === 'kept' ? t('power.trees.keptClashes') : t('power.trees.stillClashes') }
   }
-  const kept = result.kept_copies?.length ? ` ${t('power.trees.keptCopies', { paths: result.kept_copies.join(', ') })}` : ''
+  const keptPaths = Array.isArray(result.kept_copies) ? result.kept_copies.join(', ') : (result.kept_copies ?? '')
+  const kept = keptPaths ? ` ${t('power.trees.keptCopies', { paths: keptPaths })}` : ''
   return { type: 'warning', text: `${t('power.trees.failed', { detail: result.detail || '—' })}${kept}` }
 }
 
@@ -1315,26 +1352,11 @@ async function runConfirmedClean() {
   let deferredCount = 0
   let failedCount = 0
   let freedBytes = 0
-  try {
-    if (job.wtIds.length) {
-      const res = await cleanWorktrees(job.wtIds)
-      cleanedCount += res.cleaned.length
-      deferredCount += res.deferred.length
-      failedCount += res.failed.length
-      freedBytes += res.freed_bytes
-    }
-    if (job.wdIds.length) {
-      const res = await cleanWorkDirs(job.wdIds)
-      cleanedCount += res.cleaned.length
-      failedCount += res.failed.length
-      freedBytes += res.freed_bytes
-    }
-    if (job.transcriptMode) {
-      const res = await cleanTranscripts(job.transcriptMode)
-      cleanedCount += res.cleaned
-      failedCount += res.skipped
-      freedBytes += res.freed_bytes
-    }
+  let wtDone = false
+  let wdDone = false
+  let trDone = false
+
+  const buildSummaryText = () => {
     const parts: string[] = [
       t('power.runtime.storage.result.cleaned', { count: cleanedCount, size: formatBytes(freedBytes) }),
     ]
@@ -1344,15 +1366,73 @@ async function runConfirmedClean() {
     if (failedCount > 0) {
       parts.push(t('power.runtime.storage.result.failed', { count: failedCount }))
     }
+    return parts.join(' ')
+  }
+
+  try {
+    if (job.wtIds.length) {
+      const res = await cleanWorktrees(job.wtIds)
+      wtDone = true
+      cleanedCount += res.cleaned.length
+      deferredCount += res.deferred.length
+      failedCount += res.failed.length
+      freedBytes += res.freed_bytes
+    }
+    if (job.wdIds.length) {
+      const res = await cleanWorkDirs(job.wdIds)
+      wdDone = true
+      cleanedCount += res.cleaned.length
+      failedCount += res.failed.length
+      freedBytes += res.freed_bytes
+    }
+    if (job.transcriptMode) {
+      const res = await cleanTranscripts(job.transcriptMode)
+      trDone = true
+      cleanedCount += res.cleaned
+      failedCount += res.skipped
+      freedBytes += res.freed_bytes
+    }
     banner.value = {
       type: deferredCount > 0 || failedCount > 0 ? 'warning' : 'success',
-      text: parts.join(' '),
+      text: buildSummaryText(),
     }
     confirmOpen.value = false
     pending.value = null
     await load(true)
   } catch (failure) {
     error.value = describeConsoleError(failure, t, te)
+    if (wtDone || wdDone || trDone) {
+      banner.value = {
+        type: 'warning',
+        text: buildSummaryText(),
+      }
+      const remainingWt = wtDone ? [] : job.wtIds
+      const remainingWd = wdDone ? [] : job.wdIds
+      const remainingTr = trDone ? null : job.transcriptMode
+      const remainingItems = job.items.filter(entry => {
+        if (wtDone && entry.id.startsWith('wt:')) return false
+        if (wdDone && entry.id.startsWith('wd:')) return false
+        if (trDone && entry.id === 'tr:expired') return false
+        return true
+      })
+      if (remainingWt.length || remainingWd.length || remainingTr) {
+        pending.value = {
+          ...job,
+          items: remainingItems,
+          wtIds: remainingWt,
+          wdIds: remainingWd,
+          transcriptMode: remainingTr,
+        }
+      } else {
+        confirmOpen.value = false
+        pending.value = null
+      }
+      try {
+        await load({ preserveBanner: true, preserveError: true })
+      } catch {
+        // Keep the primary cleanup error visible if the refresh also fails.
+      }
+    }
   } finally {
     cleaning.value = false
   }

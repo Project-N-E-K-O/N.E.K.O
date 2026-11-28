@@ -102,10 +102,26 @@ async def test_storage_settings_store_defaults_persistence_and_validation(tmp_pa
     with pytest.raises(ValueError, match="out_of_range"):
         await store.put(worktree_kept_days=999)
 
-    # Corrupt json gracefully falls back to defaults.
+    # Corrupt json fails closed (auto-clean disabled), does NOT cache defaults, and refuses overwrites.
     path.write_text("{not valid json", encoding="utf-8")
-    fallback = await StorageSettingsStore(path).get()
-    assert fallback["work_dir_kept_days"] == 30
+    corrupt_store = StorageSettingsStore(path)
+    fallback = await corrupt_store.get()
+    assert fallback["auto_clean_work_dirs"] is False
+    assert fallback["auto_clean_worktrees"] is False
+    with pytest.raises(OSError):
+        await corrupt_store.put(work_dir_kept_days=60)
+
+    # Once the file recovers, the same store instance re-reads it instead of staying stuck on fallback.
+    path.write_text(
+        '{"version": 1, "auto_clean_work_dirs": false, "work_dir_kept_days": 45, '
+        '"auto_clean_worktrees": true, "worktree_kept_days": 7}',
+        encoding="utf-8",
+    )
+    recovered = await corrupt_store.get()
+    assert recovered["auto_clean_work_dirs"] is False
+    assert recovered["work_dir_kept_days"] == 45
+    assert recovered["auto_clean_worktrees"] is True
+    assert recovered["worktree_kept_days"] == 7
 
 
 def test_parse_work_dir_id_rejects_traversal_and_malformed_ids():
@@ -564,5 +580,376 @@ async def test_auto_cleanup_worktrees_expires_old_kept_and_respects_toggle_and_m
         assert ended_comm is not None and ended_comm.status == "cancelled"
         events = await host.ledger.events(comm_old.id)
         assert any(ev.type == "tree_expired" for ev in events)
+    finally:
+        await host.shutdown()
+
+
+async def test_session_with_own_workdir_recorded_is_not_blocked_by_own_hold(tmp_path: Path):
+    """Cleaning a session whose own ``session.workdir`` points to ``work/`` must not self-block."""
+    clock = Clock(1_800_000_000.0)
+    host = make_host(tmp_path)
+    host.storage._clock = clock
+    host.space_keeper._clock = clock
+    try:
+        sess = await host.ledger.create_session(name="recorded-wd", lanlan_name="Lan", project=DEFAULT_PROJECT)
+        work_dir = host.paths.work_dir(sess.id, DEFAULT_PROJECT)
+        work_dir.mkdir(parents=True)
+        (work_dir / "out.bin").write_bytes(b"a" * 128)
+        await host.ledger.update_session(sess.id, status="idle", workdir=str(work_dir))
+
+        res = await host.clean_work_dirs([format_work_dir_id("session", DEFAULT_PROJECT, sess.id)])
+        assert res["cleaned"] == [format_work_dir_id("session", DEFAULT_PROJECT, sess.id)]
+        assert res["failed"] == []
+        assert not work_dir.exists()
+    finally:
+        await host.shutdown()
+
+
+async def test_incomplete_scan_prevents_auto_deletion_and_false_empty_or_stale_flags(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from nekopower.host import storage as storage_mod
+
+    clock = Clock(1_800_000_000.0)
+    host = make_host(tmp_path)
+    host.storage._clock = clock
+    host.space_keeper._clock = clock
+    try:
+        old_ts = clock.now - 40 * DAY
+        sess = await host.ledger.create_session(name="huge", lanlan_name="Lan", project=DEFAULT_PROJECT)
+        await host.ledger.update_session(sess.id, status="idle")
+        await host.ledger.run(
+            lambda conn: conn.execute("UPDATE sessions SET last_active_at = ? WHERE id = ?", (old_ts, sess.id))
+        )
+        work_dir = host.paths.work_dir(sess.id, DEFAULT_PROJECT)
+        work_dir.mkdir(parents=True)
+        (work_dir / "nested.txt").write_text("important", encoding="utf-8")
+        _set_tree_mtime(work_dir, old_ts)
+
+        repo_dir = tmp_path / "missing-repo"
+        wt_dir = host.paths.worktree_dir("huge0001")
+        wt_dir.mkdir(parents=True)
+        (wt_dir / ".git").write_text(f"gitdir: {(repo_dir / '.git' / 'worktrees' / 'huge0001').as_posix()}\n", encoding="utf-8")
+        (wt_dir / "wip.txt").write_text("wip", encoding="utf-8")
+        _set_tree_mtime(wt_dir, old_ts)
+        await host.ledger.add_tree(
+            id="huge0001",
+            session_id=sess.id,
+            commission_id=None,
+            lanlan_name="Lan",
+            project="proj",
+            project_dir=str(repo_dir),
+            repo_root=str(repo_dir),
+            path=str(wt_dir),
+            workdir=str(wt_dir),
+            state="kept",
+        )
+        await host.ledger.run(
+            lambda conn: conn.execute("UPDATE worktrees SET updated_at = ? WHERE id = ?", (old_ts, "huge0001"))
+        )
+
+        # Simulate timed-out scan returning whole=False with file_count=0 and old mtime.
+        def incomplete_measure(path: Path, deadline: float, *, skip_names: frozenset[str] = frozenset()) -> storage_mod.DirStats:
+            if path in (work_dir, wt_dir):
+                return storage_mod.DirStats(exists=True, bytes=0, whole=False, file_count=0, newest_mtime=old_ts)
+            return storage_mod.DirStats(exists=path.is_dir(), bytes=0, whole=True, file_count=0, newest_mtime=old_ts)
+
+        monkeypatch.setattr(storage_mod, "measure_dir", incomplete_measure)
+
+        view = await host.storage_overview()
+        wd_item = next(d for d in view["work_dirs"] if d["session_id"] == sess.id)
+        assert wd_item["empty"] is False
+        assert wd_item["stale"] is False
+        wt_item = next(t for t in view["worktrees"] if t["id"] == "huge0001")
+        assert wt_item["stale"] is False
+
+        # Two confirmed tidy rounds must NOT delete either directory while scans are incomplete.
+        await host.space_keeper.tidy()
+        clock.now += SPACE_UPKEEP_INTERVAL_SECONDS + 60.0
+        await host.space_keeper.tidy()
+        assert work_dir.is_dir()
+        assert wt_dir.is_dir()
+    finally:
+        await host.shutdown()
+
+
+async def test_auto_cleanup_spares_nested_project_workdir_and_recent_closed_fork(tmp_path: Path):
+    clock = Clock(1_800_000_000.0)
+    host = make_host(tmp_path)
+    host.storage._clock = clock
+    host.space_keeper._clock = clock
+    try:
+        await host.set_storage_settings(auto_clean_work_dirs=True, work_dir_kept_days=7)
+        old_ts = clock.now - 30 * DAY
+        recent_ts = clock.now - 2 * DAY
+
+        # 1. Active project whose workdir is a subdirectory inside an expired session's work/.
+        nested_s = await host.ledger.create_session(name="parent-s", lanlan_name="Lan", project="demo")
+        await host.ledger.update_session(nested_s.id, status="idle")
+        await host.ledger.run(
+            lambda conn: conn.execute("UPDATE sessions SET last_active_at = ? WHERE id = ?", (old_ts, nested_s.id))
+        )
+        parent_work = host.paths.work_dir(nested_s.id, "demo")
+        nested_app = parent_work / "subapp"
+        nested_app.mkdir(parents=True)
+        (nested_app / "main.py").write_text("print(1)", encoding="utf-8")
+        _set_tree_mtime(parent_work, old_ts)
+        await host.space.touch_project("demo", workdir=str(nested_app))
+
+        # 2. Old source session with a closed, uncleared fork active 2 days ago.
+        src = await host.ledger.create_session(name="old-src", lanlan_name="Lan", project=DEFAULT_PROJECT)
+        await host.ledger.update_session(src.id, status="closed")
+        await host.ledger.run(
+            lambda conn: conn.execute("UPDATE sessions SET last_active_at = ? WHERE id = ?", (old_ts, src.id))
+        )
+        src_work = host.paths.work_dir(src.id, DEFAULT_PROJECT)
+        src_work.mkdir(parents=True)
+        (src_work / "shared.txt").write_text("shared", encoding="utf-8")
+        _set_tree_mtime(src_work, old_ts)
+
+        fork = await host.ledger.create_session(
+            name="recent-fork", lanlan_name="Lan", project=DEFAULT_PROJECT, kind="fork", forked_from=src.id, workdir=str(src_work)
+        )
+        await host.ledger.update_session(fork.id, status="closed")
+        await host.ledger.run(
+            lambda conn: conn.execute("UPDATE sessions SET last_active_at = ? WHERE id = ?", (recent_ts, fork.id))
+        )
+
+        view = await host.storage_overview()
+        by_sid = {d["session_id"]: d for d in view["work_dirs"]}
+        assert by_sid[nested_s.id]["referenced_by_project"] is True
+        assert by_sid[nested_s.id]["stale"] is False
+        assert by_sid[src.id]["stale"] is False
+        assert by_sid[src.id]["last_active_at"] == pytest.approx(recent_ts)
+
+        # Two confirmed tidy rounds must spare both directories.
+        await host.space_keeper.tidy()
+        clock.now += SPACE_UPKEEP_INTERVAL_SECONDS + 60.0
+        await host.space_keeper.tidy()
+        assert nested_app.is_dir()
+        assert src_work.is_dir()
+    finally:
+        await host.shutdown()
+
+
+async def test_overview_prioritizes_cleanable_items_before_protected_ones(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr("config.nekopower_settings.STORAGE_MAX_ITEMS", 2)
+    host = make_host(tmp_path)
+    try:
+        # Two huge running (in-use) sessions and one small idle (cleanable) session.
+        for idx in range(2):
+            busy = await host.ledger.create_session(name=f"busy-{idx}", lanlan_name="Lan", project=DEFAULT_PROJECT)
+            await host.ledger.update_session(busy.id, status="running")
+            bw = host.paths.work_dir(busy.id, DEFAULT_PROJECT)
+            bw.mkdir(parents=True)
+            (bw / "big.bin").write_bytes(b"b" * 10_000)
+
+        idle = await host.ledger.create_session(name="small-idle", lanlan_name="Lan", project=DEFAULT_PROJECT)
+        await host.ledger.update_session(idle.id, status="idle")
+        iw = host.paths.work_dir(idle.id, DEFAULT_PROJECT)
+        iw.mkdir(parents=True)
+        (iw / "tiny.bin").write_bytes(b"t" * 10)
+
+        view = await host.storage_overview()
+        assert len(view["work_dirs"]) == 2
+        assert view["work_dirs_more"] == 1
+        assert view["work_dirs"][0]["session_id"] == idle.id
+        assert view["work_dirs"][0]["can_clean"] is True
+    finally:
+        await host.shutdown()
+
+
+def _make_dir_link(link_path: Path, target: Path) -> bool:
+    if sys.platform == "win32":
+        proc = subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(link_path), str(target)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return proc.returncode == 0
+    os.symlink(target, link_path)
+    return True
+
+
+async def test_symlinked_managed_root_is_rejected_and_missing_dir_reports_missing(tmp_path: Path):
+    """A symlink/junction at ``task_agents`` must be rejected, while a missing ``work/`` raises FileNotFoundError."""
+    import asyncio
+
+    host = make_host(tmp_path)
+    try:
+        # Missing work dir under a real task_agents root raises FileNotFoundError (404 place_missing).
+        (host.paths.root() / "task_agents").mkdir(parents=True, exist_ok=True)
+        with pytest.raises(FileNotFoundError, match="place_missing"):
+            await host.resolve_storage_open_path("work_dir", format_work_dir_id("session", DEFAULT_PROJECT, "gone-1"))
+
+        # Replace task_agents with a junction (Windows) or symlink (POSIX) to an outside directory.
+        ta_root = host.paths.root() / "task_agents"
+        ta_root.rmdir()
+        outside = tmp_path / "outside_ta"
+        victim = outside / "projects" / DEFAULT_PROJECT / "sessions" / "s1" / "work"
+        victim.mkdir(parents=True)
+        secret = victim / "keep.txt"
+        secret.write_text("must survive", encoding="utf-8")
+
+        assert await asyncio.to_thread(_make_dir_link, ta_root, outside)
+
+        wid = format_work_dir_id("session", DEFAULT_PROJECT, "s1")
+        with pytest.raises(ValueError, match="bad_work_dir"):
+            await host.resolve_storage_open_path("work_dir", wid)
+
+        res = await host.clean_work_dirs([wid])
+        assert res["cleaned"] == []
+        assert res["failed"] == [{"id": wid, "code": "unsafe_path"}]
+        assert secret.read_text(encoding="utf-8") == "must survive"
+    finally:
+        await host.shutdown()
+
+
+async def test_project_referenced_work_dir_and_unreadable_projects_fail_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Manual cleanup must protect project-referenced dirs and fail closed when ``list_projects`` fails."""
+    host = make_host(tmp_path)
+    try:
+        sess = await host.ledger.create_session(name="ref-s", lanlan_name="Lan", project="demo")
+        await host.ledger.update_session(sess.id, status="idle")
+        work_dir = host.paths.work_dir(sess.id, "demo")
+        work_dir.mkdir(parents=True)
+        (work_dir / "code.py").write_bytes(b"p" * 200)
+        await host.space.touch_project("demo", workdir=str(work_dir))
+
+        # Overview marks project-referenced session work_dir as not cleanable, and manual clean refuses it.
+        view = await host.storage_overview()
+        wid = format_work_dir_id("session", "demo", sess.id)
+        item = next(d for d in view["work_dirs"] if d["id"] == wid)
+        assert item["referenced_by_project"] is True
+        assert item["can_clean"] is False
+
+        refused = await host.clean_work_dirs([wid])
+        assert refused["cleaned"] == []
+        assert refused["failed"] == [{"id": wid, "code": "in_use"}]
+        assert work_dir.is_dir()
+
+        # When list_projects raises OSError, even an unreferenced idle work_dir fails closed.
+        other = await host.ledger.create_session(name="other-s", lanlan_name="Lan", project=DEFAULT_PROJECT)
+        await host.ledger.update_session(other.id, status="idle")
+        other_work = host.paths.work_dir(other.id, DEFAULT_PROJECT)
+        other_work.mkdir(parents=True)
+        (other_work / "tmp.txt").write_bytes(b"x" * 50)
+
+        async def broken_list_projects(*_args: Any, **_kwargs: Any) -> list[Any]:
+            raise OSError("disk temporarily busy")
+
+        monkeypatch.setattr(host.space, "list_projects", broken_list_projects)
+        other_id = format_work_dir_id("session", DEFAULT_PROJECT, other.id)
+        blocked = await host.clean_work_dirs([other_id])
+        assert blocked["cleaned"] == []
+        assert blocked["failed"] == [{"id": other_id, "code": "in_use"}]
+        assert other_work.is_dir()
+    finally:
+        await host.shutdown()
+
+
+async def test_retry_discarded_rejects_in_tree_of_and_overview_counts_extra_session_files(tmp_path: Path):
+    """``retry_discarded_tree`` rejects trees still in ``_tree_of``, and overview counts extra session files."""
+    from nekopower.host.paths import DSH_SESSION_NAME
+
+    host = make_host(tmp_path)
+    try:
+        sess = await host.ledger.create_session(name="dsh-s", lanlan_name="Lan", project=DEFAULT_PROJECT)
+        await host.ledger.update_session(sess.id, status="idle")
+        sdir = host.paths.session_dir(sess.id, DEFAULT_PROJECT)
+        sdir.mkdir(parents=True)
+        (sdir / DSH_SESSION_NAME).write_bytes(b"d" * 333)
+
+        view = await host.storage_overview()
+        cats = {c["key"]: c for c in view["categories"]}
+        ta_place = next(p for p in view["places"] if p["key"] == "task_agents")
+        assert ta_place["bytes"] == 333
+        assert cats["other"]["bytes"] >= 333
+
+        # Add a discarding worktree still referenced in _tree_of -> retry_discarded_tree must refuse it.
+        repo_dir = tmp_path / "gone-repo"
+        wt_dir = host.paths.worktree_dir("busy0001")
+        wt_dir.mkdir(parents=True)
+        (wt_dir / ".git").write_text(
+            f"gitdir: {(repo_dir / '.git' / 'worktrees' / 'busy0001').as_posix()}\n", encoding="utf-8"
+        )
+        await host.ledger.add_tree(
+            id="busy0001",
+            session_id=sess.id,
+            commission_id=None,
+            lanlan_name="Lan",
+            project="proj",
+            project_dir=str(repo_dir),
+            repo_root=str(repo_dir),
+            path=str(wt_dir),
+            workdir=str(wt_dir),
+            state="discarding",
+        )
+        host.task_agents._tree_of["comm-active"] = "busy0001"
+        try:
+            with pytest.raises(ValueError, match="at_work"):
+                await host.task_agents.retry_discarded_tree("busy0001")
+            assert await host.task_agents.retry_discarded_trees() == 0
+            assert wt_dir.is_dir()
+        finally:
+            host.task_agents._tree_of.pop("comm-active", None)
+    finally:
+        await host.shutdown()
+
+
+async def test_expired_session_cleanup_survives_estimation_error_and_partial_freed_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A single session estimation error must not abort ``clean_expired_sessions_now``, and partial outputs freed bytes are counted."""
+    clock = Clock(1_800_000_000.0)
+    host = make_host(tmp_path)
+    host.storage._clock = clock
+    host.space_keeper._clock = clock
+    try:
+        old_ts = clock.now - 120 * DAY
+        s1 = await host.ledger.create_session(name="good-old", lanlan_name="Lan", project=DEFAULT_PROJECT)
+        s2 = await host.ledger.create_session(name="err-old", lanlan_name="Lan", project=DEFAULT_PROJECT)
+        for s in (s1, s2):
+            await host.ledger.update_session(s.id, status="idle")
+            await host.ledger.run(
+                lambda conn, sid=s.id: conn.execute("UPDATE sessions SET last_active_at = ? WHERE id = ?", (old_ts, sid))
+            )
+            sdir = host.paths.session_dir(s.id, DEFAULT_PROJECT)
+            sdir.mkdir(parents=True)
+            (sdir / TRANSCRIPT_NAME).write_bytes(b"t" * 200)
+
+        real_dir_of = host.space_keeper._session_dir_of
+        calls = {"n": 0}
+
+        def flaky_dir_of(session: Any) -> Path:
+            if session.id == s2.id and calls["n"] == 0:
+                calls["n"] += 1
+                raise PermissionError("transient stat error")
+            return real_dir_of(session)
+
+        monkeypatch.setattr(host.space_keeper, "_session_dir_of", flaky_dir_of)
+        res = await host.clean_transcripts("expired")
+        assert res["cleaned"] == 2
+        assert res["freed_bytes"] == 200  # s1's bytes preserved even when s2 estimation failed
+
+        # Partial removal in clean_inactive_outputs_now still adds freed bytes.
+        s3 = await host.ledger.create_session(name="partial-out", lanlan_name="Lan", project=DEFAULT_PROJECT)
+        await host.ledger.update_session(s3.id, status="idle")
+        out_dir = host.paths.session_dir(s3.id, DEFAULT_PROJECT) / "outputs"
+        out_dir.mkdir(parents=True)
+        (out_dir / "big.txt").write_bytes(b"o" * 400)
+
+        from nekopower.host import storage as storage_mod
+
+        monkeypatch.setattr(storage_mod, "remove_dir_safely", lambda target, root: (False, 350))
+        out_res = await host.clean_transcripts("outputs")
+        assert out_res["cleaned"] == 0
+        assert out_res["skipped"] == 1
+        assert out_res["freed_bytes"] == 350
     finally:
         await host.shutdown()

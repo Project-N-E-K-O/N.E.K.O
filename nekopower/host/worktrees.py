@@ -808,6 +808,20 @@ class WorktreeManager:
                 worktree.repo_root, worktree.path, worktree.id, remove_directory=False, token=worktree.token
             )
 
+    async def remove_if_untouched(self, worktree: Worktree, is_untouched: Any) -> bool:
+        """Remove ``worktree`` under its repository lock only if ``is_untouched(path)`` still holds.
+
+        Returns True when removal ran and completed, or False when ``is_untouched``
+        reported recent activity or an incomplete check and left the worktree intact.
+        """
+        async with await self._lock(worktree.repo_root):
+            if not await asyncio.to_thread(is_untouched, worktree.path):
+                return False
+            await self._forget(
+                worktree.repo_root, worktree.path, worktree.id, remove_directory=False, token=worktree.token
+            )
+            return True
+
     async def reconcile(
         self, project_dir: Path | str, base_dir: Path | str, known: Iterable[str]
     ) -> ReconcileReport:

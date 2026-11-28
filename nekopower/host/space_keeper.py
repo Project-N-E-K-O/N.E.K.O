@@ -1925,8 +1925,11 @@ class SpaceKeeper:
                 session = await self._ledger.get_session(session_id)
                 est = 0
                 if session is not None:
-                    directory = Path(await asyncio.to_thread(self._session_dir_of, session))
-                    est = await asyncio.to_thread(self._record_bytes, directory, measure_dir)
+                    try:
+                        directory = Path(await asyncio.to_thread(self._session_dir_of, session))
+                        est = await asyncio.to_thread(self._record_bytes, directory, measure_dir)
+                    except (OSError, ValueError):
+                        est = 0
                 outcome = await self._clean_one(session_id, until)
                 if outcome == _REMOVED:
                     cleaned += 1
@@ -1947,6 +1950,7 @@ class SpaceKeeper:
                 if path.is_file() and not path.is_symlink():
                     total += int(path.stat().st_size)
             except OSError:
+                # Skip missing or unreadable files during best-effort size estimation.
                 pass
         outputs = directory / _OUTPUTS_NAME
         if outputs.is_dir() and not outputs.is_symlink():
@@ -1961,37 +1965,59 @@ class SpaceKeeper:
         if self._session_dir_of is None:
             return {"cleaned": 0, "freed_bytes": 0, "skipped": 0}
         cleaned = skipped = freed = 0
-        rows = await self._ledger.find_sessions(limit=10_000, commissions_each=0)
-        for row in rows:
-            if self._closed:
+        after_rowid = 0
+        page_size = 500
+        while not self._closed:
+            batch = await self._ledger.run(
+                lambda conn, cursor=after_rowid: [
+                    (int(row["rowid"]), str(row["id"]), str(row["status"]))
+                    for row in conn.execute(
+                        "SELECT rowid, id, status FROM sessions WHERE rowid > ? ORDER BY rowid ASC LIMIT ?",
+                        (cursor, page_size),
+                    ).fetchall()
+                ]
+            )
+            if not batch:
                 break
-            session = row.session
-            if session.status in ("running", "waiting", "compacting"):
-                continue
-            if self._hold_files is not None and not self._hold_files(session.id):
-                continue
-            try:
-                if await self._ledger.select(session_id=session.id, statuses=ACTIVE_STATUSES, limit=1):
+            after_rowid = batch[-1][0]
+            for _rowid, session_id, status in batch:
+                if self._closed:
+                    break
+                if status in ("running", "waiting", "compacting"):
                     continue
-                if any(copy.status != "cleared" for copy in await self._ledger.forks_of(session.id)):
-                    continue
-                directory = Path(await asyncio.to_thread(self._session_dir_of, session))
-                if directory.name != session.id or directory.parent.name != "sessions":
-                    continue
-                outputs = directory / _OUTPUTS_NAME
-                if not await asyncio.to_thread(lambda p=outputs: p.is_dir() and not p.is_symlink()):
+                if self._hold_files is not None and not self._hold_files(session_id):
                     continue
                 try:
-                    removed, item_freed = await to_thread_through_cancellation(remove_dir_safely, outputs, directory)
-                except ValueError:
-                    skipped += 1
-                    continue
-                if removed:
-                    cleaned += 1
+                    session = await self._ledger.get_session(session_id)
+                    if session is None or session.status in ("running", "waiting", "compacting"):
+                        continue
+                    if await self._ledger.select(session_id=session.id, statuses=ACTIVE_STATUSES, limit=1):
+                        continue
+                    if any(copy.status != "cleared" for copy in await self._ledger.forks_of(session.id)):
+                        continue
+                    try:
+                        directory = Path(await asyncio.to_thread(self._session_dir_of, session))
+                    except (OSError, ValueError):
+                        skipped += 1
+                        continue
+                    if directory.name != session.id or directory.parent.name != "sessions":
+                        continue
+                    outputs = directory / _OUTPUTS_NAME
+                    if not await asyncio.to_thread(lambda p=outputs: p.is_dir() and not p.is_symlink()):
+                        continue
+                    try:
+                        removed, item_freed = await to_thread_through_cancellation(remove_dir_safely, outputs, directory)
+                    except ValueError:
+                        skipped += 1
+                        continue
                     freed += item_freed
-                else:
-                    skipped += 1
-            finally:
-                if self._release_files is not None:
-                    self._release_files(session.id)
+                    if removed:
+                        cleaned += 1
+                    else:
+                        skipped += 1
+                finally:
+                    if self._release_files is not None:
+                        self._release_files(session_id)
+            if len(batch) < page_size:
+                break
         return {"cleaned": cleaned, "freed_bytes": freed, "skipped": skipped}

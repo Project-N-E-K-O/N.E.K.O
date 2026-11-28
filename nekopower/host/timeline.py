@@ -469,7 +469,13 @@ def _event_entry(
         detail = {"tree": _text(payload.get("tree")), "path": text}
     elif kind == "tree_expired":
         text = _text(payload.get("path"))
-        detail = {"tree": _text(payload.get("tree")), "path": text, "state": _text(payload.get("state"))}
+        detail = {
+            "tree": _text(payload.get("tree")),
+            "path": text,
+            "state": _text(payload.get("state")),
+            "removed": payload.get("removed") is not False,
+            "outcome": _text(payload.get("outcome")) or "removed",
+        }
     elif kind == "team_formed":
         members = [item for item in payload.get("members") or [] if isinstance(item, dict)]
         detail = {

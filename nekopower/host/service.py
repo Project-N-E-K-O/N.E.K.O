@@ -1873,10 +1873,10 @@ class NekoPowerHost:
         root = self.paths.root()
         return [
             {"key": "task_agents", "path": str(root / "task_agents")},
-            {"key": "worktrees", "path": str(self.paths.worktrees_dir())},
             {"key": "space", "path": str(self.paths.space().root)},
             {"key": "dsh", "path": str(self.paths.dsh())},
             {"key": "browser_profile", "path": str(root / "browser_profile")},
+            {"key": "worktrees", "path": str(self.paths.worktrees_dir())},
         ]
 
     # -- disk space management --------------------------------------------

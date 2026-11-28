@@ -320,7 +320,7 @@ export interface Landing {
   /** Whether what clashed went back to its familiar to merge. */
   resolving: boolean
   detail: string
-  kept_copies?: string[]
+  kept_copies?: string | string[]
   /** Changed outside the project's directory, elsewhere in its repository: landed with the rest. */
   outside?: string[]
   /** Not carried over (too large, a repository of their own): still in the worktree, which stays. */

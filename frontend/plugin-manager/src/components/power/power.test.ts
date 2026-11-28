@@ -414,7 +414,7 @@ describe('the folders tab', () => {
     api.openStorageItem.mockResolvedValue({ success: true })
     api.cleanWorktrees.mockResolvedValue({ cleaned: ['wt-stale'], deferred: [], freed_bytes: 250 * 1024 * 1024, failed: [] })
 
-    const page = await mount(PlacesTab)
+    await mount(PlacesTab)
     expect(byTest('kpi-total')?.textContent).toContain('520 MB')
     expect(byTest('kpi-reclaimable')?.textContent).toContain('420 MB')
     expect(byTest('kpi-disk')?.textContent).toContain('300 GB')
@@ -449,10 +449,12 @@ describe('the folders tab', () => {
 
   it('cleans transcripts and saves updated automatic cleanup policy', async () => {
     const sample = storageSample()
+    const updatedSettings = { ...sample.settings, auto_clean_work_dirs: false }
     api.getStorage.mockResolvedValue(sample)
     api.cleanTranscripts.mockResolvedValue({ cleaned: 1, freed_bytes: 10 * 1024 * 1024, skipped: 0 })
-    api.setStorageSettings.mockResolvedValue({
-      settings: { ...sample.settings, auto_clean_work_dirs: false },
+    api.setStorageSettings.mockImplementation(async () => {
+      api.getStorage.mockResolvedValue(storageSample({ settings: updatedSettings }))
+      return { settings: updatedSettings }
     })
 
     await mount(PlacesTab)
@@ -463,11 +465,15 @@ describe('the folders tab', () => {
 
     // Toggle auto_clean_work_dirs off and save policy.
     expect((byTest('policy-save') as HTMLButtonElement).disabled).toBe(true)
-    await click(byTest('policy-workdirs-enabled')?.querySelector('input'))
+    const toggle = byTest('policy-workdirs-enabled')?.querySelector('input') as HTMLInputElement
+    await click(toggle)
     expect((byTest('policy-save') as HTMLButtonElement).disabled).toBe(false)
     await click(byTest('policy-save'))
     expect(api.setStorageSettings).toHaveBeenCalledWith({ auto_clean_work_dirs: false })
     expect(byTest('policy-note')?.textContent).toContain(words.runtime.storage.policy.saved)
+    // After refresh with persisted settings, switch stays off and save button returns to disabled.
+    expect(toggle.checked).toBe(false)
+    expect((byTest('policy-save') as HTMLButtonElement).disabled).toBe(true)
   })
 
   it('supports one-click cleaning of all stale items across worktrees, work dirs, and expired transcripts', async () => {
@@ -483,6 +489,61 @@ describe('the folders tab', () => {
     expect(api.cleanWorkDirs).toHaveBeenCalledWith(['session:_daily/s-old'])
     expect(api.cleanTranscripts).toHaveBeenCalledWith('expired')
     expect(byTest('storage-banner')?.textContent).toContain('410 MB')
+  })
+
+  it('preserves completed steps on partial multi-step failure, refreshes overview, and retries only remaining steps', async () => {
+    api.getStorage.mockResolvedValue(storageSample())
+    api.cleanWorktrees.mockResolvedValueOnce({ cleaned: ['wt-stale'], deferred: [], freed_bytes: 250 * 1024 * 1024, failed: [] })
+    api.cleanWorkDirs
+      .mockRejectedValueOnce(refusal('agent_unreachable'))
+      .mockResolvedValueOnce({ cleaned: ['session:_daily/s-old'], freed_bytes: 120 * 1024 * 1024, failed: [] })
+    api.cleanTranscripts.mockResolvedValueOnce({ cleaned: 2, freed_bytes: 40 * 1024 * 1024, skipped: 0 })
+
+    await mount(PlacesTab)
+    await click(byTest('clean-all-stale'))
+    await click(byTest('storage-confirm-submit'))
+
+    // First attempt cleaned worktrees, failed on work dirs: error + partial progress shown and overview refreshed.
+    expect(api.cleanWorktrees).toHaveBeenCalledTimes(1)
+    expect(api.cleanWorkDirs).toHaveBeenCalledTimes(1)
+    expect(api.cleanTranscripts).toHaveBeenCalledTimes(0)
+    expect(byTest('storage-error')?.textContent).toContain(words.errors.agent_unreachable)
+    expect(byTest('storage-banner')?.textContent).toContain('250 MB')
+    expect(api.getStorage).toHaveBeenCalledTimes(2)
+
+    // Retrying from the open confirmation dialog only submits the remaining work dirs and transcripts.
+    await click(byTest('storage-confirm-submit'))
+    expect(api.cleanWorktrees).toHaveBeenCalledTimes(1)
+    expect(api.cleanWorkDirs).toHaveBeenCalledTimes(2)
+    expect(api.cleanTranscripts).toHaveBeenCalledTimes(1)
+    expect(byTest('storage-banner')?.textContent).toContain('160 MB')
+  })
+
+  it('keeps unsaved policy edits across refresh and renders string kept_copies on failed merge', async () => {
+    api.getStorage.mockResolvedValue(storageSample())
+    api.cleanTranscripts.mockResolvedValue({ cleaned: 1, freed_bytes: 10 * 1024 * 1024, skipped: 0 })
+    api.landWorktree.mockResolvedValueOnce({
+      status: 'failed', files: [], more: 0, conflicts: [], resolving: false,
+      detail: 'write failed', kept_copies: 'C:/kept/backup',
+    })
+
+    await mount(PlacesTab)
+    const toggle = byTest('policy-workdirs-enabled')?.querySelector('input') as HTMLInputElement
+    await click(toggle)
+    expect(toggle.checked).toBe(false)
+    expect((byTest('policy-save') as HTMLButtonElement).disabled).toBe(false)
+
+    // Triggering a cleanup refresh must not overwrite unsaved policy draft.
+    await click(byTest('storage-tab-transcripts'))
+    await click(byTest('clean-output-caches'))
+    await click(byTest('storage-confirm-submit'))
+    expect(toggle.checked).toBe(false)
+    expect((byTest('policy-save') as HTMLButtonElement).disabled).toBe(false)
+
+    // Merging a worktree whose backend returns kept_copies as a string renders backup path without throwing.
+    await click(byTest('storage-tab-worktrees'))
+    await click(byTest('worktree-land-wt-stale'))
+    expect(byTest('storage-banner')?.textContent).toContain('C:/kept/backup')
   })
 })
 

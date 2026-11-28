@@ -380,7 +380,7 @@ async def test_the_places_are_listed_with_what_they_hold_and_only_they_are_opene
     (space / "AGENTS.md").write_text("123", encoding="utf-8")
 
     places = {place["key"]: place for place in (await client.get("/console/places", headers=HEADERS)).json()["places"]}
-    assert list(places) == ["task_agents", "worktrees", "space", "dsh", "browser_profile"]
+    assert list(places) == ["task_agents", "space", "dsh", "browser_profile", "worktrees"]
     assert places["space"] == {"key": "space", "path": str(space), "exists": True, "bytes": 8, "bytes_whole": True}
     assert places["dsh"]["exists"] is False and places["dsh"]["bytes"] is None
 

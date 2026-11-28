@@ -57,7 +57,6 @@ from typing import Any
 
 from nekopower.host.ledger import ACTIVE_STATUSES, TREE_STATES_LEFT
 from nekopower.host.paths import (
-    DEFAULT_PROJECT,
     SYSTEM_SNAPSHOT_NAME,
     TRANSCRIPT_NAME,
     HostPaths,
@@ -108,24 +107,72 @@ def _is_reparse_link(path: Path, st: os.stat_result | None = None) -> bool:
     return False
 
 
-def _is_link_or_escaped(target: Path, allowed_root: Path) -> bool:
-    """Return True when ``target`` is a link or lies outside ``allowed_root``."""
-    if _is_reparse_link(target):
-        return True
+def _classify_path_safety(target: Path, allowed_root: Path) -> str:
+    """Classify ``target`` relative to ``allowed_root`` without following links.
+
+    Returns:
+    * ``"ok"`` when ``target`` exists, lies strictly inside ``allowed_root``,
+      and neither ``allowed_root`` nor any component down to ``target`` is a
+      symlink or Windows junction/mount point.
+    * ``"missing"`` when ``target`` (or an intermediate directory) does not
+      exist and every existing prefix from ``allowed_root`` downward is a
+      regular directory (not a link).
+    * ``"unsafe"`` when ``target`` escapes ``allowed_root``, equals
+      ``allowed_root``, traverses a link/junction, or cannot be inspected.
+    """
+    abs_root = os.path.abspath(str(allowed_root))
+    abs_target = os.path.abspath(str(target))
+    norm_root = os.path.normcase(abs_root)
+    norm_target = os.path.normcase(abs_target)
+    prefix = norm_root if norm_root.endswith(os.sep) else norm_root + os.sep
+    if norm_target == norm_root or not norm_target.startswith(prefix):
+        return "unsafe"
+    rel_str = abs_target[len(prefix) :]
+    rel_parts = Path(rel_str).parts
+    if not rel_parts or any(part in ("", ".", "..") for part in rel_parts):
+        return "unsafe"
+
+    cursor = Path(abs_root)
     try:
-        real_root = os.path.normcase(os.path.realpath(allowed_root))
-        real_parent = os.path.normcase(os.path.realpath(target.parent))
-        real_target = os.path.normcase(os.path.realpath(target))
+        root_st = os.lstat(_fs(cursor))
+    except FileNotFoundError:
+        return "missing"
     except OSError:
-        return True
+        return "unsafe"
+    if _is_reparse_link(cursor, root_st) or not stat.S_ISDIR(root_st.st_mode):
+        return "unsafe"
+
+    for idx, part in enumerate(rel_parts):
+        cursor = cursor / part
+        try:
+            st = os.lstat(_fs(cursor))
+        except FileNotFoundError:
+            return "missing"
+        except OSError:
+            return "unsafe"
+        if _is_reparse_link(cursor, st):
+            return "unsafe"
+        if idx < len(rel_parts) - 1 and not stat.S_ISDIR(st.st_mode):
+            return "unsafe"
+
+    try:
+        real_root = os.path.normcase(os.path.realpath(abs_root))
+        real_parent = os.path.normcase(os.path.realpath(os.path.dirname(abs_target)))
+        real_target = os.path.normcase(os.path.realpath(abs_target))
+    except OSError:
+        return "unsafe"
     if real_target == real_root:
-        return True
-    # The parent must resolve within allowed_root, and target itself must be
-    # directly inside real_parent (not redirected via a link).
-    if real_parent != real_root and not real_parent.startswith(real_root + os.sep):
-        return True
-    expected = os.path.normcase(os.path.join(real_parent, target.name))
-    return real_target != expected
+        return "unsafe"
+    real_prefix = real_root if real_root.endswith(os.sep) else real_root + os.sep
+    if real_parent != real_root and not real_parent.startswith(real_prefix):
+        return "unsafe"
+    expected = os.path.normcase(os.path.join(real_parent, os.path.basename(abs_target)))
+    return "ok" if real_target == expected else "unsafe"
+
+
+def _is_link_or_escaped(target: Path, allowed_root: Path) -> bool:
+    """Return True when ``target`` is missing, a link, traverses a link, or lies outside ``allowed_root``."""
+    return _classify_path_safety(target, allowed_root) != "ok"
 
 
 def _same_path(first: str | Path | None, second: str | Path | None) -> bool:
@@ -204,11 +251,20 @@ def measure_dir(path: Path, deadline: float, *, skip_names: frozenset[str] = fro
     return DirStats(exists=True, bytes=total, whole=whole, file_count=files, newest_mtime=newest)
 
 
-def newest_mtime_of(path: Path, budget_seconds: float = 0.25, *, skip_git: bool = False) -> float | None:
-    """Blocking: return the newest mtime inside ``path`` (bounded), or None if missing."""
+def newest_mtime_of(
+    path: Path, budget_seconds: float = 0.25, *, skip_git: bool = False
+) -> tuple[float | None, bool]:
+    """Blocking: return ``(newest_mtime, scan_complete)`` for ``path`` within ``budget_seconds``.
+
+    ``scan_complete`` is False whenever the scan timed out or hit unreadable
+    entries; callers performing automatic cleanup must refuse to delete when
+    ``scan_complete`` is False so recently edited nested files are never lost.
+    """
     skip = frozenset({".git"}) if skip_git else frozenset()
     stats = measure_dir(path, time.monotonic() + budget_seconds, skip_names=skip)
-    return stats.newest_mtime if stats.exists else None
+    if not stats.exists:
+        return None, stats.whole
+    return stats.newest_mtime, stats.whole
 
 
 def _clear_readonly(fs_path: str) -> None:
@@ -224,9 +280,10 @@ def remove_dir_safely(target: Path, allowed_root: Path) -> tuple[bool, int]:
     held open by another process on Windows). Raises ``ValueError`` when
     ``target`` is a link or lies outside ``allowed_root``.
     """
-    if not os.path.lexists(_fs(target)):
+    safety = _classify_path_safety(target, allowed_root)
+    if safety == "missing":
         return True, 0
-    if _is_link_or_escaped(target, allowed_root):
+    if safety != "ok":
         raise ValueError("unsafe_path")
 
     freed = 0
@@ -262,6 +319,7 @@ def remove_dir_safely(target: Path, allowed_root: Path) -> tuple[bool, int]:
                     else:
                         os.unlink(fs_child)
                 except FileNotFoundError:
+                    # Link already disappeared concurrently.
                     pass
                 except OSError:
                     _clear_readonly(fs_child)
@@ -281,6 +339,7 @@ def remove_dir_safely(target: Path, allowed_root: Path) -> tuple[bool, int]:
                     os.unlink(fs_child)
                     freed += size
                 except FileNotFoundError:
+                    # File already removed concurrently.
                     pass
                 except OSError:
                     _clear_readonly(fs_child)
@@ -288,18 +347,21 @@ def remove_dir_safely(target: Path, allowed_root: Path) -> tuple[bool, int]:
                         os.unlink(fs_child)
                         freed += size
                     except FileNotFoundError:
+                        # File disappeared while clearing read-only bit.
                         pass
                     except OSError:
                         failed = True
         try:
             os.rmdir(fs_dir)
         except FileNotFoundError:
+            # Directory already removed concurrently.
             pass
         except OSError:
             _clear_readonly(fs_dir)
             try:
                 os.rmdir(fs_dir)
             except FileNotFoundError:
+                # Directory disappeared while clearing read-only bit.
                 pass
             except OSError:
                 failed = True
@@ -382,6 +444,14 @@ def _note_write_failed(writing: "asyncio.Future[dict[str, Any]]") -> None:
         logger.warning("writing the storage settings failed: %s", type(writing.exception()).__name__)
 
 
+def _safe_unreadable_settings() -> dict[str, Any]:
+    """Fail-closed settings used when ``storage.json`` exists but cannot be read."""
+    values = _default_settings()
+    values["auto_clean_work_dirs"] = False
+    values["auto_clean_worktrees"] = False
+    return values
+
+
 class StorageSettingsStore:
     """User-configured automatic cleanup settings kept in ``storage.json``."""
 
@@ -394,25 +464,31 @@ class StorageSettingsStore:
         source = self._path_source
         return Path(source() if callable(source) else source)
 
-    def _read(self) -> dict[str, Any]:
+    def _read_disk(self) -> tuple[dict[str, Any], bool]:
+        """Blocking: return ``(values, readable)``; ``readable`` is False on read/parse error."""
         found = _default_settings()
         try:
             raw = json.loads(self._path().read_text(encoding="utf-8"))
         except FileNotFoundError:
-            return found
+            return found, True
         except (OSError, ValueError) as exc:
-            logger.warning("storage settings cannot be read (%s); defaults are used", type(exc).__name__)
-            return found
-        if isinstance(raw, dict):
-            if isinstance(raw.get("auto_clean_work_dirs"), bool):
-                found["auto_clean_work_dirs"] = raw["auto_clean_work_dirs"]
-            if _valid_days(raw.get("work_dir_kept_days")):
-                found["work_dir_kept_days"] = int(raw["work_dir_kept_days"])
-            if isinstance(raw.get("auto_clean_worktrees"), bool):
-                found["auto_clean_worktrees"] = raw["auto_clean_worktrees"]
-            if _valid_days(raw.get("worktree_kept_days")):
-                found["worktree_kept_days"] = int(raw["worktree_kept_days"])
-        return found
+            logger.warning(
+                "storage settings cannot be read (%s); automatic cleanup disabled until readable",
+                type(exc).__name__,
+            )
+            return _safe_unreadable_settings(), False
+        if not isinstance(raw, dict):
+            logger.warning("storage settings file does not contain a JSON object; automatic cleanup disabled")
+            return _safe_unreadable_settings(), False
+        if isinstance(raw.get("auto_clean_work_dirs"), bool):
+            found["auto_clean_work_dirs"] = raw["auto_clean_work_dirs"]
+        if _valid_days(raw.get("work_dir_kept_days")):
+            found["work_dir_kept_days"] = int(raw["work_dir_kept_days"])
+        if isinstance(raw.get("auto_clean_worktrees"), bool):
+            found["auto_clean_worktrees"] = raw["auto_clean_worktrees"]
+        if _valid_days(raw.get("worktree_kept_days")):
+            found["worktree_kept_days"] = int(raw["worktree_kept_days"])
+        return found, True
 
     def _write(self, values: dict[str, Any], path: Path) -> None:
         from utils.file_utils import atomic_write_json
@@ -421,12 +497,21 @@ class StorageSettingsStore:
         atomic_write_json(path, {"version": _FILE_VERSION, **values})
 
     async def get(self) -> dict[str, Any]:
-        """Return the active settings dictionary."""
-        if self._kept is None:
-            async with self._lock:
-                if self._kept is None:
-                    self._kept = await asyncio.to_thread(self._read)
-        return dict(self._kept)
+        """Return the active settings dictionary.
+
+        When ``storage.json`` exists but cannot be read, returns fail-closed
+        settings with automatic cleanup disabled and does not cache them so
+        subsequent calls re-read once the file recovers.
+        """
+        if self._kept is not None:
+            return dict(self._kept)
+        async with self._lock:
+            if self._kept is not None:
+                return dict(self._kept)
+            values, readable = await asyncio.to_thread(self._read_disk)
+            if readable:
+                self._kept = values
+            return dict(values)
 
     async def describe(self) -> dict[str, Any]:
         """Return settings with defaults, bounds, and transcript retention for the UI."""
@@ -474,7 +559,10 @@ class StorageSettingsStore:
         worktree_kept_days: int | None,
     ) -> dict[str, Any]:
         async with self._lock:
-            values = dict(self._kept) if self._kept is not None else await asyncio.to_thread(self._read)
+            # Always base saves on current on-disk contents; refuse to overwrite an unreadable file.
+            values, readable = await asyncio.to_thread(self._read_disk)
+            if not readable:
+                raise OSError("storage settings file is unreadable")
             if auto_clean_work_dirs is not None:
                 values["auto_clean_work_dirs"] = auto_clean_work_dirs
             if work_dir_kept_days is not None:
@@ -562,13 +650,14 @@ class StorageManager:
 
     async def _ledger_snapshot(
         self,
-    ) -> tuple[dict[str, Any], set[str], set[str], set[str], dict[str, Any], list[Any], bool]:
+    ) -> tuple[dict[str, Any], set[str], set[str], set[str], dict[str, Any], list[Any], bool, bool]:
         """Read sessions, live workdirs, active project workdirs, projects, and trees in one pass."""
         sessions_by_id: dict[str, Any] = {}
         active_sessions: set[str] = set()
         live_workdirs: set[str] = set()
         active_project_workdirs: set[str] = set()
         projects_by_name: dict[str, Any] = {}
+        projects_readable = True
 
         has_ledger = await asyncio.to_thread(self._paths.ledger_db().is_file)
         if has_ledger:
@@ -600,6 +689,7 @@ class StorageManager:
                     elif proj.name not in projects_by_name:
                         projects_by_name[proj.name] = proj
             except OSError:
+                projects_readable = False
                 logger.warning("listing projects for storage scan failed", exc_info=True)
 
         return (
@@ -610,18 +700,41 @@ class StorageManager:
             projects_by_name,
             trees,
             has_ledger,
+            projects_readable,
         )
 
-    async def _busy_workdirs(self) -> tuple[set[str], set[str], set[str]]:
-        """Return ``(active_session_ids, live_workdirs, active_project_workdirs)``."""
+    async def _busy_workdirs(
+        self,
+        *,
+        exclude_session_id: str | None = None,
+        exclude_session_ids: set[str] | frozenset[str] = frozenset(),
+    ) -> tuple[set[str], set[str], set[str] | None]:
+        """Return ``(active_session_ids, live_workdirs, active_project_workdirs)``.
+
+        When ``exclude_session_id`` or ``exclude_session_ids`` is given, those
+        sessions' own in-memory file holds (``hold_files``) are excluded from
+        ``_in_use`` so cleanup does not mistake its own deletion lock for an
+        active user; their ledger statuses and other sessions sharing the
+        directory are still checked.
+
+        ``active_project_workdirs`` is ``None`` if listing active projects
+        failed with ``OSError``, so callers depending on project-reference
+        checks fail closed rather than assuming no references exist.
+        """
+        excluded = set(exclude_session_ids)
+        if exclude_session_id is not None:
+            excluded.add(exclude_session_id)
         active_sessions: set[str] = set()
         live_workdirs: set[str] = set()
-        active_project_workdirs: set[str] = set()
+        active_project_workdirs: set[str] | None = set()
         if await asyncio.to_thread(self._paths.ledger_db().is_file):
             all_sessions = await self._ledger.find_sessions(limit=10_000, commissions_each=0)
             for row in all_sessions:
                 session = row.session
-                if session.status in _BUSY_SESSION_STATUSES or self._task_agents._in_use(session.id):
+                in_use = session.status in _BUSY_SESSION_STATUSES or (
+                    session.id not in excluded and self._task_agents._in_use(session.id)
+                )
+                if in_use:
                     active_sessions.add(session.id)
                     if session.workdir:
                         live_workdirs.add(os.path.normcase(os.path.normpath(session.workdir)))
@@ -637,7 +750,8 @@ class StorageManager:
                     if proj.workdir:
                         active_project_workdirs.add(os.path.normcase(os.path.normpath(proj.workdir)))
             except OSError:
-                pass
+                active_project_workdirs = None
+                logger.warning("listing active projects for storage cleanup failed", exc_info=True)
         return active_sessions, live_workdirs, active_project_workdirs
 
     # -- overview ---------------------------------------------------------
@@ -665,6 +779,7 @@ class StorageManager:
             projects_by_name,
             trees,
             has_ledger,
+            projects_readable,
         ) = await self._ledger_snapshot()
         busy_projects: set[str] = set()
         for proj_name, proj in projects_by_name.items():
@@ -697,12 +812,19 @@ class StorageManager:
             elif row.commission_id and await self._task_agents._still_at_it_in(row):
                 still_at_it.add(row.id)
 
-        # Forks map: source_session_id -> has uncleared fork
+        # Forks map: source_session_id -> uncleared forks, latest activity, and busy forks.
         uncleared_fork_sources: set[str] = set()
+        fork_latest_active: dict[str, float] = {}
+        busy_fork_sources: set[str] = set()
         for srow in sessions_by_id.values():
             s = srow.session
             if s.kind == "fork" and s.forked_from and s.status != "cleared":
                 uncleared_fork_sources.add(s.forked_from)
+                prev = fork_latest_active.get(s.forked_from)
+                if prev is None or s.last_active_at > prev:
+                    fork_latest_active[s.forked_from] = s.last_active_at
+                if s.id in active_sessions:
+                    busy_fork_sources.add(s.forked_from)
 
         root = self._paths.root()
         places_spec = self._places()
@@ -716,7 +838,6 @@ class StorageManager:
             # 1. Scan worktrees (tracked + orphan dirs in wt/)
             wt_root = self._paths.worktrees_dir()
             wt_root_exists = wt_root.is_dir() and not _is_reparse_link(wt_root)
-            tracked_by_id = {row.id: row for row in trees}
             wt_items: list[dict[str, Any]] = []
             wt_total_bytes = 0
             wt_whole = True
@@ -737,7 +858,11 @@ class StorageManager:
                     (t for t in (row.updated_at, stats.newest_mtime) if t is not None),
                     default=row.updated_at,
                 )
-                stale = can_clean and (row.state == "discarding" or effective_time <= worktree_cutoff)
+                stale = can_clean and (
+                    row.state == "discarding"
+                    or not stats.exists
+                    or (stats.whole and effective_time <= worktree_cutoff)
+                )
                 if can_clean and stats.exists:
                     wt_reclaimable += stats.bytes
                 title, session_name = tree_meta.get(row.id, ("", ""))
@@ -814,7 +939,7 @@ class StorageManager:
                                     "updated_at": stats.newest_mtime,
                                     "can_clean": can_clean,
                                     "can_land": False,
-                                    "stale": can_clean,
+                                    "stale": can_clean and stats.whole,
                                 }
                             )
                 except OSError:
@@ -838,6 +963,40 @@ class StorageManager:
             outputs_bytes = 0
             transcript_reclaimable = 0
             ta_other_bytes = 0
+            ta_other_whole = True
+
+            def _measure_unclassified(directory: Path, skip: frozenset[str]) -> None:
+                nonlocal ta_other_bytes, ta_other_whole
+                if time.monotonic() > deadline:
+                    ta_other_whole = False
+                    return
+                try:
+                    with os.scandir(_fs(directory)) as extra_entries:
+                        for extra in extra_entries:
+                            if extra.name in skip:
+                                continue
+                            if time.monotonic() > deadline:
+                                ta_other_whole = False
+                                break
+                            child = directory / extra.name
+                            try:
+                                st = extra.stat(follow_symlinks=False)
+                            except OSError:
+                                ta_other_whole = False
+                                continue
+                            if _is_reparse_link(child, st):
+                                continue
+                            if stat.S_ISDIR(st.st_mode):
+                                extra_stats = measure_dir(child, item_deadline())
+                                ta_other_bytes += extra_stats.bytes
+                                ta_other_whole = ta_other_whole and extra_stats.whole
+                            elif stat.S_ISREG(st.st_mode):
+                                ta_other_bytes += int(st.st_size)
+                except OSError:
+                    ta_other_whole = False
+
+            if ta_exists:
+                _measure_unclassified(ta_root, frozenset({"projects"}))
 
             if ta_exists and projects_root.is_dir() and not _is_reparse_link(projects_root):
                 try:
@@ -847,6 +1006,7 @@ class StorageManager:
                     proj_dirs = []
                     work_dirs_whole = False
                     transcript_whole = False
+                    ta_other_whole = False
 
                 for proj_entry in proj_dirs:
                     proj_name = proj_entry.name
@@ -854,11 +1014,23 @@ class StorageManager:
                     if _is_reparse_link(proj_path):
                         continue
                     try:
-                        if not proj_entry.is_dir(follow_symlinks=False):
-                            continue
-                        safe_segment(proj_name, "project")
-                    except (OSError, ValueError):
+                        st_proj = proj_entry.stat(follow_symlinks=False)
+                    except OSError:
+                        ta_other_whole = False
                         continue
+                    if not stat.S_ISDIR(st_proj.st_mode):
+                        if stat.S_ISREG(st_proj.st_mode):
+                            ta_other_bytes += int(st_proj.st_size)
+                        continue
+                    try:
+                        safe_segment(proj_name, "project")
+                    except ValueError:
+                        extra_stats = measure_dir(proj_path, item_deadline())
+                        ta_other_bytes += extra_stats.bytes
+                        ta_other_whole = ta_other_whole and extra_stats.whole
+                        continue
+
+                    _measure_unclassified(proj_path, frozenset({_WORK_NAME, "sessions"}))
 
                     proj_record = projects_by_name.get(proj_name)
                     # Project-level default work dir: task_agents/projects/<project>/work
@@ -873,7 +1045,11 @@ class StorageManager:
                         )
                         is_archived = proj_record is not None and proj_record.archive_year is not None
                         status_label = "project_archived" if is_archived else "project_active"
-                        can_clean = not in_use
+                        referenced_proj = not is_archived and (
+                            not projects_readable
+                            or any(_path_is_or_inside(pwd, norm_pw) for pwd in active_project_workdirs)
+                        )
+                        can_clean = not in_use and not referenced_proj and projects_readable
                         if can_clean:
                             work_dirs_reclaimable += stats.bytes
                         last_at = max(
@@ -900,12 +1076,12 @@ class StorageManager:
                                 "bytes": stats.bytes,
                                 "bytes_whole": stats.whole,
                                 "file_count": stats.file_count,
-                                "empty": stats.file_count == 0,
+                                "empty": stats.whole and stats.file_count == 0,
                                 "last_active_at": last_at,
                                 "in_use": in_use,
                                 "can_clean": can_clean,
                                 "stale": False,
-                                "referenced_by_project": not is_archived and norm_pw in active_project_workdirs,
+                                "referenced_by_project": referenced_proj,
                             }
                         )
 
@@ -919,6 +1095,7 @@ class StorageManager:
                     except OSError:
                         work_dirs_whole = False
                         transcript_whole = False
+                        ta_other_whole = False
                         continue
 
                     for sess_entry in sess_list:
@@ -927,10 +1104,20 @@ class StorageManager:
                         if _is_reparse_link(sess_path):
                             continue
                         try:
-                            if not sess_entry.is_dir(follow_symlinks=False):
-                                continue
+                            st_sess = sess_entry.stat(follow_symlinks=False)
+                        except OSError:
+                            ta_other_whole = False
+                            continue
+                        if not stat.S_ISDIR(st_sess.st_mode):
+                            if stat.S_ISREG(st_sess.st_mode):
+                                ta_other_bytes += int(st_sess.st_size)
+                            continue
+                        try:
                             safe_segment(sess_id, "session id")
-                        except (OSError, ValueError):
+                        except ValueError:
+                            extra_stats = measure_dir(sess_path, item_deadline())
+                            ta_other_bytes += extra_stats.bytes
+                            ta_other_whole = ta_other_whole and extra_stats.whole
                             continue
 
                         srow = sessions_by_id.get(sess_id)
@@ -946,17 +1133,28 @@ class StorageManager:
                             work_dirs_bytes += stats.bytes
                             norm_wp = os.path.normcase(os.path.normpath(str(work_path)))
                             referenced_live = any(_path_is_or_inside(wd, norm_wp) for wd in live_workdirs)
-                            referenced_proj = norm_wp in active_project_workdirs
-                            in_use = session_active or referenced_live
-                            can_clean = not in_use
+                            referenced_proj = not projects_readable or any(
+                                _path_is_or_inside(pwd, norm_wp) for pwd in active_project_workdirs
+                            )
+                            in_use = session_active or referenced_live or sess_id in busy_fork_sources
+                            can_clean = not in_use and not referenced_proj and projects_readable
                             last_at = max(
-                                (t for t in (session.last_active_at if session else None, stats.newest_mtime) if t),
+                                (
+                                    t
+                                    for t in (
+                                        session.last_active_at if session else None,
+                                        fork_latest_active.get(sess_id),
+                                        stats.newest_mtime,
+                                    )
+                                    if t
+                                ),
                                 default=stats.newest_mtime,
                             )
-                            is_empty = stats.file_count == 0
+                            is_empty = stats.whole and stats.file_count == 0
                             stale = (
                                 can_clean
                                 and not referenced_proj
+                                and stats.whole
                                 and (
                                     is_empty
                                     or session is None
@@ -1003,6 +1201,7 @@ class StorageManager:
                                     sess_record_bytes += int(fst.st_size)
                                     has_record = True
                             except OSError:
+                                # Missing or unreadable optional record file is skipped.
                                 pass
                         out_dir = sess_path / _OUTPUTS_NAME
                         if out_dir.is_dir() and not _is_reparse_link(out_dir):
@@ -1010,6 +1209,12 @@ class StorageManager:
                             transcript_whole = transcript_whole and ostats.whole
                             sess_outputs_bytes = ostats.bytes
                             has_outputs = True
+
+                        # Account for other session files (e.g. dsh-session.json) without double-counting.
+                        _measure_unclassified(
+                            sess_path,
+                            frozenset({_WORK_NAME, _OUTPUTS_NAME, TRANSCRIPT_NAME, SYSTEM_SNAPSHOT_NAME}),
+                        )
 
                         combined = sess_record_bytes + sess_outputs_bytes
                         if has_record or has_outputs:
@@ -1040,7 +1245,11 @@ class StorageManager:
             # 3. Measure remaining places (space, dsh, browser_profile) + root files
             place_measurements: dict[str, tuple[bool, int | None, bool]] = {}
             ta_total = work_dirs_bytes + transcript_bytes + ta_other_bytes
-            place_measurements["task_agents"] = (ta_exists, ta_total if ta_exists else None, work_dirs_whole and transcript_whole)
+            place_measurements["task_agents"] = (
+                ta_exists,
+                ta_total if ta_exists else None,
+                work_dirs_whole and transcript_whole and ta_other_whole,
+            )
             place_measurements["worktrees"] = (wt_root_exists, wt_total_bytes if wt_root_exists else None, wt_whole)
 
             other_place_bytes: dict[str, tuple[bool, int, bool]] = {}
@@ -1055,6 +1264,7 @@ class StorageManager:
 
             # Top-level files in <root> (ledger.db, json configs)
             root_other_bytes = 0
+            root_other_whole = True
             if root.is_dir() and not _is_reparse_link(root):
                 try:
                     with os.scandir(_fs(root)) as entries:
@@ -1064,13 +1274,24 @@ class StorageManager:
                                 if stat.S_ISREG(st.st_mode):
                                     root_other_bytes += int(st.st_size)
                             except OSError:
+                                root_other_whole = False
                                 continue
                 except OSError:
-                    pass
+                    root_other_whole = False
 
-            # Sort items: largest first, then oldest
-            wt_items.sort(key=lambda item: (-(item["bytes"] or 0), item["updated_at"] or 0.0, item["id"]))
-            work_dir_items.sort(key=lambda item: (-(item["bytes"] or 0), item["last_active_at"] or 0.0, item["id"]))
+            # Sort items: cleanable first so protected/in-use entries cannot hide
+            # smaller cleanable items behind STORAGE_MAX_ITEMS, then largest, then oldest.
+            wt_items.sort(
+                key=lambda item: (not item["can_clean"], -(item["bytes"] or 0), item["updated_at"] or 0.0, item["id"])
+            )
+            work_dir_items.sort(
+                key=lambda item: (
+                    not item["can_clean"],
+                    -(item["bytes"] or 0),
+                    item["last_active_at"] or 0.0,
+                    item["id"],
+                )
+            )
 
             wt_more = max(0, len(wt_items) - STORAGE_MAX_ITEMS)
             wd_more = max(0, len(work_dir_items) - STORAGE_MAX_ITEMS)
@@ -1140,8 +1361,8 @@ class StorageManager:
                 },
                 {
                     "key": "other",
-                    "bytes": root_other_bytes,
-                    "bytes_whole": True,
+                    "bytes": root_other_bytes + ta_other_bytes,
+                    "bytes_whole": root_other_whole and ta_other_whole,
                     "count": 0,
                     "reclaimable_bytes": 0,
                     "cleanable": False,
@@ -1195,7 +1416,10 @@ class StorageManager:
                 if scope == "session" and session_id is not None
                 else self._paths.project_work_dir(project)
             )
-            if await asyncio.to_thread(_is_link_or_escaped, target, root):
+            safety = await asyncio.to_thread(_classify_path_safety, target, root)
+            if safety == "missing":
+                raise FileNotFoundError("place_missing")
+            if safety != "ok":
                 raise ValueError("bad_work_dir")
             if not await asyncio.to_thread(target.is_dir):
                 raise FileNotFoundError("place_missing")
@@ -1210,7 +1434,10 @@ class StorageManager:
                         raise FileNotFoundError("place_missing")
                     return target
             target = self._paths.worktree_dir(name)
-            if await asyncio.to_thread(_is_link_or_escaped, target, self._paths.worktrees_dir()):
+            safety = await asyncio.to_thread(_classify_path_safety, target, self._paths.worktrees_dir())
+            if safety == "missing":
+                raise FileNotFoundError("place_missing")
+            if safety != "ok":
                 raise ValueError("no_worktree")
             if not await asyncio.to_thread(target.is_dir):
                 raise FileNotFoundError("place_missing")
@@ -1220,7 +1447,7 @@ class StorageManager:
     # -- manual cleanup: working directories ------------------------------
 
     async def clean_work_dirs(self, ids: list[str]) -> dict[str, Any]:
-        """Clean the specified host-owned working directories, refusing any that are in use."""
+        """Clean the specified host-owned working directories, refusing any that are in use or project-referenced."""
         if not isinstance(ids, list) or not ids or len(ids) > _MAX_CLEAN_IDS:
             raise ValueError("bad_ids")
         unique_ids = list(dict.fromkeys(ids))
@@ -1231,10 +1458,12 @@ class StorageManager:
         freed_total = 0
 
         for item_id, (scope, project, session_id) in parsed:
-            outcome, freed = await self._clean_one_work_dir(scope, project, session_id)
+            outcome, freed = await self._clean_one_work_dir(
+                scope, project, session_id, skip_project_referenced=True
+            )
+            freed_total += freed
             if outcome == "cleaned":
                 cleaned.append(item_id)
-                freed_total += freed
             else:
                 failed.append({"id": item_id, "code": outcome})
         return {"cleaned": cleaned, "freed_bytes": freed_total, "failed": failed}
@@ -1251,7 +1480,8 @@ class StorageManager:
         """Remove one validated host-owned ``work/`` directory.
 
         Returns ``(outcome, freed_bytes)`` where ``outcome`` is ``cleaned``,
-        ``not_found``, ``in_use``, ``recent``, ``not_removed``, or ``unsafe_path``.
+        ``not_found``, ``in_use``, ``recent``, ``scan_incomplete``,
+        ``not_removed``, or ``unsafe_path``.
         """
         from utils.asyncio_executor import to_thread_through_cancellation
 
@@ -1260,20 +1490,52 @@ class StorageManager:
 
         if scope == "project":
             target = self._paths.project_work_dir(project)
-            async with self._project_lock:
+            norm_target = os.path.normcase(os.path.normpath(str(target)))
+            families = getattr(self._task_agents, "families", None)
+            placing_lock = getattr(families, "placing", None)
+            placing_cm = placing_lock if placing_lock is not None else contextlib.nullcontext()
+            # Acquire _project_lock before families.placing (matching service.open_session / derive_leader)
+            # and hold all existing sessions of the project so no commission can start into target mid-delete.
+            async with self._project_lock, placing_cm:
                 if await self._project_busy(project) is not None:
                     return "in_use", 0
-                _active_ids, live_workdirs, _proj_dirs = await self._busy_workdirs()
-                norm_target = os.path.normcase(os.path.normpath(str(target)))
-                if any(_path_is_or_inside(wd, norm_target) for wd in live_workdirs):
-                    return "in_use", 0
-                if not await asyncio.to_thread(lambda: os.path.lexists(_fs(target))):
-                    return "not_found", 0
+                held_sids: list[str] = []
                 try:
-                    removed, freed = await to_thread_through_cancellation(remove_dir_safely, target, ta_root)
-                except ValueError:
-                    return "unsafe_path", 0
-                return ("cleaned" if removed else "not_removed"), freed
+                    if await asyncio.to_thread(self._paths.ledger_db().is_file):
+                        all_rows = await self._ledger.find_sessions(limit=10_000, commissions_each=0)
+                        for row in all_rows:
+                            sess = row.session
+                            if sess.project == project or (
+                                sess.workdir and _path_is_or_inside(sess.workdir, norm_target)
+                            ):
+                                if not self._task_agents.hold_files(sess.id):
+                                    return "in_use", 0
+                                held_sids.append(sess.id)
+                    if await self._project_busy(project) is not None:
+                        return "in_use", 0
+                    _active_ids, live_workdirs, active_project_workdirs = await self._busy_workdirs(
+                        exclude_session_ids=frozenset(held_sids)
+                    )
+                    if any(_path_is_or_inside(wd, norm_target) for wd in live_workdirs):
+                        return "in_use", 0
+                    if skip_project_referenced and (
+                        active_project_workdirs is None
+                        or any(_path_is_or_inside(pwd, norm_target) for pwd in active_project_workdirs)
+                    ):
+                        return "in_use", 0
+                    safety = await asyncio.to_thread(_classify_path_safety, target, ta_root)
+                    if safety == "missing":
+                        return "not_found", 0
+                    if safety != "ok":
+                        return "unsafe_path", 0
+                    try:
+                        removed, freed = await to_thread_through_cancellation(remove_dir_safely, target, ta_root)
+                    except ValueError:
+                        return "unsafe_path", 0
+                    return ("cleaned" if removed else "not_removed"), freed
+                finally:
+                    for sid in held_sids:
+                        self._task_agents.release_files(sid)
 
         assert session_id is not None
         target = self._paths.work_dir(session_id, project)
@@ -1292,16 +1554,30 @@ class StorageManager:
                     for copy in await self._ledger.forks_of(session_id):
                         if copy.status in _BUSY_SESSION_STATUSES or self._task_agents._in_use(copy.id):
                             return "in_use", 0
-            _active_ids, live_workdirs, active_project_workdirs = await self._busy_workdirs()
+                        if await self._ledger.select(session_id=copy.id, statuses=ACTIVE_STATUSES, limit=1):
+                            return "in_use", 0
+                        if until is not None and copy.status != "cleared" and copy.last_active_at > until:
+                            return "recent", 0
+            _active_ids, live_workdirs, active_project_workdirs = await self._busy_workdirs(
+                exclude_session_id=session_id
+            )
             norm_target = os.path.normcase(os.path.normpath(str(target)))
             if any(_path_is_or_inside(wd, norm_target) for wd in live_workdirs):
                 return "in_use", 0
-            if skip_project_referenced and norm_target in active_project_workdirs:
+            if skip_project_referenced and (
+                active_project_workdirs is None
+                or any(_path_is_or_inside(pwd, norm_target) for pwd in active_project_workdirs)
+            ):
                 return "in_use", 0
-            if not await asyncio.to_thread(lambda: os.path.lexists(_fs(target))):
+            safety = await asyncio.to_thread(_classify_path_safety, target, ta_root)
+            if safety == "missing":
                 return "not_found", 0
+            if safety != "ok":
+                return "unsafe_path", 0
             if until is not None:
-                mtime = await asyncio.to_thread(newest_mtime_of, target, 0.25)
+                mtime, whole = await asyncio.to_thread(newest_mtime_of, target, 0.25)
+                if not whole:
+                    return "scan_incomplete", 0
                 if mtime is not None and mtime > until:
                     return "recent", 0
             try:
@@ -1412,6 +1688,8 @@ class StorageManager:
             return
         removed = 0
         for project, session_id in candidates:
+            if not (await self.settings.get())["auto_clean_work_dirs"]:
+                break
             outcome, _freed = await self._clean_one_work_dir(
                 "session", project, session_id, until=until, skip_project_referenced=True
             )
@@ -1488,6 +1766,8 @@ class StorageManager:
         rows = await self._ledger.trees(states=tuple(sorted(TREE_STATES_LEFT)))
         expired = 0
         for row in rows:
+            if not (await self.settings.get())["auto_clean_worktrees"]:
+                break
             if row.updated_at > until:
                 continue
             try:

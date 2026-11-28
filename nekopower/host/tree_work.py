@@ -2143,7 +2143,7 @@ class TreeWork:
             row = await self._ledger.get_tree(tree_id)
             if row is None:
                 raise LookupError(tree_id)
-            if row.state != "discarding":
+            if row.state != "discarding" or tree_id in self._tree_of.values():
                 raise ValueError("at_work")
             return await self._remove_discarded(row)
         finally:
@@ -2153,7 +2153,7 @@ class TreeWork:
         """Retry removing any ``discarding`` worktrees left from earlier attempts; returns how many went."""
         removed = 0
         for row in await self._ledger.trees(states=("discarding",)):
-            if row.id in self._trees_in_hand:
+            if row.id in self._trees_in_hand or row.id in self._tree_of.values():
                 continue
             try:
                 if await self.retry_discarded_tree(row.id):
@@ -2170,47 +2170,131 @@ class TreeWork:
         check_mtime: Any = None,
     ) -> dict[str, Any]:
         """Automatically remove a left-over worktree older than ``until`` if untouched since then."""
+        from nekopower.host.worktrees import WorktreeError
+
+        def evaluate_mtime(path: Path) -> str | None:
+            if check_mtime is None:
+                return None
+            checked = check_mtime(path)
+            if isinstance(checked, tuple):
+                mtime, whole = checked
+                if not whole:
+                    return "scan_incomplete"
+            else:
+                mtime = checked
+            if mtime is not None and mtime > until:
+                return "touched"
+            return None
+
         async with self._tree_in_hand(tree_id, TREE_STATES_LEFT) as row:
             if row.updated_at > until:
                 return {"expired": False, "reason": "recent"}
             if check_mtime is not None and not await self._tree_is_gone(row):
-                mtime = await asyncio.to_thread(check_mtime, Path(row.path))
-                if mtime is not None and mtime > until:
-                    return {"expired": False, "reason": "touched"}
+                pre_abort = await asyncio.to_thread(evaluate_mtime, Path(row.path))
+                if pre_abort is not None:
+                    return {"expired": False, "reason": pre_abort}
             handle = await self._handle_of(row)
+            outcome_kind = "removed"
+            removed = True
             if handle is None and not await self._tree_is_gone(row):
                 if not await self._repository_gone(row):
                     raise ValueError("not_opened")
+                if check_mtime is not None:
+                    recheck = await asyncio.to_thread(evaluate_mtime, Path(row.path))
+                    if recheck is not None:
+                        return {"expired": False, "reason": recheck}
                 went = await self._remove_what_is_left(row)
                 self._forget_tree(row)
                 self._tree_handles.pop(row.id, None)
                 self._trees_mine.discard(row.id)
-                if went is False:
-                    await self._ledger.update_tree(row.id, state="discarding", reason="")
+                if went is True:
+                    removed, outcome_kind = True, "removed"
+                elif went is False:
+                    removed, outcome_kind = False, "deferred"
                 else:
-                    await self._ledger.drop_tree(row.id)
-                removed = went is True
+                    removed, outcome_kind = False, "record_only"
+            elif handle is not None:
+                if check_mtime is not None:
+                    abort_reason: list[str] = []
+
+                    def still_untouched(path: Path) -> bool:
+                        reason = evaluate_mtime(path)
+                        if reason is not None:
+                            abort_reason.append(reason)
+                            return False
+                        return True
+
+                    try:
+                        proceeded = await self.worktrees.remove_if_untouched(handle, still_untouched)
+                    except asyncio.CancelledError:
+                        raise
+                    except (WorktreeError, OSError) as exc:
+                        logger.warning("worktree %s could not be removed during expiry: %s", row.id, exc)
+                        proceeded = True
+                        removed = False
+                        outcome_kind = "deferred"
+                    if not proceeded:
+                        return {"expired": False, "reason": abort_reason[0] if abort_reason else "touched"}
+                    self._forget_tree(row)
+                    self._tree_handles.pop(row.id, None)
+                    self._trees_mine.discard(row.id)
+                else:
+                    try:
+                        await self.worktrees.remove(handle)
+                    except asyncio.CancelledError:
+                        raise
+                    except (WorktreeError, OSError) as exc:
+                        logger.warning("worktree %s could not be removed during expiry: %s", row.id, exc)
+                        removed = False
+                        outcome_kind = "deferred"
+                    self._forget_tree(row)
+                    self._tree_handles.pop(row.id, None)
+                    self._trees_mine.discard(row.id)
             else:
-                removed = await self._remove_tree(row, handle, discarded=True)
-            await self._note_tree_event(
-                row.commission_id, "tree_expired", {"tree": row.id, "path": row.workdir, "state": row.state}
-            )
+                # Directory is already gone; drop only its in-memory state and record below.
+                self._forget_tree(row)
+                self._tree_handles.pop(row.id, None)
+                self._trees_mine.discard(row.id)
+
+            # Cancel any blocked commission before dropping the tree row so a transient
+            # ledger write error keeps the tree row for retry on the next upkeep round.
+            cancel_reasons = {
+                "removed": "the worktree expired and was cleaned up",
+                "deferred": "the worktree expired and is pending removal",
+                "record_only": "the worktree expired and its record was removed",
+            }
             stuck = self._stuck_over(row, await self._ledger.get(row.commission_id) if row.commission_id else None)
             if row.commission_id and stuck:
                 moved = await self._ledger.transition(
                     row.commission_id,
                     "cancelled",
-                    reason="the worktree expired and was cleaned up",
+                    reason=cancel_reasons[outcome_kind],
                     only_from=("blocked",),
                 )
                 if moved.applied and moved.commission is not None:
                     await self._settle_after_decision(moved.commission)
-            return {"expired": True, "removed": removed}
+
+            await self._note_tree_event(
+                row.commission_id,
+                "tree_expired",
+                {
+                    "tree": row.id,
+                    "path": row.workdir,
+                    "state": row.state,
+                    "removed": removed,
+                    "outcome": outcome_kind,
+                },
+            )
+            if outcome_kind == "deferred":
+                await self._ledger.update_tree(row.id, state="discarding", reason="")
+            else:
+                await self._ledger.drop_tree(row.id)
+            return {"expired": True, "removed": removed, "outcome": outcome_kind}
 
     async def remove_orphan_worktree(self, tree_id: str) -> dict[str, Any]:
         """Remove an untracked directory inside ``wt/`` safely, unregistering it from git when possible."""
         from nekopower.host.paths import worktree_name
-        from nekopower.host.storage import remove_dir_safely
+        from nekopower.host.storage import measure_dir, remove_dir_safely
         from nekopower.host.worktrees import WorktreeError
         from utils.asyncio_executor import to_thread_through_cancellation
 
@@ -2233,6 +2317,8 @@ class TreeWork:
                 return {"removed": True, "freed_bytes": 0}
             if await asyncio.to_thread(_is_link, target):
                 raise ValueError("unsafe_path")
+            pre_stats = await asyncio.to_thread(measure_dir, target, time.monotonic() + 0.25)
+            est_bytes = pre_stats.bytes if pre_stats.exists else 0
             # Try git removal first when the directory's .git points to an existing repository.
             repo_root = await asyncio.to_thread(_repo_from_worktree_gitfile, target)
             if repo_root is not None and await asyncio.to_thread(repo_root.is_dir):
@@ -2242,9 +2328,10 @@ class TreeWork:
                 except asyncio.CancelledError:
                     raise
                 except (WorktreeError, ValueError, OSError):
+                    # Git unregistration unavailable; fall back to direct removal below.
                     pass
             if not await asyncio.to_thread(lambda: os.path.lexists(target)):
-                return {"removed": True, "freed_bytes": 0}
+                return {"removed": True, "freed_bytes": est_bytes}
             removed, freed = await to_thread_through_cancellation(remove_dir_safely, target, base)
             return {"removed": removed, "freed_bytes": freed}
         finally:

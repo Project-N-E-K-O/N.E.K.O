@@ -99,7 +99,8 @@ function landed(result: Landing, state: string): string {
     // One the user sees to never goes back to its familiar: what clashed is the user's to merge.
     return state === 'kept' ? t('power.trees.keptClashes') : t('power.trees.stillClashes')
   }
-  const kept = result.kept_copies?.length ? ` ${t('power.trees.keptCopies', { paths: result.kept_copies.join(', ') })}` : ''
+  const keptPaths = Array.isArray(result.kept_copies) ? result.kept_copies.join(', ') : (result.kept_copies ?? '')
+  const kept = keptPaths ? ` ${t('power.trees.keptCopies', { paths: keptPaths })}` : ''
   return `${t('power.trees.failed', { detail: result.detail || '—' })}${kept}`
 }
 
