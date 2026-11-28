@@ -576,6 +576,28 @@ describe('a familiar up close', () => {
     expect(byTest('card-preset-widens')?.textContent).toBe(words.space.familiars.presetWidens)
   })
 
+  it('keeps the kinds read for this opening of the editor when an earlier reading for the same familiar fails late', async () => {
+    const kind = (name: string, changes_files: boolean) =>
+      ({ name, label: '', description: '', avatar: name, source: 'builtin', valid: true, error: '', changes_files, needs_builtin: false })
+    let fail!: (reason: unknown) => void
+    api.getTemplates.mockReturnValueOnce(new Promise((_resolve, reject) => { fail = reject }))
+    api.getTemplates.mockResolvedValueOnce({ templates: [kind('general', true), kind('scout', false)] })
+    await show([card({ kind: 'line', preset: 'scout', leader: false })])
+    // Opened, closed and opened again while the first reading is still on its way.
+    await click(byTest('card-edit'))
+    await click([...document.querySelectorAll('.el-dialog__footer button')].find(button => button.textContent?.trim() === 'Cancel'))
+    await click(byTest('card-edit'))
+    await flush()
+    const offered = () => [...new Set([...document.querySelectorAll('.el-select-dropdown__item')].map(item => item.textContent?.trim()))].filter(Boolean)
+    expect(offered()).toEqual([words.home.presets.general, words.home.presets.scout])
+    // The first reading fails now: it is not this opening's, and takes nothing of it away.
+    fail(new Error('gone'))
+    await flush()
+    await flush()
+    expect(offered()).toEqual([words.home.presets.general, words.home.presets.scout])
+    expect((byTest('card-preset')?.querySelector('input') as HTMLInputElement | null)?.disabled).toBe(false)
+  })
+
   it('a save that is under way sends what it was started with, not what another editor holds by then', async () => {
     const kind = (name: string, changes_files: boolean) =>
       ({ name, label: '', description: '', avatar: name, source: 'builtin', valid: true, error: '', changes_files, needs_builtin: false })

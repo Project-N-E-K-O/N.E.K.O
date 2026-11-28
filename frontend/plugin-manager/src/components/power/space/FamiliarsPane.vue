@@ -382,20 +382,23 @@ function kindName(preset: string, label = ''): string {
   return te(key) ? t(key) : label || kindOf(preset)?.label || preset
 }
 
-async function readKinds(id: string) {
+async function readKinds() {
+  // Of this opening of the editor: one that was closed and opened again meanwhile, for the same
+  // familiar too, reads its own list, and what an earlier reading comes back with is not its.
+  const turn = editorTurn
+  const mine = () => editorTurn === turn && editing.value
   kindsRead.value = false
   // What was read for the editor before is another familiar's, maybe another project's: nothing
   // is chosen, nor said of what a kind can do, by that list while this one is read.
   templates.value = []
   try {
     const read = (await getTemplates(props.project)).templates
-    // The editor is another familiar's by now, or closed: what was read is not its list.
-    if (opened.id === id) templates.value = read
+    if (mine()) templates.value = read
   } catch {
     // Not read: the kind it is stays the one choice, and its card can be written all the same.
-    if (opened.id === id) templates.value = []
+    if (mine()) templates.value = []
   }
-  if (opened.id === id) kindsRead.value = true
+  if (mine()) kindsRead.value = true
 }
 
 function edit() {
@@ -409,7 +412,7 @@ function edit() {
   editorTurn += 1
   cardError.value = ''
   editing.value = true
-  if (kindChanges.value) void readKinds(card.id)
+  if (kindChanges.value) void readKinds()
 }
 
 async function saveCard() {

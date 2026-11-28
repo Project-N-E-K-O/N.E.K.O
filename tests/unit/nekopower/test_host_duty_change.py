@@ -890,3 +890,39 @@ def test_in_dsh_a_session_is_told_with_every_commission_which_of_its_tools_its_p
     sizes = {now: count_tokens(preset_keeps_off_in_dsh(now, made[now])) for now in ("scout", "planner", "inspector")}
     # Measured 34 for the scout and the planner, 31 for the inspector.
     assert max(sizes.values()) <= 36, sizes
+
+
+async def test_a_session_given_another_preset_is_not_summed_up_while_idle_until_it_was_started_as_that(hosts, tmp_path):
+    llm = ScriptedLLM([_report("header fixed"), _report("looked")])
+    host = await _shop(hosts, tmp_path, llm)
+    manager = host.task_agents
+    await _done(host, "fix the header of the shop site")
+    # Where it last ran is where it would go: it can be summed up while idle.
+    assert await manager._idle_model(host.member) is not None
+
+    await host.change_duty(host.member, "scout")
+
+    # What is on record is where it goes next (its model is settled anew with its preset), not
+    # where it last ran: nothing of it goes there before the user goes on with it.
+    assert await manager._idle_model(host.member) is None
+    assert await manager._idle_compact(host.member) is False and len(llm.requests) == 1
+
+    await _done(host, "look at the footer of the shop site")
+    assert await manager._idle_model(host.member) is not None
+
+
+def test_a_text_that_was_refused_does_not_leave_its_note_to_be_taken_for_told():
+    from nekopower.host import task_agents as module
+
+    session = module._Session(commission_id="c1", session_id="s1")
+    # The first text tells it of a change of its preset; the runtime refuses it, and takes the next.
+    session.sent, session.numbered = 2, {7: 1, 8: 2}
+    session.started_as, session.started_as_with = "scout", 1
+    module._withdraw(session, 7)
+    # What is taken as the first from here on is the other text: it says nothing of the change.
+    assert session.started_as is None and session.numbered == {8: 1}
+    # Another text withdrawn leaves a note that is on its way alone.
+    session.sent, session.numbered = 2, {7: 1, 8: 2}
+    session.started_as, session.started_as_with = "scout", 1
+    module._withdraw(session, 8)
+    assert session.started_as == "scout"

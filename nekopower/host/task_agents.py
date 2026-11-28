@@ -664,6 +664,11 @@ def _withdraw(session: _Session, serial: Any) -> list[int]:
         for key in [key for key, value in session.numbered.items() if value == number]:
             del session.numbered[key]
     wakes = session.handed.pop(number, None) or []
+    if session.started_as is not None and number == session.started_as_with:
+        # The text that tells it of a change of its preset is the one it did not get: it is
+        # not taken to know of it by whatever is taken under that number next, and is told
+        # with its next start.
+        session.started_as = None
     told = session.copies_told.pop(number, None)
     if told:
         session.copies_dropped.extend(told)
@@ -11797,6 +11802,12 @@ class TaskAgentManager(TreeWork):
         is summed up for it: it is looked up when the time comes.)
         """
         kept = await self._ledger.get_session(session_id)
+        if kept is not None and kept.preset_told and kept.preset_told != kept.preset:
+            # Given another preset since its task agent last started, and with it the model it
+            # is sent to from its next start (``_settle_model_anew``): what is on record is
+            # where it goes next, not where it last ran. Nothing of it goes there until the
+            # user goes on with it, as below.
+            return None
         choice = await self.session_model(kept, record=False) if kept is not None else await self._new_session_model()
         config = choice.config
         if kept is not None and kept.model_ident and choice.ident != kept.model_ident:
