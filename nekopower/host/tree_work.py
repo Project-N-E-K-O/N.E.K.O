@@ -105,6 +105,10 @@ _GONE_SECONDS = 15.0
 # What a merge is said to have come to when files that clashed still hold conflict markers
 # (``MergeResult.detail``): nothing was merged, and nothing is put into the worktree anew.
 _MARKERS_LEFT = "conflict markers are left"
+# What a merge is said to have come to when binary, symlink, or modify/delete conflicts
+# prepared in a non-git working copy were left untouched without an explicit resolution.
+_UNRESOLVED_CONFLICTS = "unresolved non-text conflicts remain"
+_CONFLICT_NOT_READY: frozenset[str] = frozenset({_MARKERS_LEFT, _UNRESOLVED_CONFLICTS})
 # How a line begins that begins one side of a clash, and how much of a file is read at a time
 # when it is looked through for one.
 _MARKS = (b"<<<<<<< ", b">>>>>>> ")
@@ -729,17 +733,32 @@ class TreeWork:
         repo_root = row.repo_root or row.project_dir
         return bool(not repo_root or await self._repo_root_gone(repo_root))
 
-    async def _forget_gone_metadata(self, row: Tree) -> None:
+    async def _forget_gone_metadata(self, row: Tree, *, force: bool = False) -> None:
         """Drop lingering git registration/refs or non-git copy metadata for a gone worktree."""
         from nekopower.host import _copy_trees
+        from nekopower.host.worktrees import WorktreeError
 
-        copy_meta = await asyncio.to_thread(_copy_trees.read_copy_meta, Path(row.path))
-        if copy_meta is not None:
-            if row.project_dir and (not row.token or not copy_meta.get("token") or copy_meta.get("token") == row.token):
+        meta_dir_exists = await asyncio.to_thread(lambda: _copy_trees.copy_meta_dir(Path(row.path)).exists())
+        if meta_dir_exists:
+            try:
+                copy_meta = await asyncio.to_thread(_copy_trees.read_copy_meta, Path(row.path), strict=True)
+            except (OSError, ValueError) as exc:
+                raise WorktreeError(f"reading working-copy metadata for {row.path} failed: {exc}") from exc
+            if row.project_dir and (
+                copy_meta is None
+                or not row.token
+                or not copy_meta.get("token")
+                or copy_meta.get("token") == row.token
+            ):
                 try:
-                    await self.worktrees.forget_gone(row.project_dir, row.path, row.id, token=row.token)
+                    await self.worktrees.forget_gone(
+                        row.project_dir, row.path, row.id, token=row.token, force=force
+                    )
                 except TypeError:
-                    await self.worktrees.forget_gone(row.project_dir, row.path, row.id)
+                    try:
+                        await self.worktrees.forget_gone(row.project_dir, row.path, row.id, token=row.token)
+                    except TypeError:
+                        await self.worktrees.forget_gone(row.project_dir, row.path, row.id)
             return
         repo_root = row.repo_root or row.project_dir
         if repo_root and not await self._repo_root_gone(repo_root):
@@ -768,20 +787,19 @@ class TreeWork:
                 # The worktree was moved elsewhere and a link to it left here: what the link leads
                 # to is read, and removed, through no such link.
                 return False
-            if _is_empty(path):
-                # All of it went, and the directory itself did not (it was in use, or the host ended
-                # just then): nothing is lost with an empty directory, whoever made it. One that
-                # still cannot be removed stays on record as one to remove.
-                if before_delete is not None and not before_delete(path):
-                    return "aborted"
-                _remove_empty(path)
-                meta_dir = _copy_trees.copy_meta_dir(path)
-                if not path.exists() and meta_dir.exists():
-                    with contextlib.suppress(OSError):
-                        _copy_trees.remove_tree_safe(meta_dir)
-                return True
-            meta = _copy_trees.read_copy_meta(path)
-            if meta is not None and meta.get("id") == row.id and _same_dir(str(meta.get("project_dir") or ""), row.project_dir):
+            meta_dir = _copy_trees.copy_meta_dir(path)
+            if meta_dir.exists():
+                # Sidecar metadata exists: verify this directory and sidecar belong to ``row``
+                # BEFORE deleting even if ``path`` happens to be empty, so a newly created empty
+                # working copy at the same path is never wiped by a stale ledger row.
+                try:
+                    meta = _copy_trees.read_copy_meta(path, strict=True)
+                except (OSError, ValueError):
+                    return "incomplete"
+                if meta is None:
+                    return "incomplete"
+                if meta.get("id") != row.id or not _same_dir(str(meta.get("project_dir") or ""), row.project_dir):
+                    return False
                 from nekopower.host.worktrees import (
                     _directory_identity,
                     _fs,
@@ -801,10 +819,20 @@ class TreeWork:
                         _copy_trees.unlink_dependencies(path, meta.get("links") or ())
                         _copy_trees.remove_tree_safe(path)
                         if not path.exists():
-                            _copy_trees.remove_tree_safe(_copy_trees.copy_meta_dir(path))
+                            _copy_trees.remove_tree_safe(meta_dir)
                 finally:
                     if saved_times and os.path.lexists(_fs(path)):
                         _restore_surviving_dir_times(saved_times)
+                if meta_dir.exists():
+                    return "incomplete"
+                return True
+            if _is_empty(path):
+                # All of it went, and the directory itself did not (it was in use, or the host ended
+                # just then): nothing is lost with an empty directory, whoever made it. One that
+                # still cannot be removed stays on record as one to remove.
+                if before_delete is not None and not before_delete(path):
+                    return "aborted"
+                _remove_empty(path)
                 return True
             if not _says_it_is(path, row.id, row.repo_root):
                 return False
@@ -834,6 +862,8 @@ class TreeWork:
         status = await to_thread_through_cancellation(remove)
         if status == "aborted":
             return "aborted"
+        if status == "incomplete":
+            return False
         if not status:
             return None
         return await self._tree_is_gone(row)
@@ -932,6 +962,14 @@ class TreeWork:
                 raise
             except (WorktreeError, OSError) as exc:
                 logger.warning("worktree %s could not be removed: %s", row.id, exc)
+                gone = False
+        elif discarded and await self._tree_is_gone(row) and getattr(self.worktrees, "forget_gone", None) is not None:
+            try:
+                await self._forget_gone_metadata(row, force=True)
+            except asyncio.CancelledError:
+                raise
+            except (WorktreeError, OSError) as exc:
+                logger.warning("worktree %s metadata could not be cleaned up: %s", row.id, exc)
                 gone = False
         self._tree_handles.pop(row.id, None)
         self._trees_mine.discard(row.id)
@@ -1048,7 +1086,7 @@ class TreeWork:
             else:
                 # Directory is already gone; retry cleaning up lingering registration, refs, or copy metadata.
                 try:
-                    await self._forget_gone_metadata(row)
+                    await self._forget_gone_metadata(row, force=(row.reason != "expired"))
                 except asyncio.CancelledError:
                     raise
                 except (WorktreeError, OSError) as exc:
@@ -1344,7 +1382,12 @@ class TreeWork:
         if row is None:
             return ""
         kind, linked = await self._tree_kind_and_links(row)
-        template = texts.TASK_AGENT_IN_COPY if kind == "copy" else texts.TASK_AGENT_IN_TREE
+        if kind == "copy":
+            template = texts.TASK_AGENT_IN_COPY
+        elif linked:
+            template = texts.TASK_AGENT_IN_TREE_WITH_DEPS
+        else:
+            template = texts.TASK_AGENT_IN_TREE
         opening = template.format(tree=row.workdir, project=row.project_dir)
         if linked:
             opening += texts.TASK_AGENT_TREE_LINKED_DEPS.format(deps=", ".join(linked))
@@ -1640,21 +1683,29 @@ class TreeWork:
         return "again"
 
     async def _merge_or_markers(self, row: Tree, handle: Any, *, unless: Any = None, landing: Any = None) -> Any:
-        """Merge a worktree back (``_merge_back``), unless files that clashed in it still hold conflict markers.
+        """Merge a worktree back (``_merge_back``), unless clashed files still have markers or unresolved non-text conflicts.
 
         A task agent that was sent back to merge what clashed and says
-        it is done with the markers still there has not merged: landed
-        so, the markers would be text in the project's files. That is
-        told as one more clash of those files, with nothing merged.
+        it is done with the markers still there (or with binary, symlink,
+        or modify/delete conflicts left untouched) has not merged: landed
+        so, markers or unreviewed versions would overwrite the project's
+        files. That is told as one more clash of those files, with nothing
+        merged.
         """
+        from nekopower.host import _copy_trees
         from nekopower.host.worktrees import MergeResult
 
+        root = Path(handle.path)
         if row.conflicts:
-            root = Path(handle.path)
             left = await asyncio.to_thread(lambda: tuple(name for name in row.conflicts if _has_markers(root / name)))
             if left:
                 # (More said to it while the files were read is seen where this is acted on, ``_landed_or_not``.)
                 return MergeResult("conflict", conflicts=left, detail=_MARKERS_LEFT)
+        if getattr(handle, "kind", "git") == "copy":
+            unresolved = await asyncio.to_thread(_copy_trees.unresolved_non_marker_conflicts, root)
+            if unresolved:
+                names = tuple(name for name in unresolved if name) or tuple(row.conflicts)
+                return MergeResult("conflict", conflicts=names, detail=_UNRESOLVED_CONFLICTS)
         return await self._merge_back(row, handle, unless=unless, landing=landing)
 
     async def _send_back(self, commission_id: str, row: Tree, findings: str) -> None:
@@ -1938,8 +1989,9 @@ class TreeWork:
             return await self._at_work_again(row)
         if result.status == "conflict" and row.rounds < settings.LANDING_CONFLICT_ROUNDS:
             try:
-                if result.detail != _MARKERS_LEFT:
-                    # (Where markers are left, the worktree holds the merge as far as it went already.)
+                if result.detail not in _CONFLICT_NOT_READY:
+                    # (Where markers or unresolved non-text conflicts remain, the worktree holds
+                    # the prepared conflict state already.)
                     handle = await self.worktrees.prepare_conflicts(handle, result)
             except asyncio.CancelledError:
                 raise
@@ -1962,8 +2014,14 @@ class TreeWork:
                 "landing_conflict",
                 {"tree": row.id, "conflicts": list(result.conflicts[: settings.TREE_FILES_LISTED]), "round": row.rounds},
             )
+            if result.detail == _MARKERS_LEFT:
+                conflict_template = texts.TREE_MARKERS_LEFT
+            elif result.detail == _UNRESOLVED_CONFLICTS:
+                conflict_template = texts.TREE_UNRESOLVED_CONFLICTS
+            else:
+                conflict_template = texts.TREE_CONFLICT
             said = _Found(
-                (texts.TREE_MARKERS_LEFT if result.detail == _MARKERS_LEFT else texts.TREE_CONFLICT).format(
+                conflict_template.format(
                     files=names_text(result.conflicts, settings.TREE_FILES_LISTED, settings.LANDED_NOTE_MAX_TOKENS),
                     round=row.rounds,
                     rounds=settings.LANDING_CONFLICT_ROUNDS,
@@ -2534,7 +2592,7 @@ class TreeWork:
                 and await self._ledger.session_alive(taker)
             ):
                 try:
-                    if result.detail != _MARKERS_LEFT:
+                    if result.detail not in _CONFLICT_NOT_READY:
                         handle = await self.worktrees.prepare_conflicts(handle, result)
                 except (WorktreeError, OSError) as exc:
                     await self._ledger.update_tree(
@@ -2551,10 +2609,16 @@ class TreeWork:
                     "landing_conflict",
                     {"tree": row.id, "conflicts": answer["conflicts"], "round": 1, "by": "user"},
                 )
+                if result.detail == _MARKERS_LEFT:
+                    conflict_template = texts.TREE_MARKERS_LEFT
+                elif result.detail == _UNRESOLVED_CONFLICTS:
+                    conflict_template = texts.TREE_UNRESOLVED_CONFLICTS
+                else:
+                    conflict_template = texts.TREE_CONFLICT
                 said = _Found(
                     texts.TREE_TRY_AGAIN
                     + "\n\n"
-                    + (texts.TREE_MARKERS_LEFT if result.detail == _MARKERS_LEFT else texts.TREE_CONFLICT).format(
+                    + conflict_template.format(
                         files=names_text(result.conflicts, settings.TREE_FILES_LISTED, settings.LANDED_NOTE_MAX_TOKENS),
                         round=1,
                         rounds=settings.LANDING_CONFLICT_ROUNDS,
@@ -2565,6 +2629,33 @@ class TreeWork:
                 if await self._take_up_again(commission.id, said):
                     answer["resolving"] = True
                     return answer
+            if explicit_delivery:
+                # Prepare conflict markers and advance the worktree's start baseline to the
+                # explicit branch/PR target tip so the user can edit any third merged result
+                # and retry the same explicit delivery target without auto-resuming into WorkingFiles.
+                if result.detail not in _CONFLICT_NOT_READY:
+                    try:
+                        handle = await self.worktrees.prepare_conflicts(handle, result)
+                    except asyncio.CancelledError:
+                        raise
+                    except (WorktreeError, OSError) as exc:
+                        await self._ledger.update_tree(
+                            row.id,
+                            state="kept" if was_kept else "unlanded",
+                            reason=REASON_FAILED,
+                            conflicts=result.conflicts,
+                        )
+                        answer.update(status="failed", detail=str(exc))
+                        return answer
+                    self._tree_handles[row.id] = handle
+                await self._ledger.update_tree(
+                    row.id,
+                    state="kept" if was_kept else "unlanded",
+                    reason=REASON_CONFLICT,
+                    conflicts=result.conflicts,
+                    token=handle.token,
+                )
+                return answer
             # (One the user sees to personally stays that: its commission goes on in another.)
             await self._ledger.update_tree(
                 row.id, state="kept" if was_kept else "unlanded", reason=REASON_CONFLICT, conflicts=result.conflicts

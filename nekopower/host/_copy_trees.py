@@ -47,6 +47,7 @@ _BASE_MANIFEST_FILE = "base_manifest.json"
 _BLOBS_DIR = "blobs"
 _PENDING_DIR = "pending"
 _CONFLICTS_DIR = "conflicts"
+_UNRESOLVED_CONFLICTS_FILE = "unresolved.json"
 _ROLLBACK_INCOMPLETE_FILE = "rollback_incomplete.json"
 _LANDING_INTENT_FILE = "landing_intent.json"
 _XATTR_MISSING_ERRNOS = frozenset(
@@ -56,6 +57,15 @@ _XATTR_MISSING_ERRNOS = frozenset(
 
 class CopyCancelled(RuntimeError):
     """Raised inside a synchronous copy worker thread when cancellation is requested."""
+
+
+class CopyProjectDrifted(OSError):
+    """Raised when a target project file changed right before ``apply_copy_changes`` mutated it."""
+
+    def __init__(self, drifted: list[str], mutated: list[str]) -> None:
+        self.drifted = list(drifted)
+        self.mutated = list(mutated)
+        super().__init__(f"project files changed while landing ({', '.join(self.drifted[:5])}); merge again")
 
 
 def _check_cancelled(cancel_event: threading.Event | None) -> None:
@@ -619,6 +629,10 @@ def scan_copy_directory(
             if rel in active_set and link:
                 dirs.remove(dname)
                 continue
+            if not prefix and dname.lower() == ".git":
+                dirs.remove(dname)
+                skipped.append(rel + "/")
+                continue
             if not link and os.path.lexists(os.path.join(full, ".git")):
                 dirs.remove(dname)
                 skipped.append(rel + "/")
@@ -647,6 +661,9 @@ def scan_copy_directory(
 
         for fname in filenames:
             rel = f"{prefix}{fname}"
+            if not prefix and fname.lower() == ".git":
+                skipped.append(rel)
+                continue
             full = os.path.join(current, fname)
             if os.path.islink(full):
                 files[rel] = {"kind": "symlink", "target": os.readlink(full)}
@@ -1011,6 +1028,8 @@ def copy_has_changes(
         base_digest = str(base.get("digest") or "")
         if not (intent_digest and base_digest == intent_digest and base.get("source") == "landed"):
             return True
+    if unresolved_non_marker_conflicts(copy_path):
+        return True
     links = active_links(copy_path, meta.get("links") or ())
     base_files = base.get("files") or {}
     try:
@@ -1280,12 +1299,16 @@ def compute_copy_merge(
             return True
 
         if w_ent is None and _is_skipped_in_copy(rel):
-            # The working copy skipped this path (e.g. a nested Git repo, junction, or special file)
-            # rather than deleting it: leave the project's entry untouched.
-            copy_skipped_untouched.add(rel)
-            if c_ent is not None:
-                merged_entries[rel] = dict(c_ent)
-            continue
+            # If the copy replaced a tracked directory with a junction/link while the project
+            # concurrently modified a file beneath it, report a conflict (matching POSIX symlink
+            # behavior) instead of silently hiding the clash as unchanged.
+            if not (b_ent is not None and not _same_entry(c_ent, b_ent) and has_link_ancestor(copy_path, rel)):
+                # The working copy skipped this path (e.g. a nested Git repo, junction, or special file)
+                # rather than deleting it: leave the project's entry untouched.
+                copy_skipped_untouched.add(rel)
+                if c_ent is not None:
+                    merged_entries[rel] = dict(c_ent)
+                continue
 
         if _same_entry(w_ent, b_ent):
             if c_ent is not None:
@@ -1588,16 +1611,27 @@ def apply_copy_changes(
     merged_entries: Mapping[str, Mapping[str, Any]],
     merged_contents: Mapping[str, bytes],
     *,
+    expected_current: Mapping[str, Mapping[str, Any] | None] | None = None,
+    mutated_paths: list[str] | None = None,
     cancel_event: threading.Event | None = None,
 ) -> None:
-    """Write merged file changes into ``project_dir``."""
+    """Write merged file changes into ``project_dir``, re-checking each target against ``expected_current`` first."""
     deletes = [rel for rel, kind, _a, _d in changes if kind == "deleted"]
     writes = [(rel, kind) for rel, kind, _a, _d in changes if kind != "deleted"]
+    touched: list[str] = mutated_paths if mutated_paths is not None else []
+
+    def _assert_not_drifted(rel: str) -> None:
+        if expected_current is not None and rel in expected_current:
+            drifted = verify_project_unchanged(project_dir, {rel: expected_current[rel]})
+            if drifted:
+                raise CopyProjectDrifted(drifted, touched)
 
     for rel in deletes:
         _check_cancelled(cancel_event)
         if has_link_ancestor(project_dir, rel):
             raise OSError(f"refusing to delete through directory link: {rel}")
+        _assert_not_drifted(rel)
+        touched.append(rel)
         target = fs_path(project_dir / rel)
         if os.path.islink(target) or os.path.isfile(target):
             os.remove(target)
@@ -1614,6 +1648,8 @@ def apply_copy_changes(
         _check_cancelled(cancel_event)
         if has_link_ancestor(project_dir, rel):
             raise OSError(f"refusing to write through directory link: {rel}")
+        _assert_not_drifted(rel)
+        touched.append(rel)
         entry = merged_entries[rel]
         target_path = project_dir / rel
         target = fs_path(target_path)
@@ -1880,12 +1916,15 @@ def prepare_copy_conflicts_sync(
     # during rollback still blocks subsequent merges until recovered or discarded.
     old_base_bytes = (meta_dir / _BASE_MANIFEST_FILE).read_bytes()
     old_meta_bytes = (meta_dir / _META_FILE).read_bytes()
+    unresolved_file = meta_dir / _CONFLICTS_DIR / _UNRESOLVED_CONFLICTS_FILE
+    old_unresolved_bytes = unresolved_file.read_bytes() if unresolved_file.is_file() else None
     prep_backup_dir = meta_dir / _PENDING_DIR / f"prep-bak-{uuid.uuid4().hex}"
     prep_backup_dir.mkdir(parents=True, exist_ok=True)
     saved_entries: list[tuple[str, str, str | None]] = []
     mutated_copy = False
     mutated_base = False
     mutated_meta = False
+    mutated_unresolved = False
     rollback_failed = False
     # (rel, kind: 'absent' | 'dir' | 'file' | 'symlink', payload: backup filename or link target)
     try:
@@ -2014,6 +2053,18 @@ def prepare_copy_conflicts_sync(
                         if os.path.isfile(fs_path(src_blob)):
                             _store_blob_file(src_blob, sha, blobs_dir)
             _atomic_write_json(saved_dir / "versions.json", conflict_versions)
+            unresolved_entries: dict[str, dict[str, Any]] = {}
+            for rel in sorted(conflict_versions):
+                unresolved_entries[rel] = {
+                    "merge_id": merge_id,
+                    "snapshot": _snapshot_conflict_path(copy_path, rel),
+                }
+            mutated_unresolved = True
+            _atomic_write_json(unresolved_file, {"entries": unresolved_entries})
+        elif unresolved_file.is_file():
+            mutated_unresolved = True
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(fs_path(unresolved_file))
         new_start = str(pending["current"])
         mutated_base = True
         _atomic_write_json(
@@ -2102,6 +2153,16 @@ def prepare_copy_conflicts_sync(
             except OSError as rb_err:
                 rollback_failed = True
                 exc.add_note(f"rollback failed to restore {_META_FILE}: {rb_err}")
+        if mutated_unresolved:
+            try:
+                if old_unresolved_bytes is None:
+                    with contextlib.suppress(FileNotFoundError):
+                        os.unlink(fs_path(unresolved_file))
+                else:
+                    _atomic_write_bytes(unresolved_file, old_unresolved_bytes)
+            except OSError as rb_err:
+                rollback_failed = True
+                exc.add_note(f"rollback failed to restore {_UNRESOLVED_CONFLICTS_FILE}: {rb_err}")
         if rollback_failed:
             with contextlib.suppress(OSError):
                 _atomic_write_json(
@@ -2201,3 +2262,139 @@ def copy_matches_identity(
         if st.st_ino and (st.st_dev != noted_stat["dev"] or st.st_ino != noted_stat["ino"]):
             return "theirs"
     return "unknown"
+
+
+def _snapshot_conflict_path(copy_path: Path, rel: str) -> dict[str, Any]:
+    """Capture a content fingerprint of ``copy_path / rel`` right after conflict preparation."""
+    target = fs_path(copy_path / rel)
+    if not os.path.lexists(target):
+        return {"kind": "absent"}
+    if os.path.islink(target):
+        return {"kind": "symlink", "target": os.readlink(target)}
+    if is_dir_link(copy_path / rel) or os.path.isdir(target):
+        return {"kind": "dir"}
+    try:
+        st = os.lstat(target)
+        return {"kind": "file", "sha256": _hash_file(target), "size": st.st_size}
+    except OSError:
+        return {"kind": "unreadable"}
+
+
+def unresolved_non_marker_conflicts(copy_path: Path) -> tuple[str, ...]:
+    """Return copy paths with binary/symlink/modify-delete conflicts left untouched since preparation."""
+    meta_dir = copy_meta_dir(copy_path)
+    unresolved_file = meta_dir / _CONFLICTS_DIR / _UNRESOLVED_CONFLICTS_FILE
+    if not unresolved_file.is_file():
+        return ()
+    try:
+        raw = json.loads(unresolved_file.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ("",)
+    entries = raw.get("entries") if isinstance(raw, dict) else None
+    if not isinstance(entries, dict) or not entries:
+        return ()
+    still_unresolved: list[str] = []
+    for rel, info in sorted(entries.items()):
+        if not isinstance(rel, str) or not isinstance(info, dict):
+            continue
+        expected = info.get("snapshot")
+        if not isinstance(expected, dict):
+            still_unresolved.append(rel)
+            continue
+        current = _snapshot_conflict_path(copy_path, rel)
+        if current == expected:
+            still_unresolved.append(rel)
+    return tuple(still_unresolved)
+
+
+def resolve_copy_conflict_sync(
+    copy_path: Path,
+    rel: str,
+    *,
+    choose: Literal["worktree", "project"] = "worktree",
+) -> None:
+    """Explicitly settle a recorded non-text conflict in ``copy_path`` by choosing ``worktree`` or ``project``."""
+    if choose not in ("worktree", "project"):
+        raise ValueError(f"choose must be 'worktree' or 'project', got {choose!r}")
+    norm_rel = rel.replace("\\", "/").strip("/")
+    meta_dir = copy_meta_dir(copy_path)
+    if _has_incomplete_rollback(meta_dir):
+        raise ValueError(
+            f"working copy {copy_path} has an incomplete rollback backup under {meta_dir / _PENDING_DIR}; recover or discard it"
+        )
+    if _read_landing_intent(meta_dir) is not None:
+        raise ValueError(
+            f"working copy {copy_path} has an unfinalized landing under {meta_dir / _PENDING_DIR}; recover or discard it"
+        )
+    unresolved_file = meta_dir / _CONFLICTS_DIR / _UNRESOLVED_CONFLICTS_FILE
+    if not unresolved_file.is_file():
+        raise ValueError(f"no unresolved non-text conflict recorded for {norm_rel!r}")
+    try:
+        raw = json.loads(unresolved_file.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"could not read unresolved conflict state: {exc}") from exc
+    entries = dict(raw.get("entries") or {}) if isinstance(raw, dict) else {}
+    info = entries.get(norm_rel)
+    if not isinstance(info, dict):
+        raise ValueError(f"no unresolved non-text conflict recorded for {norm_rel!r}")
+    merge_id = str(info.get("merge_id") or "")
+    versions_file = meta_dir / _CONFLICTS_DIR / merge_id / "versions.json"
+    try:
+        versions = json.loads(versions_file.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"saved conflict versions for {norm_rel!r} are unavailable: {exc}") from exc
+    side_map = versions.get(norm_rel)
+    if not isinstance(side_map, dict) or choose not in side_map:
+        raise ValueError(f"saved conflict version {choose!r} for {norm_rel!r} is unavailable")
+    chosen = side_map[choose]
+    if has_link_ancestor(copy_path, norm_rel):
+        raise ValueError(f"refusing to resolve conflict through directory link: {norm_rel}")
+    target_path = copy_path / norm_rel
+    target = fs_path(target_path)
+    if chosen is None:
+        if os.path.islink(target) or os.path.isfile(target):
+            os.remove(target)
+        parent = target_path.parent
+        while parent != copy_path and relative_posix(parent, copy_path):
+            if is_dir_link(parent):
+                break
+            try:
+                os.rmdir(fs_path(parent))
+            except OSError:
+                break
+            parent = parent.parent
+    elif isinstance(chosen, dict) and chosen.get("kind") == "symlink":
+        os.makedirs(fs_path(target_path.parent), exist_ok=True)
+        if os.path.lexists(target):
+            if os.path.isdir(target) and not is_dir_link(target_path):
+                os.rmdir(target)
+            elif is_dir_link(target_path):
+                remove_dir_link(target_path)
+            else:
+                os.remove(target)
+        os.symlink(str(chosen["target"]), target)
+    elif isinstance(chosen, dict) and chosen.get("kind") == "file":
+        sha = str(chosen["sha256"])
+        blob = meta_dir / _BLOBS_DIR / sha
+        if not os.path.isfile(fs_path(blob)):
+            raise ValueError(f"saved blob {sha} for {norm_rel!r} ({choose}) is missing")
+        os.makedirs(fs_path(target_path.parent), exist_ok=True)
+        if os.path.lexists(target) and (os.path.islink(target) or os.path.isdir(target)):
+            if os.path.isdir(target) and not is_dir_link(target_path):
+                os.rmdir(target)
+            elif is_dir_link(target_path):
+                remove_dir_link(target_path)
+            else:
+                os.remove(target)
+        shutil.copyfile(fs_path(blob), target)
+        if sys.platform != "win32" and "mode" in chosen:
+            with contextlib.suppress(OSError):
+                os.chmod(target, int(chosen["mode"]))
+    else:
+        raise ValueError(f"unsupported conflict entry for {norm_rel!r}: {chosen!r}")
+    entries.pop(norm_rel, None)
+    if entries:
+        _atomic_write_json(unresolved_file, {"entries": entries})
+    else:
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(fs_path(unresolved_file))

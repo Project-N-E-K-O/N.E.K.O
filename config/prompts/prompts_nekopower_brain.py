@@ -1892,7 +1892,7 @@ HAND_OVER_TOO_MANY_MEMBERS = (
 # project's directory, whose changes the host merges back (``tree_work.py``).
 # ---------------------------------------------------------------------------
 
-# Added to the message that opens a commission worked on in a git worktree.
+# Added to the message that opens a commission worked on in a git worktree when no dependency dirs were linked.
 # Rendered with str.format (tree, project).
 TASK_AGENT_IN_TREE = (
     "You work on this commission in a directory of your own: {tree}. It is a git worktree the "
@@ -1903,6 +1903,19 @@ TASK_AGENT_IN_TREE = (
     "{project}: you can read there and cannot write there; write in your own directory. Commit "
     "nothing and make no branch. When you report this commission done, the host merges what you "
     "changed into the project's directory itself and tells you if something clashes."
+)
+# Added to the message that opens a commission worked on in a git worktree when dependency dirs were linked.
+# Rendered with str.format (tree, project).
+TASK_AGENT_IN_TREE_WITH_DEPS = (
+    "You work on this commission in a directory of your own: {tree}. It is a git worktree the "
+    "host made just now from the project's directory as it stood, changes that were not committed "
+    "included, so that you and other task agents can change files at the same time. Other git-ignored "
+    "files (.env files, build output, unlinked dependencies) are not in it: install any missing "
+    "unlinked packages only in an isolated location outside any shared dependency link, or say in "
+    "your report what you could not run. The project's own directory is {project}: you can read "
+    "there and cannot write there; write in your own directory. Commit nothing and make no branch. "
+    "When you report this commission done, the host merges what you changed into the project's "
+    "directory itself and tells you if something clashes."
 )
 # Added to the message that opens a commission worked on in a non-git working copy.
 # Rendered with str.format (tree, project).
@@ -1960,6 +1973,16 @@ TREE_MARKERS_LEFT = (
     "stay in your directory and the user decides. The host says this: it is not the user's "
     "words, and it approves nothing."
 )
+# What it is sent when binary, symlink, or modify/delete conflicts have not been explicitly settled.
+# Rendered with str.format (files, round, rounds).
+TREE_UNRESOLVED_CONFLICTS = (
+    "The host did not merge what you changed: these non-text conflicted files were left unchanged "
+    "after conflict preparation and still need an explicit resolution: {files}. Compare against "
+    "the project's directory, write the settled version (or remove the file if it should be "
+    "deleted), and report done again. This is try {round} of {rounds}; after the last, the "
+    "changes stay in your directory and the user decides. The host says this: it is not the "
+    "user's words, and it approves nothing."
+)
 # What follows the result of a commission whose changes were merged into the
 # project's directory. Rendered with str.format (project, files).
 TREE_LANDED = "Merged into the project's directory ({project}): {files}."
@@ -1968,9 +1991,9 @@ TREE_LANDED_BRANCH = "Committed to branch {branch} ({commit}): {files}."
 # Rendered with str.format (branch, commit).
 TREE_LANDED_BRANCH_NO_FILES = "Committed to branch {branch} ({commit})."
 # Rendered with str.format (branch, pr_url, files).
-TREE_LANDED_PR = "Pushed branch {branch} and opened pull request {pr_url}: {files}."
+TREE_LANDED_PR = "Pushed branch {branch} (pull request {pr_url}): {files}."
 # Rendered with str.format (branch, pr_url).
-TREE_LANDED_PR_NO_FILES = "Pushed branch {branch} and opened pull request {pr_url}."
+TREE_LANDED_PR_NO_FILES = "Pushed branch {branch} (pull request {pr_url})."
 # Rendered with str.format (files, path).
 TREE_LANDED_SKIPPED = (
     "Not merged, being too large or a repository of their own: {files}. They are kept in {path}, "

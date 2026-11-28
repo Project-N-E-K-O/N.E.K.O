@@ -924,6 +924,11 @@ class WorktreeManager:
                     worktree.path, "diff-files", "--name-only", "-z", timeout=settings.WORKTREE_GIT_WORK_SECONDS
                 )
                 touched = sorted({*touched, *(_decode(name) for name in dirty.stdout.split(b"\0") if name)})
+                if active:
+                    touched = [
+                        name for name in touched
+                        if not any(name == rel or name.startswith(rel + "/") for rel in active)
+                    ]
                 (saved / "files").mkdir()
                 # Waited for to the end: what a copy still writes could not be
                 # removed below (Windows), and would be left unreported.
@@ -1174,7 +1179,36 @@ class WorktreeManager:
                 self._forget_created_prs(worktree.path)
             return outcome
 
-    async def forget_gone(self, repo_root: Path | str, path: Path | str, worktree_id: str, *, token: str = "") -> None:
+    async def resolve_conflict(
+        self,
+        worktree: Worktree,
+        path: str,
+        *,
+        choose: Literal["worktree", "project"] = "worktree",
+    ) -> None:
+        """Explicitly resolve an unresolved non-text conflict in a working copy by choosing ``worktree`` or ``project``."""
+        if worktree.kind != "copy":
+            raise WorktreeError("resolve_conflict is only needed for non-git working-copy conflicts")
+        async with self._copy_lock(worktree.repo_root):
+            mismatch = await asyncio.to_thread(_verify_copy_handle, worktree)
+            if mismatch is not None:
+                raise WorktreeError(mismatch)
+            try:
+                await _to_the_end(
+                    asyncio.to_thread(_copy_trees.resolve_copy_conflict_sync, worktree.path, path, choose=choose)
+                )
+            except (ValueError, OSError) as exc:
+                raise WorktreeError(str(exc)) from exc
+
+    async def forget_gone(
+        self,
+        repo_root: Path | str,
+        path: Path | str,
+        worktree_id: str,
+        *,
+        token: str = "",
+        force: bool = False,
+    ) -> None:
         """Drop lingering registration, refs, or copy metadata for a worktree whose directory is already gone."""
         root = await asyncio.to_thread(_absolute, Path(repo_root))
         target = await asyncio.to_thread(_absolute, Path(path))
@@ -1189,7 +1223,27 @@ class WorktreeManager:
                     raise WorktreeError(
                         f"reading working-copy metadata for {target} failed ({exc}); leaving metadata intact"
                     ) from exc
+                if not force:
+                    has_incomplete = await asyncio.to_thread(_copy_trees._has_incomplete_rollback, meta_dir)
+                    has_intent = await asyncio.to_thread(lambda: _copy_trees._read_landing_intent(meta_dir) is not None)
+                    if has_incomplete or has_intent:
+                        raise WorktreeError(
+                            f"working copy {target} has pending recovery data under {meta_dir}; recover or discard explicitly"
+                        )
                 if meta is None:
+                    def _prune_empty(directory: Path) -> bool:
+                        try:
+                            os.rmdir(_fs(directory))
+                            return True
+                        except FileNotFoundError:
+                            return True
+                        except OSError:
+                            return False
+
+                    if not await _to_the_end(asyncio.to_thread(_prune_empty, meta_dir)):
+                        raise WorktreeError(
+                            f"{target} is missing meta.json while {meta_dir} is not empty; leaving metadata intact"
+                        )
                     return
                 if token and meta.get("token") and meta["token"] != token:
                     raise WorktreeError(
@@ -2218,15 +2272,17 @@ class WorktreeManager:
                             False,
                             f"remote branch {target_branch!r} already exists on {remote_name!r} and does not belong to this worktree",
                         )
-                # Atomic create-only push: an empty lease value rejects if the ref is created concurrently.
+                # Atomic create-only push: an empty lease value rejects if the ref is created concurrently,
+                # and pushing the exact commit OID prevents a concurrent local fast-forward from leaking.
                 pushed = await self._git(
                     root,
                     "push",
                     "--no-verify",
+                    "--no-follow-tags",
                     f"--force-with-lease={ref_name}:",
                     "--",
                     remote_name,
-                    f"{ref_name}:{ref_name}",
+                    f"{commit_to_push}:{ref_name}",
                     check=False,
                     timeout=settings.WORKTREE_PR_TIMEOUT_SECONDS,
                 )
@@ -2235,9 +2291,10 @@ class WorktreeManager:
                     root,
                     "push",
                     "--no-verify",
+                    "--no-follow-tags",
                     "--",
                     remote_name,
-                    f"{ref_name}:{ref_name}",
+                    f"{commit_to_push}:{ref_name}",
                     check=False,
                     timeout=settings.WORKTREE_PR_TIMEOUT_SECONDS,
                 )
@@ -2813,6 +2870,23 @@ class WorktreeManager:
         cached_pr = self._created_prs.get(pr_cache_key) if not existing_pr_url else None
 
         can_verify_pr = pr.find_pr is not None or pr.create_pr is None
+        gh_repo_selector: str | None = None
+        if pr.create_pr is None:
+            gh_repo_selector = await self._gh_repo_selector(root, remote_name)
+            if not gh_repo_selector:
+                return MergeResult(
+                    "failed",
+                    detail=(
+                        f"could not determine repository selector from remote {remote_name!r} for {pr.gh!r}; "
+                        "configure a GitHub remote URL or provide a custom create_pr callback"
+                    ),
+                    skipped=result.skipped,
+                    result=result.commit,
+                    result_tree=result.tree,
+                    base=base,
+                    branch=target_branch,
+                    remote=remote_name,
+                )
         branch_result = await self._land_on_branch(
             worktree,
             result,
@@ -2899,7 +2973,7 @@ class WorktreeManager:
                 live_pr = (
                     await pr.find_pr(verify_request)
                     if pr.find_pr is not None
-                    else await self._find_existing_pr_with_gh(pr.gh, verify_request)
+                    else await self._find_existing_pr_with_gh(pr.gh, verify_request, repo_selector=gh_repo_selector)
                 )
             except asyncio.CancelledError:
                 raise
@@ -3006,12 +3080,12 @@ class WorktreeManager:
                     if found_pr is not None and found_pr.url:
                         info = found_pr
                 elif pr.create_pr is None:
-                    info = await self._find_existing_pr_with_gh(pr.gh, request)
+                    info = await self._find_existing_pr_with_gh(pr.gh, request, repo_selector=gh_repo_selector)
             if info is None:
                 info = (
                     await pr.create_pr(request)
                     if pr.create_pr is not None
-                    else await self._create_pr_with_gh(pr.gh, request)
+                    else await self._create_pr_with_gh(pr.gh, request, repo_selector=gh_repo_selector)
                 )
         except asyncio.CancelledError:
             raise
@@ -3108,11 +3182,15 @@ class WorktreeManager:
             raise
         return int(process.returncode or 0), stdout, stderr
 
-    async def _find_existing_pr_with_gh(self, gh_program: str, request: PRRequest) -> PRInfo | None:
-        args = ["pr", "list"]
-        repo_selector = await self._gh_repo_selector(request.repo_root, request.remote)
-        if repo_selector:
-            args.extend(["--repo", repo_selector])
+    async def _find_existing_pr_with_gh(
+        self, gh_program: str, request: PRRequest, *, repo_selector: str | None = None
+    ) -> PRInfo | None:
+        resolved_selector = repo_selector if repo_selector is not None else await self._gh_repo_selector(request.repo_root, request.remote)
+        if not resolved_selector:
+            raise WorktreeError(
+                f"could not determine repository selector from remote {request.remote!r} for {gh_program!r}"
+            )
+        args = ["pr", "list", "--repo", resolved_selector]
         args.extend([
             "--head",
             request.branch,
@@ -3168,11 +3246,15 @@ class WorktreeManager:
             return PRInfo(url=url, number=number)
         return None
 
-    async def _create_pr_with_gh(self, gh_program: str, request: PRRequest) -> PRInfo:
-        args = ["pr", "create"]
-        repo_selector = await self._gh_repo_selector(request.repo_root, request.remote)
-        if repo_selector:
-            args.extend(["--repo", repo_selector])
+    async def _create_pr_with_gh(
+        self, gh_program: str, request: PRRequest, *, repo_selector: str | None = None
+    ) -> PRInfo:
+        resolved_selector = repo_selector if repo_selector is not None else await self._gh_repo_selector(request.repo_root, request.remote)
+        if not resolved_selector:
+            raise WorktreeError(
+                f"could not determine repository selector from remote {request.remote!r} for {gh_program!r}"
+            )
+        args = ["pr", "create", "--repo", resolved_selector]
         args.extend([
             "--head",
             request.branch,
@@ -3196,7 +3278,9 @@ class WorktreeManager:
             combined = (stderr + b"\n" + stdout).decode("utf-8", "replace")
             if "already exists" in combined.lower():
                 with contextlib.suppress(WorktreeError):
-                    recovered = await self._find_existing_pr_with_gh(gh_program, request)
+                    recovered = await self._find_existing_pr_with_gh(
+                        gh_program, request, repo_selector=resolved_selector
+                    )
                     if recovered is not None:
                         return recovered
             raise WorktreeError(_failure(f"{gh_program} pr create", stderr or stdout))
@@ -3355,6 +3439,13 @@ class WorktreeManager:
         mismatch = await asyncio.to_thread(_verify_copy_handle, worktree)
         if mismatch is not None:
             return MergeResult("failed", detail=mismatch)
+        unresolved = await asyncio.to_thread(_copy_trees.unresolved_non_marker_conflicts, worktree.path)
+        if unresolved:
+            return MergeResult(
+                "conflict",
+                conflicts=tuple(item for item in unresolved if item),
+                detail="unresolved non-text conflicts remain",
+            )
         compute_stop = threading.Event()
         computed = await self._run_copy_worker(
             _copy_trees.compute_copy_merge,
@@ -3440,6 +3531,7 @@ class WorktreeManager:
                 raise
             stop = threading.Event()
             landed_ok = False
+            mutated_paths: list[str] = []
             try:
                 await self._run_copy_worker(
                     _copy_trees.apply_copy_changes,
@@ -3448,6 +3540,8 @@ class WorktreeManager:
                     computed["merged_entries"],
                     computed["merged_contents"],
                     stop=stop,
+                    expected_current=expected_current,
+                    mutated_paths=mutated_paths,
                     cancel_event=stop,
                 )
                 ok = await self._run_copy_worker(
@@ -3463,10 +3557,17 @@ class WorktreeManager:
                     landed_ok = True
             except BaseException as error:
                 stop.set()
-                if isinstance(error, OSError):
+                if isinstance(error, _copy_trees.CopyProjectDrifted):
+                    detail = str(error)
+                elif isinstance(error, OSError):
                     detail = f"writing the changes failed: {error}"
                 else:
-                    putting = asyncio.ensure_future(asyncio.to_thread(_restore, project_dir, saved))
+                    to_restore = (
+                        [entry for entry in saved if entry.name in set(mutated_paths)]
+                        if mutated_paths
+                        else []
+                    )
+                    putting = asyncio.ensure_future(asyncio.to_thread(_restore, project_dir, to_restore))
                     cancelled = await _settle(putting)
                     if putting.exception() is not None:
                         keep = True
@@ -3487,7 +3588,14 @@ class WorktreeManager:
                     asyncio.to_thread(_copy_trees.advance_copy_baseline, worktree.path, computed["result_scan"])
                 )
                 return MergeResult("landed", **counted)
-            restoring = asyncio.ensure_future(asyncio.to_thread(_restore, project_dir, saved))
+            # Only restore paths actually mutated during apply_copy_changes so a concurrently edited
+            # drifted file is never overwritten with stale backup contents.
+            to_restore = (
+                [entry for entry in saved if entry.name in set(mutated_paths)]
+                if mutated_paths
+                else []
+            )
+            restoring = asyncio.ensure_future(asyncio.to_thread(_restore, project_dir, to_restore))
             cancelled = await _settle(restoring)
             left = restoring.result()
             keep = bool(left)
@@ -4152,7 +4260,7 @@ def _in_the_way(
         if path in ignored or any(up in ignored for up in _parents(path)):
             continue
         full = _fs(root / path)
-        if _is_file_or_link(full) or (os.path.isdir(full) and _holds_unsaved(root, path, held)):
+        if _is_file_or_link(full) or (os.path.isdir(full) and _holds_unsaved(root, path, held, ignore_links=ignored)):
             hit.add(path)
         for up in _parents(path):
             if up in ignored:
@@ -4292,14 +4400,28 @@ def _remove_files(root: Path, names: list[str]) -> None:
             os.remove(target)
 
 
-def _holds_unsaved(root: Path, directory: str, held: set[str]) -> bool:
+def _holds_unsaved(root: Path, directory: str, held: set[str], ignore_links: set[str] | None = None) -> bool:
     """Return whether ``directory`` under ``root`` has a file or link that ``held`` has not."""
+    ignored = ignore_links or set()
     top = _fs(root / directory)
     for current, dirs, files in os.walk(top):
-        names = files + [name for name in dirs if os.path.islink(os.path.join(current, name))]
-        for name in names:
-            relative = os.path.relpath(os.path.join(current, name), top).replace(os.sep, "/")
-            if f"{directory}/{relative}" not in held:
+        for name in list(dirs):
+            full_dir = os.path.join(current, name)
+            relative = os.path.relpath(full_dir, top).replace(os.sep, "/")
+            rel_path = f"{directory}/{relative}"
+            if _copy_trees.is_dir_link(full_dir):
+                dirs.remove(name)
+                if rel_path in ignored:
+                    continue
+                if rel_path not in held:
+                    return True
+        for name in files:
+            full_file = os.path.join(current, name)
+            relative = os.path.relpath(full_file, top).replace(os.sep, "/")
+            rel_path = f"{directory}/{relative}"
+            if rel_path in ignored and os.path.islink(full_file):
+                continue
+            if rel_path not in held:
                 return True
     return False
 
@@ -4733,9 +4855,9 @@ def _noted_links(common_dir: Path, path: Path) -> tuple[str, ...]:
 
 
 def _note_delivery(common_dir: Path, path: Path, payload: Mapping[str, Any]) -> None:
-    entry = _registration_of(common_dir, path)
+    entry = _registration_of(common_dir, path, strict=True)
     if entry is None:
-        return
+        raise OSError(f"worktree registration for {path} not found under {common_dir / 'worktrees'}")
     _copy_trees._atomic_write_json(entry / _DELIVERY_NOTE, dict(payload))
 
 
