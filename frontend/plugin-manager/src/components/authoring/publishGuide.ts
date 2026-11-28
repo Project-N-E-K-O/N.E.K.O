@@ -5,7 +5,8 @@
  *
  * Written in full in Simplified Chinese and English; every other locale shows
  * the English guide. Text may hold `{repo}`, `{tag}`, `{version}`, `{branch}`,
- * `{pluginId}` and `{dir}`, filled from the project's publish status.
+ * `{firstPush}`, `{pluginId}` and `{dir}`, filled from the project's publish
+ * status; `{branch}` and `{firstPush}` come quoted for the shell.
  */
 import type { PublishPageId, ToolId } from '@/components/authoring/publishFlow'
 import { enUS } from '@/components/authoring/publishGuide.en'
@@ -61,7 +62,9 @@ export interface PublishGuide {
   tools: Record<ToolId, ToolGuide>
 }
 
-export type GuideParams = Partial<Record<'repo' | 'tag' | 'version' | 'branch' | 'pluginId' | 'dir', string>>
+export type GuideParams = Partial<
+  Record<'repo' | 'tag' | 'version' | 'branch' | 'firstPush' | 'pluginId' | 'dir', string>
+>
 
 /** Fill `{name}` placeholders; an unknown or empty value keeps a readable placeholder. */
 export function fillGuide(text: string, params: GuideParams): string {

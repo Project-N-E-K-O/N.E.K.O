@@ -183,6 +183,8 @@ const messages: AuthoringMessages = {
   publishRepoNotPublic: 'GitHub リポジトリが存在し、公開されている必要があります。',
   publishRepoUncommitted: 'ワークツリーに未コミットの変更があります。先にコミットしてください。',
   publishRepoUnpushed: 'HEAD がまだプッシュされていません。{command} を実行してください。',
+  publishRepoPushToOrigin: 'HEAD がまだプッシュされていません。origin のブランチにプッシュしてください。',
+  publishRepoPushFillIn: 'コマンドの {placeholder} は次の値に置き換えてください：{value}',
   publishVerifyPassed: '標準の検証ワークフローがこのコミットで成功しました。',
   publishReleaseReady: 'Release {tag} は全アセット付きで公開済みです。',
   publishReleaseMissing: 'Release {tag} はまだ存在しません。',

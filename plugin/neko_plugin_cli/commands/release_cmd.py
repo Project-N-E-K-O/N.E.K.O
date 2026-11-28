@@ -739,15 +739,15 @@ _SHELL_PLAIN = re.compile(r"[\w+:./-][\w@+=:./-]*")
 def _push_refspec(branch: str, remote_branch: str | None = None) -> str:
     """The ``git push`` refspec for exactly these branches.
 
-    A branch name may start with +, which git reads as "force" at the start of
-    a refspec (``git push origin +main`` force-pushes main), and no quoting
-    hides it from git. Such a side is spelled out as refs/heads/<name>.
+    Each side is spelled out as refs/heads/<name>. A short name is refused
+    when a tag of the same name exists (``src refspec main matches more than
+    one``), and a name starting with + would read as "force" at the start of
+    a refspec (``git push origin +main`` force-pushes main); no quoting hides
+    either from git.
     """
-
-    def side(name: str) -> str:
-        return f"refs/heads/{name}" if name.startswith("+") else name
-
-    return side(branch) if remote_branch is None else f"{side(branch)}:{side(remote_branch)}"
+    if remote_branch is None:
+        return f"refs/heads/{branch}"
+    return f"refs/heads/{branch}:refs/heads/{remote_branch}"
 
 
 class PushHint(NamedTuple):
@@ -764,8 +764,8 @@ def _push_hint(branch: str, remote_branch: str | None = None) -> PushHint:
 
     The refspec is one quoted argument (``<branch>:<remote_branch>`` when the
     names differ: a bare ``git push`` is refused under push.default=simple).
-    The fill-in is the refspec, not the raw branch, so a leading + stays
-    spelled out when the user types it in.
+    The fill-in is the refspec, not the raw branch, so the user types in the
+    spelled-out refs/heads/ form too.
     """
     if remote_branch is None or remote_branch == branch:
         refspec, placeholder = _push_refspec(branch), _BRANCH_PLACEHOLDER
@@ -781,18 +781,26 @@ def _push_hint(branch: str, remote_branch: str | None = None) -> PushHint:
 
 
 def _push_hint_notes(hint: PushHint) -> tuple[str, str, str]:
-    """English, Chinese and Japanese notes naming what fills the placeholder, or blanks.
+    """English, Chinese and Japanese sentences naming what fills the placeholder, or blanks.
 
-    Each follows the command directly (the English one starts with a space).
+    Each is a sentence of its own, never written onto the command: the value
+    is shown only because no quoting keeps it literal, so a user who copies
+    the command together with it would run it in their shell.
     """
     if hint.fill_in is None:
         return ("", "", "")
     name = hint.placeholder.strip('"')
     return (
-        f" (for {name}: {hint.fill_in})",
-        f"（{name} 处填写：{hint.fill_in}）",
-        f"（{name} に入れる値：{hint.fill_in}）",
+        f"In that command, {name} stands for: {hint.fill_in}",
+        f"命令中的 {name} 代表：{hint.fill_in}",
+        f"コマンドの {name} に入る値：{hint.fill_in}",
     )
+
+
+def _after_command(notes: tuple[str, str, str]) -> tuple[str, str, str]:
+    """``notes`` as the sentences that follow a message ending in a command."""
+    en, zh, ja = notes
+    return (f". {en}" if en else "", f"。{zh}" if zh else "", f"。{ja}" if ja else "")
 
 
 def _shell_argument(value: str, placeholder: str) -> str:

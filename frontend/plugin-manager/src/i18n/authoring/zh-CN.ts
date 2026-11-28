@@ -173,6 +173,8 @@ const messages: AuthoringMessages = {
   publishRepoNotPublic: 'GitHub 仓库必须存在且公开。',
   publishRepoUncommitted: '工作区有未提交的修改，请先提交。',
   publishRepoUnpushed: 'HEAD 尚未推送，请运行 {command}。',
+  publishRepoPushToOrigin: 'HEAD 尚未推送，请推送到 origin 分支。',
+  publishRepoPushFillIn: '请把命令里的 {placeholder} 换成：{value}',
   publishVerifyPassed: '标准验证工作流已在此提交上通过。',
   publishReleaseReady: 'Release {tag} 已发布，资产齐全。',
   publishReleaseMissing: 'Release {tag} 尚不存在。',

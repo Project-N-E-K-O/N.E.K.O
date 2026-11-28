@@ -181,6 +181,8 @@ const messages: AuthoringMessages = {
   publishRepoNotPublic: 'El repositorio de GitHub debe existir y ser público.',
   publishRepoUncommitted: 'El árbol de trabajo tiene cambios sin confirmar; confírmalos primero.',
   publishRepoUnpushed: 'HEAD aún no se ha enviado; ejecuta {command}.',
+  publishRepoPushToOrigin: 'HEAD aún no se ha enviado; envíalo a su rama de origin.',
+  publishRepoPushFillIn: 'En ese comando, sustituye {placeholder} por: {value}',
   publishVerifyPassed: 'El flujo de verificación estándar pasó en este commit.',
   publishReleaseReady: 'Release {tag} está publicado con todos sus recursos.',
   publishReleaseMissing: 'Release {tag} aún no existe.',

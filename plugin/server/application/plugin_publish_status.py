@@ -11,7 +11,7 @@ import asyncio
 import time
 from dataclasses import asdict
 from pathlib import Path
-from typing import Literal, NamedTuple, TypedDict
+from typing import TYPE_CHECKING, Literal, NamedTuple, TypedDict
 from urllib.parse import quote
 
 from plugin.neko_plugin_cli.core.plugin_source import load_plugin_source
@@ -29,6 +29,9 @@ from plugin.utils.github_release import (
     workflow_run_state as _run_state,
 )
 from plugin.utils.http_imports import ensure_httpx
+
+if TYPE_CHECKING:
+    from plugin.neko_plugin_cli.commands.release_cmd import PushHint
 
 _GITHUB_API = "https://api.github.com"
 _CACHE_SECONDS = 60.0
@@ -82,12 +85,12 @@ class LocalStatus(NamedTuple):
     actions: dict[str, str]
 
 
-def push_command(state: RepoState) -> str | None:
+def push_hint(state: RepoState) -> PushHint | None:
     """The git push that gets HEAD to its origin branch, None when none is due.
 
-    Quoted as the CLI prints it, with a note when it shows a placeholder.
+    Quoted as the CLI prints it; ``fill_in`` names the value of a placeholder.
     """
-    from plugin.neko_plugin_cli.commands.release_cmd import _push_hint, _push_hint_notes
+    from plugin.neko_plugin_cli.commands.release_cmd import _push_hint
 
     if not state.branch or state.head is None or state.head_pushed is True:
         return None
@@ -95,10 +98,35 @@ def push_command(state: RepoState) -> str | None:
     if remote == "origin" and remote_branch:
         # Named in full: a bare git push is refused for a differently named
         # upstream under push.default=simple.
-        hint = _push_hint(state.branch, remote_branch)
-    else:
-        hint = _push_hint(state.branch)
-    return hint.command + _push_hint_notes(hint)[0]
+        return _push_hint(state.branch, remote_branch)
+    return _push_hint(state.branch)
+
+
+def repository_status(state: RepoState) -> dict[str, object]:
+    """``state`` plus the quoted commands the publish page shows for it.
+
+    A placeholder's value travels in its own field, never inside a command:
+    a value that cannot be quoted for the user's shell would run when pasted.
+    """
+    from plugin.neko_plugin_cli.commands.release_cmd import (
+        _BRANCH_PLACEHOLDER,
+        _push_hint,
+        _shell_argument,
+    )
+
+    due = push_hint(state)
+    first_push = _push_hint(state.branch) if state.branch else None
+    return {
+        **asdict(state),
+        "push_command": due.command if due else None,
+        "push_fill_in": (
+            {"placeholder": due.placeholder.strip('"'), "value": due.fill_in}
+            if due and due.fill_in is not None
+            else None
+        ),
+        "branch_argument": _shell_argument(state.branch, _BRANCH_PLACEHOLDER) if state.branch else None,
+        "set_upstream_command": first_push.command if first_push else None,
+    }
 
 
 def read_local_status(project_id: str) -> LocalStatus:
@@ -337,7 +365,7 @@ async def get_publish_status(project_id: str, *, fresh: bool = False) -> dict[st
     return {
         "plugin_id": local.plugin_id,
         "version": local.version,
-        "repository": {**asdict(state), "push_command": push_command(state)},
+        "repository": repository_status(state),
         "actions": local.actions,
         "remote": remote,
         "workspace": asdict(workspace) if workspace else None,

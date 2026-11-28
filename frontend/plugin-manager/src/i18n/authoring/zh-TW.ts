@@ -173,6 +173,8 @@ const messages: AuthoringMessages = {
   publishRepoNotPublic: 'GitHub 儲存庫必須存在且公開。',
   publishRepoUncommitted: '工作區有未提交的變更，請先提交。',
   publishRepoUnpushed: 'HEAD 尚未推送，請執行 {command}。',
+  publishRepoPushToOrigin: 'HEAD 尚未推送，請推送到 origin 分支。',
+  publishRepoPushFillIn: '請把指令裡的 {placeholder} 換成：{value}',
   publishVerifyPassed: '標準驗證工作流程已在此提交上通過。',
   publishReleaseReady: 'Release {tag} 已發布，資產齊全。',
   publishReleaseMissing: 'Release {tag} 尚不存在。',

@@ -179,6 +179,8 @@ const messages: AuthoringMessages = {
   publishRepoNotPublic: 'GitHub 저장소가 존재하고 공개되어 있어야 합니다.',
   publishRepoUncommitted: '작업 트리에 커밋되지 않은 변경 사항이 있습니다. 먼저 커밋하세요.',
   publishRepoUnpushed: 'HEAD가 아직 푸시되지 않았습니다. {command}을(를) 실행하세요.',
+  publishRepoPushToOrigin: 'HEAD가 아직 푸시되지 않았습니다. origin 브랜치에 푸시하세요.',
+  publishRepoPushFillIn: '명령의 {placeholder} 부분을 다음 값으로 바꾸세요: {value}',
   publishVerifyPassed: '표준 검증 워크플로가 이 커밋에서 통과했습니다.',
   publishReleaseReady: 'Release {tag}가 모든 자산과 함께 게시되었습니다.',
   publishReleaseMissing: 'Release {tag}가 아직 없습니다.',

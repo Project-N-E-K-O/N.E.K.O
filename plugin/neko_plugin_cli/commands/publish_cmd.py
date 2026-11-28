@@ -561,7 +561,9 @@ def _ensure_clean_worktree(plugin_dir: Path) -> None:
 
 
 def _ensure_head_pushed(plugin_dir: Path, *, head: str) -> None:
-    branch = git_output(plugin_dir, "symbolic-ref", "--short", "-q", "HEAD")
+    # Not --short: it gives heads/main when a tag is also named main.
+    ref = git_output(plugin_dir, "symbolic-ref", "-q", "HEAD")
+    branch = ref.removeprefix("refs/heads/") if ref and ref.startswith("refs/heads/") else None
     if not branch:
         raise RuntimeError(
             _tri(
@@ -570,9 +572,9 @@ def _ensure_head_pushed(plugin_dir: Path, *, head: str) -> None:
                 "HEAD がデタッチ状態です。公開するブランチをチェックアウトしてください",
             )
         )
-    # Quoted like init's push step, with a note naming what fills a placeholder.
+    # Quoted like init's push step; what fills a placeholder is a sentence of its own.
     set_upstream = release_cmd._push_hint(branch)
-    up_en, up_zh, up_ja = release_cmd._push_hint_notes(set_upstream)
+    up_en, up_zh, up_ja = release_cmd._after_command(release_cmd._push_hint_notes(set_upstream))
     upstream = git_output(
         plugin_dir,
         "rev-parse",
@@ -585,7 +587,7 @@ def _ensure_head_pushed(plugin_dir: Path, *, head: str) -> None:
             _tri(
                 f"branch {branch} has no upstream; run {set_upstream.command}{up_en}",
                 f"分支 {branch} 没有上游分支；请运行 {set_upstream.command}{up_zh}",
-                f"ブランチ {branch} に上流ブランチがありません。{set_upstream.command}{up_ja} を実行してください",
+                f"ブランチ {branch} に上流ブランチがありません。{set_upstream.command} を実行してください{up_ja}",
             )
         )
     remote, _, remote_branch = upstream.partition("/")
@@ -594,19 +596,19 @@ def _ensure_head_pushed(plugin_dir: Path, *, head: str) -> None:
             _tri(
                 f"branch {branch} tracks {upstream}, not an origin branch; run {set_upstream.command}{up_en}",
                 f"分支 {branch} 跟踪的是 {upstream}，不是 origin 上的分支；请运行 {set_upstream.command}{up_zh}",
-                f"ブランチ {branch} は origin ではなく {upstream} を追跡しています。{set_upstream.command}{up_ja} を実行してください",
+                f"ブランチ {branch} は origin ではなく {upstream} を追跡しています。{set_upstream.command} を実行してください{up_ja}",
             )
         )
     output = _git(plugin_dir, "ls-remote", "origin", f"refs/heads/{remote_branch}")
     remote_head = output.split(maxsplit=1)[0] if output else None
     if remote_head != head:
         push = release_cmd._push_hint(branch, remote_branch)
-        en, zh, ja = release_cmd._push_hint_notes(push)
+        en, zh, ja = release_cmd._after_command(release_cmd._push_hint_notes(push))
         raise RuntimeError(
             _tri(
                 f"HEAD is not pushed to origin/{remote_branch}; run {push.command}{en}",
                 f"HEAD 尚未推送到 origin/{remote_branch}；请运行 {push.command}{zh}",
-                f"HEAD が origin/{remote_branch} に push されていません。{push.command}{ja} を実行してください",
+                f"HEAD が origin/{remote_branch} に push されていません。{push.command} を実行してください{ja}",
             )
         )
 

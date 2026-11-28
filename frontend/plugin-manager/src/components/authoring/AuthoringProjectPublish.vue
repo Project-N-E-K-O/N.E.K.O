@@ -301,7 +301,12 @@ const pagerSteps = computed(() =>
       ]
     : []
 )
-const text = (message: FlowMessage) => t(`authoring.${message.key}`, message.params ?? {})
+const text = (message: FlowMessage): string => {
+  const sentence = t(`authoring.${message.key}`, message.params ?? {})
+  if (!message.then) return sentence
+  // No space after a full-width full stop (zh, ja).
+  return `${sentence}${/[。．！？]$/.test(sentence) ? '' : ' '}${text(message.then)}`
+}
 const taskActive = computed(() => !!task.value && publishTaskActive(task.value))
 const stepRef = (id: PublishPageId) => ({
   n: PUBLISH_PAGE_ORDER.indexOf(id),
@@ -316,7 +321,10 @@ const guideParams = computed<GuideParams>(() => ({
   repo: status.value?.repository.github_repository ?? undefined,
   tag: status.value?.repository.tag,
   version: status.value?.version,
-  branch: status.value?.repository.branch ?? 'main',
+  // Quoted by the server for the shell, never built here; main before the
+  // project has a repository.
+  branch: status.value?.repository.branch_argument ?? 'main',
+  firstPush: status.value?.repository.set_upstream_command ?? 'git push -u origin refs/heads/main',
   pluginId: status.value?.plugin_id,
   dir: props.sourceDir,
 }))

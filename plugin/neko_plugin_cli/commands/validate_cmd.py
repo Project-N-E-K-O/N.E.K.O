@@ -1978,11 +1978,14 @@ def _check_symlink_tree(
                             # link whatever the rules say, and keep scanning.
                             ignored_links.append(path)
                             continue
+                        if link_is_dir and path.is_symlink():
+                            # The build's walk does not follow a directory
+                            # symlink: it makes an empty directory and copies
+                            # nothing from the target.
+                            continue
                         # The build walks into a junction, so it is judged as
-                        # a subtree like the pruning above; a directory
-                        # symlink stays one entry, judged by the full rules.
-                        is_junction = link_is_dir and not path.is_symlink()
-                        link_rules = tree_rules if is_junction else rules
+                        # a subtree like the pruning above.
+                        link_rules = tree_rules if link_is_dir else rules
                         if not should_skip_path(path.relative_to(plugin_dir), is_dir=link_is_dir, rules=link_rules):
                             ignored_links.append(path)
             directories[:] = [name for name in directories if name not in linked]

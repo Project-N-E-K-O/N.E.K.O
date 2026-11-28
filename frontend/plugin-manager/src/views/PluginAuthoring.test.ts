@@ -167,6 +167,9 @@ function publishStatus(overrides: {
       detached: false,
       head_pushed: true,
       push_command: null,
+      push_fill_in: null,
+      branch_argument: 'main',
+      set_upstream_command: 'git push -u origin refs/heads/main',
       worktree_clean: true,
       dirty_paths: [],
       tag_exists: false,
@@ -1039,14 +1042,38 @@ describe('authoring workbench backed by the server project list', () => {
       expect(guide!.querySelectorAll('.authoring-guide__section').length).toBeGreaterThan(1)
     }
     const repository = page('repository').querySelector('.authoring-guide')!.textContent
-    expect(repository).toContain('git push -u origin main')
+    expect(repository).toContain('git init -b main')
+    expect(repository).toContain('git push -u origin refs/heads/main')
     expect(repository).toContain('n.e.k.o_plugin_hello_world')
     expect(page('release').querySelector('.authoring-guide')!.textContent).toContain('v0.2.0')
     expect(page('verify').querySelector('.authoring-guide')!.textContent).toContain(
       'https://github.com/owner/hello_world/actions'
     )
     // Unfilled placeholders never leak into the text.
-    expect(container.querySelector('.authoring-publish')!.textContent).not.toMatch(/\{(repo|tag|version|branch|pluginId|dir)\}/)
+    expect(container.querySelector('.authoring-publish')!.textContent).not.toMatch(/\{(repo|tag|version|branch|firstPush|pluginId|dir)\}/)
+  })
+
+  it('fills the guide commands with the branch the server quoted', async () => {
+    api.route.query = { project: 'p1' }
+    api.listPluginProjects.mockResolvedValue([listed])
+    api.getPluginProjectPublishStatus.mockResolvedValue(
+      publishStatus({
+        repository: {
+          branch: 'feat;$(x)',
+          branch_argument: "'feat;$(x)'",
+          set_upstream_command: "git push -u origin 'refs/heads/feat;$(x)'",
+        },
+      })
+    )
+    const container = await mount()
+    await openPublish(container)
+    const commands = [...page('repository').querySelectorAll('.authoring-guide-command code')].map(
+      (node) => node.textContent
+    )
+    expect(commands.join('\n')).toContain("git init -b 'feat;$(x)'")
+    expect(commands.join('\n')).toContain("git push -u origin 'refs/heads/feat;$(x)'")
+    expect(page('repository').querySelector('.authoring-guide')!.textContent).not.toContain('origin feat;$(x)')
+    expect(container.querySelector('.authoring-publish')!.textContent).not.toMatch(/\{firstPush\}/)
   })
 
   it('opens the page a blocker dialog points to', async () => {
@@ -1145,14 +1172,35 @@ describe('authoring workbench backed by the server project list', () => {
       'the branch has no upstream',
       // The command comes quoted from the server; the page shows it as is.
       publishStatus({
-        repository: { branch: 'feat;$(x)', upstream: null, head_pushed: null, push_command: "git push -u origin 'feat;$(x)'" },
+        repository: {
+          branch: 'feat;$(x)',
+          upstream: null,
+          head_pushed: null,
+          push_command: "git push -u origin 'refs/heads/feat;$(x)'",
+        },
       }),
-      "Branch feat;$(x) has no upstream; run git push -u origin 'feat;$(x)'.",
+      "Branch feat;$(x) has no upstream; run git push -u origin 'refs/heads/feat;$(x)'.",
     ],
     [
       'the upstream is not on origin',
-      publishStatus({ repository: { upstream: 'fork/main', head_pushed: false, push_command: 'git push -u origin main' } }),
-      'Branch main tracks fork/main, not origin; run git push -u origin main.',
+      publishStatus({
+        repository: { upstream: 'fork/main', head_pushed: false, push_command: 'git push -u origin refs/heads/main' },
+      }),
+      'Branch main tracks fork/main, not origin; run git push -u origin refs/heads/main.',
+    ],
+    [
+      'the branch shows a placeholder',
+      // The raw name is text after the command, never part of it.
+      publishStatus({
+        repository: {
+          branch: 'feat%PATH%&calc&',
+          upstream: 'origin/feat%PATH%&calc&',
+          head_pushed: false,
+          push_command: 'git push origin "<branch>"',
+          push_fill_in: { placeholder: '<branch>', value: 'refs/heads/feat%PATH%&calc&' },
+        },
+      }),
+      'HEAD is not pushed yet; run git push origin "<branch>". In that command, replace <branch> with: refs/heads/feat%PATH%&calc&',
     ],
     [
       'HEAD is detached',

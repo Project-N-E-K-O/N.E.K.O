@@ -184,6 +184,8 @@ const messages = {
   publishRepoNotPublic: 'The GitHub repository must exist and be public.',
   publishRepoUncommitted: 'The working tree has uncommitted changes; commit them first.',
   publishRepoUnpushed: 'HEAD is not pushed yet; run {command}.',
+  publishRepoPushToOrigin: 'HEAD is not pushed yet; push it to its origin branch.',
+  publishRepoPushFillIn: 'In that command, replace {placeholder} with: {value}',
   publishVerifyPassed: 'The standard verify workflow passed on this commit.',
   publishReleaseReady: 'Release {tag} is published with all assets.',
   publishReleaseMissing: 'Release {tag} does not exist yet.',

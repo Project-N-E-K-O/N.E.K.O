@@ -61,7 +61,7 @@ export const enPages: Record<PublishPageId, PageGuide> = {
           { label: 'For an existing folder without Git', command: 'git init -b {branch}' },
           { label: 'First commit', command: 'git add .\ngit commit -m "Initial plugin"' },
           { label: 'Connect the GitHub repository', command: 'git remote add origin https://github.com/<your-name>/n.e.k.o_plugin_{pluginId}.git' },
-          { label: 'First upload', command: 'git push -u origin {branch}' },
+          { label: 'First upload', command: '{firstPush}' },
         ],
       },
       {
@@ -80,7 +80,7 @@ export const enPages: Record<PublishPageId, PageGuide> = {
         steps: [
           '"Uncommitted changes": some files changed but are not committed; do the three steps above. Files that must not be uploaded (temporary files, secrets) belong in .gitignore.',
           '"HEAD is not pushed": committed but not uploaded; run git push.',
-          '"Branch has no upstream": the first upload needs git push -u origin {branch}.',
+          '"Branch has no upstream": the first upload needs {firstPush}.',
           '"release.yml is not current": in the N.E.K.O source folder run uv run neko-plugin setup-repo "{dir}" --upgrade-github-actions, then commit and push.',
           '"Repository is not public": on the repository page open Settings → Danger Zone at the bottom → Change visibility → Public.',
         ],

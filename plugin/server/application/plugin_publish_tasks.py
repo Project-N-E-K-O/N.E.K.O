@@ -34,7 +34,7 @@ from plugin.server.application.plugin_projects import source_repo_root
 from plugin.server.application.plugin_publish_status import (
     LocalStatus,
     RemoteGithubState,
-    push_command,
+    push_hint,
     read_local_status,
     read_remote_github,
 )
@@ -127,14 +127,19 @@ def _push_blockers(state: RepoState) -> list[str]:
         return ["the repository has no commits yet"]
     if state.detached:
         return ["HEAD is detached; check out the branch to publish from"]
-    command = push_command(state)
+    hint = push_hint(state)
+    if hint is None:
+        return []
+    from plugin.neko_plugin_cli.commands.release_cmd import _after_command, _push_hint_notes
+
+    # The placeholder's value goes in a sentence of its own, as the CLI's
+    # publish prints it.
+    run = f"run {hint.command}{_after_command(_push_hint_notes(hint))[0]}"
     if state.upstream is None:
-        return [f"branch {branch} has no upstream; run {command}"]
+        return [f"branch {branch} has no upstream; {run}"]
     if not state.upstream.startswith("origin/"):
-        return [f"branch {branch} tracks {state.upstream}, which is not on origin; run {command}"]
-    if state.head_pushed is not True:
-        return [f"HEAD is not pushed to {state.upstream}; run {command}"]
-    return []
+        return [f"branch {branch} tracks {state.upstream}, which is not on origin; {run}"]
+    return [f"HEAD is not pushed to {state.upstream}; {run}"]
 
 
 def _release_blockers(local: LocalStatus) -> list[str]:

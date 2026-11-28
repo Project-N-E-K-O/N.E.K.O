@@ -38,6 +38,9 @@ function status(
       detached: false,
       head_pushed: true,
       push_command: null,
+      push_fill_in: null,
+      branch_argument: 'main',
+      set_upstream_command: 'git push -u origin refs/heads/main',
       worktree_clean: true,
       dirty_paths: [],
       tag_exists: false,
@@ -335,6 +338,34 @@ describe('publishFlow', () => {
     expect(flow.pushedHead).toBeNull()
   })
 
+  it('names the value of a push placeholder in a sentence of its own', () => {
+    const repository = {
+      head_pushed: false,
+      push_command: 'git push origin "<branch>:<remote-branch>"',
+      push_fill_in: { placeholder: '<branch>:<remote-branch>', value: 'refs/heads/a%b:refs/heads/main' },
+    }
+    const flow = flowOf({ status: status({ repository }), submission: approved(), task: null })
+    expect(step(flow, 'repository').detail).toEqual({
+      key: 'publishRepoUnpushed',
+      params: { command: 'git push origin "<branch>:<remote-branch>"' },
+      then: {
+        key: 'publishRepoPushFillIn',
+        params: { placeholder: '<branch>:<remote-branch>', value: 'refs/heads/a%b:refs/heads/main' },
+      },
+    })
+  })
+
+  it('falls back to the command-free text when the server sends no push command', () => {
+    for (const repository of [
+      { head_pushed: false },
+      { upstream: null, head_pushed: null },
+      { upstream: 'fork/main', head_pushed: false },
+    ]) {
+      const flow = flowOf({ status: status({ repository }), submission: approved(), task: null })
+      expect(step(flow, 'repository').detail).toEqual({ key: 'publishRepoPushToOrigin' })
+    }
+  })
+
   it('passes the full pushed HEAD to the submission', () => {
     const flow = flowOf({ status: status(), submission: submission(), task: null })
     expect(flow.pushedHead).toBe(HEAD)
@@ -425,7 +456,10 @@ describe('publishFlow action blockers', () => {
 
   it('puts every local git problem the server gate refuses first, as hard', () => {
     const flow = flowOf({
-      status: status({ repository: { head_pushed: false }, remote: { verify: 'failure' } }),
+      status: status({
+        repository: { head_pushed: false, push_command: 'git push origin refs/heads/main' },
+        remote: { verify: 'failure' },
+      }),
       submission: submission(),
       task: null,
     })

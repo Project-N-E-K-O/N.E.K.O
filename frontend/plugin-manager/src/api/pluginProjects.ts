@@ -128,11 +128,17 @@ export interface PublishRepositoryState {
   /** True only when the upstream is origin/<branch> and equals HEAD; null without HEAD, upstream or branch. */
   head_pushed: boolean | null
   /**
-   * The git push that gets HEAD to its origin branch, quoted for the shell (a
-   * placeholder plus a note when no quoting keeps the branch literal); null when
-   * no push is due.
+   * The git push that gets HEAD to its origin branch, quoted for the shell; null
+   * when no push is due. Shows a placeholder when no quoting keeps the branch
+   * literal, and never holds the raw name then.
    */
   push_command: string | null
+  /** What the placeholder of `push_command` stands for; shown as text, not pasted. */
+  push_fill_in: { placeholder: string; value: string } | null
+  /** The branch quoted as one shell argument (`git init -b`), or a placeholder. */
+  branch_argument: string | null
+  /** `git push -u origin <branch>` quoted like `push_command`, whether or not a push is due. */
+  set_upstream_command: string | null
   /** Same definition as the CLI publish gate. */
   worktree_clean: boolean | null
   /** The first changed paths when the worktree is not clean. */

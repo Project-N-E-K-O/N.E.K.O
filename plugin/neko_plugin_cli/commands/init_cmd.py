@@ -523,11 +523,6 @@ def _git_command(plugin_dir: Path, arguments: str) -> str:
     return f"git -C {release_cmd._plugin_dir_argument(plugin_dir, '')} {arguments}"
 
 
-def _branch_argument(branch: str) -> str:
-    # Branch names may hold $ ; ( & and the like; quote them like the directory.
-    return release_cmd._shell_argument(branch, release_cmd._BRANCH_PLACEHOLDER)
-
-
 def _push_step(plugin_dir: Path) -> tuple[str, release_cmd.PushHint]:
     """The push command, and the hint it came from for the placeholder note."""
     hint = release_cmd._push_hint(_current_branch(plugin_dir))
@@ -535,11 +530,9 @@ def _push_step(plugin_dir: Path) -> tuple[str, release_cmd.PushHint]:
 
 
 def _current_branch(plugin_dir: Path) -> str:
-    branch = (
-        git_output(plugin_dir, "symbolic-ref", "--short", "-q", "HEAD")
-        if _has_own_repository(plugin_dir)
-        else None
-    )
+    # Not --short: it gives heads/main when a tag is also named main.
+    ref = git_output(plugin_dir, "symbolic-ref", "-q", "HEAD") if _has_own_repository(plugin_dir) else None
+    branch = ref.removeprefix("refs/heads/") if ref and ref.startswith("refs/heads/") else None
     return branch or "main"
 
 
@@ -605,7 +598,7 @@ def _print_git_commands(
     if push_hint is not None and push_hint.fill_in is not None:
         # Likewise for a branch name no Windows quoting keeps literal.
         english, chinese, japanese = release_cmd._push_hint_notes(push_hint)
-        print("       " + _tri(english.lstrip(), chinese, japanese))
+        print("       " + _tri(english, chinese, japanese))
 
 
 def _gh_available() -> bool:
