@@ -1895,8 +1895,9 @@
             if (!this.hasReviewedActions() || !msg?.visit_id || msg.side !== 'guest') return false;
             if (msg.recovery) {
                 if (msg.action === 'restored') {
+                    // A same-visit snapshot must preserve an accepted departure in flight.
+                    if (this._reviewedVisit !== msg.visit_id) this._reviewedVisitPermit = null;
                     this._reviewedVisit = msg.visit_id;
-                    this._reviewedVisitPermit = null;
                 }
                 if (msg.action === 'ended' && this._reviewedVisit === msg.visit_id) {
                     this._reviewedVisit = null; this._reviewedVisitPermit = null;

@@ -2574,3 +2574,43 @@ test('new live visit invalidates an older in-flight recovery snapshot before mar
     complete({ok:true,json:async()=>({active:true,visit_id:old,side:'guest',phase:'active'})});
     assert.equal(await recovery,false);assert.equal(messages.some(msg=>msg.action==='restored'),false);
 });
+
+for (const queued of [false, true]) test(`same-visit recovery preserves a ${queued ? 'queued' : 'decoding'} departure and plays it once`, async t => {
+    const {bridge,window:bridgeWindow,messages}=visitBridgeFixture();
+    const {manager:m,window,advance}=timedReviewedFixture();t.after(()=>m.clearLayeredTimers());
+    const id='a'.repeat(22);bridge._state.visitId=id;
+    bridgeWindow.pngtuberManager.handleReviewedVisit=msg=>{messages.push(msg);return m.handleReviewedVisit(msg)};
+    bridgeWindow.nekoLocalMutationSecurity={getMutationHeaders:async()=>({'X-CSRF-Token':'token'})};
+    let deliverSnapshot;bridgeWindow.fetch=()=>new Promise(resolve=>deliverSnapshot=resolve);
+    if(queued){m.requestReviewedState(2);await flushReviewed();}
+    const events=[];window.dispatchEvent=()=>events.push(m.layeredStateIndex);
+    let finishDeparture;m.prepareReviewedEntry=()=>new Promise(resolve=>finishDeparture=resolve);
+    const recovery=bridge.recoverAfterReload('YUI',10000);await flushReviewed();
+    bridge.onStateChange({type:'visit_state_change',action:'departed',visit_id:id,side:'guest'});
+    const permit=m._reviewedVisitPermit;assert.ok(permit);
+    if(queued)assert.equal(m._reviewedQueued.index,7);else assert.equal(m._reviewedPreparing,true);
+    deliverSnapshot({ok:true,json:async()=>({active:true,visit_id:id,side:'guest',phase:'active'})});
+    assert.equal(await recovery,true);assert.equal(messages.at(-1).action,'restored');
+    assert.equal(m._reviewedVisitPermit,permit);assert.equal(events.length,0);
+    if(queued){advance(2200);m._trackedPlayback.lastIndex=1;m.reviewedPlaybackTick(2200);}
+    assert.equal(typeof finishDeparture,'function');finishDeparture([{image:{}}]);await flushReviewed();
+    assert.equal(m.layeredStateIndex,7);assert.deepEqual(events,[7]);
+    m.handleReviewedVisit({action:'restored',side:'guest',visit_id:id,recovery:true});
+    assert.equal(m._reviewedVisitPermit,permit);assert.deepEqual(events,[7]);
+});
+
+test('different-visit recovery invalidates an older decoding departure without replaying departure', async t => {
+    const {manager:m,window}=timedReviewedFixture();t.after(()=>m.clearLayeredTimers());
+    let finish;m.prepareReviewedEntry=()=>new Promise(resolve=>finish=resolve);
+    const events=[];window.dispatchEvent=()=>events.push(m.layeredStateIndex);
+    m.handleReviewedVisit({action:'departed',side:'guest',visit_id:'old'});const oldPermit=m._reviewedVisitPermit;
+    m.handleReviewedVisit({action:'restored',side:'guest',visit_id:'new',recovery:true});
+    assert.notEqual(m._reviewedVisitPermit,oldPermit);assert.equal(m._reviewedVisitPermit,null);
+    finish([{image:{}}]);await flushReviewed();assert.equal(m.layeredStateIndex,0);assert.deepEqual(events,[]);
+    assert.equal(m._reviewedVisit,'new');assert.equal(m._reviewedPreparing,false);
+    assert.equal(m.handleReviewedVisit({action:'ended',side:'guest',visit_id:'old'}),false);
+    m.prepareReviewedEntry=async()=>[{image:{}}];
+    assert.equal(m.handleReviewedVisit({action:'ended',side:'guest',visit_id:'new'}),true);await flushReviewed();
+    assert.equal(m.layeredStateIndex,6);assert.deepEqual(events,[6]);
+    assert.equal(m.handleReviewedVisit({action:'ended',side:'guest',visit_id:'new'}),false);
+});
