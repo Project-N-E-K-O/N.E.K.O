@@ -613,6 +613,15 @@ async function save(row: PanelRow, run: () => Promise<PermissionPanel>) {
       optional(getPermissionAuditHistory(props.pluginId)),
     ])
     if (validPending(nextPending)) pending.value = nextPending
+    else if (pending.value) {
+      // The old count belongs to the answer before this one: not shown for it.
+      pending.value = {
+        ...pending.value,
+        first_use: pending.value.first_use.filter(
+          (use) => !(use.plugin_id === props.pluginId && use.permission === row.permission),
+        ),
+      }
+    }
     // Without a current answer, nothing is claimed about unused time.
     audit.value = validHistory(nextAudit) ? nextAudit : null
   } catch (error) {
@@ -624,9 +633,10 @@ async function save(row: PanelRow, run: () => Promise<PermissionPanel>) {
       if (reloadAfterSave) {
         reloadAfterSave = false
         void load()
-      } else if (pollTimer === null && panel.value && scanPending(panel.value)) {
-        // Keep following a scan that is still running, also after a failed save.
-        pollTimer = setTimeout(load, SCAN_POLL_MS)
+      } else if (pollTimer === null && panel.value && (scanPending(panel.value) || failedPolls > 0)) {
+        // Resume what the save paused: following a running scan, or retrying a
+        // failed refresh (with its backoff), also after a failed save.
+        pollTimer = setTimeout(load, Math.min(SCAN_POLL_MS * 2 ** failedPolls, MAX_POLL_MS))
       }
     }
   }

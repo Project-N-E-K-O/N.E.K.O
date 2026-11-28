@@ -624,6 +624,47 @@ describe('PluginPermissions tab', () => {
     }
   })
 
+  it('drops the count of uses while undecided when it cannot be read again after a decision', async () => {
+    serve(panel({ rows: [row({ state: 'undecided', condition: null })] }), {
+      pending: {
+        incomplete: [],
+        first_use: [{ plugin_id: 'demo', permission: NET, at: localDay(2026, 11, 27), count: 4, count_is_lower_bound: false }],
+      },
+    })
+    const root = await mount()
+    expect(q(root, `first-use-${NET}`)).not.toBeNull()
+    api.getPendingPermissions.mockRejectedValue(new Error('offline'))
+    // Allowed, then back to undecided, with the list unreadable in between.
+    api.decidePermission.mockResolvedValue(panel({ rows: [row({ state: 'undecided', condition: null })] }))
+    q(root, `switch-${NET}`)!.dispatchEvent(new Event('change'))
+    await flush()
+    expect(q(root, `first-use-${NET}`)).toBeNull()
+  })
+
+  it('resumes retrying a failed refresh after a failed save', async () => {
+    vi.useFakeTimers()
+    try {
+      serve(panel({ rows: [row({ state: 'undecided', condition: null })] }))
+      const root = await mount()
+      api.getPermissionPanel.mockRejectedValueOnce(new Error('offline'))
+      q(root, 'banner-changed')!.click()
+      await flush()
+      expect(api.getPermissionPanel).toHaveBeenCalledTimes(2)
+      // A save before the retry pauses it, and fails.
+      api.decidePermission.mockRejectedValueOnce(new Error('x'))
+      q(root, `switch-${NET}`)!.dispatchEvent(new Event('change'))
+      await flush()
+      // The retry comes back with its backoff (10 s), not the scan interval.
+      await vi.advanceTimersByTimeAsync(5000)
+      expect(api.getPermissionPanel).toHaveBeenCalledTimes(2)
+      await vi.advanceTimersByTimeAsync(5000)
+      await flush()
+      expect(api.getPermissionPanel).toHaveBeenCalledTimes(3)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('says when the scan failed and does not claim there are no blind spots', async () => {
     serve(panel({ analysis: { ...panel().analysis, status: 'failed' } }))
     const root = await mount()
