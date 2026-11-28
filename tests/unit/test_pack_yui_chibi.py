@@ -257,9 +257,12 @@ def test_main_recovers_then_reads_and_consumes_manifest_under_one_lock(tmp_path,
     assert (target / unpack.READY_MARKER).read_text() == old["archive_sha256"]
 
 
-def test_public_installer_refreshes_a_stale_entry_after_manifest_rollback(tmp_path):
+def test_public_installer_rejects_stale_entry_after_manifest_rollback(tmp_path):
     dest, old, stale = interrupted_generation(tmp_path)
-    target = unpack.unpack_model(stale, dest, tmp_path / "runtime")
+    with pytest.raises(ValueError, match="does not match current"):
+        unpack.unpack_model(stale, dest, tmp_path / "runtime")
+    assert not (tmp_path / "runtime/yui-chibi").exists()
+    target = unpack.unpack_model(old, dest, tmp_path / "runtime")
     assert (target / unpack.READY_MARKER).read_text() == old["archive_sha256"]
     assert (target / "clips/idle/frames/0000.png").read_bytes() == b"body"
 
@@ -357,3 +360,65 @@ def test_disguised_non_png_patch_rejected_without_publishing(tmp_path):
     with pytest.raises(ValueError, match="must contain PNG data"):
         pack.build(src, dest)
     assert snapshot(dest) == before
+
+
+def test_publication_lock_waits_for_release_and_times_out_without_entering(tmp_path):
+    import threading
+    acquired, release = threading.Event(), threading.Event()
+    errors = []
+    def holder():
+        try:
+            with publish.publication_lock(tmp_path, "concurrent"):
+                acquired.set()
+                release.wait(3)
+        except Exception as error:
+            errors.append(error)
+            acquired.set()
+    thread = threading.Thread(target=holder)
+    thread.start()
+    assert acquired.wait(2)
+    try:
+        with pytest.raises(TimeoutError):
+            with publish.publication_lock(tmp_path, "concurrent", timeout=.1):
+                pytest.fail("entered held lock")
+        timer = threading.Timer(.1, release.set)
+        timer.start()
+        try:
+            with publish.publication_lock(tmp_path, "concurrent", timeout=2):
+                assert release.is_set()
+        finally:
+            timer.join()
+    finally:
+        release.set()
+        thread.join()
+    assert not errors
+
+
+def test_publication_lock_file_does_not_grow_or_require_writable_resource_root(tmp_path, monkeypatch):
+    lock_root = tmp_path / "locks"
+    lock_root.mkdir()
+    monkeypatch.setattr(publish.tempfile, "gettempdir", lambda: str(lock_root))
+    resource_root = tmp_path / "absent-resources"
+    for _ in range(3):
+        with publish.publication_lock(resource_root, "publish"):
+            pass
+    assert not resource_root.exists()
+    assert [path.stat().st_size for path in lock_root.iterdir()] == [1]
+
+
+@pytest.mark.parametrize("name", ["idle", "happy"])
+def test_duplicate_action_names_rejected_before_overwriting_or_publication(tmp_path, name):
+    import copy
+    src, dest = source(tmp_path), packs(tmp_path)
+    path = src / "metadata.actions.json"
+    metadata = json.loads(path.read_text())
+    metadata["state_count"] = 2
+    metadata["state_catalog"] = [{"state_index": 0, "name": name}, {"state_index": 1, "name": name}]
+    metadata["tracked_animations"]["1"] = copy.deepcopy(metadata["tracked_animations"]["0"])
+    metadata["reviewed_actions"]["groups"]["idle"] = [0, 1]
+    path.write_text(json.dumps(metadata))
+    before, source_before = snapshot(dest), snapshot(src)
+    with pytest.raises(ValueError, match="Duplicate reviewed action name"):
+        pack.build(src, dest)
+    assert snapshot(dest) == before
+    assert snapshot(src) == source_before

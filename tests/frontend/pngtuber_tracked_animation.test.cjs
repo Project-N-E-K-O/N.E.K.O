@@ -7,6 +7,7 @@ const source = fs.readFileSync(path.join(__dirname, '../../static/pngtuber-core.
 
 function fixture({ fakeTimers = false } = {}) {
     let clock = 100, next = 0;
+    let fetchImplementation = () => Promise.reject(Error("unexpected fetch"));
     const callbacks = new Map(), images = [];
     const timers = new Map();
     let timerId = 10000;
@@ -36,7 +37,7 @@ function fixture({ fakeTimers = false } = {}) {
     }
     const window = { location: { pathname: '/' }, lanlan_config: {model_type: 'pngtuber'}, dispatchEvent: () => {} };
     vm.runInNewContext(source, { window, document: { getElementById: () => null, createElement: () => ({ getContext: () => context }), body: { classList: { contains: () => false } } },
-        console, Image, Date: class extends Date { static now() { return 1_000_000 + clock; } }, CustomEvent: class { constructor(type, options) { this.type = type; this.detail = options.detail; } }, performance: { now: () => clock },
+        console, Image, fetch: (...args) => fetchImplementation(...args), Date: class extends Date { static now() { return 1_000_000 + clock; } }, CustomEvent: class { constructor(type, options) { this.type = type; this.detail = options.detail; } }, performance: { now: () => clock },
         requestAnimationFrame: fn => { callbacks.set(++next, fn); return next; },
         cancelAnimationFrame: id => callbacks.delete(id), setTimeout: timerSet, clearTimeout: timerClear });
     const manager = new window.PNGTuberManager();
@@ -51,7 +52,7 @@ function fixture({ fakeTimers = false } = {}) {
     manager.stopTalkingHopAnimation = () => {};
     manager.syncLayeredSpeechSlot = () => {};
     manager.setState = () => {};
-    return { window, manager, metadata, context, callbacks, images, wallNow: () => 1_000_000 + clock, timers, advance };
+    return { setFetch: fn => { fetchImplementation = fn; }, window, manager, metadata, context, callbacks, images, wallNow: () => 1_000_000 + clock, timers, advance };
 }
 
 test('rejects a discontinuous frame clock before starting playback', () => {
@@ -151,8 +152,8 @@ test('nonzero loop entry keeps the tail join on the selected matching frame', ()
     }
 });
 
-function actionFixture() {
-    const f = fixture(), m = f.manager;
+function actionFixture(options = {}) {
+    const f = fixture(options), m = f.manager;
     const idle = f.metadata.tracked_animation;
     const action = { duration_ms: 80, playback: 'once', lipsync: false, width: 480, height: 640,
         frames: [{time_ms: 0, duration_ms: 80, image: 'angry/0.png', x: 0, y: 0}] };
@@ -424,8 +425,8 @@ test('mouth rotation follows the face for open and closed lips without rotating 
     assert.equal(calls.some(c=>c[0]==='rotate'),false,'legacy frames keep their existing transform');
 });
 
-function speechEndFixture() {
-    const f=actionFixture(),m=f.manager,restarts=[];
+function speechEndFixture(options = {}) {
+    const f=actionFixture(options),m=f.manager,restarts=[];
     m.ensureContainer=()=>{};m.applyTransform=()=>{};m.updateLockIconPosition=()=>{};
     m.setState=Object.getPrototypeOf(m).setState;
     m.restartLayeredAnimationLoop=()=>{m.layeredAnimationStart=performance.now();restarts.push(m.layeredStateIndex)};
@@ -783,7 +784,7 @@ test('reviewed loop overlap retains source resolution and applies the same canva
  const scratch={width:0,height:0,getContext:()=>new Proxy({},{get:()=>()=>{}})};playback.mixCanvas=scratch;m.drawTrackedMouth=()=>{};
  const calls=[];const ctx=new Proxy({},{get:(_,key)=>(...args)=>calls.push([key,...args]),set:()=>true});
  m.drawTrackedPlayback(ctx,1750);assert.equal(scratch.width,720);assert.equal(scratch.height,960);assert(calls.some(c=>c[0]==='scale'&&c[1]===.8&&c[2]===.8));
- m.hasReviewedActions=()=>false;calls.length=0;m.drawTrackedPlayback(ctx,1760);assert.equal(scratch.width,576);assert.equal(scratch.height,768);assert.equal(calls.some(c=>c[0]==='scale'),false);
+ m.hasReviewedActions=()=>false;calls.length=0;m.drawTrackedPlayback(ctx,1760);assert.equal(scratch.width,720);assert.equal(scratch.height,960);assert(calls.some(c=>c[0]==='scale'&&c[1]===.8&&c[2]===.8));
 });
 
 test('reviewed paused playback rejects API and direct state requests without loading entries',()=>{
@@ -912,25 +913,15 @@ test('a queued entry retries transient failure and consumes the queue only on su
     m.clearLayeredTimers();
 });
 
-test('permanent entry and fallback failure settle instead of retrying every frame', async () => {
-    const { manager: m, advance } = realReviewedFixture();
-    m.requestReviewedState(2);
-    await flushReviewed();
-    m._trackedPlayback.lastIndex = 1;
-    let attempts = 0;
-    m.prepareReviewedEntry = async () => { attempts++; throw Error('offline'); };
-    for (const time of [2200, 2500, 3100, 4200, 4500, 5100]) {
-        advance(time);
-        m.reviewedPlaybackTick(time);
-        await flushReviewed();
-    }
-    const count = attempts;
-    for (let time = 6000; time < 8000; time++) m.reviewedPlaybackTick(time);
-    await flushReviewed();
-    assert.ok(count <= 6);
-    assert.equal(attempts, count);
-    assert.equal(m._reviewedRetry.exhausted, true);
-    m.clearLayeredTimers();
+test('permanent entry failure uses bounded delayed idle recovery instead of per-frame retries', async t => {
+    const { manager: m, advance } = realReviewedFixture();t.after(()=>m.clearLayeredTimers());
+    m.requestReviewedState(2);await flushReviewed();m._trackedPlayback.lastIndex=1;
+    let attempts=0;m.prepareReviewedEntry=async()=>{attempts++;throw Error('offline')};
+    for(const time of [2200,2500,3100,4200,4500,5100]) {advance(time);m.reviewedPlaybackTick(time);await flushReviewed();}
+    const count=attempts;assert.ok(m._reviewedRecovery);
+    for(let time=5101;time<5350;time++)m.reviewedPlaybackTick(time);
+    await flushReviewed();assert.equal(attempts,count);
+    advance(5350);m.reviewedPlaybackTick(5350);await flushReviewed();assert.equal(attempts,count+1);
 });
 
 test('frame retries back off and only terminal final-frame failure releases the action', async () => {
@@ -1572,7 +1563,7 @@ test('emotion duration positive value hands off at the requested visible delay',
     m.reviewedPick = () => 2;
     m.setEmotion('happy', { durationMs: 80 });
     await flushReviewed();
-    assert.equal(m._reviewedReturnAfterMs, 80);
+    assert.equal(m._reviewedReturnDeadline, 180);
     assert.equal(m.layeredStateIndex, 2);
     advance(179);
     await flushReviewed();
@@ -1589,7 +1580,7 @@ test('emotion duration omitted follows the clip rather than creating a return ti
     m.reviewedPick = () => 2;
     m.setEmotion('happy');
     await flushReviewed();
-    assert.equal(m._reviewedReturnAfterMs, null);
+    assert.equal(m._reviewedReturnDeadline, null);
     assert.equal(m._reviewedHoldLast, false);
     assert.equal(m.layeredStateReturnTimer, null);
     m._trackedPlayback.lastIndex = 1;
@@ -2012,7 +2003,7 @@ test('new queued work recovers from exhausted entry and idle-fallback retries', 
     const attempts = { action: 0, idle: 0 };
     m.prepareReviewedEntry = async index => {
         if (index === 3) { attempts.action++; throw Error('action unavailable'); }
-        if (index === 0) { attempts.idle++; throw Error('idle unavailable'); }
+        if ([0,1].includes(index)) { attempts.idle++; throw Error('idle unavailable'); }
         return [{ image: {} }];
     };
     m.requestReviewedState(3, { force: true });
@@ -2022,7 +2013,7 @@ test('new queued work recovers from exhausted entry and idle-fallback retries', 
         m.reviewedPlaybackTick(time);
         await flushReviewed();
     }
-    assert.equal(m._reviewedRetry.exhausted, true);
+    assert.ok(m._reviewedRecovery);
     assert.deepEqual(attempts, { action: 3, idle: 3 });
     assert.equal(m.requestReviewedState(4), true);
     assert.equal(m._reviewedRetry, null);
@@ -2215,4 +2206,302 @@ for (const scale of [1,.5]) test(`transition snapshot uses logical bounds at ren
     m.drawReviewedTransition(ctx,140);
     assert.deepEqual(drawn,[[snapshot,0,0,720,960]]);
     assert.equal(ctx.globalAlpha,.5);
+});
+
+
+test('idle entry exhaustion switches to the other healthy idle and clears recovery', async t => {
+    const {manager:m,advance}=timedReviewedFixture();t.after(()=>m.clearLayeredTimers());delete m.reviewedChooseIdle;
+    m.requestReviewedState(2);await flushReviewed();m._trackedPlayback.lastIndex=1;
+    const attempts=[];m.prepareReviewedEntry=async index=>{attempts.push(index);if(index===0)throw Error('idle-1 down');return [{image:{}}]};
+    m.requestReviewedState(0,{force:true,reviewedIdleEntry:true});await flushReviewed();
+    for(const time of [350,850,1100]) {advance(time);m.reviewedPlaybackTick(time);await flushReviewed();}
+    assert.equal(m.layeredStateIndex,1);assert.deepEqual(attempts,[0,0,0,1]);assert.equal(m._reviewedRecovery,null);
+});
+
+test('both unavailable idle entries recover after cooldown without external requests or frame storms', async t => {
+    const {manager:m,advance}=timedReviewedFixture();t.after(()=>m.clearLayeredTimers());delete m.reviewedChooseIdle;
+    m.requestReviewedState(2);await flushReviewed();m._trackedPlayback.lastIndex=1;
+    let online=false,calls=0;m.prepareReviewedEntry=async()=>{calls++;if(!online)throw Error('offline');return [{image:{}}]};
+    m.requestReviewedState(0,{force:true,reviewedIdleEntry:true});await flushReviewed();
+    for(const time of [350,850,1100,1350,1850]) {advance(time);m.reviewedPlaybackTick(time);await flushReviewed();}
+    assert.equal(calls,6);assert.ok(m._reviewedRecovery);
+    for(let time=2000;time<31000;time+=100){advance(time);m.reviewedPlaybackTick(time);await flushReviewed();}
+    assert.equal(calls,6,'known unavailable entries remain quarantined');
+    online=true;advance(32000);m.reviewedPlaybackTick(32000);await flushReviewed();
+    assert.ok([0,1].includes(m.layeredStateIndex));assert.equal(m._reviewedRecovery,null);
+});
+
+test('idle frame failure quarantine expires for real tracked frame loads', async t => {
+    const {manager:m,images,advance}=realReviewedFixture();t.after(()=>m.clearLayeredTimers());
+    const p=m._trackedPlayback;
+    for(const time of [100,400,1000]) {advance(time);m.requestTrackedFrame(1);images.at(-1).onerror();await flushReviewed();}
+    assert.equal(p.failed.has(1),true);const count=images.length;
+    advance(30999);m.requestTrackedFrame(1);assert.equal(images.length,count);
+    advance(31000);m.requestTrackedFrame(1);images.at(-1).onload();await flushReviewed();
+    assert.equal(p.failed.has(1),false);assert.ok(p.cache.has(1));assert.equal(p.idleResource.failures.has(1),false);
+});
+
+test('idle recovery cannot be replaced by an expired action deadline and accepts newer work', async t => {
+    const {manager:m,advance}=timedReviewedFixture();t.after(()=>m.clearLayeredTimers());
+    m.requestReviewedState(2,{returnToDefaultAfterMs:500});await flushReviewed();
+    m._reviewedRecovery={at:5000};const token=m._reviewedRequest;
+    advance(700);assert.equal(m._reviewedRequest,token);assert.equal(m.tryReviewedDeadline(700),false);
+    m.requestReviewedState(3,{force:true});await flushReviewed();assert.equal(m.layeredStateIndex,3);assert.equal(m._reviewedRecovery,null);
+});
+
+test('new visit pending clears a lost old guest marker without a fake return animation', () => {
+    const {manager:m}=reviewedFixture();const {bridge,window}=visitBridgeFixture();
+    const a='a'.repeat(22),b='b'.repeat(22);bridge._state.visitId=a;
+    const events=[];m.requestReviewedState=(index)=>{events.push(index);return true};window.pngtuberManager=m;
+    m.handleReviewedVisit({action:'departed',visit_id:a,side:'guest'});
+    bridge.onStateChange({type:'visit_state_change',action:'pending',visit_id:b,side:'guest'});
+    assert.equal(m._reviewedVisit,null);assert.deepEqual(events,[7]);
+    bridge.onStateChange({type:'visit_state_change',action:'departed',visit_id:b,side:'guest'});
+    assert.equal(m._reviewedVisit,b);assert.deepEqual(events,[7,7]);
+    bridge.onStateChange({type:'visit_state_change',action:'ended',visit_id:a,side:'guest'});assert.equal(m._reviewedVisit,b);
+    bridge.onStateChange({type:'visit_state_change',action:'ended',visit_id:b,side:'guest'});assert.equal(m._reviewedVisit,null);
+    assert.equal(events.length,3);
+});
+
+for(const source of ['hotkey','alt-one-cycle-hotkey','api']) test(`explicit state zero via ${source} selects idle-1 while automatic return may choose idle-2`, async t => {
+    const {manager:m}=realReviewedFixture();t.after(()=>m.clearLayeredTimers());
+    m.requestReviewedState(1,{reviewedIdleEntry:true});await flushReviewed();m.reviewedChooseIdle=()=>1;
+    if(source==='api')m.playLayeredAnimation('0');else m.setLayeredStateIndex(0,{source});
+    await flushReviewed();assert.equal(m.layeredStateIndex,0);
+    m.requestReviewedState(2,{force:true});await flushReviewed();m.finishReviewedAction();await flushReviewed();assert.equal(m.layeredStateIndex,1);
+});
+
+for(const failedLayer of [false,true]) test(`initial idle decode failure keeps the real layered adapter (${failedLayer?'first body frame':'prefetch'})`, async t => {
+    const f=realReviewedFixture(),{manager:m,images}=f;t.after(()=>m.clearLayeredTimers());
+    const metadata=JSON.parse(JSON.stringify(m.layeredMetadata));metadata.runtime='layered_canvas';metadata.layers=[{image:'first.webp'}];metadata.canvas={width:720,height:960};
+    f.setFetch(async()=>({ok:true,json:async()=>metadata}));
+    m.config.adapter='layered_canvas_v1';m.config.idle_image='/compat.png';m.config.layered_metadata='/meta.json';
+    m.canvasElement={style:{},getContext:()=>f.context};
+    m.initializeLayeredToggleState=()=>{};m.startLayeredBlinkLoop=()=>{};
+    m.attachLayeredHotkeys=m.attachLayeredPlayEvent=m.attachLayeredPointerTracking=()=>{};
+    m.prepareReviewedEntry=async()=>{throw Error('first idle prefetch failed')};
+    const loaded=m.setupLayeredAdapter();await flushReviewed();
+    if(failedLayer){images.at(-1).onerror();await flushReviewed();assert.equal(images.at(-1).url,'/compat.png');}
+    images.at(-1).onload();assert.equal(await loaded,true);
+    assert.equal(m.layeredMetadata.runtime,'layered_canvas');assert.ok(m._trackedPlayback);assert.ok(m.layeredImages.get(0));
+});
+
+
+test('an explicit same-action policy replaces idle recovery without changing body time', async t => {
+    const {manager:m,advance}=timedReviewedFixture();t.after(()=>m.clearLayeredTimers());
+    m.requestReviewedState(2);await flushReviewed();const start=m.layeredAnimationStart;
+    m._reviewedRecovery={at:5000};advance(300);m.requestReviewedState(2,{returnToDefaultAfterMs:500});
+    assert.equal(m._reviewedRecovery,null);assert.equal(m.layeredAnimationStart,start);
+    advance(800);await flushReviewed();assert.equal(m.layeredStateIndex,0);
+});
+
+test('invalid pending events cannot retire the active guest marker', () => {
+    const {manager:m}=reviewedFixture();const {bridge,window}=visitBridgeFixture();window.pngtuberManager=m;
+    m._reviewedVisit='a';
+    for(const data of [{visit_id:'invalid',side:'guest'},{visit_id:'b'.repeat(22),side:'invalid'}])
+        bridge.onStateChange({type:'visit_state_change',action:'pending',...data});
+    assert.equal(m._reviewedVisit,'a');assert.equal(bridge._state.visitId,'a');
+});
+
+
+for(const trackedSize of [true,false]) test(`legacy loop renders consistent bounds before during and after crossfade (explicit size ${trackedSize})`, () => {
+    const {manager:m}=fixture();const p=m._trackedPlayback;
+    m.layeredMetadata={canvas:{width:480,height:640}};
+    if(trackedSize){p.data.width=720;p.data.height=960;}
+    p.data.loop={crossfade_ms:200};p.data.frames.forEach((_,i)=>p.cache.set(i,{index:i}));
+    const calls=[];const ctx=new Proxy({}, {get:(_,key)=>(...args)=>calls.push([key,...args]),set:()=>true});
+    const elapsed=[100,1750,1800,1900,3600];
+    for(const time of elapsed){
+        calls.length=0;m.drawTrackedPlayback(ctx,time+100);
+        const scales=calls.filter(c=>c[0]==='scale');
+        if(trackedSize)assert.deepEqual(scales,[['scale',2/3,2/3]],`phase ${time}`);
+        else assert.equal(scales.length,0,`phase ${time}`);
+        if(p.lastSelection.mix>0){
+            assert.equal(p.mixCanvas.width,trackedSize?720:480);assert.equal(p.mixCanvas.height,trackedSize?960:640);
+            const before=p.lastSelection;calls.length=0;m.drawTrackedPlayback(ctx,99999,true);
+            assert.equal(p.lastSelection,before);assert.deepEqual(calls.filter(c=>c[0]==='scale'),scales);
+        }
+    }
+});
+
+function legacyEmotionClockFixture() {
+    const f=speechEndFixture({fakeTimers:true}),m=f.manager;
+    const loop={...f.action,playback:'loop',duration_ms:1200,lipsync:true,mouth_crop:[0,0,30,20],
+        frames:[{...f.action.frames[0],duration_ms:1200}]};
+    f.metadata.state_count=3;f.metadata.state_catalog.push({name:'happy',state_index:2});
+    f.metadata.tracked_animations[1]=loop;f.metadata.tracked_animations[2]={...f.action};
+    f.metadata.emotion_mappings={angry:1,happy:2};
+    return {...f,loop};
+}
+
+test('legacy looping emotion keeps the default five seconds across loops and returns on the exact boundary', () => {
+    const {manager:m,advance,loop}=legacyEmotionClockFixture();m.setEmotion('angry');
+    assert.equal(m._trackedPlayback.data,loop);
+    for(const time of [1300,2500,3700,5099]){advance(time);assert.equal(m.layeredStateIndex,1);assert.equal(m.currentEmotion,'angry');}
+    advance(5100);assert.equal(m.layeredStateIndex,0);assert.equal(m.currentEmotion,null);
+});
+
+for(const durationMs of [0,900]) test(`legacy loop respects explicit emotion duration ${durationMs}`, () => {
+    const {manager:m,advance}=legacyEmotionClockFixture();m.setEmotion('angry',{durationMs});
+    if(durationMs===0){advance(10000);assert.equal(m.layeredStateIndex,1);assert.equal(m.emotionTimer,null);m.clearEmotion();}
+    else {advance(999);assert.equal(m.layeredStateIndex,1);advance(1000);assert.equal(m.layeredStateIndex,0);}
+});
+
+test('switching loop emotion to one-shot during speech cancels the old return and preserves speech', () => {
+    const {manager:m,advance}=legacyEmotionClockFixture();m.isSpeaking=true;m.lipSyncMouthOpen=.65;
+    m.setEmotion('angry');advance(1100);m.setEmotion('happy');
+    assert.equal(m.layeredStateIndex,2);assert.equal(m.isSpeaking,true);assert.equal(m.lipSyncMouthOpen,.65);
+    advance(1179);assert.equal(m.layeredStateIndex,2);advance(1180);assert.equal(m.layeredStateIndex,0);
+    advance(5100);assert.equal(m.layeredStateIndex,0);assert.equal(m.isSpeaking,true);
+});
+
+test('switching one-shot to loop cancels the shorter deadline and clearing allows a fresh loop emotion', () => {
+    const {manager:m,advance}=legacyEmotionClockFixture();m.setEmotion('happy');advance(140);m.setEmotion('angry');
+    advance(180);assert.equal(m.layeredStateIndex,1);advance(5139);assert.equal(m.layeredStateIndex,1);
+    advance(5140);assert.equal(m.layeredStateIndex,0);
+    m.setEmotion('angry');advance(5200);m.clearEmotion();m.setEmotion('angry');
+    advance(10199);assert.equal(m.layeredStateIndex,1);advance(10200);assert.equal(m.layeredStateIndex,0);
+});
+
+test('legacy looping emotion pause keeps its existing wall-clock expiry and resumes to idle', () => {
+    const {manager:m,advance}=legacyEmotionClockFixture();
+    m.container={style:{display:'block'},classList:{contains:()=>false}};
+    m.startLayeredBlinkLoop=()=>{};m.startLayeredAnimationLoop=()=>{};
+    m.setEmotion('angry');advance(300);m.pauseRendering();advance(5100);
+    assert.equal(m.currentEmotion,null);m.resumeRendering();assert.equal(m.layeredStateIndex,0);
+});
+
+
+for(const speaking of [false,true]) for(const first of ['happy','sad','angry','surprised']) for(const second of ['happy','sad','angry','surprised'])
+test(`reviewed ${first} -> ${second} -> idle preserves body clocks and speech=${speaking}`, async t => {
+    const {manager:m,advance}=timedReviewedFixture();t.after(()=>m.clearLayeredTimers());
+    const labels=['happy','sad','angry','surprised'];
+    labels.forEach((name,i)=>{m.layeredMetadata.reviewed_actions.groups[name]=[i+2];m.layeredMetadata.state_catalog[i+2].group=name;m.layeredMetadata.tracked_animations[i+2].lipsync=true;});
+    m.isSpeaking=speaking;m.lipSyncMouthOpen=.6;
+    m.setEmotion(first);await flushReviewed();const playback=m._trackedPlayback,start=m.layeredAnimationStart;
+    advance(300);m.setEmotion(second);await flushReviewed();
+    assert.equal(m._trackedPlayback,playback);assert.equal(m.layeredAnimationStart,start);
+    assert.equal(m.isSpeaking,speaking);assert.equal(m.lipSyncMouthOpen,.6);
+    advance(2200);m._trackedPlayback.lastIndex=1;m.reviewedPlaybackTick(2200);await flushReviewed();
+    if(first===second)assert.equal(m.layeredStateIndex,0);
+    else {
+        assert.equal(m.layeredStateIndex,labels.indexOf(second)+2);assert.equal(m.currentEmotion,second);
+        assert.equal(m.isSpeaking,speaking);assert.equal(m.lipSyncMouthOpen,.6);
+        advance(4300);m._trackedPlayback.lastIndex=1;m.reviewedPlaybackTick(4300);await flushReviewed();
+        assert.equal(m.layeredStateIndex,0);
+    }
+    assert.equal(m.currentEmotion,null);assert.equal(m.isSpeaking,speaking);
+});
+
+
+for(const touch of [false,true]) test(`released ${touch?'touch zoom':'pointer drag'} does not leave a queued performance`, async t => {
+    const {manager:m,advance}=timedReviewedFixture();t.after(()=>m.clearLayeredTimers());
+    m.setModelDraggingState=()=>{};m.rememberDragScreenPoint=()=>{};m.snapModelIntoScreen=async()=>{};m.saveOrStageCurrentConfig=async()=>{};m.isDragCompletionCurrent=()=>true;
+    m.checkAndSwitchDisplayAfterDrag=async()=>false;m.recordDragHintPointerEdgeRelease=async()=>{};
+    m.requestReviewedState(2,{returnToDefaultAfterMs:0});await flushReviewed();
+    const gesture=touch?{changed:true}:{moved:true,pointerId:1};m[touch?'_touchZoomState':'_dragState']=gesture;m.showDragImage();
+    assert.equal(m._reviewedQueued.index,4);
+    if(touch)await m.endTouchZoom();else await m.endDrag({pointerId:1});
+    assert.equal(m._reviewedQueued,null);advance(2400);m._trackedPlayback.lastIndex=1;m.reviewedPlaybackTick(2400);await flushReviewed();
+    assert.equal(m.layeredStateIndex,2,'expired drag must not release a held emotion');
+});
+
+test('an active drag can still hand off after the emotion and returns naturally when released', async t => {
+    const {manager:m,advance}=timedReviewedFixture();t.after(()=>m.clearLayeredTimers());
+    m.requestReviewedState(2);await flushReviewed();m._dragState={moved:true};m.showDragImage();
+    advance(2200);m._trackedPlayback.lastIndex=1;m.reviewedPlaybackTick(2200);await flushReviewed();assert.equal(m.layeredStateIndex,4);
+    m.releaseReviewedDrag(m._dragState);m._dragState=null;
+    advance(4300);m._trackedPlayback.lastIndex=1;m.reviewedPlaybackTick(4300);await flushReviewed();assert.equal(m.layeredStateIndex,0);
+});
+
+for(const failure of [false,true]) test(`drag entry ${failure?'failure':'decode'} arriving after gesture ends cannot play or retry`, async t => {
+    const {manager:m}=timedReviewedFixture();t.after(()=>m.clearLayeredTimers());let finish,fail;
+    m.prepareReviewedEntry=()=>new Promise((resolve,reject)=>{finish=resolve;fail=reject});
+    const gesture={changed:true};m._touchZoomState=gesture;m.showDragImage();assert.equal(m._reviewedPreparing,true);
+    m._touchZoomState=null;m.releaseReviewedDrag(gesture);
+    if(failure)fail(Error('late failure'));else finish([{image:{}}]);await flushReviewed();
+    assert.equal(m.layeredStateIndex,0);assert.equal(m._reviewedPreparing,false);assert.equal(m._reviewedRetry,null);
+});
+
+test('queued old drag cannot be revived by a different new gesture', async t => {
+    const {manager:m,advance}=timedReviewedFixture();t.after(()=>m.clearLayeredTimers());
+    m.requestReviewedState(2);await flushReviewed();m._dragState={moved:true};m.showDragImage();m._dragState={moved:true};
+    advance(2200);m._trackedPlayback.lastIndex=1;m.reviewedPlaybackTick(2200);await flushReviewed();assert.equal(m.layeredStateIndex,0);
+});
+
+test('hold-current request supersedes older queued work while later work can still supersede that hold', async t => {
+    const {manager:m,advance}=timedReviewedFixture();t.after(()=>m.clearLayeredTimers());
+    m.requestReviewedState(2);await flushReviewed();const start=m.layeredAnimationStart;
+    m.requestReviewedState(3);m.requestReviewedState(2,{returnToDefaultAfterMs:0});assert.equal(m._reviewedQueued,null);
+    advance(2300);m._trackedPlayback.lastIndex=1;m.reviewedPlaybackTick(2300);await flushReviewed();assert.equal(m.layeredStateIndex,2);assert.equal(m.layeredAnimationStart,start);
+    m.requestReviewedState(3);await flushReviewed();assert.equal(m.layeredStateIndex,3);
+});
+
+test('initial preload completion preserves a newer pending emotion and active transient state', async t => {
+    const f=realReviewedFixture({fakeTimers:true}),m=f.manager;t.after(()=>m.clearLayeredTimers());
+    const md=JSON.parse(JSON.stringify(m.layeredMetadata));md.runtime='layered_canvas';md.layers=[{image:'first.webp'}];md.canvas={width:720,height:960};md.emotion_mappings={happy:2};md.state_catalog[1].name='talking';
+    f.setFetch(async()=>({ok:true,json:async()=>md}));m.config={...m.config,adapter:'layered_canvas_v1',layered_metadata:'/meta.json',state_priority:'talking'};
+    m.canvasElement={style:{},getContext:()=>f.context};m.initializeLayeredToggleState=()=>{};m.startLayeredBlinkLoop=()=>{};m.attachLayeredHotkeys=m.attachLayeredPlayEvent=m.attachLayeredPointerTracking=()=>{};
+    let finish;m.prepareReviewedEntry=()=>new Promise(resolve=>finish=resolve);const loading=m.setupLayeredAdapter();await flushReviewed();f.images.at(-1).onload();await flushReviewed();
+    const finishInitial=finish;m.isSpeaking=true;m.setEmotion('happy');const pending=m.pendingEmotion;assert.ok(pending);
+    const slots=m.layeredTransientSlots;m.activeLayeredEmotionIndex=2;
+    finishInitial([{image:{}}]);assert.equal(await loading,true);assert.equal(m.pendingEmotion,pending);assert.equal(m.layeredTransientSlots,slots);assert.equal(m.activeLayeredEmotionIndex,2);
+});
+
+for(const delay of [1000,60000,0]) test(`reviewed leisure uses configured idle threshold ${delay}`, () => {
+    const {manager:m,window}=reviewedFixture();window.getReviewedPNGTuberActivity=()=>({proactiveEnabled:false,owner:true,busy:false});m.layeredMetadata.reviewed_actions.leisure_idle_ms=delay;
+    const calls=[];m.requestReviewedState=index=>{calls.push(index);return true};m.reviewedPlaybackTick(100);
+    if(delay>0){m.reviewedPlaybackTick(100+delay-1);assert.equal(calls.length,0);m.reviewedPlaybackTick(100+delay);}
+    assert.deepEqual(calls,[5]);
+});
+for(const delay of [undefined,-1,null,'1000',Infinity]) test(`invalid idle threshold ${String(delay)} preserves thirty seconds`, () => {
+    const {manager:m}=reviewedFixture();m.layeredMetadata.reviewed_actions.leisure_idle_ms=delay;assert.equal(m.reviewedLeisureDelay(),30000);
+});
+
+
+for(const touch of [false,true]) test(`starting a new ${touch?'pinch':'pointer gesture'} retires an old queued drag`, async t => {
+    const {manager:m,advance}=timedReviewedFixture();t.after(()=>m.clearLayeredTimers());
+    m.setModelDraggingState=()=>{};m.rememberDragScreenPoint=()=>{};m.getActivePlacement=()=>({scale:.5,offsetX:0,offsetY:0});
+    m.requestReviewedState(2,{returnToDefaultAfterMs:0});await flushReviewed();m._dragState={moved:true};m.showDragImage();assert.ok(m._reviewedQueued);
+    const event={preventDefault(){},stopPropagation(){},button:0,pointerId:2,clientX:10,clientY:10,touches:[{clientX:0,clientY:0},{clientX:20,clientY:20}]};
+    if(touch)m.startTouchZoom(event);else m.startDrag(event);
+    assert.equal(m._reviewedQueued,null);advance(2300);m._trackedPlayback.lastIndex=1;m.reviewedPlaybackTick(2300);await flushReviewed();assert.equal(m.layeredStateIndex,2);
+});
+
+test('active pinch is recognized even when another pointer has only pressed without moving', async t => {
+    const {manager:m}=timedReviewedFixture();t.after(()=>m.clearLayeredTimers());m._dragState={moved:false};m._touchZoomState={changed:true};
+    m.showDragImage();await flushReviewed();assert.equal(m.layeredStateIndex,4);
+});
+
+
+test('new positive duration for the active emotion replaces older queued work through the public API', async t => {
+    const {manager:m,advance}=timedReviewedFixture();t.after(()=>m.clearLayeredTimers());m.reviewedPick=()=>2;
+    m.setEmotion('happy');await flushReviewed();const start=m.layeredAnimationStart;m.requestReviewedState(3);assert.equal(m._reviewedQueued.index,3);
+    advance(300);m.setEmotion('happy',{durationMs:500});assert.equal(m._reviewedQueued,null);assert.equal(m.layeredAnimationStart,start);
+    advance(799);await flushReviewed();assert.equal(m.layeredStateIndex,2);
+    advance(800);await flushReviewed();assert.equal(m.layeredStateIndex,0);assert.equal(m.currentEmotion,null);
+});
+
+
+test('a released gesture cancels a never-resolving drag preparation and unblocks the return deadline', async t => {
+    const {manager:m,advance}=timedReviewedFixture();t.after(()=>m.clearLayeredTimers());
+    m.requestReviewedState(2,{returnToDefaultAfterMs:500});await flushReviewed();
+    const gesture={moved:true};m._dragState=gesture;m.showDragImage();
+    m.prepareReviewedEntry=index=>index===4?new Promise(()=>{}):Promise.resolve([{image:{}}]);
+    advance(600);await flushReviewed();assert.equal(m._reviewedPreparing,true);
+    m._dragState=null;m.releaseReviewedDrag(gesture);assert.equal(m._reviewedPreparing,false);assert.equal(m._reviewedPreparingDrag,null);
+    advance(601);m.reviewedPlaybackTick(601);await flushReviewed();assert.equal(m.layeredStateIndex,0);
+});
+
+test('releasing an old drag does not cancel a newer emotion preparation', async t => {
+    const {manager:m}=timedReviewedFixture();t.after(()=>m.clearLayeredTimers());
+    m.prepareReviewedEntry=()=>new Promise(()=>{});const gesture={changed:true};m._touchZoomState=gesture;m.showDragImage();
+    m.requestReviewedState(2,{force:true});const token=m._reviewedRequest;m._touchZoomState=null;m.releaseReviewedDrag(gesture);
+    assert.equal(m._reviewedRequest,token);assert.equal(m._reviewedPreparing,true);assert.equal(m._reviewedPreparingDrag,null);
+});
+
+
+test('releasing an absent gesture is a no-op even while non-drag work is preparing', () => {
+    const {manager:m}=reviewedFixture();m._reviewedPreparing=true;m._reviewedPreparingDrag=null;const token=m._reviewedRequest;
+    m.releaseReviewedDrag(undefined);m.releaseReviewedDrag(null);assert.equal(m._reviewedPreparing,true);assert.equal(m._reviewedRequest,token);
 });

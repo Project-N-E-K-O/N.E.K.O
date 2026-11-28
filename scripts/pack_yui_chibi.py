@@ -78,6 +78,11 @@ def _build(source: Path, packs: Path, compatibility_dir: Path | None = None):
             )
             return relative
 
+        action_names = [state["name"] for state in metadata["state_catalog"]]
+        if any(not isinstance(name, str) for name in action_names):
+            raise ValueError("Non-portable action identifier")
+        if len(action_names) != len(set(action_names)):
+            raise ValueError("Duplicate reviewed action name")
         for state in metadata["state_catalog"]:
             key, name = str(state["state_index"]), state["name"]
             if not re.fullmatch(r"[a-z0-9-]+", name):

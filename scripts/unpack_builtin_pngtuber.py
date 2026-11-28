@@ -48,6 +48,12 @@ def _safe_relative_path(raw_path: str) -> PurePosixPath | None:
     path = PurePosixPath(normalized)
     if path.is_absolute() or any(part in ("", ".", "..") for part in path.parts):
         return None
+    for part in path.parts:
+        if part.endswith((".", " ")) or re.search(r'[<>:"|?*\x00-\x1f]', part):
+            return None
+        stem = part.split(".", 1)[0].rstrip(" ").upper()
+        if re.fullmatch(r"CON|PRN|AUX|NUL|COM[1-9\u00b9\u00b2\u00b3]|LPT[1-9\u00b9\u00b2\u00b3]|CONIN\$|CONOUT\$", stem):
+            return None
     return path
 
 
@@ -182,7 +188,7 @@ def _archive_parts(model: dict) -> list[dict]:
     if parts is None:
         parts = [
             {
-                key: model.get(key)
+                key: (model.get(key).lower() if key == "archive_sha256" and isinstance(model.get(key), str) else model.get(key))
                 for key in ("archive", "archive_sha256", "file_count", "unpacked_size")
             }
         ]
@@ -242,7 +248,7 @@ def _unpack_model(
     folder_name = folder_path.name
 
     parts = _archive_parts(model)
-    expected_hash = model["archive_sha256"]
+    expected_hash = parts[0]["archive_sha256"] if model.get("archives") is None else model["archive_sha256"]
 
     target_dir = output_root / folder_name
     backup_dir = output_root / f".{folder_name}.backup"
@@ -378,9 +384,11 @@ def unpack_model(model: dict, packs_root: Path = PACKS_ROOT, output_root: Path =
         manifest = packs_root / "manifest.json"
         if manifest.is_file():
             models = _manifest_models(manifest)
-            model = next((entry for entry in models if entry.get("folder") == model.get("folder")), None)
-            if model is None:
+            listed = next((entry for entry in models if entry.get("folder") == model.get("folder")), None)
+            if listed is None:
                 raise ValueError("model no longer listed in built-in manifest")
+            if listed != model:
+                raise ValueError("requested model does not match current built-in manifest; reload the manifest")
         return _install_entry(model, packs_root, output_root)
 
 

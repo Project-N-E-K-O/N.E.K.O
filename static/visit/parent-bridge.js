@@ -1075,6 +1075,7 @@
     function applyStateChange(msg, fromRecovery) {
       if (!msg || msg.type !== 'visit_state_change') return;
       var action = msg.action;
+      if (action === 'pending' && (!VISIT_ID_RE.test(msg.visit_id || '') || (msg.side !== 'host' && msg.side !== 'guest'))) return;
       // 别的场次迟到的事件在改任何状态之前就丢掉（closed 之后 visitId 已空，按记下的 closedVisitId 过滤）；
       // pending 开的是新场次，照常处理
       var current = state.visitId || state.closedVisitId;
@@ -1090,6 +1091,10 @@
       if (action === 'departed') state.auxGen.away += 1;
       if (msg.peer_crop === 'upper' || msg.peer_crop === 'full') state.peerCrop = msg.peer_crop;
       if (action === 'pending') {
+        // A new accepted session retires the old guest marker, even if its ended frame was lost.
+        if (current && current !== msg.visit_id && (state.side || state.closedSide) === 'guest') {
+          notifyReviewedVisit('ended', current, 'guest', true);
+        }
         state.closedVisitId = null; state.closedSide = null;
         if (msg.visit_id === state.endedVisitId) state.endedVisitId = null;
         ensureFrame(msg.side, msg.visit_id);

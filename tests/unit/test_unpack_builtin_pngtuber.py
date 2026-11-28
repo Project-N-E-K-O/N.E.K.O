@@ -281,3 +281,43 @@ def test_multipart_publish_failure_rolls_back(monkeypatch, tmp_path):
             model, tmp_path / "packs", tmp_path / "out"
         )
     assert (target / "previous.txt").read_text() == "previous"
+
+
+@pytest.mark.parametrize("with_manifest", [False, True])
+def test_legacy_single_archive_accepts_uppercase_hash_without_mutating_manifest(tmp_path, with_manifest):
+    packs_root = tmp_path / "packs"
+    entry = _write_valid_pack(packs_root)
+    entry["archive_sha256"] = entry["archive_sha256"].upper()
+    before = dict(entry)
+    if with_manifest:
+        (packs_root / "manifest.json").write_text(json.dumps({"version": 1, "models": [entry]}))
+    target = unpack_builtin_pngtuber.unpack_model(entry, packs_root, tmp_path / "runtime")
+    assert (target / unpack_builtin_pngtuber.READY_MARKER).read_text() == entry["archive_sha256"].lower()
+    assert entry == before
+    assert unpack_builtin_pngtuber.unpack_model(entry, packs_root, tmp_path / "runtime") == target
+
+
+@pytest.mark.parametrize("name", ["clips/COM\u00b9.webp", "clips/LPT\u00b2.png", "clips/body.png:meta", "clips/CON.png", "NUL", "clips/com1.webp", "clips/LPT9.txt", "clips/aux .png", "clips/CONIN$", "clips/frame.png.", "clips/frame.png ", "clips/bad?.png", "clips/bad\x00.png"])
+def test_nonportable_windows_member_path_is_rejected(name):
+    assert unpack_builtin_pngtuber._safe_relative_path(name) is None
+
+
+@pytest.mark.parametrize("name", ["clips/cone.png", "clips/com10.webp", "clips/frame-1.png", "clips/a.b.png"])
+def test_portable_names_resembling_devices_remain_accepted(name):
+    assert str(unpack_builtin_pngtuber._safe_relative_path(name)) == name
+
+
+def test_nonportable_archive_member_is_rejected_before_install_and_keeps_old_model(tmp_path):
+    packs_root = tmp_path / "packs"
+    old = _write_valid_pack(packs_root)
+    output = tmp_path / "runtime"
+    target = unpack_builtin_pngtuber.unpack_model(old, packs_root, output)
+    previous = (target / "model.json").read_bytes()
+    archive_path = packs_root / old["archive"]
+    with zipfile.ZipFile(archive_path, "a") as archive:
+        archive.writestr("clips/frame.png:meta", b"bad")
+    candidate = {**old, "archive_sha256": hashlib.sha256(archive_path.read_bytes()).hexdigest(), "file_count": old["file_count"] + 1, "unpacked_size": old["unpacked_size"] + 3}
+    with pytest.raises(ValueError, match="unsafe archive path"):
+        unpack_builtin_pngtuber.unpack_model(candidate, packs_root, output)
+    assert (target / "model.json").read_bytes() == previous
+    assert not (output / ".yui-test.backup").exists()

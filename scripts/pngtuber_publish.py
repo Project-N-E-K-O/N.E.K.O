@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+import errno
 import hashlib
 import json
 import os
@@ -9,26 +10,54 @@ import re
 from pathlib import Path
 import shutil
 import tempfile
+import threading
+import time
+
+
+_HELD_LOCKS: set[tuple[str, int]] = set()
 
 
 @contextmanager
-def publication_lock(root: Path, key: str):
+def publication_lock(root: Path, key: str, *, timeout: float = 10.0):
     identity = str(root.resolve()).casefold() + ":" + key
+    owner = (identity, threading.get_ident())
+    if owner in _HELD_LOCKS:
+        raise BlockingIOError("PNGTuber publication lock is not reentrant")
     name = hashlib.sha256(identity.encode()).hexdigest()
-    with (Path(tempfile.gettempdir()) / ("neko-pngtuber-" + name + ".lock")).open("a+b") as stream:
+    # A shared deterministic path also works when installed resource packs are read-only.
+    path = Path(tempfile.gettempdir()) / ("neko-pngtuber-" + name + ".lock")
+    if path.is_symlink():
+        raise ValueError("unsafe PNGTuber lock file")
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+    with os.fdopen(os.open(path, flags, 0o600), "r+b") as stream:
+        deadline = time.monotonic() + max(0, timeout)
+        while True:
+            stream.seek(0)
+            try:
+                if os.name == "nt":
+                    import msvcrt
+                    msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError as error:
+                if error.errno not in {errno.EACCES, errno.EAGAIN, errno.EDEADLK}:
+                    raise
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("Timed out waiting for PNGTuber publication lock") from error
+                time.sleep(min(0.05, remaining))
+        # Never inspect a byte held by another process on Windows.
         stream.seek(0)
         stream.write(b"0")
+        stream.truncate(1)
         stream.flush()
-        stream.seek(0)
-        if os.name == "nt":
-            import msvcrt
-            msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
-        else:
-            import fcntl
-            fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        _HELD_LOCKS.add(owner)
         try:
             yield
         finally:
+            _HELD_LOCKS.discard(owner)
             stream.seek(0)
             if os.name == "nt":
                 msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)

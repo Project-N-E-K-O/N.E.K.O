@@ -621,7 +621,7 @@
         }
 
         setLayeredStateIndex(index, options = {}) {
-            if (this.hasReviewedActions() && !options.reviewedCommit) return this.requestReviewedState(index, options);
+            if (this.hasReviewedActions() && !options.reviewedCommit) return this.requestReviewedState(Math.max(0, Math.min(this.getLayeredStateCount() - 1, Number(index) || 0)), { ...options, reviewedIdleEntry: true });
             if (!this.isLayeredActive()) return false;
             const stateCount = this.getLayeredStateCount();
             const nextIndex = Math.max(0, Math.min(stateCount - 1, Number(index) || 0));
@@ -676,7 +676,7 @@
 
         playLayeredAnimation(target, options = {}) {
             if (this._renderingPaused) return false;
-            if (this.hasReviewedActions()) return this.requestReviewedState(this.resolveLayeredAnimationTarget(target), options);
+            if (this.hasReviewedActions()) return this.requestReviewedState(this.resolveLayeredAnimationTarget(target), { ...options, reviewedIdleEntry: true });
             if (!this.isLayeredActive()) return false;
             return this.setLayeredStateIndex(this.resolveLayeredAnimationTarget(target), {
                 returnToDefaultAfterMs: options.returnToDefaultAfterMs ?? (() => {
@@ -986,7 +986,12 @@
                 await Promise.all(layers.map(async (layer, index) => {
                     const src = resolveSiblingAsset(config.layered_metadata, layer.image);
                     if (!src) return;
-                    const img = await loadImageElement(src);
+                    let img;
+                    try { img = await loadImageElement(src); }
+                    catch (error) {
+                        if (index !== 0 || metadata.reviewed_actions?.version !== 1 || !config.idle_image) throw error;
+                        img = await loadImageElement(config.idle_image);
+                    }
                     if (!isCurrentLoad()) return;
                     layeredImages.set(index, img);
                     layer._imageIndex = index;
@@ -999,14 +1004,10 @@
                 this.layeredStateIndex = this.hasReviewedActions() ? this.reviewedChooseIdle() : 0;
                 this.initializeTrackedPlayback(metadata, config.layered_metadata);
                 if (this.hasReviewedActions()) {
-                    await this.prepareReviewedEntry(this.layeredStateIndex);
+                    try { await this.prepareReviewedEntry(this.layeredStateIndex); }
+                    catch (error) { console.warn('[PNGTuber] reviewed idle entry deferred; continuing layered playback', error); }
                     if (!isCurrentLoad()) return false;
                 }
-            // 说话优先时被延后的情绪：话说完再补上（不是丢弃，也不是插进来）
-            this.pendingEmotion = null;
-            this.activeLayeredEmotionIndex = null;
-            // 瞬时状态槽（说话/拖动/点击）随包一起重来，别把上一个模型的槽带到新模型上
-            this.resetLayeredTransientSlots();
                 this.initializeLayeredToggleState(layers);
                 this.ensureContainer();
                 const canvas = this.canvasElement;
@@ -1439,9 +1440,34 @@
             return index;
         }
 
+        reviewedIdleFailure(resource, index) {
+            const failure = resource?.failures.get(index);
+            if (failure && performance.now() >= failure.expires) {
+                resource.failures.delete(index);
+                return null;
+            }
+            return failure;
+        }
+
+        reviewedIdleChoices(healthyOnly = false) {
+            const metadata = this.layeredMetadata;
+            const list = metadata?.reviewed_actions?.groups?.idle || [];
+            return list.filter(index => {
+                if (metadata.tracked_animations?.[index]?.playback !== 'loop') return false;
+                if (!healthyOnly) return true;
+                const entry = this._reviewedIdleEntryFailures?.get(index);
+                if (entry?.metadata === metadata && performance.now() < entry.expires) return false;
+                const resource = this._reviewedIdleMetadata === metadata ? this._reviewedIdleResources?.get(index) : null;
+                return !metadata.tracked_animations[index].frames.slice(0, 6).some((_, frame) => {
+                    const failure = this.reviewedIdleFailure(resource, frame);
+                    return failure && (failure.count >= 3 || performance.now() < failure.at);
+                });
+            });
+        }
+
         reviewedChooseIdle() {
-            const list = this.layeredMetadata?.reviewed_actions?.groups?.idle || [];
-            const choices = list.filter(index => this.layeredMetadata.tracked_animations?.[index]?.playback === 'loop');
+            const healthy = this.reviewedIdleChoices(true);
+            const choices = healthy.length ? healthy : this.reviewedIdleChoices();
             // Independent entry choice: repetition is allowed, no forced alternation.
             return choices.length ? choices[Math.floor(Math.random() * choices.length)] : 0;
         }
@@ -1450,8 +1476,10 @@
             this._reviewedRequest = (this._reviewedRequest || 0) + 1;
             this._reviewedWarmGeneration = (this._reviewedWarmGeneration || 0) + 1;
             this._reviewedPreparing = false;
+            this._reviewedPreparingDrag = null;
             this._reviewedQueued = null;
             this._reviewedRetry = null;
+            this._reviewedRecovery = null;
             this._reviewedIdleSince = null;
             if (release) {
                 this._reviewedEntries?.clear();
@@ -1463,7 +1491,7 @@
                 this._reviewedVisitPermit = null;
                 this._reviewedHoldLast = false;
                 this._reviewedReturnDeadline = null;
-                this._reviewedReturnAfterMs = null;
+                this._reviewedIdleEntryFailures = null;
                 this._reviewedLast = null;
                 this._reviewedHiddenAt = null;
                 this._reviewedBodyFrozenAt = null;
@@ -1478,6 +1506,31 @@
             return activity?.proactiveEnabled === false && activity?.owner === true && !activity.busy
                 && !this.isSpeaking && !this._dragState && !this._touchZoomState
                 && !this._reviewedVisit && !this.currentEmotion;
+        }
+
+        reviewedDragEligible(options) {
+            const gesture = options.dragGesture;
+            return Boolean(gesture && ((gesture === this._dragState && gesture.moved)
+                || (gesture === this._touchZoomState && gesture.changed)));
+        }
+
+        releaseReviewedDrag(gesture) {
+            if (!gesture) return;
+            if (this._reviewedPreparingDrag?.gesture === gesture) {
+                this._reviewedEntries?.delete(this._reviewedPreparingDrag.index);
+                this._reviewedRequest = (this._reviewedRequest || 0) + 1;
+                this._reviewedPreparing = false;
+                this._reviewedPreparingDrag = null;
+            }
+            if (this._reviewedQueued?.options.source === 'reviewed-drag'
+                && this._reviewedQueued.options.dragGesture === gesture) this._reviewedQueued = null;
+            if (this._reviewedRetry?.options?.source === 'reviewed-drag'
+                && this._reviewedRetry.options.dragGesture === gesture) this._reviewedRetry = null;
+        }
+
+        reviewedLeisureDelay() {
+            const delay = this.layeredMetadata?.reviewed_actions?.leisure_idle_ms;
+            return Number.isFinite(delay) && delay >= 0 ? delay : 30000;
         }
 
         reviewedActionComplete(playback, elapsed) {
@@ -1507,17 +1560,21 @@
                 options = { ...options, leisureInputAt: options.leisureInputAt ?? inputAt };
                 if (options.leisureInputAt !== inputAt || !this.reviewedLeisureEligible()) return false;
             }
+            if (options.source === 'reviewed-drag') {
+                options = { ...options, dragGesture: options.dragGesture || (this._dragState?.moved ? this._dragState : this._touchZoomState) };
+                if (!this.reviewedDragEligible(options)) return false;
+            }
             const current = this._trackedPlayback;
             if (!options.force && index === this.layeredStateIndex && current?.data === data) {
                 if ((options.emotion || options.returnToDefaultAfterMs !== undefined)
-                    && (this._reviewedPreparing || this._reviewedRetry)) this.cancelReviewedRequests();
+                    && (this._reviewedPreparing || this._reviewedRetry || this._reviewedRecovery || this._reviewedQueued)) this.cancelReviewedRequests();
                 this.applyReviewedPlaybackOptions(options);
                 return true;
             }
             const elapsed = performance.now() - this.layeredAnimationStart;
             if (!options.force && current?.data.playback === 'once' && !this.reviewedActionComplete(current, elapsed)) {
                 this._reviewedQueued = { index, options };
-                if (this._reviewedRetry?.exhausted) this._reviewedRetry = null;
+                if (this._reviewedRecovery) this._reviewedRecovery = null;
                 return true;
             }
             // Keep the identity across retries: a newer queue item can target the same clip.
@@ -1527,13 +1584,17 @@
             const token = (this._reviewedRequest || 0) + 1;
             this._reviewedRequest = token;
             this._reviewedRetry = null;
+            this._reviewedRecovery = null;
             this._reviewedPreparing = true;
+            this._reviewedPreparingDrag = options.source === 'reviewed-drag' ? { gesture: options.dragGesture, index } : null;
             const inputAt = options.leisureInputAt ?? (this.reviewedActivity()?.inputAt || 0);
             this.prepareReviewedEntry(index).then(entries => {
                 if (this.layeredMetadata !== metadata || this._reviewedRequest !== token || !this.hasReviewedActions()) return;
-                if (this._renderingPaused || this._reviewedHidden || (visitOnly && options.visitPermit !== this._reviewedVisitPermit)
+                if (this._renderingPaused || this._reviewedHidden
+                    || (options.source === 'reviewed-drag' && !this.reviewedDragEligible(options)) || (visitOnly && options.visitPermit !== this._reviewedVisitPermit)
                     || (options.source === 'reviewed-leisure' && (!this.reviewedLeisureEligible() || (this.reviewedActivity()?.inputAt || 0) !== inputAt))) {
                     this._reviewedPreparing = false;
+                    this._reviewedPreparingDrag = null;
                     return;
                 }
                 // Validate before changing the visible state or publishing its event.
@@ -1546,9 +1607,13 @@
                     this._reviewedTransition = { snapshot, at: performance.now() };
                 }
                 this._reviewedPreparing = false;
+                this._reviewedPreparingDrag = null;
                 if (this._reviewedQueued === options.reviewedQueueEntry) this._reviewedQueued = null;
                 this._reviewedLeisureInputAt = inputAt;
-                if (idleIndices.includes(index)) { this.currentEmotion = null; this.activeLayeredEmotionIndex = null; }
+                if (idleIndices.includes(index)) {
+                    this._reviewedIdleEntryFailures?.delete(index);
+                    this.currentEmotion = null; this.activeLayeredEmotionIndex = null;
+                }
                 else if (options.emotion) { this.currentEmotion = options.emotion; this.activeLayeredEmotionIndex = index; }
                 this.setLayeredStateIndex(index, {
                     source: options.source || 'reviewed', reviewedCommit: true,
@@ -1564,6 +1629,8 @@
             }).catch(error => {
                 if (this._reviewedRequest !== token || this.layeredMetadata !== metadata) return;
                 this._reviewedPreparing = false;
+                this._reviewedPreparingDrag = null;
+                if (options.source === 'reviewed-drag' && !this.reviewedDragEligible(options)) return;
                 const attempts = (options.retryAttempt || 0) + 1;
                 if (attempts < 3) {
                     this._reviewedRetry = { index, options: { ...options, force: true, retryAttempt: attempts },
@@ -1575,7 +1642,11 @@
                         this._reviewedRetry = { handoff: true, at: performance.now() + 1000 };
                     } else if (!idleIndices.includes(index) && !options.failureFallback) {
                         this._reviewedRetry = { index: 0, options: { force: true, failureFallback: true }, at: performance.now() + 1000 };
-                    } else this._reviewedRetry = { exhausted: true };
+                    } else {
+                        this._reviewedIdleEntryFailures ??= new Map();
+                        this._reviewedIdleEntryFailures.set(index, { metadata, expires: performance.now() + 30000 });
+                        this._reviewedRecovery = { at: performance.now() + (this.reviewedIdleChoices(true).length ? 250 : 5000) };
+                    }
                 }
                 console.warn('[PNGTuber] reviewed entry unavailable; retaining current pose', error);
             });
@@ -1593,8 +1664,6 @@
             this._reviewedHoldLast = options.returnToDefaultAfterMs === 0;
             const delay = Number(options.returnToDefaultAfterMs);
             this._reviewedReturnDeadline = Number.isFinite(delay) && delay > 0 ? performance.now() + delay : null;
-            this._reviewedReturnAfterMs = this._reviewedReturnDeadline == null ? null
-                : this._reviewedReturnDeadline - this.layeredAnimationStart;
             this.scheduleReviewedReturn();
         }
 
@@ -1616,7 +1685,7 @@
 
         tryReviewedDeadline(timestamp = performance.now()) {
             if (!this.hasReviewedActions() || this._renderingPaused || this._reviewedHidden
-                || this._reviewedPreparing || this._reviewedRetry || this._reviewedReturnDeadline == null
+                || this._reviewedPreparing || this._reviewedRetry || this._reviewedRecovery || this._reviewedReturnDeadline == null
                 || timestamp < this._reviewedReturnDeadline) return false;
             // Timer and render-clock expiry share precedence: accepted newer work wins.
             return this.finishReviewedAction();
@@ -1663,7 +1732,7 @@
             if (resource.cache.has(index)) return Promise.resolve({ image: resource.cache.get(index),
                 patch: resource.patches.get(resource.data.frames[index].mouth_patch?.image) });
             if (resource.pending.has(index)) return resource.pending.get(index);
-            const failure = resource.failures?.get(index);
+            const failure = this.reviewedIdleFailure(resource, index);
             if (failure && (failure.count >= 3 || performance.now() < failure.at)) return Promise.reject(new Error('idle frame retry deferred'));
             const generation = this._reviewedWarmGeneration;
             const frame = resource.data.frames[index];
@@ -1675,13 +1744,14 @@
                     typeof item.decode === 'function' ? item.decode() : Promise.resolve()));
                 if (!this._renderingPaused && !this._reviewedHidden && generation === this._reviewedWarmGeneration
                     && this.layeredMetadata === resource.metadata && this._reviewedIdleMetadata === resource.metadata) {
+                    resource.failures.delete(index);
                     resource.cache.set(index, image);
                     if (mouthPatch) resource.patches.set(patch.image, mouthPatch);
                 }
                 return { image, patch: mouthPatch };
             }).catch(error => {
                 const count = (resource.failures.get(index)?.count || 0) + 1;
-                resource.failures.set(index, { count, at: performance.now() + 250 * 2 ** (count - 1) });
+                resource.failures.set(index, { count, at: performance.now() + 250 * 2 ** (count - 1), expires: performance.now() + 30000 });
                 throw error;
             }).finally(() => resource.pending.delete(index));
             resource.pending.set(index, ready);
@@ -1700,7 +1770,7 @@
                     && this._reviewedIdleMetadata === resource.metadata && this.hasReviewedActions()
                     && generation === this._reviewedWarmGeneration && !this._renderingPaused && !this._reviewedHidden) {
                     const frame = cursor++;
-                    if (resource.failures.get(frame)?.count >= 3) continue;
+                    if (this.reviewedIdleFailure(resource, frame)?.count >= 3) continue;
                     await this.loadReviewedIdleFrame(resource, frame, base);
                     // Yield between decodes; never enqueue a whole clip on the main thread.
                     await new Promise(resolve => setTimeout(resolve, 0));
@@ -1738,9 +1808,17 @@
             if (!this.hasReviewedActions() || this._reviewedPreparing || this._renderingPaused || this._reviewedHidden) return;
             const playback = this._trackedPlayback;
             if (!playback) return;
+            if (this._reviewedRecovery && timestamp >= this._reviewedRecovery.at) {
+                if (this.reviewedIdleChoices(true).length) {
+                    const index = this.reviewedChooseIdle();
+                    this.requestReviewedState(index, { force: true, reviewedIdleEntry: true, failureFallback: true });
+                    return;
+                }
+                this._reviewedRecovery.at = timestamp + 5000;
+            }
             if (this._reviewedRetry) {
                 const retry = this._reviewedRetry;
-                if (!retry.exhausted && timestamp >= retry.at) {
+                if (timestamp >= retry.at) {
                     this._reviewedRetry = null;
                     if (retry.handoff) this.finishReviewedAction();
                     else this.requestReviewedState(retry.index, retry.options);
@@ -1751,11 +1829,11 @@
             const elapsed = timestamp - this.layeredAnimationStart;
             const group = this.layeredStateCatalog().find(x => x.state_index === this.layeredStateIndex)?.group;
             const activity = this.reviewedActivity();
-            if (group === 'leisure' && (this.isSpeaking || activity?.proactiveEnabled || activity?.busy
+            if (!this._reviewedRecovery && group === 'leisure' && (this.isSpeaking || activity?.proactiveEnabled || activity?.busy
                 || (activity?.inputAt || 0) > (this._reviewedLeisureInputAt || 0))) {
                 this.requestReviewedState(0, { force: true, source: 'reviewed-interrupt' }); return;
             }
-            if (playback.data.playback === 'once' && this.reviewedActionComplete(playback, elapsed)
+            if (!this._reviewedRecovery && playback.data.playback === 'once' && this.reviewedActionComplete(playback, elapsed)
                 && (!this._reviewedHoldLast || this._reviewedQueued)
                 && this._reviewedReturnDeadline == null) {
                 this.finishReviewedAction(); return;
@@ -1770,7 +1848,7 @@
             if (!eligible) this._reviewedIdleSince = null;
             else {
                 this._reviewedIdleSince ??= timestamp;
-                if (timestamp - this._reviewedIdleSince >= 30000) {
+                if (timestamp - this._reviewedIdleSince >= this.reviewedLeisureDelay()) {
                     const index = this.reviewedPick('leisure');
                     this._reviewedIdleSince = null;
                     if (index !== null) this.requestReviewedState(index, { source: 'reviewed-leisure' });
@@ -1807,7 +1885,7 @@
                 }
                 return false;
             }
-            if (msg.action === 'departed' && !this._reviewedVisit) {
+            if (msg.action === 'departed' && this._reviewedVisit !== msg.visit_id) {
                 this._reviewedVisit = msg.visit_id;
                 const index = this.reviewedPick('visit-leave');
                 this._reviewedVisitPermit = {};
@@ -1898,14 +1976,18 @@
 
         requestTrackedFrame(index) {
             const playback = this._trackedPlayback;
-            if (!playback || playback.cache.has(index) || playback.pending.has(index)
-                || playback.failed.has(index) || playback.pending.size >= 6) return;
+            if (!playback || playback.cache.has(index) || playback.pending.has(index) || playback.pending.size >= 6) return;
+            if (playback.failed.has(index)) {
+                if (!playback.idleResource || performance.now() < (playback.retries.get(index)?.expires ?? Infinity)) return;
+                playback.failed.delete(index);
+                playback.retries.delete(index);
+            }
             const retry = playback.retries.get(index);
             if (retry && performance.now() < retry.at) return;
             const onFailure = error => {
                 if (this._trackedPlayback !== playback) return;
                 const count = (playback.retries.get(index)?.count || 0) + 1;
-                playback.retries.set(index, { count, at: performance.now() + 250 * 2 ** (count - 1) });
+                playback.retries.set(index, { count, at: performance.now() + 250 * 2 ** (count - 1), expires: performance.now() + 30000 });
                 if (count >= 3) playback.failed.add(index);
                 console.warn('[PNGTuber] tracked frame unavailable:', index, error);
             };
@@ -2208,9 +2290,9 @@
             }
             const scratch = snapshot ? document.createElement('canvas')
                 : playback.mixCanvas || (playback.mixCanvas = document.createElement('canvas'));
-            const reviewedScale = this.hasReviewedActions() && data.width && data.height;
-            const width = Number(reviewedScale ? data.width : this.layeredMetadata.canvas.width);
-            const height = Number(reviewedScale ? data.height : this.layeredMetadata.canvas.height);
+            const hasTrackSize = data.width && data.height;
+            const width = Number(hasTrackSize ? data.width : this.layeredMetadata.canvas.width);
+            const height = Number(hasTrackSize ? data.height : this.layeredMetadata.canvas.height);
             if (scratch.width !== width) scratch.width = width;
             if (scratch.height !== height) scratch.height = height;
             const mixContext = scratch.getContext('2d');
@@ -2223,7 +2305,7 @@
             };
             ctx.save();
             ctx.translate(padding, padding);
-            if (reviewedScale) ctx.scale(this.layeredMetadata.canvas.width / data.width, this.layeredMetadata.canvas.height / data.height);
+            if (hasTrackSize) ctx.scale(this.layeredMetadata.canvas.width / data.width, this.layeredMetadata.canvas.height / data.height);
             drawSample(image, frame, 1 - mix);
             if (mix > 0) {
                 ctx.globalCompositeOperation = 'lighter';
@@ -4410,6 +4492,7 @@
             event.preventDefault();
             event.stopPropagation();
             const placement = this.getActivePlacement();
+            this.releaseReviewedDrag(this._dragState);
             this._dragState = {
                 dragSequence: null,
                 pointerId: event.pointerId,
@@ -4482,6 +4565,7 @@
             if (!state || (state.pointerId !== undefined && event.pointerId !== state.pointerId)) return;
             this.rememberDragScreenPoint(state, event);
             this._dragState = null;
+            this.releaseReviewedDrag(state);
             // 拖拽释放后的物理回摆窗口保持满帧：Plus 模型物理状态的内部字段
             // （draggerX/Y）不走 remix 形状探测，用时间窗兜底两种物理形态
             this._layeredFullRateHoldUntil = performance.now() + 2000;
@@ -4600,6 +4684,8 @@
             event.stopPropagation();
             const center = this.getTouchCenter(event.touches[0], event.touches[1]);
             const placement = this.getActivePlacement();
+            this.releaseReviewedDrag(this._dragState);
+            this.releaseReviewedDrag(this._touchZoomState);
             this._dragState = null;
             this._touchZoomState = {
                 dragSequence: null,
@@ -4668,6 +4754,7 @@
             const state = this._touchZoomState;
             if (!state) return;
             this._touchZoomState = null;
+            this.releaseReviewedDrag(state);
             this.resetLayeredDragVelocity();
             this.setModelDraggingState(false);
             const hasDragPerformance = this.layeredTransientSlots?.some(slot => slot.kind === 'drag');
@@ -5293,7 +5380,8 @@
                     this.emotionTimer = null;
                     this.clearEmotion();
                 }, options.durationMs === undefined
-                    ? (this.layeredMetadata?.tracked_animations?.[stateIndex]?.duration_ms || DEFAULT_EMOTION_DURATION_MS)
+                    ? (this.layeredMetadata?.tracked_animations?.[stateIndex]?.playback === 'once'
+                        ? this.layeredMetadata.tracked_animations[stateIndex].duration_ms : DEFAULT_EMOTION_DURATION_MS)
                     : durationMs);
             }
             return this.setLayeredStateIndex(stateIndex, { source: 'emotion' });
