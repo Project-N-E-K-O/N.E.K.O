@@ -30,8 +30,8 @@ has a setting of its own, kept in ``role_models.json`` next to the ledger:
   model of the session that started it, else that of its project's lead,
   else ``agent``; ``advanced`` the slot that follows the advanced task agent
   model of the main app and declares tool calling, else that model itself,
-  else ``agent`` (when that model cannot be read or names none, or there
-  are no slots to read it by).
+  else ``agent`` (when that model cannot be read, names none or has an
+  address that is not an HTTP one, or there are no slots to read it by).
 
 A copy of a session (preset ``shadow``) has no setting: it is sent where the
 session it was copied from is, or what was cached of the conversation is lost.
@@ -270,6 +270,11 @@ def same_as_kept(session: Any, choice: Choice) -> bool:
     return all(getattr(session, name, None) == value for name, value in choice.columns().items())
 
 
+def _http_address(config: dict[str, Any]) -> bool:
+    """Return whether a model's address is an HTTP one, as ``materialize_host_slot`` asks of a followed tier."""
+    return str(config.get("base_url") or "").strip().lower().startswith(("http://", "https://"))
+
+
 def _protocol_provider(protocol: Any) -> str:
     """Return the provider type the client is made with for a slot's protocol (``utils.llm_client``)."""
     return "anthropic" if protocol == "anthropic_messages" else "openai_compatible"
@@ -424,6 +429,10 @@ class RoleModels:
         if not config or not config.get("model"):
             # The tier was there as the slot was resolved, and is not now.
             raise SlotUnavailable(HOST_API_NOT_CONFIGURED)
+        if tier == ADVANCED_TIER and not _http_address(config):
+            # Read again after the slot was resolved (and its address
+            # checked): as the advanced model itself is refused.
+            raise SlotUnavailable(HOST_API_UNSUPPORTED)
         if IMAGE_INPUT not in tuple(resolved.capabilities):
             config = {**config, "supports_images": False}
         return _choice(slot_id, agent, config, tier=tier)
@@ -474,7 +483,7 @@ class RoleModels:
             raise SlotUnavailable(MODEL_CONFIG_UNREADABLE) from None
         if not config or not config.get("model"):
             raise SlotUnavailable(HOST_API_NOT_CONFIGURED)
-        if not str(config.get("base_url") or "").strip().lower().startswith(("http://", "https://")):
+        if not _http_address(config):
             # A WebSocket address, say: no session can be opened with it, and
             # sent there a planner would only fail at its first request.
             raise SlotUnavailable(HOST_API_UNSUPPORTED)

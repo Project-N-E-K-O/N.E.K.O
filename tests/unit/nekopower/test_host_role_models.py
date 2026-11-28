@@ -2429,6 +2429,42 @@ async def test_an_advanced_model_that_cannot_be_used_leaves_a_planner_with_the_t
     assert (row.model_slot, row.model_fallback) == (AGENT_SLOT, code)
 
 
+class _AdvancedTierMovesOffHttp(Manager):
+    """The advanced tier has an HTTP address as the slots are listed and one is resolved, and a WebSocket one when it is read again."""
+
+    def __init__(self, root: Path, tiers: dict[str, Any]) -> None:
+        super().__init__(root, tiers)
+        self.reads = 0
+
+    def get_model_api_config(self, model_type: str) -> dict[str, Any]:
+        if model_type == "agent_advanced":
+            self.reads += 1
+            # Read once as the slots are listed, once as the slot is resolved.
+            if self.reads > 2:
+                return {**ADVANCED_TIER, "base_url": "ws://advanced.test/v1"}
+        return super().get_model_api_config(model_type)
+
+
+async def test_an_advanced_model_whose_address_is_no_http_one_when_read_again_leaves_a_planner_with_the_task_agent_model(
+    hosts, tmp_path
+):
+    manager = _AdvancedTierMovesOffHttp(
+        tmp_path / "app", {"agent": dict(AGENT_TIER), "agent_advanced": dict(ADVANCED_TIER)}
+    )
+    _write_slots(manager, _with_advanced_slot())
+    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM(), manager)
+    session = await _planner(host)
+
+    choice = await host.task_agents.session_model(session)
+
+    # Resolved through the slot with its HTTP address, read again with the WebSocket one: refused
+    # there too, as the advanced model itself is.
+    assert manager.reads >= 3
+    assert (choice.slot, choice.agent, choice.tier, choice.fallback) == (AGENT_SLOT, True, "agent", "host_api_unsupported")
+    row = await host.ledger.get_session(session.id)
+    assert (row.model_slot, row.model_fallback) == (AGENT_SLOT, "host_api_unsupported")
+
+
 async def test_without_slots_a_planner_is_sent_to_the_task_agent_model_as_every_preset_is(hosts, tmp_path):
     host = _host(hosts, tmp_path, lambda spec: ScriptedLLM(), None)
     session = await _planner(host)

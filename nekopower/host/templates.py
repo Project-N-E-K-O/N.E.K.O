@@ -66,8 +66,8 @@ agents that session starts as well (``Template.under``), except what it
 names under ``withhold_own``: tools a session of it is without itself and
 the task agents it starts keep, for one that is to hand work out and not
 do it. It names no model, address or key (``model`` says only
-whose model a session of it follows by default, and is kept for the pull
-request that makes use of it). What a file gets wrong is an error with a
+whose model a session of it follows by default, as ``role_models.py``
+settles it). What a file gets wrong is an error with a
 reason, never ignored: a field this does not know, a value that is not one
 of those allowed, a text over its cap. A file that is wrong takes the place
 of the template it would have replaced all the same: a session of that
