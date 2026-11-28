@@ -216,10 +216,8 @@ def _read_regular_gitfile(path: Path, max_bytes: int = 65536) -> str | None:
     except OSError:
         return None
     finally:
-        try:
+        with contextlib.suppress(OSError):
             os.close(fd)
-        except OSError:
-            pass
     if total > max_bytes:
         return None
     return b"".join(chunks).decode("utf-8", errors="replace").strip()
@@ -580,6 +578,7 @@ class TreeWork:
         *,
         ignore_blocked_commission_id: str | None = None,
         exclude_tree_id: str | None = None,
+        synchronize_projects: bool = False,
     ) -> bool:
         """Return whether any active/in-use session, active commission, active project, or other worktree references ``target_path``."""
         from nekopower.host.storage import _BUSY_SESSION_STATUSES, _any_path_is_or_inside, _path_aliases
@@ -666,7 +665,9 @@ class TreeWork:
         space = getattr(self, "_space", None)
         if space is not None and hasattr(space, "list_projects_checked"):
             try:
-                projects, readable = await space.list_projects_checked(include_archived=False)
+                projects, readable = await space.list_projects_checked(
+                    include_archived=False, under_write_lock=synchronize_projects
+                )
             except OSError:
                 return True
             if not readable:
@@ -924,7 +925,10 @@ class TreeWork:
                 return False
         try:
             if await self._workdir_referenced_actively(
-                row.path, ignore_blocked_commission_id=row.commission_id, exclude_tree_id=row.id
+                row.path,
+                ignore_blocked_commission_id=row.commission_id,
+                exclude_tree_id=row.id,
+                synchronize_projects=True,
             ):
                 return False
 
@@ -2446,7 +2450,10 @@ class TreeWork:
                     raise ValueError("at_work")
             try:
                 if await self._workdir_referenced_actively(
-                    row.path, ignore_blocked_commission_id=row.commission_id, exclude_tree_id=row.id
+                    row.path,
+                    ignore_blocked_commission_id=row.commission_id,
+                    exclude_tree_id=row.id,
+                    synchronize_projects=True,
                 ):
                     raise ValueError("at_work")
                 handle = await self._handle_for_cleanup(row)
@@ -2577,7 +2584,10 @@ class TreeWork:
                     return {"expired": False, "reason": "in_use"}
             try:
                 if await self._workdir_referenced_actively(
-                    row.path, ignore_blocked_commission_id=row.commission_id, exclude_tree_id=row.id
+                    row.path,
+                    ignore_blocked_commission_id=row.commission_id,
+                    exclude_tree_id=row.id,
+                    synchronize_projects=True,
                 ):
                     return {"expired": False, "reason": "in_use"}
                 if check_mtime is not None and not await self._tree_is_gone(row):
@@ -2933,7 +2943,7 @@ class TreeWork:
                 if workdir_hold is None:
                     raise ValueError("busy")
             try:
-                if await self._workdir_referenced_actively(target):
+                if await self._workdir_referenced_actively(target, synchronize_projects=True):
                     raise ValueError("busy")
                 pre_stats = await asyncio.to_thread(measure_dir, target, time.monotonic() + 0.25)
                 est_bytes = pre_stats.bytes if pre_stats.exists else 0
@@ -3029,26 +3039,29 @@ class TreeWork:
         outcome_kind = "removed" if marker_outcome == "expiring" else marker_outcome
         if gone:
             repo_root = row.repo_root or row.project_dir
+            metadata_err: Exception | None = None
             if repo_root and not await self._repo_root_gone(repo_root):
                 try:
                     await self.worktrees.forget_gone(repo_root, row.path, row.id)
                 except asyncio.CancelledError:
                     raise
                 except (WorktreeError, OSError) as exc:
-                    if not await self._tree_is_gone(row):
-                        if marker_outcome == "removed":
-                            # The directory reappeared before forget_gone() ran: keep the ledger row,
-                            # pending marker, and blocked commission intact rather than cancelling it.
-                            kept.append(row.id)
-                            return
-                        if marker_outcome == "expiring":
-                            await self._clear_pending_expired_trees((row.id,), expected={row.id: marker})
-                            kept.append(row.id)
-                            return
-                    logger.warning(
-                        "pending expired worktree %s metadata cleanup deferred: %s", row.id, exc
-                    )
-                    outcome_kind = "deferred"
+                    metadata_err = exc
+            if not await self._tree_is_gone(row):
+                if marker_outcome == "removed":
+                    # The directory reappeared before settlement ran: keep the ledger row,
+                    # pending marker, and blocked commission intact rather than cancelling it.
+                    kept.append(row.id)
+                    return
+                if marker_outcome == "expiring":
+                    await self._clear_pending_expired_trees((row.id,), expected={row.id: marker})
+                    kept.append(row.id)
+                    return
+            if metadata_err is not None:
+                logger.warning(
+                    "pending expired worktree %s metadata cleanup deferred: %s", row.id, metadata_err
+                )
+                outcome_kind = "deferred"
         self._forget_tree(row)
         await self._settle_expired_tree(
             row, outcome_kind, removed=(gone and outcome_kind == "removed")

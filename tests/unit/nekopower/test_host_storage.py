@@ -4468,6 +4468,54 @@ async def test_round22_review_fixes(tmp_path: Path, monkeypatch: pytest.MonkeyPa
         finally:
             host.task_agents.release_workdir(race_hold)
 
+        # 2b. Independent lock-enforcement test: prove the final should_abort() re-check and
+        #     os.unlink() execute inside the exact same op_lock acquisition (removing `with lock_cm:`
+        #     while keeping the second should_abort() check fails this test).
+        lock_root = tmp_path / "lock_probe_root"
+        lock_dir = lock_root / "work"
+        lock_dir.mkdir(parents=True)
+        (lock_dir / "probe.txt").write_text("payload", encoding="utf-8")
+
+        class _ProbeLock:
+            def __init__(self) -> None:
+                self._inner = threading.Lock()
+                self.held = False
+                self.acquire_id = 0
+
+            def __enter__(self) -> "_ProbeLock":
+                self._inner.acquire()
+                self.held = True
+                self.acquire_id += 1
+                return self
+
+            def __exit__(self, *args: Any) -> None:
+                self.held = False
+                self._inner.release()
+
+        probe_lock = _ProbeLock()
+        check_events: list[tuple[bool, int]] = []
+        unlink_events: list[tuple[bool, int]] = []
+        orig_unlink = os.unlink
+
+        def probe_abort() -> bool:
+            check_events.append((probe_lock.held, probe_lock.acquire_id))
+            return False
+
+        def probe_unlink(path: Any, *args: Any, **kwargs: Any) -> None:
+            unlink_events.append((probe_lock.held, probe_lock.acquire_id))
+            orig_unlink(path, *args, **kwargs)
+
+        with monkeypatch.context() as mp:
+            mp.setattr(os, "unlink", probe_unlink)
+            removed_probe, freed_probe = storage_mod.remove_dir_safely(
+                lock_dir, lock_root, should_abort=probe_abort, op_lock=probe_lock  # type: ignore[arg-type]
+            )
+        assert removed_probe is True and freed_probe == len("payload")
+        assert len(unlink_events) == 1
+        unlink_held, unlink_acq = unlink_events[0]
+        assert unlink_held is True
+        assert any(held and acq == unlink_acq for held, acq in check_events)
+
         # 3. _restore():
         #    (a) With normal wiring, _restore() waits BEFORE _move(source, target) while any workdir hold is active.
         await host.space.touch_project("waitp", workdir=str(tmp_path / "wait_other"), count=False)
@@ -4769,5 +4817,71 @@ async def test_round22_review_fixes(tmp_path: Path, monkeypatch: pytest.MonkeyPa
         assert reap2_restored[0] is True
         assert "reapdrp1" in rec_reap2["kept"]
         assert await host.ledger.get_tree("reapdrp1") is not None
+
+        #    (d) _settle_reconciled_pending_expiry: if directory reappears while _repo_root_gone()
+        #        returns True (so forget_gone() is skipped), still keep row, "removed" marker, and commission.
+        reap3_wt = host.paths.worktree_dir("reapgon1")
+        reap3_s = await host.ledger.create_session(name="reap3-s", lanlan_name="Lan", project="reapp3")
+        reap3_c, _ = await host.ledger.create(
+            dispatch_text="reap3-c",
+            title="reap3-c",
+            lanlan_name="Lan",
+            source="dispatch",
+            route="task_agent",
+            project="reapp3",
+            session_id=reap3_s.id,
+            workdir=str(reap3_wt),
+        )
+        await host.ledger.transition(reap3_c.id, "working")
+        await host.ledger.transition(reap3_c.id, "blocked")
+        gone_repo = tmp_path / "vanished_repo"
+        reap3_row = await host.ledger.add_tree(
+            id="reapgon1",
+            session_id=reap3_s.id,
+            commission_id=reap3_c.id,
+            lanlan_name="Lan",
+            project="reapp3",
+            project_dir=str(gone_repo),
+            repo_root=str(gone_repo),
+            path=str(reap3_wt),
+            workdir=str(reap3_wt),
+            token="tok-reap3",
+            state="held",
+        )
+        await host.task_agents._record_pending_expired_tree("reapgon1", "removed", row=reap3_row)
+        orig_repo_gone = host.task_agents._repo_root_gone
+        reap3_triggered = [False]
+
+        async def restore_during_repo_gone(repo_root: str) -> bool:
+            res = await orig_repo_gone(repo_root)
+            if os.path.normcase(os.path.normpath(repo_root)) == os.path.normcase(os.path.normpath(str(gone_repo))):
+                reap3_triggered[0] = True
+                reap3_wt.mkdir(parents=True, exist_ok=True)
+            return res
+
+        with monkeypatch.context() as mp:
+            mp.setattr(host.task_agents, "_repo_root_gone", restore_during_repo_gone)
+            rec_reap3 = await host.task_agents._reconcile_trees_now()
+        assert reap3_triggered[0] is True
+        assert "reapgon1" in rec_reap3["kept"]
+        assert (await host.ledger.get_tree("reapgon1")).state == "held"
+        assert (await host.ledger.get(reap3_c.id)).status == "blocked"
+        assert "reapgon1" in await host.task_agents._read_pending_expired_trees()
+
+        #    (e) Worktree cleanup paths synchronize active project reads under space write lock.
+        lock_flags: list[bool] = []
+        orig_list_checked = host.space.list_projects_checked
+
+        async def spy_list_checked(*args: Any, **kwargs: Any) -> Any:
+            lock_flags.append(bool(kwargs.get("under_write_lock", False)))
+            return await orig_list_checked(*args, **kwargs)
+
+        orph_sync = host.paths.worktree_dir("syncwt01")
+        orph_sync.mkdir(parents=True)
+        with monkeypatch.context() as mp:
+            mp.setattr(host.space, "list_projects_checked", spy_list_checked)
+            res_sync = await host.task_agents.remove_orphan_worktree("syncwt01")
+        assert res_sync["removed"] is True
+        assert lock_flags == [True]
     finally:
         await host.shutdown()
