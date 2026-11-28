@@ -1713,6 +1713,16 @@ BROWSER_SNAPSHOT_MAX_TOKENS = 3000
 """Cap on one page snapshot handed to a task agent. A longer one is cut and
 ends with a line saying so and how to see the rest."""
 
+DESKTOP_UI_TREE_MAX_TOKENS = 1200
+"""Cap on one Windows UI Automation control tree returned by ``computer``
+action ``ui_tree``. A longer tree is cut by line and says which offset reads
+on."""
+
+DESKTOP_SCREENSHOT_UI_TREE_MAX_TOKENS = 600
+"""Cap on the compact Windows UI Automation control tree appended to desktop
+screenshots and uid-driven actions so the model can act by control uid without
+an extra round trip."""
+
 BROWSER_DIALOG_TEXT_MAX_TOKENS = 200
 BROWSER_PAGE_URL_MAX_TOKENS = 40
 """Caps on text a page writes that goes into a tool result outside the
@@ -1746,6 +1756,13 @@ HOST_SHUTDOWN_BUDGET_SECONDS = 4.0
 on with the rest of its own shutdown. The host's steps keep running after
 that until the process exits; nothing is lost by it, because every status is
 already in the ledger and unsent reports go out with the next start."""
+
+AGENT_CONNECTION_DRAIN_SECONDS = 1.0
+"""How long the agent server's uvicorn drains open HTTP connections before
+running lifespan shutdown hooks (including the browser shutdown timer).
+Matches ``MERGED_CONNECTION_DRAIN_TIMEOUT`` so standalone and multiprocess
+launches on macOS and Linux reach the browser kill timer well within the
+launcher's 8-second graceful shutdown budget."""
 
 BROWSER_KILL_AT_SHUTDOWN_SECONDS = 5.0
 """How long after the agent process began to shut down the browser the

@@ -509,3 +509,115 @@ async def test_a_socket_the_system_gave_up_on_is_a_connection_that_broke_and_not
     with pytest.raises(CdpClosed, match="the connection to the browser broke: TimeoutError"):
         await connection.send("Page.enable", timeout=30.0)
     assert connection.closed
+
+
+# ---------------------------------------------------------------------------
+# PipeTransport (--remote-debugging-pipe)
+# ---------------------------------------------------------------------------
+
+
+async def test_pipe_transport_round_trips_nul_framed_commands_events_and_initial_buffer() -> None:
+    import os
+    import sys
+    import threading
+    from nekopower.builtin.browser.cdp import PipeTransport
+
+    if sys.platform == "win32":
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreatePipe.argtypes = [
+            ctypes.POINTER(wintypes.HANDLE),
+            ctypes.POINTER(wintypes.HANDLE),
+            ctypes.c_void_p,
+            wintypes.DWORD,
+        ]
+        kernel32.CreatePipe.restype = wintypes.BOOL
+        kernel32.ReadFile.argtypes = [
+            wintypes.HANDLE,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+            ctypes.POINTER(wintypes.DWORD),
+            ctypes.c_void_p,
+        ]
+        kernel32.ReadFile.restype = wintypes.BOOL
+        kernel32.WriteFile.argtypes = [
+            wintypes.HANDLE,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+            ctypes.POINTER(wintypes.DWORD),
+            ctypes.c_void_p,
+        ]
+        kernel32.WriteFile.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+
+        c_r, p_w = wintypes.HANDLE(), wintypes.HANDLE()
+        p_r, c_w = wintypes.HANDLE(), wintypes.HANDLE()
+        assert kernel32.CreatePipe(ctypes.byref(c_r), ctypes.byref(p_w), None, 0)
+        assert kernel32.CreatePipe(ctypes.byref(p_r), ctypes.byref(c_w), None, 0)
+        read_h, write_h = p_r.value, p_w.value
+
+        def child_read() -> bytes:
+            buf = ctypes.create_string_buffer(4096)
+            n = wintypes.DWORD()
+            if not kernel32.ReadFile(c_r.value, buf, 4096, ctypes.byref(n), None) or n.value == 0:
+                return b""
+            return buf.raw[: n.value]
+
+        def child_write(data: bytes) -> None:
+            n = wintypes.DWORD()
+            kernel32.WriteFile(c_w.value, data, len(data), ctypes.byref(n), None)
+
+        def child_close() -> None:
+            kernel32.CloseHandle(c_r.value)
+            kernel32.CloseHandle(c_w.value)
+    else:
+        c_r_fd, write_h = os.pipe()
+        read_h, c_w_fd = os.pipe()
+
+        def child_read() -> bytes:
+            return os.read(c_r_fd, 4096)
+
+        def child_write(data: bytes) -> None:
+            os.write(c_w_fd, data)
+
+        def child_close() -> None:
+            os.close(c_r_fd)
+            os.close(c_w_fd)
+
+    seen_events: list[str] = []
+
+    def fake_browser() -> None:
+        buf = bytearray()
+        try:
+            while True:
+                chunk = child_read()
+                if not chunk:
+                    break
+                buf.extend(chunk)
+                while (nul := buf.find(0)) != -1:
+                    raw = bytes(buf[:nul])
+                    del buf[: nul + 1]
+                    msg = json.loads(raw.decode("utf-8"))
+                    reply = json.dumps({"id": msg["id"], "result": {"echo": msg["method"]}}).encode("utf-8") + b"\x00"
+                    child_write(reply)
+        finally:
+            child_close()
+
+    worker = threading.Thread(target=fake_browser, daemon=True)
+    worker.start()
+    initial = json.dumps({"method": "Target.targetCreated", "params": {"targetInfo": {"targetId": "T0"}}}).encode("utf-8") + b"\x00"
+    transport = PipeTransport(read_h, write_h, initial_buffer=initial)
+    conn = await CdpConnection.connect_pipe(transport)
+    conn.on_event(lambda method, _params, _sid: seen_events.append(method))
+    try:
+        assert await conn.send("Browser.getVersion") == {"echo": "Browser.getVersion"}
+        assert await conn.send("Input.insertText", {"text": "猫 café"}) == {"echo": "Input.insertText"}
+        await _until(lambda: seen_events == ["Target.targetCreated"], "initial buffered event")
+    finally:
+        await conn.close()
+        worker.join(timeout=3.0)
+    assert conn.closed
+    assert not worker.is_alive()

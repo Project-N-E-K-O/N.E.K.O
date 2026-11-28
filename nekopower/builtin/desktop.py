@@ -69,7 +69,7 @@ SCROLL_DEFAULT_NOTCHES = 3
 SCROLL_MAX_NOTCHES = 50
 TYPE_MAX_CHARACTERS = 4000
 
-ACTIONS: tuple[str, ...] = ("screenshot", "click", "move", "drag", "scroll", "type", "key", "wait")
+ACTIONS: tuple[str, ...] = ("screenshot", "ui_tree", "click", "move", "drag", "scroll", "type", "key", "wait")
 BUTTONS: tuple[str, ...] = ("left", "right", "middle")
 DIRECTIONS: tuple[str, ...] = ("up", "down", "left", "right")
 
@@ -372,6 +372,17 @@ class ScaledInput:
         if self._cancel_event.wait(timeout=seconds):
             raise InterruptedError("stopped")
 
+    def _clamp_px(self, px: int, py: int) -> tuple[int, int]:
+        max_x = max(0, self._w - 1)
+        max_y = max(0, self._h - 1)
+        px = max(0, min(int(px), max_x))
+        py = max(0, min(int(py), max_y))
+        if self._w > self._FAILSAFE_EDGE_PX * 2:
+            px = max(self._FAILSAFE_EDGE_PX, min(px, max_x - self._FAILSAFE_EDGE_PX))
+        if self._h > self._FAILSAFE_EDGE_PX * 2:
+            py = max(self._FAILSAFE_EDGE_PX, min(py, max_y - self._FAILSAFE_EDGE_PX))
+        return px, py
+
     def to_pixels(self, x: float, y: float) -> tuple[int, int]:
         """Return the screen pixel of a point on the 0 to 999 scale.
 
@@ -382,13 +393,7 @@ class ScaledInput:
         max_y = max(0, self._h - 1)
         px = int(round(float(x) * max_x / COORDINATE_MAX))
         py = int(round(float(y) * max_y / COORDINATE_MAX))
-        px = max(0, min(px, max_x))
-        py = max(0, min(py, max_y))
-        if self._w > self._FAILSAFE_EDGE_PX * 2:
-            px = max(self._FAILSAFE_EDGE_PX, min(px, max_x - self._FAILSAFE_EDGE_PX))
-        if self._h > self._FAILSAFE_EDGE_PX * 2:
-            py = max(self._FAILSAFE_EDGE_PX, min(py, max_y - self._FAILSAFE_EDGE_PX))
-        return px, py
+        return self._clamp_px(px, py)
 
     def _glide_to(self, px: int, py: int, duration: float = 0.3) -> None:
         """Move the pointer there along an eased path, so the user can follow it."""
@@ -401,24 +406,32 @@ class ScaledInput:
             except Exception:  # noqa: BLE001 - the click itself still names the point
                 logger.debug("moving the pointer failed", exc_info=True)
 
+    def click_px(self, px: int, py: int, *, button: str = "left", clicks: int = 1) -> tuple[int, int]:
+        self.ensure_not_stopped()
+        cx, cy = self._clamp_px(px, py)
+        self._glide_to(cx, cy)
+        self.ensure_not_stopped()
+        self._backend.click(cx, cy, clicks=clicks, interval=0.08 if clicks > 1 else 0.0, button=button)
+        return cx, cy
+
     def click(self, x: float, y: float, *, button: str = "left", clicks: int = 1) -> tuple[int, int]:
-        self.ensure_not_stopped()
         px, py = self.to_pixels(x, y)
-        self._glide_to(px, py)
+        return self.click_px(px, py, button=button, clicks=clicks)
+
+    def move_px(self, px: int, py: int) -> tuple[int, int]:
         self.ensure_not_stopped()
-        self._backend.click(px, py, clicks=clicks, interval=0.08 if clicks > 1 else 0.0, button=button)
-        return px, py
+        cx, cy = self._clamp_px(px, py)
+        self._glide_to(cx, cy)
+        return cx, cy
 
     def move(self, x: float, y: float) -> tuple[int, int]:
-        self.ensure_not_stopped()
         px, py = self.to_pixels(x, y)
-        self._glide_to(px, py)
-        return px, py
+        return self.move_px(px, py)
 
-    def drag(self, x: float, y: float, to_x: float, to_y: float, *, button: str = "left") -> tuple[int, int, int, int]:
+    def drag_px(self, sx: int, sy: int, ex: int, ey: int, *, button: str = "left") -> tuple[int, int, int, int]:
         self.ensure_not_stopped()
-        sx, sy = self.to_pixels(x, y)
-        ex, ey = self.to_pixels(to_x, to_y)
+        sx, sy = self._clamp_px(sx, sy)
+        ex, ey = self._clamp_px(ex, ey)
         self._glide_to(sx, sy)
         self.ensure_not_stopped()
         self._backend.mouseDown(sx, sy, button=button)
@@ -440,11 +453,16 @@ class ScaledInput:
             self._held_buttons.remove(button)
         return sx, sy, ex, ey
 
-    def scroll(self, direction: str, notches: int, x: float | None = None, y: float | None = None) -> None:
+    def drag(self, x: float, y: float, to_x: float, to_y: float, *, button: str = "left") -> tuple[int, int, int, int]:
+        sx, sy = self.to_pixels(x, y)
+        ex, ey = self.to_pixels(to_x, to_y)
+        return self.drag_px(sx, sy, ex, ey, button=button)
+
+    def scroll_px(self, direction: str, notches: int, px: int | None = None, py: int | None = None) -> None:
         self.ensure_not_stopped()
-        if x is not None and y is not None:
-            px, py = self.to_pixels(x, y)
-            self._glide_to(px, py, duration=0.15)
+        if px is not None and py is not None:
+            cx, cy = self._clamp_px(px, py)
+            self._glide_to(cx, cy, duration=0.15)
         # pyautogui hands the number to Windows as it is, and there one notch
         # of the wheel is 120; elsewhere the number is the notches.
         windows = platform.system().lower() == "windows"
@@ -456,6 +474,13 @@ class ScaledInput:
             turn_wheel_sideways_on_windows(amount if direction == "right" else -amount)
         else:
             self._backend.hscroll(amount if direction == "right" else -amount)
+
+    def scroll(self, direction: str, notches: int, x: float | None = None, y: float | None = None) -> None:
+        if x is not None and y is not None:
+            px, py = self.to_pixels(x, y)
+            self.scroll_px(direction, notches, px, py)
+            return
+        self.scroll_px(direction, notches)
 
     def _paste(self, text: str) -> None:
         import pyperclip
@@ -641,16 +666,95 @@ def parse_keys(raw: Any, known: Any = None) -> list[str]:
     return names
 
 
+def default_ui_tree() -> Any:
+    """Return a Windows UI Automation tree manager when supported, or None elsewhere."""
+    if platform.system().lower() != "windows":
+        return None
+    from nekopower.builtin.uia import DesktopUiTree
+
+    tree = DesktopUiTree()
+    return tree if tree.is_supported() else None
+
+
+def _uid_arg(arguments: dict[str, Any], name: str = "uid") -> str | None:
+    value = arguments.get(name)
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise DesktopActionError(f"{name} must be a non-empty control uid from ui_tree")
+    return value.strip()
+
+
+def _describe_control(control: Any) -> str:
+    label = f'{control.role} "{control.name}"' if control.name else control.role
+    return f"control uid={control.uid} ({label})"
+
+
 class Desktop:
     """Carries out single actions on the desktop. Blocking: call ``act`` in a worker thread."""
 
-    def __init__(self, *, backend: Any = None, capture: Any = None, settle_seconds: float = SETTLE_SECONDS) -> None:
+    def __init__(
+        self,
+        *,
+        backend: Any = None,
+        capture: Any = None,
+        settle_seconds: float = SETTLE_SECONDS,
+        uia: Any = None,
+    ) -> None:
         self._backend = backend
         self._capture = capture if capture is not None else capture_frame
         self._settle_seconds = settle_seconds
+        self._uia = uia
+        self._lazy_uia: Any = None
         # Shared by every call, so what one call left held the next can let go.
         self._held_keys: list[str] = []
         self._held_buttons: list[str] = []
+
+    def _ui_tree(self) -> Any:
+        if self._uia is not None:
+            return self._uia
+        if self._lazy_uia is None:
+            self._lazy_uia = default_ui_tree()
+        return self._lazy_uia
+
+    def _invalidate_ui_tree(self) -> None:
+        tree = self._uia if self._uia is not None else self._lazy_uia
+        if tree is not None and hasattr(tree, "invalidate"):
+            tree.invalidate()
+
+    def _resolve_uid(self, uid: str, gui: ScaledInput) -> Any:
+        from nekopower.builtin.uia import UiaUnavailableError
+
+        tree = self._ui_tree()
+        if tree is None or not tree.is_supported():
+            raise DesktopActionError(
+                "UI Automation control uids are only available on Windows; use 0 to 999 coordinates from a screenshot."
+            )
+        try:
+            return tree.resolve(uid, screen_w=gui._w, screen_h=gui._h)
+        except UiaUnavailableError as exc:
+            raise DesktopActionError(str(exc)) from exc
+
+    def _best_effort_ui_snippet(self, gui: ScaledInput, cancel_event: threading.Event | None) -> str:
+        """Capture a compact UI tree snippet when UIA is available; never raises except on stop."""
+        tree = self._ui_tree()
+        if tree is None or not tree.is_supported():
+            return ""
+        try:
+            from config.nekopower_settings import DESKTOP_SCREENSHOT_UI_TREE_MAX_TOKENS
+
+            _snap, rendered = tree.snapshot(
+                gui._w,
+                gui._h,
+                max_tokens=DESKTOP_SCREENSHOT_UI_TREE_MAX_TOKENS,
+                cancel_event=cancel_event,
+            )
+            return rendered
+        except InterruptedError:
+            raise
+        except Exception:  # noqa: BLE001 - UIA failure must never fail screenshots or actions
+            logger.debug("capturing best-effort desktop UI tree failed", exc_info=True)
+            return ""
 
     def backend(self) -> Any:
         return self._backend if self._backend is not None else load_pyautogui()
@@ -688,6 +792,7 @@ class Desktop:
         if not EXECUTION_LOCK.acquire(timeout=RELEASE_WAIT_SECONDS):
             return False
         try:
+            self._invalidate_ui_tree()
             return self._release_held()
         finally:
             EXECUTION_LOCK.release()
@@ -713,6 +818,46 @@ class Desktop:
             size = image.size
         return encoded, size
 
+    def _act_ui_tree(self, gui: ScaledInput, arguments: dict[str, Any], cancel_event: threading.Event | None) -> DesktopResult:
+        from nekopower.builtin.uia import UiaUnavailableError
+
+        tree = self._ui_tree()
+        if tree is None or not tree.is_supported():
+            raise DesktopActionError(
+                "UI Automation control trees are only available on Windows; use action screenshot with 0 to 999 coordinates."
+            )
+        window = arguments.get("window")
+        if window is not None and (not isinstance(window, str) or not window.strip()):
+            raise DesktopActionError("window must be a non-empty window title substring")
+        offset_raw = arguments.get("offset")
+        if offset_raw is None:
+            offset = 0
+        elif isinstance(offset_raw, bool) or not isinstance(offset_raw, int) or offset_raw < 0:
+            raise DesktopActionError("offset must be a non-negative integer")
+        else:
+            offset = offset_raw
+        include_screenshot = arguments.get("include_screenshot") is True
+        try:
+            _snap, rendered = tree.snapshot(
+                gui._w,
+                gui._h,
+                window=window.strip() if isinstance(window, str) else None,
+                offset=offset,
+                cancel_event=cancel_event,
+            )
+        except UiaUnavailableError as exc:
+            raise DesktopActionError(str(exc)) from exc
+        if not include_screenshot:
+            return DesktopResult(text=rendered, screenshot=None)
+        encoded, (width, height) = self.screenshot(cancel_event)
+        return DesktopResult(
+            text=(
+                f"{rendered}\nScreenshot: {width}x{height} px. Coordinates are 0 to {COORDINATE_MAX} "
+                "on both axes, not pixels."
+            ),
+            screenshot=encoded,
+        )
+
     def act(self, action: str, arguments: dict[str, Any], cancel_event: threading.Event | None = None) -> DesktopResult:
         """Carry out one action and return what happened with a screenshot taken afterwards.
 
@@ -725,15 +870,22 @@ class Desktop:
             raise DesktopActionError("the keyboard and the mouse are busy with an earlier call; try again in a moment")
         gui: ScaledInput | None = None
         waited = 0.0
+        ui_snippet = ""
         try:
             try:
                 gui = self._input(cancel_event)
                 if not gui.release_held():
                     raise DesktopActionError("keys or buttons left held by an earlier call could not be released")
-                done = self._perform(gui, action, arguments)
+                if action == "ui_tree":
+                    return self._act_ui_tree(gui, arguments, cancel_event)
+                done, used_uid = self._perform(gui, action, arguments)
                 if action != "screenshot":
                     gui.settle_for(self._settle_seconds)
                     waited = self._settle_seconds
+                want_ui_tree = (
+                    (action == "screenshot" or used_uid or arguments.get("include_ui_tree") is True)
+                    and arguments.get("include_ui_tree") is not False
+                )
                 try:
                     encoded, (width, height) = self.screenshot(cancel_event)
                 except InterruptedError:
@@ -751,6 +903,8 @@ class Desktop:
                             "was carried out: do not repeat it. Call computer with action screenshot to see the screen."
                         )
                     )
+                if want_ui_tree:
+                    ui_snippet = self._best_effort_ui_snippet(gui, cancel_event)
             except InterruptedError as exc:
                 raise DesktopStopped("stopped") from exc
             finally:
@@ -760,64 +914,102 @@ class Desktop:
                     self._release_held()
         finally:
             EXECUTION_LOCK.release()
-        return DesktopResult(
-            text=(
-                f"{done} Screenshot after it: {width}x{height} px. Coordinates are 0 to {COORDINATE_MAX} "
-                "on both axes, not pixels."
-            ),
-            screenshot=encoded,
+        text = (
+            f"{done} Screenshot after it: {width}x{height} px. Coordinates are 0 to {COORDINATE_MAX} "
+            "on both axes, not pixels."
         )
+        if ui_snippet:
+            text = f"{text}\n{ui_snippet}"
+        return DesktopResult(text=text, screenshot=encoded)
 
-    def _perform(self, gui: ScaledInput, action: str, arguments: dict[str, Any]) -> str:
+    def _perform(self, gui: ScaledInput, action: str, arguments: dict[str, Any]) -> tuple[str, bool]:
         if action == "screenshot":
-            return "Looked at the screen."
+            return "Looked at the screen.", False
         if action == "wait":
             seconds = _number(arguments, "seconds", WAIT_DEFAULT_SECONDS, 0.0, WAIT_MAX_SECONDS)
             gui.settle_for(seconds)
-            return f"Waited {seconds:g} s."
+            return f"Waited {seconds:g} s.", False
         if action == "click":
-            x, y = _coordinate(arguments, "x"), _coordinate(arguments, "y")
+            uid = _uid_arg(arguments, "uid")
             button = arguments.get("button") or "left"
             if button not in BUTTONS:
                 raise DesktopActionError(f"button must be one of: {', '.join(BUTTONS)}")
             clicks = arguments.get("clicks") or 1
             if isinstance(clicks, bool) or clicks not in (1, 2, 3):
                 raise DesktopActionError("clicks must be 1, 2 or 3")
-            gui.click(x, y, button=button, clicks=int(clicks))
             kind = {1: "Clicked", 2: "Double-clicked", 3: "Triple-clicked"}[int(clicks)]
-            return f"{kind} the {button} button at ({x}, {y})."
+            if uid is not None:
+                ctrl = self._resolve_uid(uid, gui)
+                gui.click_px(ctrl.center_px[0], ctrl.center_px[1], button=button, clicks=int(clicks))
+                return f"{kind} the {button} button on {_describe_control(ctrl)}.", True
+            x, y = _coordinate(arguments, "x"), _coordinate(arguments, "y")
+            gui.click(x, y, button=button, clicks=int(clicks))
+            return f"{kind} the {button} button at ({x}, {y}).", False
         if action == "move":
+            uid = _uid_arg(arguments, "uid")
+            if uid is not None:
+                ctrl = self._resolve_uid(uid, gui)
+                gui.move_px(ctrl.center_px[0], ctrl.center_px[1])
+                return f"Moved the pointer to {_describe_control(ctrl)}.", True
             x, y = _coordinate(arguments, "x"), _coordinate(arguments, "y")
             gui.move(x, y)
-            return f"Moved the pointer to ({x}, {y})."
+            return f"Moved the pointer to ({x}, {y}).", False
         if action == "drag":
-            x, y = _coordinate(arguments, "x"), _coordinate(arguments, "y")
-            to_x, to_y = _coordinate(arguments, "to_x"), _coordinate(arguments, "to_y")
-            gui.drag(x, y, to_x, to_y)
-            return f"Dragged from ({x}, {y}) to ({to_x}, {to_y})."
+            uid = _uid_arg(arguments, "uid")
+            to_uid = _uid_arg(arguments, "to_uid")
+            if uid is not None:
+                start_ctrl = self._resolve_uid(uid, gui)
+                sx, sy = start_ctrl.center_px
+                start_desc = _describe_control(start_ctrl)
+            else:
+                x, y = _coordinate(arguments, "x"), _coordinate(arguments, "y")
+                sx, sy = gui.to_pixels(x, y)
+                start_desc = f"({x}, {y})"
+            if to_uid is not None:
+                end_ctrl = self._resolve_uid(to_uid, gui)
+                ex, ey = end_ctrl.center_px
+                end_desc = _describe_control(end_ctrl)
+            else:
+                to_x, to_y = _coordinate(arguments, "to_x"), _coordinate(arguments, "to_y")
+                ex, ey = gui.to_pixels(to_x, to_y)
+                end_desc = f"({to_x}, {to_y})"
+            gui.drag_px(sx, sy, ex, ey)
+            return f"Dragged from {start_desc} to {end_desc}.", (uid is not None or to_uid is not None)
         if action == "scroll":
             direction = arguments.get("direction") or "down"
             if direction not in DIRECTIONS:
                 raise DesktopActionError(f"direction must be one of: {', '.join(DIRECTIONS)}")
             notches = int(_number(arguments, "amount", SCROLL_DEFAULT_NOTCHES, 1, SCROLL_MAX_NOTCHES))
+            uid = _uid_arg(arguments, "uid")
+            if uid is not None:
+                ctrl = self._resolve_uid(uid, gui)
+                gui.scroll_px(direction, notches, ctrl.center_px[0], ctrl.center_px[1])
+                return f"Scrolled {direction} {notches} notch(es) on {_describe_control(ctrl)}.", True
             x, y = _coordinate(arguments, "x", required=False), _coordinate(arguments, "y", required=False)
             if (x is None) != (y is None):
                 raise DesktopActionError("give both x and y, or neither to scroll where the pointer is")
             gui.scroll(direction, notches, x, y)
             where = f" at ({x}, {y})" if x is not None else ""
-            return f"Scrolled {direction} {notches} notch(es){where}."
+            return f"Scrolled {direction} {notches} notch(es){where}.", False
         if action == "type":
             text = arguments.get("text")
             if not isinstance(text, str) or not text:
                 raise DesktopActionError("text is required for this action")
             if len(text) > TYPE_MAX_CHARACTERS:
                 raise DesktopActionError(f"text is longer than {TYPE_MAX_CHARACTERS} characters; type it in parts")
+            uid = _uid_arg(arguments, "uid")
+            if uid is not None:
+                ctrl = self._resolve_uid(uid, gui)
+                gui.click_px(ctrl.center_px[0], ctrl.center_px[1])
+                gui.settle_for(0.05)
+                gui.write(text)
+                return f"Typed {len(text)} character(s) into {_describe_control(ctrl)}.", True
             gui.write(text)
-            return f"Typed {len(text)} character(s)."
+            return f"Typed {len(text)} character(s).", False
         # action == "key"
         known = getattr(gui._backend, "KEYBOARD_KEYS", None)
         keys = parse_keys(arguments.get("keys"), set(known) if known else None)
         hold = _number(arguments, "hold_seconds", 0.0, 0.0, HOLD_MAX_SECONDS)
         gui.press(keys, hold)
         held = f" and held it {hold:g} s" if hold > 0 else ""
-        return f"Pressed {'+'.join(keys)}{held}."
+        return f"Pressed {'+'.join(keys)}{held}.", False

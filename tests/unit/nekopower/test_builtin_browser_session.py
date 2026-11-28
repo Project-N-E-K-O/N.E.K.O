@@ -4740,3 +4740,185 @@ async def test_the_process_of_the_users_own_browser_is_named_too(session: Browse
     await session.start()
     # Nothing was started for it; what draws over its window finds it by this all the same.
     assert (await session.refresh_window())["pid"] == BROWSER_PID
+
+
+# ---------------------------------------------------------------------------
+# Multi-browser attach, OOPIF snapshots & actions, upload/drag, WS/attach guards
+# ---------------------------------------------------------------------------
+
+
+async def test_attach_tries_other_detected_browsers_when_first_is_not_debugging(
+    session: BrowserSession, world: BrowserWorld
+) -> None:
+    edge = launcher.BrowserInstall("edge", "Microsoft Edge", "/fake/msedge", "/fake/edge-profile")
+    world.settings(mode="attach")
+    world.attach_browsers = [CHROME, edge]
+    world.attach_errors[CHROME.executable] = BrowserStartError("Google Chrome is not running with remote debugging on.")
+    await session.start()
+    assert world.attached == [CHROME, edge]
+    assert session.browser_name == "Microsoft Edge"
+    assert session.connected
+
+
+async def test_attach_reports_all_detected_browsers_when_none_is_debugging(
+    session: BrowserSession, world: BrowserWorld
+) -> None:
+    edge = launcher.BrowserInstall("edge", "Microsoft Edge", "/fake/msedge", "/fake/edge-profile")
+    world.settings(mode="attach")
+    world.attach_browsers = [CHROME, edge]
+    world.attach_error = BrowserStartError("not running")
+    with pytest.raises(BrowserError, match="Google Chrome, Microsoft Edge"):
+        await session.start()
+    assert world.attached == [CHROME, edge]
+
+
+async def test_cross_process_iframe_appears_in_snapshot_and_routes_actions_and_screenshot(
+    session: BrowserSession, world: BrowserWorld
+) -> None:
+    world.browser.serve(
+        "http://shop.test/oopif",
+        lambda: Document(
+            "Outer",
+            el("button", "Pay"),
+            el(
+                "Iframe",
+                "Card frame",
+                frame=Document("Card", el("textbox", "Card number"), el("button", "Confirm card")),
+                oopif=True,
+                quad=[200.0, 100.0, 600.0, 100.0, 600.0, 300.0, 200.0, 300.0],
+            ),
+        ),
+    )
+    page, fake, snapshot = await open_page(session, world, "http://shop.test/oopif")
+    assert snapshot.unlisted_frames == 0
+    card_uid = uid_of(snapshot, "Card number")
+    confirm_uid = uid_of(snapshot, "Confirm card")
+    assert snapshot.by_uid[card_uid].session_id is not None
+    assert snapshot.by_uid[card_uid].session_id != page.session_id
+
+    await session.fill(page, card_uid, "4111-2222")
+    await session.click(page, confirm_uid)
+    oopif_page = next(iter(world.browser.oopif_pages.values()))
+    assert oopif_page.find("Card number").value == "4111-2222"
+    assert oopif_page.find("Confirm card").clicks == 1
+    assert fake.mouse == []
+
+    # Element screenshot translates OOPIF local coordinates by ancestor iframe offset (200, 100).
+    await session.screenshot(page, uid=confirm_uid)
+    clip = fake.screenshots[-1]["clip"]
+    btn_left, btn_top, _, _ = oopif_page.find("Confirm card").box()
+    assert clip["x"] == pytest.approx(btn_left + 200.0)
+    assert clip["y"] == pytest.approx(btn_top + 100.0)
+
+    # Releasing handles releases OBJECT_GROUP on the OOPIF session too.
+    assert oopif_page.objects != {}
+    await session.release_handles()
+    assert oopif_page.objects == {} and OBJECT_GROUP in oopif_page.released_groups
+
+
+async def test_upload_file_handles_direct_file_input_and_file_chooser_button(
+    session: BrowserSession, world: BrowserWorld, tmp_path: Any
+) -> None:
+    sample = tmp_path / "resume.txt"
+    sample.write_text("hello", encoding="utf-8")
+
+    def upload_page() -> Document:
+        hidden_input = el("button", "Hidden file input", kind="file")
+        return Document(
+            "Upload",
+            el("button", "Direct file", kind="file"),
+            hidden_input,
+            el("button", "Choose file", opens_file_chooser=hidden_input),
+            el("button", "Plain button"),
+        )
+
+    world.browser.serve("http://shop.test/upload", upload_page)
+    page, fake, snapshot = await open_page(session, world, "http://shop.test/upload")
+
+    await session.upload_file(page, uid_of(snapshot, "Direct file"), str(sample))
+    assert fake.find("Direct file").files == [str(sample.resolve())]
+
+    await session.upload_file(page, uid_of(snapshot, "Choose file"), str(sample))
+    assert fake.find("Hidden file input").files == [str(sample.resolve())]
+    assert fake.intercept_file_chooser is False
+
+    with pytest.raises(BrowserError, match="did not open a file chooser"):
+        await session.upload_file(page, uid_of(snapshot, "Plain button"), str(sample))
+
+    with pytest.raises(BrowserError, match="does not exist"):
+        await session.upload_file(page, uid_of(snapshot, "Direct file"), str(tmp_path / "missing.txt"))
+
+
+async def test_drag_dispatches_html5_drag_events_and_pointer_drag(
+    session: BrowserSession, world: BrowserWorld
+) -> None:
+    world.browser.serve(
+        "http://shop.test/board",
+        lambda: Document(
+            "Board",
+            el("button", "Card A", draggable=True),
+            el("button", "Handle B", draggable=False),
+            el("region", "Done column"),
+        ),
+    )
+    page, fake, snapshot = await open_page(session, world, "http://shop.test/board")
+
+    await session.drag(page, uid_of(snapshot, "Card A"), uid_of(snapshot, "Done column"))
+    assert [ev["type"] for ev in fake.drag_events] == ["dragEnter", "dragOver", "drop"]
+    assert fake.intercept_drags is False
+
+    fake.mouse.clear()
+    fake.drag_events.clear()
+    await session.drag(page, uid_of(snapshot, "Handle B"), uid_of(snapshot, "Done column"))
+    assert fake.drag_events == []
+    assert fake.inputs()[0] == "mouseMoved"
+    assert fake.inputs()[1] == "mousePressed"
+    assert fake.inputs()[-1] == "mouseReleased"
+
+
+async def test_attach_mode_arms_websocket_guard_and_auto_attaches_oopifs_and_workers(
+    make_session: Any, world: BrowserWorld
+) -> None:
+    world.settings(mode="attach")
+    session = make_session(own_ports=lambda: {48911, 48913})
+    await session.start()
+    page = session.selected()
+    await session.navigate(page, "url", ORDER)
+    fake = world.page_of(page)
+
+    # Main page got JS WebSocket/WebTransport port guard and Target.setAutoAttach.
+    assert fake.auto_attach_enabled is True
+    assert any("48911" in src and "WebSocket" in src for src in fake.port_guard_scripts)
+
+    # Simulate an auto-attached cross-site iframe and a shared worker paused on start.
+    world.browser.other_targets.append(
+        {"targetId": "oopif-child-1", "type": "iframe", "url": "https://evil.example/frame", "title": "f"}
+    )
+    world.browser.other_targets.append(
+        {"targetId": "shared-w-1", "type": "shared_worker", "url": "https://evil.example/sw.js", "title": "sw"}
+    )
+    world.browser._other_sessions["child-iframe-sid"] = "oopif-child-1"
+    world.browser._other_sessions["child-sw-sid"] = "shared-w-1"
+    world.browser._emit(
+        "Target.attachedToTarget",
+        {
+            "sessionId": "child-iframe-sid",
+            "targetInfo": {"targetId": "oopif-child-1", "type": "iframe", "url": "https://evil.example/frame"},
+            "waitingForDebugger": True,
+        },
+        page.session_id,
+    )
+    world.browser._emit(
+        "Target.attachedToTarget",
+        {
+            "sessionId": "child-sw-sid",
+            "targetInfo": {"targetId": "shared-w-1", "type": "shared_worker", "url": "https://evil.example/sw.js"},
+            "waitingForDebugger": True,
+        },
+        page.session_id,
+    )
+    await _until(lambda: "oopif-child-1" in world.browser.resumed_targets and "shared-w-1" in world.browser.resumed_targets)
+    assert any(tid == "oopif-child-1" for tid, _ in world.browser.fetch_enabled)
+    assert any(tid == "oopif-child-1" for tid, _ in world.browser.port_guards)
+    assert any(tid == "shared-w-1" for tid, _ in world.browser.fetch_enabled)
+    assert any(tid == "shared-w-1" for tid, _ in world.browser.port_guards)

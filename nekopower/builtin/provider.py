@@ -70,6 +70,8 @@ def _drop_outcome(future: "asyncio.Future[Any]") -> None:
 class BuiltinToolProvider:
     """Lists the keyboard-and-mouse and browser tools and carries their calls out."""
 
+    supports_owner = True
+
     def __init__(
         self,
         *,
@@ -192,6 +194,7 @@ class BuiltinToolProvider:
         arguments: dict[str, Any],
         reopen_agreement: int | None = None,
         still_allowed: Callable[[], bool] | None = None,
+        owner: str | None = None,
     ) -> BuiltinOutcome:
         """Carry out one call, rechecking authorization inside the device queue. Cancelling it stops work.
 
@@ -206,7 +209,13 @@ class BuiltinToolProvider:
             return BuiltinOutcome(False, f"unknown tool {capability.tool_name}")
         if group == BUILTIN_GROUP_KEYBOARD_MOUSE:
             return await self._run_desktop(dict(arguments or {}), still_allowed)
-        return await self._run_browser(capability.tool_name, dict(arguments or {}), reopen_agreement, still_allowed)
+        return await self._run_browser(
+            capability.tool_name,
+            dict(arguments or {}),
+            reopen_agreement,
+            still_allowed,
+            owner=owner or commission_id,
+        )
 
     async def _run_desktop(self, arguments: dict[str, Any], still_allowed: Callable[[], bool] | None = None) -> BuiltinOutcome:
         from nekopower.builtin.desktop import DesktopActionError, DesktopStopped
@@ -259,8 +268,13 @@ class BuiltinToolProvider:
         return BuiltinOutcome(True, result.text, images)
 
     async def _run_browser(
-        self, tool_name: str, arguments: dict[str, Any], reopen_agreement: int | None = None,
+        self,
+        tool_name: str,
+        arguments: dict[str, Any],
+        reopen_agreement: int | None = None,
         still_allowed: Callable[[], bool] | None = None,
+        *,
+        owner: str | None = None,
     ) -> BuiltinOutcome:
         def still_on() -> str | None:
             # Asked when the call's turn has come: the browser may have been
@@ -289,12 +303,13 @@ class BuiltinToolProvider:
             while under_way := self._kills_under_way():
                 # Not stopped along with this call, should it be stopped.
                 await asyncio.wait(under_way)
-            if reopen_agreement is None:
-                outcome = await self.browser().call(tool_name, arguments, refused=still_on)
-            else:
-                outcome = await self.browser().call(
-                    tool_name, arguments, refused=still_on, reopen_agreement=reopen_agreement
-                )
+            browser = self.browser()
+            call_kwargs: dict[str, Any] = {"refused": still_on}
+            if reopen_agreement is not None:
+                call_kwargs["reopen_agreement"] = reopen_agreement
+            if owner is not None and getattr(browser, "supports_owner", False):
+                call_kwargs["owner"] = owner
+            outcome = await browser.call(tool_name, arguments, **call_kwargs)
         finally:
             self._end(BUILTIN_GROUP_BROWSER)
         self._tell_window()
@@ -317,7 +332,6 @@ class BuiltinToolProvider:
 
     async def released(self, group: str, commission_id: str) -> None:
         """A team no longer occupies a group: drop what was kept for it."""
-        del commission_id
         if group == BUILTIN_GROUP_KEYBOARD_MOUSE:
             if self._desktop is not None:
                 # Keys or buttons a stopped call left held must not stay down.
@@ -326,7 +340,10 @@ class BuiltinToolProvider:
             # The next commission is told about the window afresh.
             self._last_window = None
             if self._browser is not None:
-                await self._browser.released()
+                if getattr(self._browser, "supports_owner", False):
+                    await self._browser.released(owner=commission_id)
+                else:
+                    await self._browser.released()
 
     def browser_window(self) -> dict[str, Any] | None:
         """Return what is known about the browser window being driven, for the banner."""

@@ -109,6 +109,7 @@ import hashlib
 import hmac
 import json
 import logging
+import os
 import secrets
 from collections import Counter
 from collections.abc import Awaitable, Callable, Iterator
@@ -201,9 +202,26 @@ class _Cleared:
     # The user's agreement to this call opening a browser they closed, if one was needed.
     agreement: Any = None
     grant_id: str | None = None
+    # Secondary permission grant (for example ``outside_read`` on ``browser_upload_file``).
+    extra_grant_id: str | None = None
     # Drops it when it has waited for its call long enough.
     expiry: asyncio.TimerHandle | None = None
     device_group: str | None = None
+
+
+def _resolve_upload_path(raw_path: str, workdir: str | None) -> tuple[str, bool]:
+    """Resolve a ``browser_upload_file`` path against ``workdir`` and report whether it lies outside. Blocking."""
+    expanded = os.path.expanduser(raw_path)
+    joined = expanded if os.path.isabs(expanded) or not workdir else os.path.join(workdir, expanded)
+    resolved = os.path.realpath(joined)
+    if not workdir:
+        return resolved, True
+    root = os.path.realpath(workdir)
+    try:
+        inside = os.path.commonpath([os.path.normcase(root), os.path.normcase(resolved)]) == os.path.normcase(root)
+    except ValueError:
+        inside = False
+    return resolved, not inside
 
 
 def _call_key(capability_id: str, arguments: dict[str, Any]) -> tuple[str, str]:
@@ -1131,11 +1149,12 @@ class CapabilityGateway:
         ):
             return
         key = _call_key(capability.id, arguments)
-        cleared = await self._permit(commission, capability)
+        cleared = await self._permit(commission, capability, arguments)
         cleared.device_group = group
         if self._by_commission.get(commission_id) is not grant:
             # The token was taken back while the user was asked: no call will come for it.
             self._permissions.release_grant(cleared.grant_id)
+            self._permissions.release_grant(cleared.extra_grant_id)
             if cleared.agreement is not None:
                 self._registry.browser_reopen_agreement_over(cleared.agreement)
             return
@@ -1152,6 +1171,7 @@ class CapabilityGateway:
         if cleared is None:
             return
         self._permissions.release_grant(cleared.grant_id)
+        self._permissions.release_grant(cleared.extra_grant_id)
         if cleared.expiry is not None:
             # Its time is not to run out on whatever is ruled on for the same call next.
             cleared.expiry.cancel()
@@ -1169,7 +1189,9 @@ class CapabilityGateway:
             cleared.expiry.cancel()
         return cleared
 
-    async def _permit(self, commission: Commission, capability: Capability) -> _Cleared:
+    async def _permit(
+        self, commission: Commission, capability: Capability, arguments: dict[str, Any] | None = None
+    ) -> _Cleared:
         """Decide whether a call may be carried out, asking the user where the settings say so."""
         decision = await self._permissions.check(
             commission.id,
@@ -1185,17 +1207,57 @@ class CapabilityGateway:
             )
             reason = {DENIED_BY_SETTINGS: "settings", DENIED_BY_USER: "user"}.get(decision.reason, "no_approval")
             return _Cleared(refusal=_text(decision.reason or "permission denied", error=True), reason=reason)
+        extra_grant_id: str | None = None
+        if capability.kind == KIND_BUILTIN and capability.tool_name == "browser_upload_file" and arguments:
+            raw_path = arguments.get("filePath")
+            if isinstance(raw_path, str) and raw_path.strip():
+                resolved, outside = await asyncio.to_thread(_resolve_upload_path, raw_path, commission.workdir)
+                if outside:
+                    try:
+                        upload_decision = await self._permissions.check(
+                            commission.id,
+                            "outside_read",
+                            scope=GrantScope(capability.kind, capability.group or capability.id),
+                            hold_once=True,
+                            detail={
+                                "tool": capability.tool_name,
+                                "capability": capability.id,
+                                "title": capability.title,
+                                "path": resolved,
+                            },
+                        )
+                    except BaseException:
+                        self._permissions.release_grant(decision.grant_id)
+                        raise
+                    if not upload_decision.allow:
+                        self._permissions.release_grant(decision.grant_id)
+                        await self._ledger.append_event(
+                            commission.id,
+                            "capability_denied",
+                            {"capability": capability.id, "reason": upload_decision.reason},
+                        )
+                        reason = {DENIED_BY_SETTINGS: "settings", DENIED_BY_USER: "user"}.get(
+                            upload_decision.reason, "no_approval"
+                        )
+                        return _Cleared(
+                            refusal=_text(upload_decision.reason or "permission denied", error=True), reason=reason
+                        )
+                    extra_grant_id = upload_decision.grant_id
         if capability.kind == KIND_BUILTIN and capability.group == BUILTIN_GROUP_BROWSER:
             try:
                 refusal, agreement = await self._ask_before_reopening(commission, capability, just_asked=decision.asked)
             except BaseException:
                 self._permissions.release_grant(decision.grant_id)
+                self._permissions.release_grant(extra_grant_id)
                 raise
             return _Cleared(
-                refusal=refusal, agreement=agreement, reason="browser_reopen" if refusal else None,
+                refusal=refusal,
+                agreement=agreement,
+                reason="browser_reopen" if refusal else None,
                 grant_id=decision.grant_id,
+                extra_grant_id=extra_grant_id,
             )
-        return _Cleared(grant_id=decision.grant_id)
+        return _Cleared(grant_id=decision.grant_id, extra_grant_id=extra_grant_id)
 
     async def _call_capability(
         self, commission: Commission, capability: Capability, arguments: dict[str, Any]
@@ -1216,12 +1278,13 @@ class CapabilityGateway:
         # Ruled on before the call was made (``clear_call``), or now.
         permitted = self._take_cleared(commission.id, capability.id, arguments)
         if permitted is None:
-            permitted = await self._permit(commission, capability)
+            permitted = await self._permit(commission, capability, arguments)
         record.grant_id = self._permissions.authorization_ref(permitted.grant_id)
         try:
             return await self._run_permitted(commission, capability, arguments, record, permitted)
         finally:
             self._permissions.release_grant(permitted.grant_id)
+            self._permissions.release_grant(permitted.extra_grant_id)
 
     async def _run_permitted(
         self, commission: Commission, capability: Capability, arguments: dict[str, Any],
@@ -1230,7 +1293,10 @@ class CapabilityGateway:
         from config.nekopower_settings import GATEWAY_RESULT_MAX_TOKENS
         from utils.tokenize import truncate_to_tokens
 
-        if permitted.refusal is None and not self._permissions.grant_active(permitted.grant_id):
+        grants_ok = self._permissions.grant_active(permitted.grant_id) and (
+            permitted.extra_grant_id is None or self._permissions.grant_active(permitted.extra_grant_id)
+        )
+        if permitted.refusal is None and not grants_ok:
             # Allowed a moment ago, forbidden by the settings since: a deny
             # set meanwhile wins, as it does over an answer. Nobody is asked again.
             if permitted.agreement is not None:
@@ -1245,20 +1311,39 @@ class CapabilityGateway:
             return permitted.refusal
 
         if capability.kind == KIND_BUILTIN:
+            call_args = arguments
+            if capability.tool_name == "browser_upload_file":
+                raw_path = arguments.get("filePath")
+                if isinstance(raw_path, str) and raw_path.strip():
+                    resolved, _outside = await asyncio.to_thread(_resolve_upload_path, raw_path, commission.workdir)
+                    call_args = {**arguments, "filePath": resolved}
             if permitted.agreement is not None:
                 try:
                     # What the user agreed to is this call opening the
                     # browser: the agreement goes with it, and no other
                     # call opens the browser on the strength of it.
                     return await self._call_builtin(
-                        commission, capability, arguments, record, permitted.grant_id, reopen_agreement=permitted.agreement
+                        commission,
+                        capability,
+                        call_args,
+                        record,
+                        permitted.grant_id,
+                        extra_grant_id=permitted.extra_grant_id,
+                        reopen_agreement=permitted.agreement,
                     )
                 finally:
                     # Should it have ended before it got to the browser
                     # (stopped, or the browser stayed in use by another
                     # task): the agreement ends with it.
                     self._registry.browser_reopen_agreement_over(permitted.agreement)
-            return await self._call_builtin(commission, capability, arguments, record, permitted.grant_id)
+            return await self._call_builtin(
+                commission,
+                capability,
+                call_args,
+                record,
+                permitted.grant_id,
+                extra_grant_id=permitted.extra_grant_id,
+            )
 
         async def run_created(run_id: str) -> None:
             await self._ledger.append_event(
@@ -1395,8 +1480,15 @@ class CapabilityGateway:
         return None, self._registry.browser_reopen_agreed()
 
     async def _call_builtin(
-        self, commission: Commission, capability: Capability, arguments: dict[str, Any],
-        record: call_audit.Call, grant_id: str | None, *, reopen_agreement: Any = None
+        self,
+        commission: Commission,
+        capability: Capability,
+        arguments: dict[str, Any],
+        record: call_audit.Call,
+        grant_id: str | None,
+        *,
+        extra_grant_id: str | None = None,
+        reopen_agreement: Any = None,
     ) -> dict[str, Any]:
         """Carry out one call of a built-in tool for a commission.
 
@@ -1406,6 +1498,11 @@ class CapabilityGateway:
         """
         from config.nekopower_settings import GATEWAY_RESULT_MAX_TOKENS
         from utils.tokenize import truncate_to_tokens
+
+        def grants_active() -> bool:
+            return self._permissions.grant_active(grant_id) and (
+                extra_grant_id is None or self._permissions.grant_active(extra_grant_id)
+            )
 
         group = capability.group or ""
         claim = object()
@@ -1430,7 +1527,7 @@ class CapabilityGateway:
                 if current is None or current.status != "working":
                     self._leases.release(commission.id)
                     return _text("this commission is no longer under way", error=True)
-            if not self._permissions.grant_active(grant_id):
+            if not grants_active():
                 record.status, record.reason = "denied", "settings"
                 return _text(DENIED_BY_SETTINGS, error=True)
             keep = True
@@ -1438,9 +1535,18 @@ class CapabilityGateway:
                 grant = self._by_commission.get(commission.id)
                 if grant is not None and group in grant.active_groups:
                     grant.used_groups.add(group)
+                owner = (
+                    self._leases.team_of(group, commission.id)
+                    if (self._leases is not None and group)
+                    else None
+                ) or commission.id
                 outcome = await self._registry.run_builtin(
-                    capability, commission_id=commission.id, arguments=arguments, reopen_agreement=reopen_agreement,
-                    still_allowed=lambda: self._permissions.grant_active(grant_id),
+                    capability,
+                    commission_id=commission.id,
+                    arguments=arguments,
+                    reopen_agreement=reopen_agreement,
+                    still_allowed=grants_active,
+                    owner=owner,
                 )
             except asyncio.CancelledError:
                 # The device may have started. Its run returns the lease once the worker stops.

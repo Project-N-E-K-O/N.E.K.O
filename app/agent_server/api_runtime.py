@@ -1087,26 +1087,25 @@ async def _console_write_browser(payload: Dict[str, Any]) -> Dict[str, Any]:
 
 @app.get("/builtin/activity")
 async def builtin_activity():
-    """Return which commission is using the keyboard and mouse, and which the browser, right now.
+    """Return which commission(s) are using the keyboard and mouse, and the browser, right now.
 
     The same payloads the ``builtin_activity`` events carry, for a display
     that starts late and missed them.
     """
     from nekopower.host.capabilities import BUILTIN_GROUPS
 
-    from .nekopower_builtins import activity_payload, occupant
+    from .nekopower_builtins import activity_payload, occupants
 
     items = []
     for group in BUILTIN_GROUPS:
-        commission_id = occupant(group)
-        if commission_id:
+        for commission_id in occupants(group):
             items.append(activity_payload(group, "started", commission_id))
     return {"activity": items}
 
 
 @app.post("/builtin/stop")
 async def stop_builtin(payload: Optional[Dict[str, Any]] = None):
-    """Stop the commission that is using the keyboard and mouse or the browser.
+    """Stop the commission(s) using the keyboard and mouse or the browser.
 
     What the Esc key of the banner calls. ``group`` names one of the two;
     without it both are stopped. Stopping is what cancelling the task from
@@ -1126,7 +1125,7 @@ async def stop_builtin(payload: Optional[Dict[str, Any]] = None):
     """
     from nekopower.host.capabilities import BUILTIN_GROUPS
 
-    from .nekopower_builtins import occupant
+    from .nekopower_builtins import occupants
 
     group = (payload or {}).get("group")
     if group is not None and group not in BUILTIN_GROUPS:
@@ -1141,24 +1140,38 @@ async def stop_builtin(payload: Optional[Dict[str, Any]] = None):
     # holds both groups is not stopped twice.
     tried = set()
     for name in ([group] if group else list(BUILTIN_GROUPS)):
-        commission_id = occupant(name)
-        if not commission_id or commission_id in tried or host is None:
+        active = occupants(name)
+        if not active or host is None:
             continue
-        if meant is not None and commission_id != meant:
-            not_stopped.append({"group": name, "commission_id": commission_id})
-            logger.info("[Agent] Esc was meant for task %s; %s is used by task %s, which is left alone", meant, name, commission_id)
-            continue
-        tried.add(commission_id)
-        try:
-            commission = await host.abort(commission_id, reason="Stopped with Esc")
-        except Exception:  # noqa: BLE001 - one that cannot be ended does not keep the other groups going
-            # (Its task agent could not be closed, say: it is not said to be
-            # stopped, and the next Esc tries it again.)
-            logger.warning("[Agent] Esc could not end task %s (%s)", commission_id, name, exc_info=True)
-            continue
-        if commission is not None and commission.status == "cancelled":
-            stopped.append(commission_id)
-            logger.info("[Agent] Task %s stopped with Esc (%s)", commission_id, name)
+        if meant is not None:
+            for other in active:
+                if other != meant:
+                    not_stopped.append({"group": name, "commission_id": other})
+                    logger.info(
+                        "[Agent] Esc was meant for task %s; %s is used by task %s, which is left alone",
+                        meant,
+                        name,
+                        other,
+                    )
+            if meant not in active:
+                continue
+            targets = [meant]
+        else:
+            targets = active
+        for commission_id in targets:
+            if commission_id in tried:
+                continue
+            tried.add(commission_id)
+            try:
+                commission = await host.abort(commission_id, reason="Stopped with Esc")
+            except Exception:  # noqa: BLE001 - one that cannot be ended does not keep the other groups going
+                # (Its task agent could not be closed, say: it is not said to be
+                # stopped, and the next Esc tries it again.)
+                logger.warning("[Agent] Esc could not end task %s (%s)", commission_id, name, exc_info=True)
+                continue
+            if commission is not None and commission.status == "cancelled":
+                stopped.append(commission_id)
+                logger.info("[Agent] Task %s stopped with Esc (%s)", commission_id, name)
     answer: Dict[str, Any] = {"success": True, "stopped": stopped}
     if meant is not None:
         answer["not_stopped"] = not_stopped

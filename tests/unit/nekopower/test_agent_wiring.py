@@ -1571,7 +1571,7 @@ def test_something_that_is_not_a_group_is_not_available(builtins):
     assert builtins.module._state("") == (False, "unknown")
 
 
-def test_the_provider_lists_the_computer_tool_and_the_fifteen_browser_tools(builtins):
+def test_the_provider_lists_the_computer_tool_and_the_seventeen_browser_tools(builtins):
     from config.prompts.prompts_nekopower_builtin import BROWSER_TOOL_NAMES
     from nekopower.builtin.provider import BuiltinToolProvider
 
@@ -1579,7 +1579,7 @@ def test_the_provider_lists_the_computer_tool_and_the_fifteen_browser_tools(buil
 
     listed = builtins.provider.available()
 
-    assert len(BROWSER_TOOL_NAMES) == 15 and all(name.startswith("browser_") for name in BROWSER_TOOL_NAMES)
+    assert len(BROWSER_TOOL_NAMES) == 17 and all(name.startswith("browser_") for name in BROWSER_TOOL_NAMES)
     assert [(item.id, item.group) for item in listed] == [("builtin:keyboard_mouse:computer", KEYBOARD)] + [
         (f"builtin:browser:{name}", BROWSER) for name in BROWSER_TOOL_NAMES
     ]
@@ -1800,7 +1800,7 @@ async def test_the_host_is_given_the_tools_and_tells_this_process_who_uses_them(
     assert [item.tool_name for item in host.registry.builtins()] == [
         item.tool_name for item in builtins.provider.available()
     ]
-    assert len(host.registry.builtins()) == 16
+    assert len(host.registry.builtins()) == 18
 
     # A commission that occupies a group is known here, and the banner is told.
     assert await host.leases.acquire(BROWSER, commission.id, title="订票") is None
@@ -2178,6 +2178,39 @@ async def test_a_stop_without_a_commission_named_answers_as_it_always_did(wiring
     answer = await wiring.runtime.stop_builtin({"group": BROWSER, "commission_id": None})
 
     assert answer == {"success": True, "stopped": [booking]}
+
+
+async def test_multiple_commissions_using_the_browser_are_reported_and_stopped_independently(
+    wiring, builtins, monkeypatch
+):
+    host = wiring.host_mount.get_host()
+    first, second = await _working(host, "订机票"), await _working(host, "查酒店")
+    builtins.module.on_builtin_activity(BROWSER, "started", first)
+    builtins.module.on_builtin_activity(BROWSER, "started", second)
+
+    activity = await wiring.runtime.builtin_activity()
+    assert [item["commission_id"] for item in activity["activity"]] == [first, second]
+
+    # Stopping one named commission leaves the other running in the browser.
+    aborted = _spy_on_abort(host, monkeypatch)
+    one = await wiring.runtime.stop_builtin({"group": BROWSER, "commission_id": first})
+    assert one == {
+        "success": True,
+        "stopped": [first],
+        "not_stopped": [{"group": BROWSER, "commission_id": second}],
+    }
+    assert aborted == [(first, "Stopped with Esc")]
+    assert (await host.ledger.get(first)).status == "cancelled"
+    assert (await host.ledger.get(second)).status == "working"
+
+    # Stopping the browser group without a commission_id stops all remaining browser occupants.
+    builtins.module.on_builtin_activity(BROWSER, "ended", first)
+    third = await _working(host, "查天气")
+    builtins.module.on_builtin_activity(BROWSER, "started", third)
+    both = await wiring.runtime.stop_builtin({"group": BROWSER})
+    assert both == {"success": True, "stopped": [second, third]}
+    assert (await host.ledger.get(second)).status == "cancelled"
+    assert (await host.ledger.get(third)).status == "cancelled"
 
 
 # ---------------------------------------------------------------------------

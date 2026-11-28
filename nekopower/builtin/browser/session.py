@@ -43,6 +43,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 import threading
 from collections.abc import Awaitable, Callable, Collection, Iterable
@@ -176,6 +177,25 @@ class Page:
     dialog_event: asyncio.Event = field(default_factory=asyncio.Event)
     # Opened for the work, or by a page that was; not a tab the user had open.
     own: bool = False
+    # Team commission id currently owning this tab for parallel browser sharing; None when unowned.
+    owner: str | None = None
+    # Cross-process iframe (OOPIF) target id -> flat CDP session id.
+    child_sessions: dict[str, str] = field(default_factory=dict)
+    # Frame id -> OOPIF session id (for frames living in an OOPIF rather than ``session_id``).
+    oopif_frame_sessions: dict[str, str] = field(default_factory=dict)
+    # OOPIF frame id -> chain of ``(parent_session_id, iframe_backend_node_id)`` from top-level down.
+    oopif_ancestors: dict[str, list[tuple[str | None, int]]] = field(default_factory=dict)
+    # Worker / service-worker / shared-worker sessions auto-attached under this page.
+    worker_sessions: set[str] = field(default_factory=set)
+    # OOPIF session ids that hold object handles in ``OBJECT_GROUP``.
+    oopif_handles: set[str] = field(default_factory=set)
+    # File chooser interception state for ``upload_file``.
+    file_chooser_event: asyncio.Event = field(default_factory=asyncio.Event)
+    file_chooser_backend_id: int | None = None
+    file_chooser_session_id: str | None = None
+    # HTML5 drag interception state for ``drag``.
+    drag_event: asyncio.Event = field(default_factory=asyncio.Event)
+    drag_data: dict[str, Any] | None = None
 
 
 _ELEMENT_OF_NODE = """function() {
@@ -314,6 +334,136 @@ _FIND_TEXT = """(texts => {
   return texts.find(item => text.includes(item)) ?? null;
 })"""
 
+_IS_FILE_INPUT = """function() {
+  return this.tagName === 'INPUT' && (this.getAttribute('type') || '').toLowerCase() === 'file';
+}"""
+
+_PORT_GUARD_MARKER = "__nekopower_port_guard__"
+
+# Auto-attach filter for cross-process iframes and workers so port blocking
+# reaches them before their first script runs.
+_AUTO_ATTACH_FILTER = [
+    {"type": "iframe", "exclude": False},
+    {"type": "worker", "exclude": False},
+    {"type": "shared_worker", "exclude": False},
+    {"type": "service_worker", "exclude": False},
+]
+
+
+def _port_guard_script(ports: Collection[int], *, block_http: bool = False) -> str:
+    """Return a self-contained JS guard blocking WebSocket/WebTransport (and optionally HTTP APIs) to ``ports``."""
+    port_list = ",".join(str(int(port)) for port in sorted(ports))
+    http_flag = "true" if block_http else "false"
+    return (
+        "(() => {"
+        f"const k = Symbol.for('{_PORT_GUARD_MARKER}');"
+        "const g = globalThis;"
+        f"const wantHttp = {http_flag};"
+        "let state = g[k];"
+        "if (state && (!wantHttp || state.http)) return;"
+        "if (!state) {"
+        "  state = { ws: false, http: false };"
+        "  try { Object.defineProperty(g, k, { value: state, writable: false, configurable: false }); }"
+        "  catch (_) { try { g[k] = state; } catch (_) {} }"
+        "}"
+        f"const blocked = new Set([{port_list}]);"
+        "const URLCtor = g.URL;"
+        "const ProxyCtor = g.Proxy;"
+        "const ReflectObj = g.Reflect;"
+        "const defineProp = Object.defineProperty;"
+        "const Str = String;"
+        "const TypeErr = TypeError;"
+        "const ReqCtor = typeof g.Request === 'function' ? g.Request : null;"
+        "const portOf = (raw) => {"
+        "  try {"
+        "    const base = (g.location && typeof g.location.href === 'string') ? g.location.href : undefined;"
+        "    const u = base ? new URLCtor(raw, base) : new URLCtor(raw);"
+        "    if (u.port) return Number(u.port);"
+        "    if (u.protocol === 'http:' || u.protocol === 'ws:') return 80;"
+        "    if (u.protocol === 'https:' || u.protocol === 'wss:') return 443;"
+        "  } catch (_) {}"
+        "  return null;"
+        "};"
+        "const check = (raw) => {"
+        "  const p = portOf(raw);"
+        "  if (p !== null && blocked.has(p)) throw new TypeErr('Blocked by client');"
+        "};"
+        "const copyTail = (args, start, head) => {"
+        "  const out = head;"
+        "  for (let i = start; i < args.length; i++) out.push(args[i]);"
+        "  return out;"
+        "};"
+        "const wrapCtor = (name) => {"
+        "  const Orig = g[name];"
+        "  if (typeof Orig !== 'function') return;"
+        "  const Wrapped = new ProxyCtor(Orig, {"
+        "    construct(target, args, newTarget) {"
+        "      if (args.length > 0) {"
+        "        const raw = Str(args[0]);"
+        "        check(raw);"
+        "        args = copyTail(args, 1, [raw]);"
+        "      }"
+        "      return ReflectObj.construct(target, args, newTarget);"
+        "    },"
+        "    apply(target, thisArg, args) {"
+        "      if (args.length > 0) {"
+        "        const raw = Str(args[0]);"
+        "        check(raw);"
+        "        args = copyTail(args, 1, [raw]);"
+        "      }"
+        "      return ReflectObj.apply(target, thisArg, args);"
+        "    }"
+        "  });"
+        "  try { defineProp(g, name, { value: Wrapped, writable: false, configurable: false, enumerable: false }); }"
+        "  catch (_) { try { g[name] = Wrapped; } catch (_) {} }"
+        "};"
+        "if (!state.ws) {"
+        "  wrapCtor('WebSocket');"
+        "  wrapCtor('WebTransport');"
+        "  state.ws = true;"
+        "}"
+        "if (wantHttp && !state.http) {"
+        "  if (typeof g.fetch === 'function') {"
+        "    const origFetch = g.fetch;"
+        "    const wrappedFetch = new ProxyCtor(origFetch, {"
+        "      apply(target, thisArg, args) {"
+        "        if (args.length > 0) {"
+        "          const first = args[0];"
+        "          if (ReqCtor && first instanceof ReqCtor) {"
+        "            check(first.url);"
+        "          } else {"
+        "            const raw = Str(first);"
+        "            check(raw);"
+        "            args = copyTail(args, 1, [raw]);"
+        "          }"
+        "        }"
+        "        return ReflectObj.apply(target, thisArg, args);"
+        "      }"
+        "    });"
+        "    try { defineProp(g, 'fetch', { value: wrappedFetch, writable: false, configurable: false }); }"
+        "    catch (_) { try { g.fetch = wrappedFetch; } catch (_) {} }"
+        "  }"
+        "  wrapCtor('EventSource');"
+        "  if (g.XMLHttpRequest && g.XMLHttpRequest.prototype && typeof g.XMLHttpRequest.prototype.open === 'function') {"
+        "    const origOpen = g.XMLHttpRequest.prototype.open;"
+        "    const wrappedOpen = new ProxyCtor(origOpen, {"
+        "      apply(target, thisArg, args) {"
+        "        if (args.length > 1) {"
+        "          const raw = Str(args[1]);"
+        "          check(raw);"
+        "          args = copyTail(args, 2, [args[0], raw]);"
+        "        }"
+        "        return ReflectObj.apply(target, thisArg, args);"
+        "      }"
+        "    });"
+        "    try { defineProp(g.XMLHttpRequest.prototype, 'open', { value: wrappedOpen, writable: false, configurable: false }); }"
+        "    catch (_) {}"
+        "  }"
+        "  state.http = true;"
+        "}"
+        "})();"
+    )
+
 
 def _drop_outcome(task: "asyncio.Future[Any]") -> None:
     if not task.cancelled():
@@ -356,7 +506,7 @@ class BrowserSession:
         # kept from this application's own ports (``_keep_what_was_open``),
         # by target id. A page among them is not worked on as it is.
         self._not_kept: set[str] = set()
-        self._selected: str | None = None
+        self._selected_by_owner: dict[str | None, str] = {}
         self._next_page_id = 1
         self._next_snapshot_id = 1
         self._can_create_tabs = True
@@ -376,6 +526,7 @@ class BrowserSession:
         # The pages (by target id) on which handles on elements were taken
         # and not let go of yet.
         self._handles: set[str] = set()
+        self._handles_by_owner: dict[str | None, set[str]] = {}
         # What a start that is under way is told to stop with; None while no
         # browser is being started.
         self._starting_stop: threading.Event | None = None
@@ -416,6 +567,17 @@ class BrowserSession:
     # -- connection -------------------------------------------------------
 
     @property
+    def _selected(self) -> str | None:
+        return self._selected_by_owner.get(None)
+
+    @_selected.setter
+    def _selected(self, target_id: str | None) -> None:
+        if target_id is None:
+            self._selected_by_owner.pop(None, None)
+        else:
+            self._selected_by_owner[None] = target_id
+
+    @property
     def connected(self) -> bool:
         return self._connection is not None and not self._connection.closed
 
@@ -454,7 +616,27 @@ class BrowserSession:
         else:
             try:
                 if attach:
-                    browser = await launcher.attach(install)
+                    own_profile = str(await asyncio.to_thread(self._settings.profile_dir))
+                    candidates = await asyncio.to_thread(
+                        launcher.attach_candidates, install, executable=settings.executable
+                    )
+                    browser = None
+                    last_error: launcher.BrowserStartError | None = None
+                    for candidate in candidates:
+                        try:
+                            browser = await launcher.attach(candidate, exclude_user_data_dir=own_profile)
+                            break
+                        except launcher.BrowserStartError as exc:
+                            last_error = exc
+                    if browser is None:
+                        if len(candidates) == 1 and last_error is not None:
+                            raise last_error
+                        names = ", ".join(candidate.name for candidate in candidates)
+                        raise launcher.BrowserStartError(
+                            f"None of the detected browsers ({names}) is running with remote debugging on. "
+                            "Open chrome://inspect/#remote-debugging in the browser you want to attach to "
+                            "and allow remote debugging (Chrome 144 or later), then try again."
+                        ) from last_error
                 else:
                     profile = await asyncio.to_thread(self._settings.profile_dir)
                     # Without a display a window cannot be shown; the browser
@@ -520,10 +702,13 @@ class BrowserSession:
                 self._unclosed.append(held)
             self._browser = None
         try:
-            connection = await CdpConnection.connect(
-                browser.endpoint,
-                open_timeout=ATTACH_CONNECT_TIMEOUT_SECONDS if attach else 10.0,
-            )
+            if browser.pipe is not None:
+                connection = await CdpConnection.connect_pipe(browser.pipe)
+            else:
+                connection = await CdpConnection.connect(
+                    browser.endpoint,
+                    open_timeout=ATTACH_CONNECT_TIMEOUT_SECONDS if attach else 10.0,
+                )
         except asyncio.CancelledError:
             # Nothing holds the browser yet.
             self._abandon(browser)
@@ -648,6 +833,116 @@ class BrowserSession:
         except CdpError:
             logger.warning("the whole browser cannot be kept from this application's own ports; each page is instead", exc_info=True)
 
+    async def _install_port_guard(
+        self,
+        connection: CdpConnection,
+        session_id: str,
+        *,
+        on_new_document: bool = True,
+        block_http: bool = False,
+        timeout: float = 5.0,
+    ) -> None:
+        """Install the JS WebSocket/WebTransport (and optional HTTP) port guard on a target session. Best effort."""
+        if not self._blocked_ports:
+            return
+        script = _port_guard_script(self._blocked_ports, block_http=block_http)
+        if on_new_document:
+            try:
+                await connection.send(
+                    "Page.addScriptToEvaluateOnNewDocument",
+                    {"source": script},
+                    session_id=session_id,
+                    timeout=timeout,
+                )
+            except (CdpError, CdpTimeout):
+                logger.debug("addScriptToEvaluateOnNewDocument failed for port guard", exc_info=True)
+        try:
+            await connection.send(
+                "Runtime.evaluate",
+                {"expression": script, "silent": True, "returnByValue": True},
+                session_id=session_id,
+                timeout=timeout,
+            )
+        except (CdpError, CdpTimeout):
+            logger.debug("Runtime.evaluate failed for port guard", exc_info=True)
+
+    async def _enable_auto_attach(self, connection: CdpConnection, session_id: str, *, timeout: float = 5.0) -> None:
+        """Enable recursive auto-attach on a page or OOPIF session so child OOPIFs and workers pause for port guards."""
+        params: dict[str, Any] = {
+            "autoAttach": True,
+            "waitForDebuggerOnStart": True,
+            "flatten": True,
+            "filter": _AUTO_ATTACH_FILTER,
+        }
+        try:
+            await connection.send("Target.setAutoAttach", params, session_id=session_id, timeout=timeout)
+        except CdpError:
+            # Older/minimal CDP hosts may reject the ``filter`` parameter.
+            try:
+                fallback = {key: value for key, value in params.items() if key != "filter"}
+                await connection.send("Target.setAutoAttach", fallback, session_id=session_id, timeout=timeout)
+            except (CdpError, CdpTimeout):
+                logger.debug("Target.setAutoAttach is not available on session", exc_info=True)
+        except CdpTimeout:
+            logger.debug("Target.setAutoAttach timed out on session", exc_info=True)
+
+    async def _on_child_attached(
+        self, page: Page, child_session_id: str, target_info: dict[str, Any], waiting: bool
+    ) -> None:
+        """Arm port blocking on an auto-attached cross-site iframe or worker and resume it."""
+        connection = self._connection
+        if connection is None or connection.closed:
+            return
+        kind = str(target_info.get("type") or "")
+        target_id = str(target_info.get("targetId") or "")
+        try:
+            if kind == "iframe":
+                if target_id:
+                    page.child_sessions[target_id] = child_session_id
+                try:
+                    await connection.send("Page.enable", session_id=child_session_id, timeout=5.0)
+                except (CdpError, CdpTimeout):
+                    pass
+                if self._blocked_ports:
+                    if not self._blocked_everywhere:
+                        try:
+                            await connection.send(
+                                "Fetch.enable",
+                                {"patterns": self._block_patterns()},
+                                session_id=child_session_id,
+                                timeout=5.0,
+                            )
+                        except (CdpError, CdpTimeout):
+                            logger.debug("Fetch.enable failed on auto-attached iframe", exc_info=True)
+                    await self._install_port_guard(connection, child_session_id, on_new_document=True, timeout=5.0)
+                    await self._enable_auto_attach(connection, child_session_id, timeout=5.0)
+            elif kind in ("worker", "shared_worker", "service_worker"):
+                page.worker_sessions.add(child_session_id)
+                if self._blocked_ports:
+                    need_js_http = False
+                    if not self._blocked_everywhere and kind != "worker":
+                        try:
+                            await connection.send(
+                                "Fetch.enable",
+                                {"patterns": self._block_patterns()},
+                                session_id=child_session_id,
+                                timeout=5.0,
+                            )
+                        except (CdpError, CdpTimeout):
+                            need_js_http = True
+                    await self._install_port_guard(
+                        connection,
+                        child_session_id,
+                        on_new_document=False,
+                        block_http=need_js_http,
+                        timeout=5.0,
+                    )
+        except CdpClosed:
+            return
+        finally:
+            if waiting and not connection.closed:
+                await self._send_quietly(connection, "Runtime.runIfWaitingForDebugger", {}, child_session_id)
+
     async def _keep_what_was_open(self, connection: CdpConnection, infos: Iterable[dict[str, Any]]) -> None:
         """Keep what was open before this connection was there from this application's own ports, too.
 
@@ -707,6 +1002,12 @@ class BrowserSession:
             session_id = str(attached["sessionId"])
             try:
                 await connection.send("Fetch.enable", patterns, session_id=session_id, timeout=_KEEP_OPEN_TIMEOUT_SECONDS)
+                await self._install_port_guard(
+                    connection,
+                    session_id,
+                    on_new_document=kind in ("page", "iframe", "background_page"),
+                    timeout=min(2.0, _KEEP_OPEN_TIMEOUT_SECONDS),
+                )
                 return True
             except (CdpError, CdpTimeout):
                 # Also when the session went while it was asked: a session
@@ -853,20 +1154,48 @@ class BrowserSession:
         if self._abandoned is abandoned:
             self._abandoned = None
 
-    async def _open_blank_page(self) -> None:
+    async def _open_blank_page(self, *, owner: str | None = None) -> Page | None:
         if not self._can_create_tabs or self._connection is None:
-            return
+            return None
         try:
             created = await self._connection.send("Target.createTarget", {"url": "about:blank"})
         except CdpError:
             # A window that cannot open tabs (one provided by the desktop
             # shell): the page it has is the one that is worked on.
             self._can_create_tabs = False
-            return
+            return None
         target_id = str(created.get("targetId") or "")
         if target_id:
-            self._note_target({"targetId": target_id, "type": "page", "url": "about:blank"}, own=True)
-            self._selected = target_id
+            self._note_target({"targetId": target_id, "type": "page", "url": "about:blank"}, own=True, owner=owner)
+            self._selected_by_owner[owner] = target_id
+            return self._pages.get(target_id)
+        return None
+
+    async def ensure_owner_page(self, owner: str | None) -> Page | None:
+        """Ensure ``owner`` has a dedicated tab when multiple task agents share the browser."""
+        if owner is None:
+            return self.current(None)
+        current_tid = self._selected_by_owner.get(owner)
+        if current_tid and current_tid in self._pages and self._pages[current_tid].owner == owner:
+            return self._pages[current_tid]
+        for page in self._pages.values():
+            if page.owner == owner:
+                self._selected_by_owner[owner] = page.target_id
+                return page
+        for page in self._pages.values():
+            if page.owner is None and (page.own or not (self._user_browser and self._can_create_tabs)):
+                page.owner = owner
+                self._selected_by_owner[owner] = page.target_id
+                return page
+        created = await self._open_blank_page(owner=owner)
+        if created is not None:
+            return created
+        if not self._can_create_tabs and any(p.owner not in (None, owner) for p in self._pages.values()):
+            raise BrowserError(
+                "This browser cannot open additional tabs, and its single page is currently in use by another task. "
+                "Try again once that task finishes."
+            )
+        return self.current(owner)
 
     async def _drop_connection(self) -> None:
         connection, self._connection = self._connection, None
@@ -876,7 +1205,8 @@ class BrowserSession:
         self._tabs_known = False
         self._not_kept.clear()
         self._handles.clear()
-        self._selected = None
+        self._handles_by_owner.clear()
+        self._selected_by_owner.clear()
         self._window_pid = None
         self._window_pid_asked = False
         if connection is not None:
@@ -1040,34 +1370,50 @@ class BrowserSession:
         """Whether a browser is driven, or one that could not be closed is still to be closed."""
         return self._browser is not None or bool(self._unclosed)
 
-    async def release_handles(self) -> None:
+    async def release_handles(self, *, owner: str | None = None) -> None:
         """Let go of the handles on elements taken so far (``OBJECT_GROUP``).
 
-        Called when a call is over, however it ended; a browser that refuses
-        or does not answer is not an error of the call. A page with a dialog
-        open answers nothing until the dialog is handled: its handles are
-        kept for the next time, as are those of a page whose turn had not
-        come, or was not over, when the caller was stopped.
+        When ``owner`` is given, only handles on tabs belonging to ``owner`` are
+        released so concurrent task agents do not drop each other's in-flight handles.
         """
         connection = self._connection
         if connection is None or connection.closed:
-            self._handles.clear()
+            if owner is None:
+                self._handles.clear()
+                self._handles_by_owner.clear()
+            else:
+                for tid in self._handles_by_owner.pop(owner, set()):
+                    self._handles.discard(tid)
             return
-        for target_id in list(self._handles):
+        target_ids = list(self._handles) if owner is None else list(self._handles_by_owner.get(owner, ()))
+        for target_id in target_ids:
             page = self._pages.get(target_id)
             if page is None or page.session_id is None:
                 # Closed, or detached from: its handles went with it.
                 self._handles.discard(target_id)
+                if owner is not None:
+                    self._handles_by_owner.get(owner, set()).discard(target_id)
+                else:
+                    for bucket in self._handles_by_owner.values():
+                        bucket.discard(target_id)
                 continue
             if page.dialog is not None:
                 continue
-            try:
-                await connection.send(
-                    "Runtime.releaseObjectGroup", {"objectGroup": OBJECT_GROUP}, session_id=page.session_id, timeout=2.0
-                )
-            except (CdpError, CdpClosed, CdpTimeout):
-                logger.debug("letting go of the handles of a page failed", exc_info=True)
+            sessions = [page.session_id, *list(page.oopif_handles)]
+            page.oopif_handles.clear()
+            for sid in sessions:
+                try:
+                    await connection.send(
+                        "Runtime.releaseObjectGroup", {"objectGroup": OBJECT_GROUP}, session_id=sid, timeout=2.0
+                    )
+                except (CdpError, CdpClosed, CdpTimeout):
+                    logger.debug("letting go of the handles of a page failed", exc_info=True)
             self._handles.discard(target_id)
+            if owner is not None:
+                self._handles_by_owner.get(owner, set()).discard(target_id)
+            else:
+                for bucket in self._handles_by_owner.values():
+                    bucket.discard(target_id)
 
     def stop_starting(self) -> None:
         """Tell a browser that is being started to give up; nothing is done when none is.
@@ -1098,15 +1444,33 @@ class BrowserSession:
             except Exception:  # noqa: BLE001 - nothing more can be done about it
                 logger.warning("killing the browser failed", exc_info=True)
 
-    def forget_snapshots(self) -> None:
-        """Make every uid handed out so far invalid; for when another commission takes over."""
+    def forget_snapshots(self, *, owner: str | None = None) -> None:
+        """Make uids handed out so far invalid; scoped to ``owner``'s tabs when given."""
         for page in self._pages.values():
-            page.snapshot = None
-            page.known_uids.clear()
+            if owner is None or page.owner == owner:
+                page.snapshot = None
+                page.known_uids.clear()
+
+    def release_owner(self, owner: str | None = None) -> None:
+        """Let go of ``owner``'s tabs and invalidate their uids without affecting other active owners."""
+        if owner is None:
+            self.forget_snapshots()
+            return
+        for page in self._pages.values():
+            if page.owner == owner:
+                page.snapshot = None
+                page.known_uids.clear()
+                page.owner = None
+            elif page.owner is None:
+                page.snapshot = None
+                page.known_uids.clear()
+        self._selected_by_owner.pop(owner, None)
+        for tid in self._handles_by_owner.pop(owner, set()):
+            self._handles.discard(tid)
 
     # -- events -----------------------------------------------------------
 
-    def _note_target(self, info: dict[str, Any], *, own: bool = False) -> None:
+    def _note_target(self, info: dict[str, Any], *, own: bool = False, owner: str | None = None) -> None:
         if info.get("type") != "page":
             return
         target_id = str(info.get("targetId") or "")
@@ -1132,14 +1496,18 @@ class BrowserSession:
             opener = self._pages.get(str(info.get("openerId") or ""))
             number = self._own_pages.get(target_id)
             own = own or number is not None or (opener is not None and opener.own)
+            resolved_owner = owner if owner is not None else (opener.owner if opener is not None else None)
             if number is None:
                 number = self._next_page_id
                 self._next_page_id += 1
-            page = Page(id=number, target_id=target_id, own=own)
+            page = Page(id=number, target_id=target_id, own=own, owner=resolved_owner)
             self._pages[target_id] = page
-        elif own:
-            # The event about a tab can arrive before the answer that says it was opened for the work.
-            page.own = True
+        else:
+            if own:
+                # The event about a tab can arrive before the answer that says it was opened for the work.
+                page.own = True
+            if owner is not None and page.owner is None:
+                page.owner = owner
         if page.own:
             self._own_pages[target_id] = page.id
         page.url = url
@@ -1150,13 +1518,27 @@ class BrowserSession:
         page = self._pages.pop(target_id, None)
         if page is None:
             return
-        if page.session_id and self._connection is not None:
-            self._connection.fail_session(page.session_id)
-        if self._selected == target_id:
-            fallback = self._fallback()
-            self._selected = fallback.target_id if fallback is not None else None
+        if self._connection is not None:
+            if page.session_id:
+                self._connection.fail_session(page.session_id)
+            for child_sid in list(page.child_sessions.values()):
+                self._connection.fail_session(child_sid)
+            for worker_sid in list(page.worker_sessions):
+                self._connection.fail_session(worker_sid)
+        page.child_sessions.clear()
+        page.oopif_frame_sessions.clear()
+        page.oopif_ancestors.clear()
+        page.worker_sessions.clear()
+        page.oopif_handles.clear()
+        for owner, selected_tid in list(self._selected_by_owner.items()):
+            if selected_tid == target_id:
+                fallback = self._fallback(owner)
+                if fallback is not None:
+                    self._selected_by_owner[owner] = fallback.target_id
+                else:
+                    self._selected_by_owner.pop(owner, None)
 
-    def _fallback(self) -> Page | None:
+    def _fallback(self, owner: str | None = None) -> Page | None:
         """Return the page to go on with when the selected one is gone, or None.
 
         In the browser the user is using that is never one of their tabs: a
@@ -1164,7 +1546,13 @@ class BrowserSession:
         exception is a browser that cannot open tabs, where the page there
         is is the one to work on.
         """
+        if owner is not None:
+            for page in self._pages.values():
+                if page.owner == owner:
+                    return page
         for page in self._pages.values():
+            if owner is not None and page.owner not in (None, owner):
+                continue
             if page.own or not (self._user_browser and self._can_create_tabs):
                 return page
         return None
@@ -1172,32 +1560,70 @@ class BrowserSession:
     def is_open(self, page: Page) -> bool:
         return self._pages.get(page.target_id) is page
 
+    def _page_of_session(self, session_id: str | None) -> Page | None:
+        if not session_id:
+            return None
+        for page in self._pages.values():
+            if page.session_id == session_id or session_id in page.child_sessions.values():
+                return page
+        return None
+
     def _on_event(self, method: str, params: dict[str, Any], session_id: str | None) -> None:
         if method == "Fetch.requestPaused":
             self._answer_paused(params, session_id)
+            return
+        if method == "Target.attachedToTarget":
+            child_sid = params.get("sessionId")
+            parent_page = self._page_of_session(session_id)
+            if isinstance(child_sid, str) and child_sid and parent_page is not None:
+                task = asyncio.ensure_future(
+                    self._on_child_attached(
+                        parent_page,
+                        child_sid,
+                        params.get("targetInfo") or {},
+                        bool(params.get("waitingForDebugger")),
+                    )
+                )
+                self._answers.add(task)
+                task.add_done_callback(self._answers.discard)
+                task.add_done_callback(_drop_outcome)
             return
         if method in ("Target.targetCreated", "Target.targetInfoChanged"):
             self._note_target(params.get("targetInfo") or {})
             return
         if method == "Target.targetDestroyed":
-            self._tabs.discard(str(params.get("targetId") or ""))
-            self._not_kept.discard(str(params.get("targetId") or ""))
-            self._own_pages.pop(str(params.get("targetId") or ""), None)
-            self._forget_page(str(params.get("targetId") or ""))
+            destroyed = str(params.get("targetId") or "")
+            self._tabs.discard(destroyed)
+            self._not_kept.discard(destroyed)
+            self._own_pages.pop(destroyed, None)
+            self._forget_page(destroyed)
             return
         if method == "Target.detachedFromTarget":
             detached = params.get("sessionId")
             for page in self._pages.values():
                 if page.session_id == detached:
                     page.session_id = None
+                if isinstance(detached, str) and detached:
+                    page.worker_sessions.discard(detached)
+                    page.oopif_handles.discard(detached)
+                    for child_tid, child_sid in list(page.child_sessions.items()):
+                        if child_sid == detached:
+                            del page.child_sessions[child_tid]
+                    for frame_id, frame_sid in list(page.oopif_frame_sessions.items()):
+                        if frame_sid == detached:
+                            del page.oopif_frame_sessions[frame_id]
+                            page.frame_loaders.pop(frame_id, None)
+                            page.frame_parents.pop(frame_id, None)
+                            page.oopif_ancestors.pop(frame_id, None)
             if isinstance(detached, str) and detached and self._connection is not None:
                 self._connection.fail_session(detached)
             return
         if session_id is None:
             return
-        page = next((item for item in self._pages.values() if item.session_id == session_id), None)
+        page = self._page_of_session(session_id)
         if page is None:
             return
+        is_main = session_id == page.session_id
         if method == "Page.javascriptDialogOpening":
             from config.nekopower_settings import BROWSER_DIALOG_TEXT_MAX_TOKENS
 
@@ -1211,6 +1637,15 @@ class BrowserSession:
         elif method == "Page.javascriptDialogClosed":
             page.dialog = None
             page.dialog_event.clear()
+        elif method == "Page.fileChooserOpened":
+            backend_id = params.get("backendNodeId")
+            page.file_chooser_backend_id = int(backend_id) if isinstance(backend_id, int) else None
+            page.file_chooser_session_id = session_id
+            page.file_chooser_event.set()
+        elif method == "Input.dragIntercepted":
+            data = params.get("data")
+            page.drag_data = data if isinstance(data, dict) else None
+            page.drag_event.set()
         elif method == "Page.frameNavigated":
             frame = params.get("frame") or {}
             frame_id = str(frame.get("id") or "")
@@ -1218,41 +1653,52 @@ class BrowserSession:
                 page.frame_loaders[frame_id] = str(frame.get("loaderId") or "")
                 if frame.get("parentId"):
                     page.frame_parents[frame_id] = str(frame["parentId"])
-            if not frame.get("parentId"):
+                if not is_main:
+                    page.oopif_frame_sessions[frame_id] = session_id
+            if is_main and not frame.get("parentId"):
                 page.main_frame_id = frame_id
                 page.navigations += 1
                 page.url = str(frame.get("url") or page.url)
         elif method == "Page.frameDetached":
-            page.frame_loaders.pop(str(params.get("frameId") or ""), None)
-            page.frame_parents.pop(str(params.get("frameId") or ""), None)
+            detached_frame = str(params.get("frameId") or "")
+            page.frame_loaders.pop(detached_frame, None)
+            page.frame_parents.pop(detached_frame, None)
+            page.oopif_frame_sessions.pop(detached_frame, None)
+            page.oopif_ancestors.pop(detached_frame, None)
         elif method == "Page.frameStartedLoading":
-            if str(params.get("frameId") or "") == page.main_frame_id or not page.main_frame_id:
+            if is_main and (str(params.get("frameId") or "") == page.main_frame_id or not page.main_frame_id):
                 page.loading = True
                 page.load_event.clear()
         elif method == "Page.frameStoppedLoading":
-            if str(params.get("frameId") or "") == page.main_frame_id:
+            if is_main and str(params.get("frameId") or "") == page.main_frame_id:
                 page.loading = False
                 page.load_event.set()
         elif method == "Page.loadEventFired":
-            page.load_event.set()
+            if is_main:
+                page.load_event.set()
 
     # -- pages ------------------------------------------------------------
 
-    def pages(self) -> list[Page]:
-        return list(self._pages.values())
+    def pages(self, owner: str | None = None) -> list[Page]:
+        if owner is None:
+            return list(self._pages.values())
+        return [page for page in self._pages.values() if page.owner in (None, owner)]
 
-    def current(self) -> Page | None:
+    def current(self, owner: str | None = None) -> Page | None:
         """Return the page the next action is meant for, or None when there is none."""
-        page = self._pages.get(self._selected or "")
-        if page is None:
-            page = self._fallback()
-            self._selected = page.target_id if page is not None else None
+        page = self._pages.get(self._selected_by_owner.get(owner) or "")
+        if page is None or (owner is not None and page.owner not in (None, owner)):
+            page = self._fallback(owner)
+            if page is not None:
+                self._selected_by_owner[owner] = page.target_id
+            else:
+                self._selected_by_owner.pop(owner, None)
         return page
 
-    def selected(self) -> Page:
-        page = self.current()
+    def selected(self, owner: str | None = None) -> Page:
+        page = self.current(owner)
         if page is None:
-            if self._pages:
+            if self.pages(owner):
                 raise BrowserError(
                     "The tab this work was done in is closed, and the tabs that are left are the user's own. "
                     "Open a tab with browser_new_page; select one of theirs with browser_select_page only "
@@ -1261,9 +1707,14 @@ class BrowserSession:
             raise BrowserError("The browser has no open page. Open one with browser_new_page.")
         return page
 
-    def page_by_id(self, page_id: Any) -> Page:
+    def page_by_id(self, page_id: Any, *, owner: str | None = None) -> Page:
         for page in self._pages.values():
             if page.id == page_id:
+                if owner is not None and page.owner not in (None, owner):
+                    raise BrowserError(
+                        f"Page {page_id} is currently in use by another task. "
+                        "Call browser_list_pages to see your available pages."
+                    )
                 return page
         raise BrowserError(f"There is no page {page_id}. Call browser_list_pages to see the open pages.")
 
@@ -1304,6 +1755,9 @@ class BrowserSession:
             await connection.send("Emulation.setFocusEmulationEnabled", {"enabled": True}, session_id=session_id)
         except CdpError:
             logger.debug("focus emulation is not available", exc_info=True)
+        if self._blocked_ports:
+            await self._install_port_guard(connection, session_id, on_new_document=True)
+            await self._enable_auto_attach(connection, session_id)
         page.prepared = True
         await self._refresh_frames(page)
         return session_id
@@ -1312,6 +1766,35 @@ class BrowserSession:
         if self._connection is None or self._connection.closed:
             raise BrowserError("The browser was closed. Call the tool again to start it anew.")
         return self._connection
+
+    async def _send_session(
+        self,
+        page: Page,
+        session_id: str | None,
+        method: str,
+        params: dict[str, Any] | None = None,
+        *,
+        timeout: float = 30.0,
+    ) -> dict[str, Any]:
+        """Send a command to ``session_id`` (an OOPIF) or the page's main session when ``session_id`` is None."""
+        if session_id is None or session_id == page.session_id:
+            return await self._send(page, method, params, timeout=timeout)
+        if not self.is_open(page):
+            raise PageClosed()
+        if session_id not in page.child_sessions.values():
+            raise CdpError(method, SESSION_GONE_CODE, "Cross-process frame session is no longer attached.")
+        try:
+            return await self._require_connection().send(method, params, session_id=session_id, timeout=timeout)
+        except CdpClosed as exc:
+            raise BrowserError("The browser was closed. Call the tool again to start it anew.") from exc
+        except CdpTimeout as exc:
+            if page.dialog is not None:
+                raise BrowserError(self.dialog_notice(page)) from exc
+            raise BrowserError(f"The page did not respond ({exc}). It may be busy or frozen; try reloading it.") from exc
+        except CdpError as exc:
+            if not self.is_open(page):
+                raise PageClosed() from exc
+            raise
 
     async def _send(self, page: Page, method: str, params: dict[str, Any] | None = None, *, timeout: float = 30.0) -> dict[str, Any]:
         """Send a command to a page. ``PageClosed`` when the page is gone, before or while it is sent."""
@@ -1340,12 +1823,18 @@ class BrowserSession:
             raise
 
     async def _answer_unless_dialog(
-        self, page: Page, method: str, params: dict[str, Any], *, timeout: float = 30.0
+        self,
+        page: Page,
+        method: str,
+        params: dict[str, Any],
+        *,
+        timeout: float = 30.0,
+        session_id: str | None = None,
     ) -> dict[str, Any] | None:
         """Send a command that a dialog may hold up; return None when a dialog opened instead of an answer."""
         if page.dialog is not None:
             return None
-        work = asyncio.ensure_future(self._send(page, method, params, timeout=timeout))
+        work = asyncio.ensure_future(self._send_session(page, session_id, method, params, timeout=timeout))
         opened = asyncio.ensure_future(page.dialog_event.wait())
         try:
             await asyncio.wait({work, opened}, return_when=asyncio.FIRST_COMPLETED)
@@ -1359,7 +1848,15 @@ class BrowserSession:
             if not work.done() and page.dialog is None:
                 work.cancel()
 
-    async def _send_unless_dialog(self, page: Page, method: str, params: dict[str, Any], *, timeout: float = 30.0) -> bool:
+    async def _send_unless_dialog(
+        self,
+        page: Page,
+        method: str,
+        params: dict[str, Any],
+        *,
+        timeout: float = 30.0,
+        session_id: str | None = None,
+    ) -> bool:
         """Send one step of an action; return False when nothing more is to be sent to the page.
 
         That is when a dialog opened instead of an answer, and when the page
@@ -1367,7 +1864,7 @@ class BrowserSession:
         were carried out, and the rest has nowhere to go.
         """
         try:
-            return await self._answer_unless_dialog(page, method, params, timeout=timeout) is not None
+            return await self._answer_unless_dialog(page, method, params, timeout=timeout, session_id=session_id) is not None
         except PageClosed:
             return False
 
@@ -1388,6 +1885,17 @@ class BrowserSession:
 
         root = tree.get("frameTree") or {}
         walk(root, "")
+        # Preserve loader/parent info for still-attached OOPIFs until refreshed by snapshot.
+        active_child_sids = set(page.child_sessions.values())
+        for frame_id, sid in list(page.oopif_frame_sessions.items()):
+            if sid in active_child_sids and frame_id not in loaders:
+                if frame_id in page.frame_loaders:
+                    loaders[frame_id] = page.frame_loaders[frame_id]
+                if frame_id in page.frame_parents:
+                    parents[frame_id] = page.frame_parents[frame_id]
+            else:
+                page.oopif_frame_sessions.pop(frame_id, None)
+                page.oopif_ancestors.pop(frame_id, None)
         page.frame_loaders = loaders
         page.frame_parents = parents
         page.main_frame_id = str((root.get("frame") or {}).get("id") or "")
@@ -1413,14 +1921,18 @@ class BrowserSession:
         if page.dialog is not None:
             raise BrowserError(self.dialog_notice(page))
 
-    async def select_page(self, page_id: Any, *, bring_to_front: bool = False) -> Page:
-        page = self.page_by_id(page_id)
-        self._selected = page.target_id
+    async def select_page(self, page_id: Any, *, bring_to_front: bool = False, owner: str | None = None) -> Page:
+        page = self.page_by_id(page_id, owner=owner)
+        if owner is not None and page.owner is None and page.own:
+            page.owner = owner
+        self._selected_by_owner[owner] = page.target_id
         if bring_to_front:
             await self._send(page, "Page.bringToFront")
         return page
 
-    async def new_page(self, url: str, *, background: bool = False, timeout: float | None = None) -> Page:
+    async def new_page(
+        self, url: str, *, background: bool = False, timeout: float | None = None, owner: str | None = None
+    ) -> Page:
         check_url(url, self._blocked_ports)
         connection = self._require_connection()
         if not self._can_create_tabs:
@@ -1433,14 +1945,14 @@ class BrowserSession:
                 "This browser cannot open new tabs. Use browser_navigate_page on the current page instead."
             ) from exc
         target_id = str(created.get("targetId") or "")
-        self._note_target({"targetId": target_id, "type": "page", "url": "about:blank"}, own=True)
-        self._selected = target_id
-        page = self.selected()
+        self._note_target({"targetId": target_id, "type": "page", "url": "about:blank"}, own=True, owner=owner)
+        self._selected_by_owner[owner] = target_id
+        page = self.selected(owner)
         await self.navigate(page, "url", url, timeout)
         return page
 
-    async def close_page(self, page_id: Any) -> None:
-        page = self.page_by_id(page_id)
+    async def close_page(self, page_id: Any, *, owner: str | None = None) -> None:
+        page = self.page_by_id(page_id, owner=owner)
         if len(self._pages) <= 1:
             raise BrowserError("The last open page cannot be closed.")
         if self._user_browser and not page.own:
@@ -1575,10 +2087,67 @@ class BrowserSession:
         )
         return page.snapshot
 
+    async def _attach_oopif(
+        self, page: Page, frame_id: str, ancestors: tuple[tuple[str | None, int], ...]
+    ) -> tuple[str, str]:
+        """Attach to a cross-process iframe target, refresh its frame tree, and return ``(session_id, root_frame_id)``."""
+        connection = self._require_connection()
+        oopif_sid = page.child_sessions.get(frame_id)
+        if not oopif_sid:
+            attached = await connection.send(
+                "Target.attachToTarget", {"targetId": frame_id, "flatten": True}, timeout=5.0
+            )
+            oopif_sid = str(attached["sessionId"])
+            page.child_sessions[frame_id] = oopif_sid
+            try:
+                await connection.send("Page.enable", session_id=oopif_sid, timeout=5.0)
+            except (CdpError, CdpTimeout):
+                pass
+            if self._blocked_ports:
+                if not self._blocked_everywhere:
+                    try:
+                        await connection.send(
+                            "Fetch.enable",
+                            {"patterns": self._block_patterns()},
+                            session_id=oopif_sid,
+                            timeout=5.0,
+                        )
+                    except (CdpError, CdpTimeout):
+                        logger.debug("Fetch.enable failed on OOPIF", exc_info=True)
+                await self._install_port_guard(connection, oopif_sid, on_new_document=True, timeout=5.0)
+                await self._enable_auto_attach(connection, oopif_sid, timeout=5.0)
+        tree = await self._send_session(page, oopif_sid, "Page.getFrameTree", timeout=5.0)
+        root = tree.get("frameTree") or {}
+
+        def walk(item: dict[str, Any], parent: str) -> None:
+            frame = item.get("frame") or {}
+            fid = str(frame.get("id") or "")
+            if fid:
+                page.frame_loaders[fid] = str(frame.get("loaderId") or "")
+                page.oopif_frame_sessions[fid] = oopif_sid
+                page.oopif_ancestors[fid] = list(ancestors)
+                if parent:
+                    page.frame_parents[fid] = parent
+            for child in item.get("childFrames") or ():
+                walk(child, fid)
+
+        walk(root, "")
+        root_frame_id = str((root.get("frame") or {}).get("id") or frame_id)
+        return oopif_sid, root_frame_id
+
     async def _attach_frames(
-        self, page: Page, root: Any, verbose: bool, *, depth: int, budget: list[int], unlisted: list[int]
+        self,
+        page: Page,
+        root: Any,
+        verbose: bool,
+        *,
+        depth: int,
+        budget: list[int],
+        unlisted: list[int],
+        session_id: str | None = None,
+        ancestors: tuple[tuple[str | None, int], ...] = (),
     ) -> None:
-        """Give every embedded document of the same process its own tree, a few levels deep.
+        """Give every embedded document (same-process or cross-process OOPIF) its own tree, a few levels deep.
 
         ``unlisted`` counts the embedded pages that can be seen on the page
         and whose content is not read: the model is told how many there are.
@@ -1593,17 +2162,37 @@ class BrowserSession:
                 unlisted[0] += len(nodes) - index
                 return
             budget[0] -= 1
+            child_session: str | None = session_id
+            child_ancestors = ancestors
             try:
-                described = await self._send(page, "DOM.describeNode", {"backendNodeId": node.backend_node_id}, timeout=5.0)
+                described = await self._send_session(
+                    page, session_id, "DOM.describeNode", {"backendNodeId": node.backend_node_id}, timeout=5.0
+                )
                 frame_id = str((described.get("node") or {}).get("frameId") or "")
-                if not frame_id or frame_id not in page.frame_loaders:
-                    # A frame of another site lives in another process and is not reached this way.
+                if not frame_id:
                     unlisted[0] += 1
                     continue
-                answer = await self._send(
-                    page, "Accessibility.getFullAXTree", {"frameId": frame_id}, timeout=SNAPSHOT_TIMEOUT_SECONDS
-                )
-            except (CdpError, BrowserError):
+                same_session = frame_id in page.frame_loaders and page.oopif_frame_sessions.get(frame_id) == session_id
+                if same_session:
+                    answer = await self._send_session(
+                        page,
+                        session_id,
+                        "Accessibility.getFullAXTree",
+                        {"frameId": frame_id},
+                        timeout=SNAPSHOT_TIMEOUT_SECONDS,
+                    )
+                else:
+                    # Cross-process iframe (OOPIF): attach to its target session and read its AX tree.
+                    assert node.backend_node_id is not None
+                    child_ancestors = (*ancestors, (session_id, node.backend_node_id))
+                    child_session, frame_id = await self._attach_oopif(page, frame_id, child_ancestors)
+                    answer = await self._send_session(
+                        page,
+                        child_session,
+                        "Accessibility.getFullAXTree",
+                        timeout=SNAPSHOT_TIMEOUT_SECONDS,
+                    )
+            except (CdpError, CdpTimeout, BrowserError):
                 # Frames also come and go at any time.
                 unlisted[0] += 1
                 continue
@@ -1611,11 +2200,27 @@ class BrowserSession:
             if inner is None:
                 unlisted[0] += 1
                 continue
-            await self._attach_frames(page, inner, verbose, depth=depth + 1, budget=budget, unlisted=unlisted)
+            await self._attach_frames(
+                page,
+                inner,
+                verbose,
+                depth=depth + 1,
+                budget=budget,
+                unlisted=unlisted,
+                session_id=child_session,
+                ancestors=child_ancestors,
+            )
             loader_id = page.frame_loaders.get(frame_id)
             if loader_id is None:
                 continue  # Taken out of the page while it was read.
-            node.frame = await asyncio.to_thread(serialize_tree, inner, verbose=verbose, loader_id=loader_id, frame_id=frame_id)
+            node.frame = await asyncio.to_thread(
+                serialize_tree,
+                inner,
+                verbose=verbose,
+                loader_id=loader_id,
+                frame_id=frame_id,
+                session_id=child_session,
+            )
 
     # -- elements -------------------------------------------------------------
 
@@ -1639,16 +2244,25 @@ class BrowserSession:
         )
         if page.frame_loaders.get(node.frame_id) != node.loader_id:
             raise gone
+        if node.session_id is not None and node.session_id not in page.child_sessions.values():
+            raise gone
         self._handles.add(page.target_id)
+        self._handles_by_owner.setdefault(page.owner, set()).add(page.target_id)
+        if node.session_id is not None:
+            page.oopif_handles.add(node.session_id)
         try:
-            resolved = await self._send(
-                page, "DOM.resolveNode", {"backendNodeId": node.backend_node_id, "objectGroup": OBJECT_GROUP}
+            resolved = await self._send_session(
+                page,
+                node.session_id,
+                "DOM.resolveNode",
+                {"backendNodeId": node.backend_node_id, "objectGroup": OBJECT_GROUP},
             )
             object_id = (resolved.get("object") or {}).get("objectId")
             if not object_id:
                 raise gone
-            element = await self._send(
+            element = await self._send_session(
                 page,
+                node.session_id,
                 "Runtime.callFunctionOn",
                 {
                     "objectId": object_id,
@@ -1666,7 +2280,9 @@ class BrowserSession:
             raise gone
         return node, str(element_id)
 
-    async def _call(self, page: Page, object_id: str, function: str, *arguments: Any) -> Any:
+    async def _call(
+        self, page: Page, object_id: str, function: str, *arguments: Any, session_id: str | None = None
+    ) -> Any:
         """Run one of the scripts above on an element and return what it returns.
 
         Raises ``_DialogOpened`` when the script opened a dialog (a handler
@@ -1683,6 +2299,7 @@ class BrowserSession:
                 "arguments": [{"value": argument} for argument in arguments],
                 "returnByValue": True,
             },
+            session_id=session_id,
         )
         if answer is None:
             raise _DialogOpened()
@@ -1692,16 +2309,29 @@ class BrowserSession:
             raise BrowserError(f"The page refused the action: {str(text)[:200]}")
         return (answer.get("result") or {}).get("value")
 
-    async def _scroll_into_view(self, page: Page, object_id: str) -> None:
+    async def _scroll_into_view(
+        self, page: Page, object_id: str, *, node: SnapshotNode | None = None
+    ) -> None:
+        session_id = node.session_id if node is not None else None
+        if node is not None and node.session_id is not None:
+            for anc_sid, anc_backend_id in page.oopif_ancestors.get(node.frame_id, ()):
+                try:
+                    await self._send_session(
+                        page, anc_sid, "DOM.scrollIntoViewIfNeeded", {"backendNodeId": anc_backend_id}, timeout=5.0
+                    )
+                except CdpError:
+                    logger.debug("scrolling ancestor iframe into view failed", exc_info=True)
         try:
-            await self._send(page, "DOM.scrollIntoViewIfNeeded", {"objectId": object_id}, timeout=5.0)
+            await self._send_session(
+                page, session_id, "DOM.scrollIntoViewIfNeeded", {"objectId": object_id}, timeout=5.0
+            )
         except CdpError:
             logger.debug("scrolling the element into view failed", exc_info=True)
 
-    async def _viewport(self, page: Page) -> tuple[float, float]:
+    async def _viewport(self, page: Page, *, session_id: str | None = None) -> tuple[float, float]:
         """Return the width and height of the visible part of the page, in the units mouse events are sent in."""
         try:
-            metrics = await self._send(page, "Page.getLayoutMetrics", timeout=5.0)
+            metrics = await self._send_session(page, session_id, "Page.getLayoutMetrics", timeout=5.0)
         except CdpError:
             return float("inf"), float("inf")
         for name in ("cssLayoutViewport", "cssVisualViewport", "layoutViewport"):
@@ -1723,8 +2353,11 @@ class BrowserSession:
 
     async def _reaches(self, page: Page, node: SnapshotNode, object_id: str, x: float, y: float) -> bool | str:
         """Whether the mouse at a point reaches the element; else a few words on what is there instead."""
+        session_id = node.session_id
         try:
-            hit = await self._send(page, "DOM.getNodeForLocation", {"x": int(x), "y": int(y)}, timeout=5.0)
+            hit = await self._send_session(
+                page, session_id, "DOM.getNodeForLocation", {"x": int(x), "y": int(y)}, timeout=5.0
+            )
             hit_frame = str(hit.get("frameId") or "")
             if node.frame_id and hit_frame and hit_frame != node.frame_id:
                 # Another document: one embedded in the element (the element
@@ -1735,14 +2368,16 @@ class BrowserSession:
                 if hit_frame in page.frame_loaders:
                     return "something outside the embedded page the element is in"
                 return True
-            resolved = await self._send(
+            resolved = await self._send_session(
                 page,
+                session_id,
                 "DOM.resolveNode",
                 {"backendNodeId": hit.get("backendNodeId"), "objectGroup": OBJECT_GROUP},
                 timeout=5.0,
             )
-            answer = await self._send(
+            answer = await self._send_session(
                 page,
+                session_id,
                 "Runtime.callFunctionOn",
                 {
                     "objectId": object_id,
@@ -1770,12 +2405,14 @@ class BrowserSession:
         banner or a dialog may lie over it: the mouse would then go to
         nothing, or to that.
         """
-        await self._scroll_into_view(page, object_id)
+        await self._scroll_into_view(page, object_id, node=node)
         try:
-            answer = await self._send(page, "DOM.getContentQuads", {"objectId": object_id}, timeout=5.0)
+            answer = await self._send_session(
+                page, node.session_id, "DOM.getContentQuads", {"objectId": object_id}, timeout=5.0
+            )
         except CdpError as exc:
             raise BrowserError(f"The element with uid {uid} is not visible, so it cannot be acted on.") from exc
-        width, height = await self._viewport(page)
+        width, height = await self._viewport(page, session_id=node.session_id)
         covering = ""
         for quad in answer.get("quads") or ():
             if len(quad) != 8:
@@ -1799,10 +2436,16 @@ class BrowserSession:
             )
         raise BrowserError(f"The element with uid {uid} is not visible, so it cannot be acted on.")
 
-    async def _mouse(self, page: Page, kind: str, x: float, y: float, **extra: Any) -> bool:
-        return await self._send_unless_dialog(page, "Input.dispatchMouseEvent", {"type": kind, "x": x, "y": y, **extra})
+    async def _mouse(
+        self, page: Page, kind: str, x: float, y: float, *, session_id: str | None = None, **extra: Any
+    ) -> bool:
+        return await self._send_unless_dialog(
+            page, "Input.dispatchMouseEvent", {"type": kind, "x": x, "y": y, **extra}, session_id=session_id
+        )
 
-    async def _click_at(self, page: Page, x: float, y: float, *, count: int = 1) -> int:
+    async def _click_at(
+        self, page: Page, x: float, y: float, *, count: int = 1, session_id: str | None = None
+    ) -> int:
         """Click at a point ``count`` times; return how many of the clicks were carried out.
 
         A click is the button going down and coming up, both sent to the
@@ -1816,7 +2459,7 @@ class BrowserSession:
         came instead of an answer to the button coming up is what clicking
         did.
         """
-        await self._mouse(page, "mouseMoved", x, y)
+        await self._mouse(page, "mouseMoved", x, y, session_id=session_id)
         done = 0
         for number in range(1, count + 1):
             came_up = False
@@ -1831,10 +2474,14 @@ class BrowserSession:
                 # button from coming up after it was counted as having.
                 nonlocal came_up
                 came_up = page.dialog is None and self.is_open(page)
-                await self._mouse(page, "mouseReleased", x, y, button="left", buttons=0, clickCount=number)
+                await self._mouse(
+                    page, "mouseReleased", x, y, session_id=session_id, button="left", buttons=0, clickCount=number
+                )
 
             try:
-                await self._mouse(page, "mousePressed", x, y, button="left", buttons=1, clickCount=number)
+                await self._mouse(
+                    page, "mousePressed", x, y, session_id=session_id, button="left", buttons=1, clickCount=number
+                )
             finally:
                 # Sent even when the call is stopped in between, so the button
                 # is never left down.
@@ -1851,14 +2498,14 @@ class BrowserSession:
         node, object_id = await self.element(page, uid)
         before = page.navigations
         try:
-            chosen = await self._call(page, object_id, _SELECT_OPTION)
+            chosen = await self._call(page, object_id, _SELECT_OPTION, session_id=node.session_id)
         except _DialogOpened:
             # The option was chosen, and what the page does on that change asks first.
             chosen = True
         clicks = 2 if double else 1
         if not chosen:
             x, y = await self._point(page, uid, node, object_id)
-            clicks = await self._click_at(page, x, y, count=clicks)
+            clicks = await self._click_at(page, x, y, count=clicks, session_id=node.session_id)
         await self.after_action(page, before)
         return clicks
 
@@ -1867,7 +2514,7 @@ class BrowserSession:
         node, object_id = await self.element(page, uid)
         before = page.navigations
         x, y = await self._point(page, uid, node, object_id)
-        await self._mouse(page, "mouseMoved", x, y)
+        await self._mouse(page, "mouseMoved", x, y, session_id=node.session_id)
         await self.after_action(page, before)
 
     async def fill(self, page: Page, uid: str, value: str) -> None:
@@ -1875,7 +2522,7 @@ class BrowserSession:
         self.require_no_dialog(page)
         node, object_id = await self.element(page, uid)
         try:
-            plan = await self._call(page, object_id, _PREPARE_FILL, value)
+            plan = await self._call(page, object_id, _PREPARE_FILL, value, session_id=node.session_id)
         except _DialogOpened:
             # The value was set, and what the page does on that change asks
             # first. The dialog is told with the answer; an element after
@@ -1886,7 +2533,7 @@ class BrowserSession:
             raise BrowserError(f"The element with uid {uid} could not be filled in: {plan.get('message')}.")
         if kind == "click":
             x, y = await self._point(page, uid, node, object_id)
-            if not await self._click_at(page, x, y):
+            if not await self._click_at(page, x, y, session_id=node.session_id):
                 # Not changed, and said so: read as filled in, a box that was
                 # to be ticked would be taken for ticked.
                 if page.dialog is not None:
@@ -1897,7 +2544,7 @@ class BrowserSession:
                 raise BrowserError(f"The page closed before the click on the element with uid {uid} was carried out.")
         elif kind == "type":
             try:
-                await self._call(page, object_id, _FOCUS_FOR_TYPING)
+                await self._call(page, object_id, _FOCUS_FOR_TYPING, session_id=node.session_id)
             except _DialogOpened:
                 # Opened by the page when the focus moved: nothing was typed.
                 raise BrowserError(
@@ -1905,9 +2552,139 @@ class BrowserSession:
                     f"typed into it. Handle the dialog, then fill the element in again.\n{self.dialog_notice(page)}"
                 ) from None
             if value:
-                await self._send_unless_dialog(page, "Input.insertText", {"text": value})
+                await self._send_unless_dialog(page, "Input.insertText", {"text": value}, session_id=node.session_id)
             else:
-                await self._press(page, *parse_key("Delete"))
+                await self._press(page, *parse_key("Delete"), session_id=node.session_id)
+
+    async def upload_file(self, page: Page, uid: str, file_path: str) -> None:
+        """Upload a local file via a file input or an element that triggers a file chooser."""
+        self.require_no_dialog(page)
+        resolved = await asyncio.to_thread(os.path.abspath, file_path)
+        if not await asyncio.to_thread(os.path.isfile, resolved):
+            raise BrowserError(f"Cannot upload {file_path!r}: file does not exist or is not a regular file.")
+        node, object_id = await self.element(page, uid)
+        before = page.navigations
+        try:
+            is_file_input = bool(await self._call(page, object_id, _IS_FILE_INPUT, session_id=node.session_id))
+        except _DialogOpened:
+            return
+        if is_file_input:
+            await self._send_session(
+                page, node.session_id, "DOM.setFileInputFiles", {"files": [resolved], "objectId": object_id}
+            )
+            await self.after_action(page, before)
+            return
+        # Button / custom control that opens a native file chooser when clicked.
+        intercept_sessions = [node.session_id] if node.session_id is not None else [None]
+        if node.session_id is not None:
+            intercept_sessions.append(None)
+        enabled_sessions: list[str | None] = []
+        page.file_chooser_event.clear()
+        page.file_chooser_backend_id = None
+        page.file_chooser_session_id = None
+        try:
+            for sid in intercept_sessions:
+                try:
+                    await self._send_session(page, sid, "Page.setInterceptFileChooserDialog", {"enabled": True})
+                    enabled_sessions.append(sid)
+                except CdpError:
+                    logger.debug("Page.setInterceptFileChooserDialog not supported", exc_info=True)
+            x, y = await self._point(page, uid, node, object_id)
+            await self._click_at(page, x, y, session_id=node.session_id)
+            chooser_wait = asyncio.ensure_future(page.file_chooser_event.wait())
+            dialog_wait = asyncio.ensure_future(page.dialog_event.wait())
+            try:
+                await asyncio.wait({chooser_wait, dialog_wait}, timeout=3.0, return_when=asyncio.FIRST_COMPLETED)
+            finally:
+                chooser_wait.cancel()
+                dialog_wait.cancel()
+        finally:
+            for sid in enabled_sessions:
+                try:
+                    await self._send_session(page, sid, "Page.setInterceptFileChooserDialog", {"enabled": False}, timeout=5.0)
+                except (BrowserError, CdpError):
+                    pass
+        if page.dialog is not None or not self.is_open(page):
+            await self.after_action(page, before)
+            return
+        if not page.file_chooser_event.is_set() or page.file_chooser_backend_id is None:
+            raise BrowserError(
+                f"Element with uid {uid} is not a file input and clicking it did not open a file chooser."
+            )
+        target_sid = page.file_chooser_session_id if page.file_chooser_session_id != page.session_id else None
+        await self._send_session(
+            page,
+            target_sid,
+            "DOM.setFileInputFiles",
+            {"files": [resolved], "backendNodeId": page.file_chooser_backend_id},
+        )
+        await self.after_action(page, before)
+
+    async def drag(self, page: Page, from_uid: str, to_uid: str) -> None:
+        """Drag one element onto another, supporting both HTML5 drag-and-drop and pointer dragging."""
+        self.require_no_dialog(page)
+        from_node, from_obj = await self.element(page, from_uid)
+        to_node, to_obj = await self.element(page, to_uid)
+        if from_node.session_id != to_node.session_id:
+            raise BrowserError("Cannot drag between elements in different cross-site frames.")
+        sid = from_node.session_id
+        before = page.navigations
+        sx, sy = await self._point(page, from_uid, from_node, from_obj)
+        ex, ey = await self._point(page, to_uid, to_node, to_obj)
+        intercepted_on = False
+        page.drag_event.clear()
+        page.drag_data = None
+        try:
+            await self._send_session(page, sid, "Input.setInterceptDrags", {"enabled": True}, timeout=5.0)
+            intercepted_on = True
+        except CdpError:
+            logger.debug("Input.setInterceptDrags is not available", exc_info=True)
+        pressed = False
+        last_x, last_y = sx, sy
+        try:
+            if not await self._mouse(page, "mouseMoved", sx, sy, session_id=sid):
+                return
+            pressed = True
+            if not await self._mouse(
+                page, "mousePressed", sx, sy, session_id=sid, button="left", buttons=1, clickCount=1
+            ):
+                return
+            steps = 5
+            for step in range(1, steps + 1):
+                mx = sx + (ex - sx) * (step / steps)
+                my = sy + (ey - sy) * (step / steps)
+                last_x, last_y = mx, my
+                if not await self._mouse(
+                    page, "mouseMoved", mx, my, session_id=sid, button="left", buttons=1
+                ):
+                    return
+                if page.drag_event.is_set() and page.drag_data is not None:
+                    data = page.drag_data
+                    await self._send_unless_dialog(
+                        page, "Input.dispatchDragEvent", {"type": "dragEnter", "x": ex, "y": ey, "data": data}, session_id=sid
+                    )
+                    await self._send_unless_dialog(
+                        page, "Input.dispatchDragEvent", {"type": "dragOver", "x": ex, "y": ey, "data": data}, session_id=sid
+                    )
+                    await self._send_unless_dialog(
+                        page, "Input.dispatchDragEvent", {"type": "drop", "x": ex, "y": ey, "data": data}, session_id=sid
+                    )
+                    last_x, last_y = ex, ey
+                    break
+        finally:
+            if pressed:
+                async def release_drag() -> None:
+                    await self._mouse(
+                        page, "mouseReleased", last_x, last_y, session_id=sid, button="left", buttons=0, clickCount=1
+                    )
+
+                await asyncio.shield(release_drag())
+            if intercepted_on:
+                try:
+                    await self._send_session(page, sid, "Input.setInterceptDrags", {"enabled": False}, timeout=5.0)
+                except (BrowserError, CdpError):
+                    pass
+        await self.after_action(page, before)
 
     async def fill_many(self, page: Page, elements: list[tuple[str, str]]) -> list[str]:
         """Fill several elements in, in order; return the uids that were done before one failed.
@@ -1933,7 +2710,16 @@ class BrowserSession:
 
     # -- keyboard -------------------------------------------------------------
 
-    async def _key_event(self, page: Page, kind: str, key: KeyDefinition, mask: int, *, timeout: float = 30.0) -> bool:
+    async def _key_event(
+        self,
+        page: Page,
+        kind: str,
+        key: KeyDefinition,
+        mask: int,
+        *,
+        timeout: float = 30.0,
+        session_id: str | None = None,
+    ) -> bool:
         typed = typed_text(key, mask)
         text = typed if kind == "keyDown" else None
         # The same name going down and coming up ("A" with Shift held, both times).
@@ -1948,9 +2734,18 @@ class BrowserSession:
         if text:
             params["text"] = text
             params["unmodifiedText"] = key.text or text
-        return await self._send_unless_dialog(page, "Input.dispatchKeyEvent", params, timeout=timeout)
+        return await self._send_unless_dialog(
+            page, "Input.dispatchKeyEvent", params, timeout=timeout, session_id=session_id
+        )
 
-    async def _press(self, page: Page, key: KeyDefinition, modifiers: list[KeyDefinition]) -> bool:
+    async def _press(
+        self,
+        page: Page,
+        key: KeyDefinition,
+        modifiers: list[KeyDefinition],
+        *,
+        session_id: str | None = None,
+    ) -> bool:
         """Press a key with its modifiers held; return whether the key itself was sent to the page.
 
         It is not when the page stopped taking input before its turn came: a
@@ -1970,14 +2765,14 @@ class BrowserSession:
                 # Down from the moment the event is sent, answered or not:
                 # stopped before the answer, it still has to come up.
                 down.append(modifier)
-                if not await self._key_event(page, "keyDown", modifier, mask):
+                if not await self._key_event(page, "keyDown", modifier, mask, session_id=session_id):
                     return False
             if page.dialog is not None or not self.is_open(page):
                 return False
             # The same for the key itself.
             key_is_down = True
-            if await self._key_event(page, "keyDown", key, mask):
-                await self._key_event(page, "keyUp", key, mask)
+            if await self._key_event(page, "keyDown", key, mask, session_id=session_id):
+                await self._key_event(page, "keyUp", key, mask, session_id=session_id)
             key_is_down = False
             return True
         except BaseException:
@@ -1999,7 +2794,9 @@ class BrowserSession:
             for released, is_modifier in releases:
                 if is_modifier:
                     mask &= ~modifier_mask([released])
-                release = asyncio.ensure_future(self._key_event(page, "keyUp", released, mask, timeout=wait))
+                release = asyncio.ensure_future(
+                    self._key_event(page, "keyUp", released, mask, timeout=wait, session_id=session_id)
+                )
                 if answered:
                     try:
                         await asyncio.shield(release)
@@ -2069,16 +2866,32 @@ class BrowserSession:
             raise BrowserError('Providing both "uid" and "fullPage" is not allowed.')
         params: dict[str, Any] = {"format": "jpeg", "quality": 80}
         if uid:
-            _node, object_id = await self.element(page, uid)
-            await self._scroll_into_view(page, object_id)
+            node, object_id = await self.element(page, uid)
+            await self._scroll_into_view(page, object_id, node=node)
             try:
-                quads = (await self._send(page, "DOM.getContentQuads", {"objectId": object_id})).get("quads") or []
+                quads = (
+                    await self._send_session(page, node.session_id, "DOM.getContentQuads", {"objectId": object_id})
+                ).get("quads") or []
             except CdpError as exc:
                 raise BrowserError(f"The element with uid {uid} is not visible, so it cannot be acted on.") from exc
             if not quads:
                 raise BrowserError(f"The element with uid {uid} is not visible, so there is nothing to take a screenshot of.")
-            xs = [value for quad in quads for value in quad[0::2]]
-            ys = [value for quad in quads for value in quad[1::2]]
+            offset_x, offset_y = 0.0, 0.0
+            if node.session_id is not None:
+                for anc_sid, anc_backend_id in page.oopif_ancestors.get(node.frame_id, ()):
+                    try:
+                        anc_quads = (
+                            await self._send_session(
+                                page, anc_sid, "DOM.getContentQuads", {"backendNodeId": anc_backend_id}, timeout=5.0
+                            )
+                        ).get("quads") or []
+                    except CdpError:
+                        continue
+                    if anc_quads:
+                        offset_x += min(float(v) for q in anc_quads for v in q[0::2])
+                        offset_y += min(float(v) for q in anc_quads for v in q[1::2])
+            xs = [value + offset_x for quad in quads for value in quad[0::2]]
+            ys = [value + offset_y for quad in quads for value in quad[1::2]]
             metrics = await self._send(page, "Page.getLayoutMetrics")
             viewport = metrics.get("cssVisualViewport") or {}
             params["clip"] = {
@@ -2124,6 +2937,16 @@ class BrowserSession:
                 found = None  # The page is between two documents; looked at again in a moment.
             if isinstance(found, str):
                 return found
+            for child_sid in list(page.child_sessions.values()):
+                try:
+                    child_answer = await self._send_session(
+                        page, child_sid, "Runtime.evaluate", {"expression": expression, "returnByValue": True}, timeout=3.0
+                    )
+                    child_found = (child_answer.get("result") or {}).get("value")
+                except (CdpError, CdpTimeout, BrowserError):
+                    child_found = None
+                if isinstance(child_found, str):
+                    return child_found
             if loop.time() >= deadline:
                 raise BrowserError(
                     f"None of {json.dumps(texts, ensure_ascii=False)} appeared within {limit:.0f}s. Matching is "
@@ -2149,10 +2972,10 @@ class BrowserSession:
         await self.after_action(page, before)
         return f"Successfully {'accepted' if accept else 'dismissed'} the dialog."
 
-    async def refresh_window(self) -> dict[str, Any] | None:
+    async def refresh_window(self, owner: str | None = None) -> dict[str, Any] | None:
         """Find out where the window of the selected page is on the screen; for the banner."""
         connection = self._connection
-        page = self._pages.get(self._selected or "")
+        page = self.current(owner)
         if connection is None or connection.closed or page is None:
             self._window = None
             return None

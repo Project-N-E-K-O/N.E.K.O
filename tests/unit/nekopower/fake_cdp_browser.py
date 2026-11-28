@@ -57,6 +57,8 @@ from nekopower.builtin.browser.session import (
     _ELEMENT_OF_NODE,
     _FIND_TEXT,
     _FOCUS_FOR_TYPING,
+    _IS_FILE_INPUT,
+    _PORT_GUARD_MARKER,
     _PREPARE_FILL,
     _REACHES,
     _SELECT_OPTION,
@@ -101,6 +103,9 @@ class Element:
         on_focus: Callable[["FakeBrowser", "FakePage"], None] | None = None,
         on_hover: Callable[["FakeBrowser", "FakePage"], None] | None = None,
         frame: "Document | None" = None,
+        oopif: bool = False,
+        draggable: bool = False,
+        opens_file_chooser: "Element | None" = None,
         quad: list[float] | None = None,
         script_error: str | None = None,
         **properties: Any,
@@ -132,6 +137,11 @@ class Element:
         self.frame_id = ""
         # For an ``Iframe`` element: the document inside it.
         self.frame = frame
+        self.oopif = oopif
+        self.oopif_page: FakePage | None = None
+        self.draggable = draggable
+        self.opens_file_chooser = opens_file_chooser
+        self.files: list[str] = []
         self.content_frame: Frame | None = None
         self.fixed_quad = quad
         self.script_error = script_error
@@ -285,6 +295,12 @@ class FakePage:
         self.screenshots: list[dict[str, Any]] = []
         self.handled_dialogs: list[dict[str, Any]] = []
         self.brought_to_front = 0
+        self.intercept_file_chooser = False
+        self.intercept_drags = False
+        self.drag_events: list[dict[str, Any]] = []
+        self._dragging_element: Element | None = None
+        self.port_guard_scripts: list[str] = []
+        self.auto_attach_enabled = False
         # The tab whose page opened this one, when one did.
         self.opener_id: str | None = None
         self.text_polls = 0
@@ -439,6 +455,12 @@ class FakeBrowser:
         ]
         # session -> target, of the sessions attached to targets that are not pages.
         self._other_sessions: dict[str, str] = {}
+        # Cross-process iframe targets (target_id -> FakePage), not listed as top-level pages.
+        self.oopif_pages: dict[str, FakePage] = {}
+        # Target ids (or session ids) where the JS port guard was installed.
+        self.port_guards: list[tuple[str | None, str]] = []
+        # Target ids resumed via ``Runtime.runIfWaitingForDebugger``.
+        self.resumed_targets: list[str | None] = []
         # The targets (pages and others) a session was detached from by a command, in order.
         self.detached_from: list[str] = []
         # The targets that are not pages and were closed by a command, in order.
@@ -559,12 +581,22 @@ class FakeBrowser:
             page.elements[element.backend_id] = element
         for element in frame.document.root.walk():
             if element.role == "Iframe" and element.frame is not None:
-                inner = Frame(
-                    f"{frame.frame_id}-child{next(children)}", f"loader-{next(self._loaders)}", "about:srcdoc", element.frame, frame.frame_id
-                )
-                element.content_frame = inner
-                page.frames[inner.frame_id] = inner
-                self._number(page, inner, counter)
+                if element.oopif:
+                    oopif_id = f"oopif-{next(self._targets)}"
+                    oopif_page = FakePage(oopif_id, "https://other.site/frame", element.frame.title)
+                    oopif_page.main_frame_id = oopif_id
+                    oopif_frame = Frame(oopif_id, f"loader-{next(self._loaders)}", "https://other.site/frame", element.frame)
+                    oopif_page.frames[oopif_id] = oopif_frame
+                    self._number(oopif_page, oopif_frame, itertools.count(1))
+                    element.oopif_page = oopif_page
+                    self.oopif_pages[oopif_id] = oopif_page
+                else:
+                    inner = Frame(
+                        f"{frame.frame_id}-child{next(children)}", f"loader-{next(self._loaders)}", "about:srcdoc", element.frame, frame.frame_id
+                    )
+                    element.content_frame = inner
+                    page.frames[inner.frame_id] = inner
+                    self._number(page, inner, counter)
 
     def go(self, page: FakePage, url: str, *, push: bool = True) -> Frame:
         """Load ``url`` in a page, as a link, a script or the user would, with the events of a navigation."""
@@ -703,7 +735,7 @@ class FakeBrowser:
     def _do_Target_attachToTarget(self, command: Sent, page: None) -> dict[str, Any]:
         assert command.params.get("flatten") is True, "the session speaks to pages through flat sessions"
         target_id = str(command.params.get("targetId"))
-        target = self.pages.get(target_id)
+        target = self.pages.get(target_id) or self.oopif_pages.get(target_id)
         session_id = f"session-{next(self._sessions)}"
         if target is None:
             other = next((item for item in self.other_targets if item["targetId"] == target_id), None)
@@ -717,6 +749,49 @@ class FakeBrowser:
         target.sessions.add(session_id)
         self._session_pages[session_id] = target
         return {"sessionId": session_id}
+
+    def _do_Target_setAutoAttach(self, command: Sent, page: FakePage | None) -> dict[str, Any]:
+        if page is not None:
+            page.auto_attach_enabled = bool(command.params.get("autoAttach"))
+        return {}
+
+    def _do_Runtime_runIfWaitingForDebugger(self, command: Sent, page: FakePage | None) -> dict[str, Any]:
+        target_id = page.target_id if page is not None else self._other_sessions.get(command.session_id or "")
+        self.resumed_targets.append(target_id)
+        return {}
+
+    def _do_Page_addScriptToEvaluateOnNewDocument(self, command: Sent, page: FakePage | None) -> dict[str, Any]:
+        source = str(command.params.get("source") or "")
+        target_id = page.target_id if page is not None else self._other_sessions.get(command.session_id or "")
+        if page is not None:
+            page.port_guard_scripts.append(source)
+        self.port_guards.append((target_id, source))
+        return {"identifier": "1"}
+
+    def _do_Page_setInterceptFileChooserDialog(self, command: Sent, page: FakePage) -> dict[str, Any]:
+        page.intercept_file_chooser = bool(command.params.get("enabled"))
+        return {}
+
+    def _do_DOM_setFileInputFiles(self, command: Sent, page: FakePage) -> dict[str, Any]:
+        files = [str(item) for item in command.params.get("files") or ()]
+        if command.params.get("objectId"):
+            element = self._element_of(command, page)
+        else:
+            backend_id = int(command.params.get("backendNodeId") or 0)
+            element = page.elements.get(backend_id)
+            if element is None or element.removed:
+                raise CdpError(command.method, -32000, "Could not find node with given id")
+        element.files = files
+        element.value = ", ".join(Path(f).name for f in files)
+        return {}
+
+    def _do_Input_setInterceptDrags(self, command: Sent, page: FakePage) -> dict[str, Any]:
+        page.intercept_drags = bool(command.params.get("enabled"))
+        return {}
+
+    def _do_Input_dispatchDragEvent(self, command: Sent, page: FakePage) -> dict[str, Any]:
+        page.drag_events.append(dict(command.params))
+        return {}
 
     def _do_Target_detachFromTarget(self, command: Sent, page: None) -> dict[str, Any]:
         session_id = str(command.params.get("sessionId"))
@@ -776,8 +851,9 @@ class FakeBrowser:
 
     # Page
 
-    def _do_Page_enable(self, command: Sent, page: FakePage) -> dict[str, Any]:
-        page.page_enabled = True
+    def _do_Page_enable(self, command: Sent, page: FakePage | None) -> dict[str, Any]:
+        if page is not None:
+            page.page_enabled = True
         return {}
 
     def _do_Emulation_setFocusEmulationEnabled(self, command: Sent, page: FakePage) -> dict[str, Any]:
@@ -904,6 +980,8 @@ class FakeBrowser:
         node: dict[str, Any] = {"backendNodeId": element.backend_id, "nodeName": element.role.upper()}
         if element.content_frame is not None:
             node["frameId"] = element.content_frame.frame_id
+        elif element.oopif_page is not None:
+            node["frameId"] = element.oopif_page.target_id
         return {"node": node}
 
     def _do_DOM_resolveNode(self, command: Sent, page: FakePage) -> dict[str, Any]:
@@ -933,7 +1011,12 @@ class FakeBrowser:
         return {}
 
     def _do_DOM_scrollIntoViewIfNeeded(self, command: Sent, page: FakePage) -> dict[str, Any]:
-        element = self._element_of(command, page)
+        if command.params.get("objectId"):
+            element = self._element_of(command, page)
+        else:
+            element = page.elements.get(int(command.params.get("backendNodeId") or 0))
+            if element is None or element.removed:
+                raise CdpError(command.method, -32000, "Could not find node with given id")
         if not element.visible:
             raise CdpError(command.method, -32000, "Node does not have a layout object")
         page.scrolled_to.append(element)
@@ -978,7 +1061,12 @@ class FakeBrowser:
         return {"backendNodeId": element.backend_id, "frameId": element.frame_id}
 
     def _do_DOM_getContentQuads(self, command: Sent, page: FakePage) -> dict[str, Any]:
-        element = self._element_of(command, page)
+        if command.params.get("objectId"):
+            element = self._element_of(command, page)
+        else:
+            element = page.elements.get(int(command.params.get("backendNodeId") or 0))
+            if element is None or element.removed:
+                raise CdpError(command.method, -32000, "Could not find node with given id")
         if not element.visible:
             raise CdpError(command.method, -32000, "Could not compute content quads.")
         return {"quads": [element.quad()]}
@@ -1022,6 +1110,9 @@ class FakeBrowser:
             }
         select = element.parent if element.kind == "option" else element
         before = select.value if select is not None else None
+        if function == _IS_FILE_INPUT:
+            assert arguments == []
+            return {"result": {"type": "boolean", "value": element.kind == "file"}}
         if function == _SELECT_OPTION:
             assert arguments == []
             chosen = self._select_option(element)
@@ -1073,9 +1164,14 @@ class FakeBrowser:
             return {"kind": "type"}
         return {"kind": "error", "message": f"it is not an element that can be filled in ({target.role})"}
 
-    def _do_Runtime_evaluate(self, command: Sent, page: FakePage) -> dict[str, Any]:
+    def _do_Runtime_evaluate(self, command: Sent, page: FakePage | None) -> dict[str, Any]:
         expression = str(command.params.get("expression"))
         assert command.params.get("returnByValue") is True
+        if _PORT_GUARD_MARKER in expression:
+            target_id = page.target_id if page is not None else self._other_sessions.get(command.session_id or "")
+            self.port_guards.append((target_id, expression))
+            return {"result": {"type": "undefined"}}
+        assert page is not None
         if expression == _DOM_QUIET:
             assert command.params.get("awaitPromise") is True
             return {"result": {"type": "boolean", "value": True}}
@@ -1119,16 +1215,39 @@ class FakeBrowser:
             page.hovered = element
             if entered and element.on_hover is not None:
                 element.on_hover(self, page)
-        elif event.get("type") == "mousePressed" and element is not None and element.on_press is not None:
-            element.on_press(self, page)
-        elif event.get("type") == "mouseReleased" and element is not None and not element.disabled:
-            element.clicks += 1
-            if element.kind == "toggle":
-                element.checked = not element.checked
-            if element.kind == "text":
-                page.focused = element
-            if element.on_click is not None:
-                element.on_click(self, page)
+            if (
+                event.get("buttons") == 1
+                and page.intercept_drags
+                and page._dragging_element is not None
+                and page._dragging_element.draggable
+            ):
+                dragged = page._dragging_element
+                page._dragging_element = None
+                self.emit_to_page(
+                    page,
+                    "Input.dragIntercepted",
+                    {"data": {"items": [{"mimeType": "text/plain", "data": dragged.name}], "dragOperationsMask": 1}},
+                )
+        elif event.get("type") == "mousePressed":
+            page._dragging_element = element
+            if element is not None and element.on_press is not None:
+                element.on_press(self, page)
+        elif event.get("type") == "mouseReleased":
+            page._dragging_element = None
+            if element is not None and not element.disabled:
+                element.clicks += 1
+                if element.kind == "toggle":
+                    element.checked = not element.checked
+                if element.kind == "text":
+                    page.focused = element
+                if page.intercept_file_chooser and element.opens_file_chooser is not None:
+                    self.emit_to_page(
+                        page,
+                        "Page.fileChooserOpened",
+                        {"mode": "selectSingle", "backendNodeId": element.opens_file_chooser.backend_id},
+                    )
+                if element.on_click is not None:
+                    element.on_click(self, page)
         return {}
 
     def _do_Input_dispatchKeyEvent(self, command: Sent, page: FakePage) -> dict[str, Any]:
@@ -1267,6 +1386,9 @@ class BrowserWorld:
     browser: FakeBrowser = field(default_factory=FakeBrowser)
     # The browser found on this computer; None for none.
     install: BrowserInstall | None = CHROME
+    # Additional installs to try in attach mode when executable is unset.
+    attach_browsers: list[BrowserInstall] | None = None
+    attach_errors: dict[str, Exception] = field(default_factory=dict)
     display: bool = True
     # Set to keep the start of the browser, or the connection to it, from
     # finishing until the test sets the event.
@@ -1296,13 +1418,23 @@ class BrowserWorld:
         self.clock = _NoRealSleep()
         patch = self.monkeypatch
         patch.setattr(launcher, "pick_browser", self._pick)
+        patch.setattr(launcher, "attach_candidates", self._attach_candidates)
         patch.setattr(launcher, "launch", self._launch)
         patch.setattr(launcher, "attach", self._attach)
         patch.setattr(launcher, "close", self._close)
         patch.setattr(launcher, "display_available", lambda platform=None: self.display)
-        for name in ("_start", "kill_tree", "browser_process_on", "running_endpoint", "_port_open"):
+        for name in (
+            "_start",
+            "_spawn_pipe_process",
+            "_running_browser_profiles",
+            "kill_tree",
+            "browser_process_on",
+            "running_endpoint",
+            "_port_open",
+        ):
             patch.setattr(launcher, name, _refuse)
         patch.setattr(CdpConnection, "connect", staticmethod(self._connect))
+        patch.setattr(CdpConnection, "connect_pipe", staticmethod(self._connect_pipe))
         patch.setattr(session_module, "asyncio", self.clock)
 
     def settings(self, **values: Any) -> None:
@@ -1356,8 +1488,22 @@ class BrowserWorld:
             headless=None if self.found_running else headless,
         )
 
-    async def _attach(self, install: BrowserInstall) -> RunningBrowser:
+    def _attach_candidates(
+        self, primary: BrowserInstall, *, executable: str | None = None, platform: str | None = None
+    ) -> list[BrowserInstall]:
+        del platform
+        if executable or not self.attach_browsers:
+            return [primary]
+        return list(self.attach_browsers)
+
+    async def _attach(
+        self, install: BrowserInstall, *, exclude_user_data_dir: str | None = None
+    ) -> RunningBrowser:
+        del exclude_user_data_dir
         self.attached.append(install)
+        specific = self.attach_errors.get(install.executable) or self.attach_errors.get(install.name)
+        if specific is not None:
+            raise specific
         if self.attach_error is not None:
             raise self.attach_error
         return RunningBrowser(install=install, endpoint=THEIR_ENDPOINT, process=None, owned=False, user_data_dir=install.user_data_dir)
@@ -1378,3 +1524,6 @@ class BrowserWorld:
         connection = FakeConnection(self.browser, url, open_timeout)
         self.browser.connections.append(connection)
         return connection
+
+    async def _connect_pipe(self, transport: Any) -> FakeConnection:
+        return await self._connect("pipe://cdp", open_timeout=0.0)

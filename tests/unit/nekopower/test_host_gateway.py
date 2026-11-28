@@ -1393,7 +1393,7 @@ async def test_registered_browser_is_discovered_called_and_released_through_the_
         assert driver.call.await_args.kwargs["refused"]() == "permission denied"
         assert host.leases.release(commission.id) == [BUILTIN_GROUP_BROWSER]
         await host.leases.settle()
-        driver.released.assert_awaited_once_with()
+        driver.released.assert_awaited_once_with(owner=commission.id)
     finally:
         await host.shutdown()
 
@@ -2478,7 +2478,9 @@ async def test_a_browser_the_user_closed_stays_closed_when_they_do_not_agree(bui
     assert denied == [{"capability": "builtin:browser:browser_navigate_page", "reason": reason}]
 
 
-async def test_the_provider_is_told_when_a_call_of_a_browser_tool_is_over_however_it_ended(builtin_host, short_wait):
+async def test_the_provider_is_told_when_a_call_of_a_browser_tool_is_over_however_it_ended(
+    builtin_host, short_wait, monkeypatch
+):
     await builtin_host.permission_store.set_mode("browser", "allow")
     await builtin_host.permission_store.set_mode("keyboard_mouse", "allow")
     builtin_host.permissions.set_asker(Asker("once"))
@@ -2495,6 +2497,7 @@ async def test_the_provider_is_told_when_a_call_of_a_browser_tool_is_over_howeve
     await _call(builtin_host, grant, "browser_take_screenshot")
     assert builtin_host.provider.over == [1] and len(builtin_host.provider.calls) == 3
     builtin_host.leases.release(first.id)
+    monkeypatch.setattr(builtin_host.leases, "_shared_groups", frozenset())
     await builtin_host.leases.acquire(BUILTIN_GROUP_BROWSER, first.id, title=first.title)
 
     # Another task's call, which the user agrees to and which never gets the browser: it stays in use.
@@ -2807,13 +2810,10 @@ async def test_a_builtin_call_occupies_its_group_before_it_runs_and_keeps_it(bui
     assert builtin_host.leases.occupied() == {"browser": commission.id, "keyboard_mouse": commission.id}
 
 
-@pytest.mark.parametrize(
-    ("tool", "group", "what"),
-    [("browser_navigate_page", "browser", "browser"), ("computer", "keyboard_mouse", "desktop")],
-)
 async def test_a_group_another_task_occupies_is_left_alone_and_the_task_agent_is_told_who_has_it(
-    builtin_host, short_wait, tool, group, what
+    builtin_host, short_wait
 ):
+    tool, group, what = "computer", "keyboard_mouse", "desktop"
     builtin_host.permissions.set_asker(Asker("once"))
     first = await _commission(builtin_host)
     second = await _commission(builtin_host, title="book the hotel")
@@ -2836,6 +2836,26 @@ async def test_a_group_another_task_occupies_is_left_alone_and_the_task_agent_is
     assert occupied == [{"capability": f"builtin:{group}:{tool}", "by": first.id}]
 
 
+async def test_multiple_tasks_share_the_browser_concurrently_through_the_gateway(builtin_host, short_wait):
+    builtin_host.permissions.set_asker(Asker("once"))
+    first = await _commission(builtin_host)
+    second = await _commission(builtin_host, title="book the hotel")
+    first_grant = _grant(builtin_host, first, images=True)
+    second_grant = _grant(builtin_host, second, images=True)
+
+    res1 = await _call(builtin_host, first_grant, "browser_navigate_page", {"url": "https://a.example"})
+    res2 = await asyncio.wait_for(
+        _call(builtin_host, second_grant, "browser_navigate_page", {"url": "https://b.example"}), 10
+    )
+
+    assert res1["isError"] is False and res2["isError"] is False
+    assert builtin_host.leases.occupied_teams("browser") == [first.id, second.id]
+    assert [(name, cid) for name, cid, _args in builtin_host.provider.calls] == [
+        ("browser_navigate_page", first.id),
+        ("browser_navigate_page", second.id),
+    ]
+
+
 async def test_the_browser_being_occupied_does_not_keep_another_task_from_the_desktop(builtin_host, short_wait):
     builtin_host.permissions.set_asker(Asker("once"))
     first = await _commission(builtin_host)
@@ -2854,17 +2874,19 @@ async def test_a_commission_waiting_for_a_group_gets_it_when_the_other_commissio
     builtin_host.permissions.set_asker(Asker("once"))
     first = await _commission(builtin_host)
     second = await _commission(builtin_host, title="book the hotel")
-    await _call(builtin_host, _grant(builtin_host, first), "browser_navigate_page")
+    await _call(builtin_host, _grant(builtin_host, first, images=True), "computer", {"action": "screenshot"})
 
-    waiting = asyncio.ensure_future(_call(builtin_host, _grant(builtin_host, second), "browser_navigate_page"))
-    await wait_until(lambda: builtin_host.leases._waiters, what="the second commission waiting for the browser")
+    waiting = asyncio.ensure_future(
+        _call(builtin_host, _grant(builtin_host, second, images=True), "computer", {"action": "screenshot"})
+    )
+    await wait_until(lambda: builtin_host.leases._waiters, what="the second commission waiting for the desktop")
     assert len(builtin_host.provider.calls) == 1
     await builtin_host.ledger.transition(first.id, "done", reason="test")
 
     result = await asyncio.wait_for(waiting, 10)
     assert result["isError"] is False
     assert [cid for _name, cid, _args in builtin_host.provider.calls] == [first.id, second.id]
-    assert builtin_host.leases.occupied() == {"browser": second.id}
+    assert builtin_host.leases.occupied() == {"keyboard_mouse": second.id}
 
 
 @pytest.mark.parametrize("status", ["cancelled", "waiting_user"])
@@ -2874,9 +2896,11 @@ async def test_a_commission_that_stopped_working_while_it_waited_for_a_group_doe
     builtin_host.permissions.set_asker(Asker("once"))
     first = await _commission(builtin_host)
     second = await _commission(builtin_host, title="book the hotel")
-    await _call(builtin_host, _grant(builtin_host, first), "browser_navigate_page")
-    waiting = asyncio.ensure_future(_call(builtin_host, _grant(builtin_host, second), "browser_navigate_page"))
-    await wait_until(lambda: builtin_host.leases._waiters, what="the second commission waiting for the browser")
+    await _call(builtin_host, _grant(builtin_host, first, images=True), "computer", {"action": "screenshot"})
+    waiting = asyncio.ensure_future(
+        _call(builtin_host, _grant(builtin_host, second, images=True), "computer", {"action": "screenshot"})
+    )
+    await wait_until(lambda: builtin_host.leases._waiters, what="the second commission waiting for the desktop")
 
     # Stopped, or asking the user something, by the time its turn comes.
     await builtin_host.ledger.transition(second.id, status, reason="test")
@@ -2885,25 +2909,25 @@ async def test_a_commission_that_stopped_working_while_it_waited_for_a_group_doe
 
     assert result["isError"] is True and "no longer under way" in _text(result)
     assert [cid for _name, cid, _args in builtin_host.provider.calls] == [first.id]
-    # The browser it was handed is given straight back.
+    # The desktop it was handed is given straight back.
     assert builtin_host.leases.occupied() == {}
 
 
-async def test_revoking_browser_approval_while_queued_keeps_the_next_provider_call_from_running(builtin_host):
+async def test_revoking_desktop_approval_while_queued_keeps_the_next_provider_call_from_running(builtin_host):
     builtin_host.permissions.set_asker(Asker("session"))
     holder = await _commission(builtin_host)
-    other = await _commission(builtin_host, title="second browser task")
-    await _call(builtin_host, _grant(builtin_host, holder), "browser_navigate_page")
+    other = await _commission(builtin_host, title="second desktop task")
+    await _call(builtin_host, _grant(builtin_host, holder, images=True), "computer", {"action": "screenshot"})
     other_grant = _grant(builtin_host, other, images=True)
-    await _call(builtin_host, other_grant, "computer", {"action": "screenshot"})
-    waiting = asyncio.create_task(_call(builtin_host, other_grant, "browser_navigate_page"))
+    await _call(builtin_host, other_grant, "browser_navigate_page")
+    waiting = asyncio.create_task(_call(builtin_host, other_grant, "computer", {"action": "screenshot"}))
     await wait_until(lambda: builtin_host.leases._waiters, what="second task waiting at the device")
-    await builtin_host.permission_store.set_mode("browser", "deny")
+    await builtin_host.permission_store.set_mode("keyboard_mouse", "deny")
     await builtin_host.ledger.transition(holder.id, "done", reason="test")
     result = await asyncio.wait_for(waiting, 10)
     assert result["isError"] and "permission denied" in _text(result)
     assert [cid for _, cid, _ in builtin_host.provider.calls] == [holder.id, other.id]
-    assert builtin_host.leases.occupied() == {"keyboard_mouse": other.id}
+    assert builtin_host.leases.occupied() == {"browser": other.id}
 
 
 async def test_decline_inside_provider_queue_keeps_parallel_browser_call_occupied(builtin_host, monkeypatch):
@@ -2935,19 +2959,72 @@ async def test_stopping_a_commission_stops_its_call_that_waits_for_a_group(built
     builtin_host.permissions.set_asker(Asker("once"))
     first = await _commission(builtin_host)
     second = await _commission(builtin_host, title="book the hotel")
-    await _call(builtin_host, _grant(builtin_host, first), "browser_navigate_page")
-    second_grant = _grant(builtin_host, second)
-    waiting = asyncio.ensure_future(_call(builtin_host, second_grant, "browser_navigate_page"))
+    await _call(builtin_host, _grant(builtin_host, first, images=True), "computer", {"action": "screenshot"})
+    second_grant = _grant(builtin_host, second, images=True)
+    waiting = asyncio.ensure_future(_call(builtin_host, second_grant, "computer", {"action": "screenshot"}))
     second_grant.in_flight.add(waiting)
-    await wait_until(lambda: builtin_host.leases._waiters, what="the second commission waiting for the browser")
+    await wait_until(lambda: builtin_host.leases._waiters, what="the second commission waiting for the desktop")
 
     builtin_host.gateway.revoke(second.id)
     with pytest.raises(asyncio.CancelledError):
         await waiting
 
     assert builtin_host.leases._waiters == set()
-    assert builtin_host.leases.occupied() == {"browser": first.id}
+    assert builtin_host.leases.occupied() == {"keyboard_mouse": first.id}
     assert len(builtin_host.provider.calls) == 1
+
+
+async def test_browser_upload_file_checks_outside_read_only_for_files_outside_workdir(builtin_host, tmp_path):
+    upload_def = {
+        "name": "browser_upload_file",
+        "description": "Upload a file.",
+        "parameters": {
+            "type": "object",
+            "properties": {"uid": {"type": "string"}, "filePath": {"type": "string"}},
+            "required": ["uid", "filePath"],
+        },
+    }
+    builtin_host.provider.definitions["browser_upload_file"] = (BUILTIN_GROUP_BROWSER, upload_def, False)
+    builtin_host.registry.invalidate()
+    await builtin_host.permission_store.set_mode("browser", "allow")
+
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    inside = workdir / "notes.txt"
+    inside.write_text("hi", encoding="utf-8")
+    outside_dir = tmp_path / "secret"
+    outside_dir.mkdir()
+    outside = outside_dir / "doc.pdf"
+    outside.write_bytes(b"%PDF")
+
+    commission = await _commission(builtin_host, workdir=str(workdir))
+    grant = _grant(builtin_host, commission)
+
+    # Inside workdir (even as a relative path): no outside_read prompt; passed resolved.
+    asker = Asker("deny")
+    builtin_host.permissions.set_asker(asker)
+    ok = await _call(builtin_host, grant, "browser_upload_file", {"uid": "1_1", "filePath": "notes.txt"})
+    assert ok["isError"] is False
+    assert asker.asked == []
+    assert builtin_host.provider.calls[-1][2]["filePath"] == str(inside.resolve())
+
+    # Outside workdir: denied when outside_read is declined.
+    denied = await _call(builtin_host, grant, "browser_upload_file", {"uid": "1_1", "filePath": str(outside)})
+    assert denied["isError"] is True
+    assert [(ask.category, ask.key, ask.detail.get("path")) for _cid, ask in asker.asked] == [
+        ("outside_read", None, str(outside.resolve()))
+    ]
+    assert len(builtin_host.provider.calls) == 1
+
+    # Approved once: allowed and forwarded with the resolved path.
+    asker_ok = Asker("once")
+    builtin_host.permissions.set_asker(asker_ok)
+    allowed = await _call(builtin_host, grant, "browser_upload_file", {"uid": "1_1", "filePath": str(outside)})
+    assert allowed["isError"] is False
+    assert [(ask.category, ask.key, ask.detail.get("path")) for _cid, ask in asker_ok.asked] == [
+        ("outside_read", None, str(outside.resolve()))
+    ]
+    assert builtin_host.provider.calls[-1][2]["filePath"] == str(outside.resolve())
 
 
 async def test_a_task_agent_uses_the_group_the_commission_that_started_it_occupies(builtin_host, short_wait):

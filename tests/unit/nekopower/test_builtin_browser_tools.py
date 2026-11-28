@@ -118,7 +118,7 @@ def test_every_defined_tool_has_a_handler_and_every_handler_a_definition(world: 
     built = BrowserTools(world.session())
     handled = {TOOL_PREFIX + name for name in built._handlers}
     assert handled == set(BROWSER_TOOL_NAMES)
-    assert len(BROWSER_TOOLS) == len(BROWSER_TOOL_NAMES) == len(set(BROWSER_TOOL_NAMES)) == 15
+    assert len(BROWSER_TOOLS) == len(BROWSER_TOOL_NAMES) == len(set(BROWSER_TOOL_NAMES)) == 17
     assert all(name.startswith(TOOL_PREFIX) for name in BROWSER_TOOL_NAMES)
     assert TOOL_PREFIX == "browser_"
 
@@ -1501,7 +1501,7 @@ async def test_killing_is_passed_on_to_the_session_without_waiting_for_a_call_un
     killed: list[int] = []
     monkeypatch.setattr(tools._session, "kill", lambda: killed.append(1))
     # A call holds the tools (a browser that does not answer): killing does not wait its turn.
-    async with tools._lock:
+    async with tools._owner_lock(None):
         tools.kill()
     assert killed == [1]
 
@@ -1585,3 +1585,94 @@ async def test_handles_on_a_page_with_a_dialog_open_are_let_go_once_the_dialog_w
     assert (await call(tools, "handle_dialog", action="accept")).success
 
     assert fake.objects == {} and len(fake.released_groups) == 1
+
+
+async def test_upload_file_and_drag_tools_work_and_validate_arguments(
+    tools: BrowserTools, world: BrowserWorld, tmp_path: Any
+) -> None:
+    sample = tmp_path / "photo.png"
+    sample.write_bytes(b"png")
+    world.browser.serve(
+        "http://shop.test/files",
+        lambda: Document(
+            "Files",
+            el("button", "Attachment", kind="file"),
+            el("button", "Item A", draggable=True),
+            el("region", "Drop zone"),
+        ),
+    )
+    opened = await call(tools, "navigate_page", url="http://shop.test/files")
+    assert opened.success
+    attach_uid = re.search(r'uid=(\S+) button "Attachment"', opened.text).group(1)
+    item_uid = re.search(r'uid=(\S+) button "Item A"', opened.text).group(1)
+    zone_uid = re.search(r'uid=(\S+) region "Drop zone"', opened.text).group(1)
+
+    uploaded = await call(tools, "upload_file", uid=attach_uid, filePath=str(sample))
+    assert uploaded.success and str(sample) in uploaded.text
+    assert world.browser.page("target-1").find("Attachment").files == [str(sample.resolve())]
+    assert (await call(tools, "upload_file", uid=attach_uid)).success is False
+
+    dragged = await call(tools, "drag", from_uid=item_uid, to_uid=zone_uid)
+    assert dragged.success and "Successfully dragged" in dragged.text
+    assert [ev["type"] for ev in world.browser.page("target-1").drag_events] == ["dragEnter", "dragOver", "drop"]
+    assert (await call(tools, "drag", from_uid=item_uid)).success is False
+
+
+async def test_two_owners_run_browser_tools_concurrently_on_isolated_tabs(
+    tools: BrowserTools, world: BrowserWorld
+) -> None:
+    # Team A starts navigating on tab 1.
+    first_a = await tools.call(TOOL_PREFIX + "navigate_page", {"url": ORDER}, owner="team-a")
+    assert first_a.success, first_a.text
+    assert len(world.browser.pages) == 1
+
+    # Hold team-a's next navigation while team-b navigates, snapshots, and clicks on its own tab.
+    gate = world.browser.hold("Page.navigate", url=TERMS)
+    task_a = asyncio.ensure_future(tools.call(TOOL_PREFIX + "navigate_page", {"url": TERMS}, owner="team-a"))
+    try:
+        await asyncio.wait_for(gate.reached.wait(), 5.0)
+        assert not task_a.done()
+        nav_b = await asyncio.wait_for(
+            tools.call(TOOL_PREFIX + "navigate_page", {"url": ORDER}, owner="team-b"), 5.0
+        )
+        assert nav_b.success, nav_b.text
+        assert len(world.browser.pages) == 2
+
+        # Each owner sees only its own tab in list_pages and cannot select or close the other's tab.
+        listed_b = await tools.call(TOOL_PREFIX + "list_pages", {}, owner="team-b")
+        assert "1:" not in listed_b.text and "2:" in listed_b.text
+        refused_select = await tools.call(TOOL_PREFIX + "select_page", {"pageId": 1}, owner="team-b")
+        assert not refused_select.success and "another task" in refused_select.text
+        refused_close = await tools.call(TOOL_PREFIX + "close_page", {"pageId": 1}, owner="team-b")
+        assert not refused_close.success and "another task" in refused_close.text
+
+        # Team B can click on its own page while Team A is still blocked in navigation.
+        gift_uid = re.search(r'uid=(\S+) checkbox "Gift wrap"', nav_b.text).group(1)
+        clicked_b = await tools.call(TOOL_PREFIX + "click", {"uid": gift_uid}, owner="team-b")
+        assert clicked_b.success, clicked_b.text
+        assert not task_a.done()
+    finally:
+        gate.release()
+        world.browser.gates.remove(gate)
+
+    done_a = await asyncio.wait_for(task_a, 5.0)
+    assert done_a.success, done_a.text
+    assert world.browser.page("target-1").url == TERMS
+    assert world.browser.page("target-2").url == ORDER
+    assert world.browser.page("target-2").find("Gift wrap").checked is True
+
+    # Releasing team-a forgets only team-a's snapshots; team-b keeps working on its tab.
+    await tools.released(owner="team-a")
+    snap_b = await tools.call(TOOL_PREFIX + "take_snapshot", {}, owner="team-b")
+    assert snap_b.success and 'checkbox "Gift wrap"' in snap_b.text
+    stale_a = await tools.call(TOOL_PREFIX + "click", {"uid": "1_1"}, owner="team-a")
+    assert not stale_a.success and "No snapshot found" in stale_a.text
+
+
+async def test_second_owner_fails_cleanly_when_new_tab_cannot_be_created(
+    tools: BrowserTools, world: BrowserWorld
+) -> None:
+    assert (await tools.call(TOOL_PREFIX + "navigate_page", {"url": ORDER}, owner="team-a")).success
+    world.browser.refuse("Target.createTarget", "cannot open another tab")
+    outcome = await tools.call(TOOL_PREFIX + "navigate_page", {"url": TERMS}, owner="team-b")
+    assert not outcome.success and "cannot open additional tabs" in outcome.text

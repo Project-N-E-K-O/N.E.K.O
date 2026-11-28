@@ -113,6 +113,8 @@ def no_real_desktop(monkeypatch: Any) -> Any:
     sleeps: list[float] = []
     monkeypatch.setattr(desktop, "load_pyautogui", _reached)
     monkeypatch.setattr(desktop, "capture_frame", _reached)
+    monkeypatch.setattr(desktop, "default_ui_tree", lambda: None)
+    monkeypatch.setattr("nekopower.builtin.uia._ensure_com_for_thread", _reached)
     monkeypatch.setattr(desktop, "_pyautogui", None)
     monkeypatch.setattr(desktop, "_import_error", None)
     monkeypatch.setattr(native, "capture_desktop_screenshot", _reached)
@@ -309,11 +311,11 @@ def test_the_screen_size_is_asked_of_the_backend_for_every_action(monkeypatch: A
 # ---------------------------------------------------------------------------
 
 
-def test_the_actions_are_the_eight_of_the_tool_definition() -> None:
+def test_the_actions_are_the_nine_of_the_tool_definition() -> None:
     from config.prompts.prompts_nekopower_builtin import COMPUTER_TOOL
 
     assert list(ACTIONS) == COMPUTER_TOOL["parameters"]["properties"]["action"]["enum"]
-    assert len(ACTIONS) == 8
+    assert len(ACTIONS) == 9
     assert COORDINATE_MAX == 999
 
 
@@ -670,6 +672,7 @@ def test_wait_waits_and_sends_nothing(rig: Rig, arguments: dict[str, Any], slept
 
 ONE_OF_EACH: list[tuple[str, dict[str, Any]]] = [
     ("screenshot", {}),
+    ("ui_tree", {"include_screenshot": True}),
     ("click", {"x": 10, "y": 10}),
     ("move", {"x": 10, "y": 10}),
     ("drag", {"x": 10, "y": 10, "to_x": 20, "to_y": 20}),
@@ -680,6 +683,60 @@ ONE_OF_EACH: list[tuple[str, dict[str, Any]]] = [
 ]
 
 
+class FakeUiaBackend:
+    """In-memory UI Automation backend for unit tests: never touches COM or real windows."""
+
+    def __init__(self, *, supported: bool = True, title: str = "Notepad", rect: tuple[int, int, int, int] = (0, 0, 1920, 1080)) -> None:
+        from nekopower.builtin.uia import RawControl
+
+        self.supported = supported
+        self.title = title
+        self.rect = rect
+        self.controls: list[RawControl] = [
+            RawControl("window", title, 0, rect),
+            RawControl("edit", "Editor", 1, (100, 200, 900, 600), focused=True, value="hello"),
+            RawControl("button", "Save", 1, (1400, 900, 1520, 940)),
+            RawControl("checkbox", "Word wrap", 1, (200, 700, 320, 730), checked=True),
+            RawControl("edit", "Password", 1, (200, 760, 400, 790), is_password=True, value="s3cr3t"),
+            RawControl("button", "Disabled", 1, (1540, 900, 1660, 940), enabled=False),
+        ]
+        self.truncated = 0
+        self.capture_calls: list[dict[str, Any]] = []
+        self.capture_error: Exception | None = None
+        # uid or name -> (rect, enabled) | None
+        self.locate_overrides: dict[str, tuple[tuple[int, int, int, int], bool] | None] = {}
+
+    def is_supported(self) -> bool:
+        return self.supported
+
+    def capture_tree(
+        self,
+        *,
+        window: str | None = None,
+        max_depth: int = 6,
+        max_nodes: int = 250,
+        timeout_seconds: float = 2.5,
+        cancel_event: Any = None,
+    ) -> tuple[str, tuple[int, int, int, int], list[Any], int]:
+        if cancel_event is not None and cancel_event.is_set():
+            raise InterruptedError("stopped")
+        self.capture_calls.append({"window": window, "max_depth": max_depth, "max_nodes": max_nodes})
+        if self.capture_error is not None:
+            raise self.capture_error
+        if window and window.casefold() not in self.title.casefold():
+            from nekopower.builtin.uia import UiaUnavailableError
+
+            raise UiaUnavailableError(f"No visible window matching {window!r} was found.")
+        return self.title, self.rect, list(self.controls), self.truncated
+
+    def locate(self, control: Any) -> tuple[tuple[int, int, int, int], bool] | None:
+        if control.uid in self.locate_overrides:
+            return self.locate_overrides[control.uid]
+        if control.name in self.locate_overrides:
+            return self.locate_overrides[control.name]
+        return control.rect, control.enabled
+
+
 def test_there_is_a_case_for_every_action() -> None:
     assert [action for action, _arguments in ONE_OF_EACH] == list(ACTIONS)
 
@@ -688,13 +745,17 @@ def test_there_is_a_case_for_every_action() -> None:
 def test_every_action_returns_a_screenshot_taken_after_it_and_says_how_to_read_it(
     monkeypatch: Any, action: str, arguments: dict[str, Any]
 ) -> None:
+    from nekopower.builtin.uia import DesktopUiTree
+
     rig = Rig(monkeypatch, settle_seconds=0.6)
+    if action == "ui_tree":
+        rig.desktop._uia = DesktopUiTree(FakeUiaBackend())
     rig.screen.size = (320, 180)
     result = rig.act(action, arguments)
     names = rig.names()
-    # One screenshot, the last thing done; after an action the screen is given time to settle first.
+    # One screenshot, the last thing done; after an input action the screen is given time to settle first.
     assert names.count("capture") == 1 and names[-1] == "capture"
-    if action == "screenshot":
+    if action in ("screenshot", "ui_tree"):
         assert names == ["capture"]
     else:
         assert rig.log()[-2] == ("sleep", (0.6,), {})
@@ -702,9 +763,171 @@ def test_every_action_returns_a_screenshot_taken_after_it_and_says_how_to_read_i
     assert result.screenshot is not None and result.screenshot[:3] == b"\xff\xd8\xff"
     with Image.open(BytesIO(result.screenshot)) as picture:
         assert picture.size == (320, 180)
-    assert "Screenshot after it: 320x180 px." in result.text
+    if action == "ui_tree":
+        assert "Screenshot: 320x180 px." in result.text
+    else:
+        assert "Screenshot after it: 320x180 px." in result.text
     assert "Coordinates are 0 to 999 on both axes, not pixels." in result.text
     assert not EXECUTION_LOCK.locked()
+
+
+# ---------------------------------------------------------------------------
+# Windows UI Automation control-ID operations
+# ---------------------------------------------------------------------------
+
+
+def _uia_rig(monkeypatch: Any, backend: FakeUiaBackend | None = None) -> tuple[Rig, FakeUiaBackend]:
+    from nekopower.builtin.uia import DesktopUiTree
+
+    fake = backend if backend is not None else FakeUiaBackend()
+    rig = Rig(monkeypatch, settle_seconds=0)
+    rig.system = "Windows"
+    rig.desktop._uia = DesktopUiTree(fake)
+    return rig, fake
+
+
+def test_ui_tree_renders_numbered_controls_hides_passwords_and_skips_screenshot_by_default(monkeypatch: Any) -> None:
+    rig, fake = _uia_rig(monkeypatch)
+    result = rig.act("ui_tree", {})
+
+    assert result.screenshot is None
+    assert rig.log() == []  # No screenshot capture and no sleep.
+    assert '## Desktop UI Controls — Window: "Notepad"' in result.text
+    assert 'uid=1_1 edit "Editor" value="hello" focused @(260,370)' in result.text
+    assert 'uid=1_2 button "Save" @(760,852)' in result.text
+    assert 'uid=1_3 checkbox "Word wrap" checked' in result.text
+    assert 'uid=1_4 edit "Password" password' in result.text
+    assert "s3cr3t" not in result.text
+    assert 'uid=1_5 button "Disabled" disabled' in result.text
+    assert len(fake.capture_calls) == 1
+
+
+def test_ui_tree_supports_pagination_and_window_filter(monkeypatch: Any) -> None:
+    import config.nekopower_settings as settings
+    from nekopower.builtin.uia import RawControl
+
+    fake = FakeUiaBackend(title="Settings")
+    fake.controls = [RawControl("window", "Settings", 0, (0, 0, 1920, 1080))] + [
+        RawControl("button", f"Option number {i} in list", 1, (100, 50 + i * 20, 400, 68 + i * 20)) for i in range(40)
+    ]
+    rig, _ = _uia_rig(monkeypatch, fake)
+    monkeypatch.setattr(settings, "DESKTOP_UI_TREE_MAX_TOKENS", 180)
+
+    first = rig.act("ui_tree", {"window": "set"})
+    assert "Call ui_tree with offset=" in first.text
+    next_offset = int(first.text.split("offset=", 1)[1].split(" ", 1)[0])
+    second = rig.act("ui_tree", {"window": "set", "offset": next_offset})
+    assert f"Showing controls {next_offset + 1}-" in second.text
+    # Pagination reuses the captured snapshot rather than walking the window again.
+    assert len(fake.capture_calls) == 1
+
+    with pytest.raises(DesktopActionError, match="No visible window matching 'Calculator'"):
+        rig.act("ui_tree", {"window": "Calculator"})
+
+
+def test_uid_actions_click_move_drag_scroll_and_type_use_exact_control_pixels(monkeypatch: Any) -> None:
+    rig, fake = _uia_rig(monkeypatch)
+    rig.act("ui_tree", {})
+
+    # Click Save button: rect (1400, 900, 1520, 940) -> exact pixel center (1460, 920).
+    clicked = rig.act("click", {"uid": "1_2", "clicks": 2})
+    assert rig.inputs() == [
+        glide(1460, 920),
+        ("click", (1460, 920), {"clicks": 2, "interval": 0.08, "button": "left"}),
+    ]
+    assert 'Double-clicked the left button on control uid=1_2 (button "Save").' in clicked.text
+    # Action by uid also refreshes the UI tree snapshot automatically.
+    assert "## Desktop UI Controls" in clicked.text
+    assert "uid=2_2" in clicked.text
+
+    # Move onto Editor (uid=2_1): rect (100, 200, 900, 600) -> center (500, 400).
+    rig.backend.calls.clear()
+    moved = rig.act("move", {"uid": "2_1"})
+    assert rig.inputs() == [glide(500, 400)]
+    assert 'Moved the pointer to control uid=2_1 (edit "Editor").' in moved.text
+
+    # Drag from Editor (uid=3_1 -> (500, 400)) to Save (uid=3_2 -> (1460, 920)).
+    rig.backend.calls.clear()
+    dragged = rig.act("drag", {"uid": "3_1", "to_uid": "3_2"})
+    assert ("mouseDown", (500, 400), {"button": "left"}) in rig.inputs()
+    assert ("mouseUp", (1460, 920), {"button": "left"}) in rig.inputs()
+    assert 'Dragged from control uid=3_1 (edit "Editor") to control uid=3_2 (button "Save").' in dragged.text
+
+    # Scroll on Editor (uid=4_1 -> (500, 400)).
+    rig.backend.calls.clear()
+    scrolled = rig.act("scroll", {"uid": "4_1", "direction": "down", "amount": 2})
+    assert rig.inputs() == [glide(500, 400, duration=0.15), ("scroll", (-240,), {})]
+    assert 'Scrolled down 2 notch(es) on control uid=4_1 (edit "Editor").' in scrolled.text
+
+    # Type into Editor (uid=5_1 -> clicks (500, 400) to focus, then types).
+    rig.backend.calls.clear()
+    typed = rig.act("type", {"uid": "5_1", "text": "world"})
+    assert rig.inputs() == [
+        glide(500, 400),
+        ("click", (500, 400), {"clicks": 1, "interval": 0.0, "button": "left"}),
+        ("write", ("world",), {}),
+    ]
+    assert 'Typed 5 character(s) into control uid=5_1 (edit "Editor").' in typed.text
+
+
+def test_uid_errors_for_stale_disabled_missing_and_non_windows(monkeypatch: Any) -> None:
+    # Non-Windows / unsupported UIA.
+    plain = Rig(monkeypatch)
+    with pytest.raises(DesktopActionError, match="only available on Windows"):
+        plain.act("ui_tree", {})
+    with pytest.raises(DesktopActionError, match="only available on Windows"):
+        plain.act("click", {"uid": "1_1"})
+
+    rig, fake = _uia_rig(monkeypatch)
+    # No snapshot yet.
+    with pytest.raises(DesktopActionError, match="Call computer with action ui_tree first"):
+        rig.act("click", {"uid": "1_1"})
+
+    rig.act("ui_tree", {})
+    # Unknown / stale uid.
+    with pytest.raises(DesktopActionError, match="not in the latest desktop UI tree"):
+        rig.act("click", {"uid": "99_1"})
+    # Disabled control.
+    with pytest.raises(DesktopActionError, match="currently disabled"):
+        rig.act("click", {"uid": "1_5"})
+    # Control disappeared since snapshot.
+    fake.locate_overrides["Save"] = None
+    with pytest.raises(DesktopActionError, match="no longer visible"):
+        rig.act("click", {"uid": "1_2"})
+    assert rig.inputs() == []
+
+    # Releasing held input invalidates cached UI tree so the next task cannot reuse stale uids.
+    fake.locate_overrides.clear()
+    assert rig.desktop.release_held() is True
+    with pytest.raises(DesktopActionError, match="No desktop UI tree snapshot"):
+        rig.act("click", {"uid": "1_2"})
+
+
+def test_screenshot_attaches_best_effort_ui_tree_and_ignores_uia_errors(monkeypatch: Any) -> None:
+    rig, fake = _uia_rig(monkeypatch)
+    shot = rig.act("screenshot", {})
+    assert shot.screenshot is not None
+    assert "## Desktop UI Controls" in shot.text
+    assert 'uid=1_2 button "Save"' in shot.text
+
+    # Opt-out works cleanly.
+    plain = rig.act("screenshot", {"include_ui_tree": False})
+    assert "## Desktop UI Controls" not in plain.text
+
+    # Transient UIA error never fails a screenshot.
+    fake.capture_error = RuntimeError("COM transient failure")
+    resilient = rig.act("screenshot", {})
+    assert resilient.screenshot is not None
+    assert "Looked at the screen." in resilient.text
+    assert "## Desktop UI Controls" not in resilient.text
+
+
+def test_ui_tree_respects_cancellation(monkeypatch: Any) -> None:
+    rig, _ = _uia_rig(monkeypatch)
+    cancel = threading.Event()
+    cancel.set()
+    with pytest.raises(DesktopStopped):
+        rig.act("ui_tree", {}, cancel_event=cancel)
 
 
 def test_the_screen_settles_for_the_default_time_unless_told_otherwise() -> None:
