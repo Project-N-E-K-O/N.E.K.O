@@ -329,12 +329,15 @@ async def _build(resources: ToolResources, runtime: ToolRuntime, deadline: float
     assert runtime.uv is not None  # always set for a packaged runtime
     root = resources.environment_root
     env = _install_env(runtime.env)
+    # No --no-config: a user's uv.toml (an index mirror, say) applies, as it
+    # does to the dependency page's installs. The interpreter is an explicit
+    # path and every requirement is hash-pinned, so it cannot change either.
     commands = [
-        [runtime.uv, "venv", "--no-config", "--no-project", "--clear",
+        [runtime.uv, "venv", "--no-project", "--clear",
          "--python", runtime.python, str(root)],
-        [runtime.uv, "pip", "sync", "--no-config", "--require-hashes", "--only-binary", ":all:",
+        [runtime.uv, "pip", "sync", "--require-hashes", "--only-binary", ":all:",
          "--python", str(resources.executable), str(resources.root / "requirements.txt")],
-        [runtime.uv, "pip", "install", "--no-config", "--no-deps",
+        [runtime.uv, "pip", "install", "--no-deps",
          "--python", str(resources.executable), str(resources.root / resources.wheel)],
     ]
     for command in commands:

@@ -197,6 +197,7 @@ class _FakeLayer:
         self.runtime_error: Exception | None = None
         self.command_result = 0
         self.command_output = ""
+        self.command_timeout = False
         self.before_return: threading.Event | None = None
         self.runtime = ToolRuntime(PYTHON, UV, {"RUNTIME": "1"}, tmp_path / "tools", True)
         self._monkeypatch = monkeypatch
@@ -215,6 +216,8 @@ class _FakeLayer:
 
     async def run_cli(self, argv, **kwargs):
         self.commands.append((argv, kwargs))
+        if self.command_timeout:
+            raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
         if argv[1] == "venv":
             executable = Path(argv[-1]) / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
             executable.parent.mkdir(parents=True, exist_ok=True)
@@ -237,7 +240,7 @@ async def test_preparation_builds_the_venv_on_the_shared_runtime(monkeypatch, tm
     assert len(layer.runtime_calls) == 1
     assert isinstance(layer.runtime_calls[0]["cancel"], threading.Event)
     assert [argv[:3] for argv, _ in layer.commands] == [
-        [UV, "venv", "--no-config"], [UV, "pip", "sync"], [UV, "pip", "install"],
+        [UV, "venv", "--no-project"], [UV, "pip", "sync"], [UV, "pip", "install"],
     ]
     venv, _ = layer.commands[0]
     assert venv[venv.index("--python") + 1] == PYTHON
@@ -311,6 +314,21 @@ async def test_a_failed_venv_command_is_reported_redacted(monkeypatch, tmp_path)
     assert "403" in status.error
     assert "token" not in status.error
     assert len(layer.commands) == 1  # stops at the first failing command
+
+
+async def test_running_out_of_the_budget_is_a_timeout_with_a_reason(monkeypatch, tmp_path):
+    _packaged(monkeypatch, "missing")
+    _resources(monkeypatch, tmp_path / "resources")
+    layer = _FakeLayer(monkeypatch, tmp_path)
+    layer.command_timeout = True
+
+    tools.start_tool_environment_preparation()
+    await tools._preparation_task
+    status = tools.tool_environment_status()
+    assert (status.state, status.error_code) == ("failed", "timeout")
+    assert status.error  # never an empty reason
+    # Each step gets what is left of one budget shared with uv / Python.
+    assert 0 < layer.commands[0][1]["timeout"] <= 1800.0
 
 
 async def test_an_unexpected_preparation_error_is_reported_as_internal(monkeypatch, tmp_path):
