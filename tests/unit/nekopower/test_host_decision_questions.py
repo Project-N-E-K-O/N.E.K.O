@@ -230,7 +230,7 @@ async def test_configured_decide_routes_with_the_tiers_chat_slot(monkeypatch):
         return {"q": "answer"}
 
     monkeypatch.setattr(dc, "ask_site_questions", _ask)
-    monkeypatch.setattr(dc, "decide_route", lambda site, **kw: dc.ROUTE_NATIVE)
+    monkeypatch.setattr(dc, "site_question_would_send", lambda site, **kw: True)
     got = await dm.ConfiguredDecisionLLM().decide(dm.TIER_TURN_CHECK, "turn_check", state="s", questions={"q": 1}, rehost=True)
     assert got == {"q": "answer"}
     assert asked_slots == ["emotion", "decision"]
@@ -243,8 +243,8 @@ async def test_configured_decide_routes_with_the_tiers_chat_slot(monkeypatch):
 
     monkeypatch.setattr(dc, "ask_site_questions", _miss)
     assert await dm.ConfiguredDecisionLLM().decide(dm.TIER_TURN_CHECK, "turn_check", state="s", questions={}, rehost=True) == {}
-    # Today's chat route: nothing is sent at all.
-    monkeypatch.setattr(dc, "decide_route", lambda site, **kw: dc.ROUTE_CHAT)
+    # Today's chat route, or the native endpoint in its cooldown: nothing is sent at all.
+    monkeypatch.setattr(dc, "site_question_would_send", lambda site, **kw: False)
     seen.clear()
     assert await dm.ConfiguredDecisionLLM().decide(dm.TIER_TURN_CHECK, "turn_check", state="s", questions={}, rehost=True) is None
     assert seen == {}

@@ -332,15 +332,17 @@ class ConfiguredDecisionLLM:
         of *tier*'s slot (rehost); see :func:`utils.decision_client.ask_site_questions`.
         """
         from utils.config_manager import get_config_manager
-        from utils.decision_client import ROUTE_CHAT, ask_site_questions, decide_route
+        from utils.decision_client import ask_site_questions, site_question_would_send
 
         from config.nekopower_settings import DECISION_QUESTION_TIMEOUT_SECONDS
 
         manager = get_config_manager(migrate=False)
         chat_config = await asyncio.to_thread(manager.get_model_api_config, self._slot(tier))
         decision_config = await asyncio.to_thread(manager.get_model_api_config, "decision")
-        if decide_route(site, decision_config=decision_config, chat_config=chat_config, rehost=rehost) == ROUTE_CHAT:
-            return None  # nothing is sent: the chat prompt is the only request
+        if not site_question_would_send(site, decision_config=decision_config, chat_config=chat_config, rehost=rehost):
+            # Nothing is sent (the site's chat route, or the native endpoint
+            # in its cooldown after an error): the chat prompt is the only request.
+            return None
         answers = await ask_site_questions(
             site,
             state=state,
