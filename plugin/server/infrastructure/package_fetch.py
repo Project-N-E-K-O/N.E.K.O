@@ -101,9 +101,14 @@ def _supervise(
     finished = threading.Event()
     holder: dict[str, asyncio.Task[T]] = {}
 
+    def done(task: asyncio.Task[T]) -> None:
+        if not task.cancelled():
+            task.exception()  # Retrieved here, so the loop does not log it as unhandled.
+        finished.set()
+
     def start() -> None:
         task = loop.create_task(factory())
-        task.add_done_callback(lambda _task: finished.set())
+        task.add_done_callback(done)
         holder["task"] = task
 
     def cancel() -> None:
@@ -128,7 +133,11 @@ def _supervise(
                 finished.wait(CLEANUP_SECONDS)
             raise
     on_poll()
-    return holder["task"].result()
+    task = holder["task"]
+    if task.cancelled():
+        # Cancelled on the loop's side, e.g. by the server shutting down.
+        raise PackageLoopUnavailable("the package download was cancelled on the server loop")
+    return task.result()
 
 
 def _run(

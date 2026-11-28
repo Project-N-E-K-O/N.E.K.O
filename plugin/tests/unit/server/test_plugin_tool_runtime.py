@@ -1214,6 +1214,9 @@ def test_python_build_is_fetched_over_github_routes_and_installed_from_the_file(
     _listing("https://example.com/python-build-standalone/releases/download/x/y.tar.gz"),
     _listing(url=f"{module._PYTHON_RELEASE_PREFIXES[0]}{PYTHON_TAG}/sub/{PYTHON_FILE}"),
     _listing(url=f"{module._PYTHON_RELEASE_PREFIXES[0]}{PYTHON_TAG}/..%2Fescape.tar.gz"),
+    _listing(url=f"{module._PYTHON_RELEASE_PREFIXES[0]}{PYTHON_TAG}/..%5Cescape.tar.gz"),
+    _listing(url=f"{module._PYTHON_RELEASE_PREFIXES[0]}..\\x/{PYTHON_FILE}"),
+    _listing(url=f"{module._PYTHON_RELEASE_PREFIXES[0]}../{PYTHON_FILE}"),
     _listing(version="3.0.0"),
 ])
 def test_unreadable_python_listing_lets_uv_download_by_itself(root, monkeypatch, listing):

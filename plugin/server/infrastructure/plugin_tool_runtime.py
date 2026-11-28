@@ -784,6 +784,11 @@ class _PythonDownload:
     filename: str
 
 
+def _plain_name(name: str) -> bool:
+    """One path component on every platform: it cannot leave the mirror directory."""
+    return bool(name) and "/" not in name and "\\" not in name and name not in (".", "..")
+
+
 def _python_download(
     uv: str, request: str, run: Callable[[list[str], str], subprocess.CompletedProcess[str]],
 ) -> _PythonDownload | None:
@@ -814,10 +819,9 @@ def _python_download(
         for prefix in _PYTHON_RELEASE_PREFIXES:
             if entry["url"].startswith(prefix):
                 tag, _, filename = entry["url"][len(prefix):].partition("/")
-                if tag and filename and "/" not in filename and tag not in (".", ".."):
-                    name = unquote(filename)
-                    if name and "/" not in name and "\\" not in name and name not in (".", ".."):
-                        return _PythonDownload(_PYTHON_GITHUB_PREFIX + f"{tag}/{filename}", tag, name)
+                name = unquote(filename)
+                if _plain_name(tag) and "/" not in filename and _plain_name(name):
+                    return _PythonDownload(_PYTHON_GITHUB_PREFIX + f"{tag}/{filename}", tag, name)
         return None
     return None
 

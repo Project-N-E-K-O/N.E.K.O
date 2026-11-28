@@ -250,6 +250,34 @@ def test_transfer_runs_on_the_bound_server_loop(tmp_path, network):
         loop.close()
 
 
+def test_transfer_cancelled_by_the_server_loop_is_a_loop_failure(tmp_path, network):
+    preferences(tmp_path, "direct")
+    network.handlers["github.com"] = (
+        lambda _request: httpx.Response(200, headers={"content-length": "100"}, stream=Stalled())
+    )
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=loop.run_forever, daemon=True)
+    thread.start()
+
+    def shut_down_tasks():
+        for task in asyncio.all_tasks(loop):
+            task.cancel()
+
+    try:
+        download_io.bind_package_loop(loop)
+        while download_io.package_loop() is None:
+            time.sleep(0.01)
+        threading.Timer(0.3, lambda: loop.call_soon_threadsafe(shut_down_tasks)).start()
+        with pytest.raises(fetch.PackageLoopUnavailable):
+            get(tmp_path)
+        assert list((tmp_path / "downloads").iterdir()) == []
+    finally:
+        asyncio.run_coroutine_threadsafe(download_io.aclose_package_http_client(), loop).result(5)
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(5)
+        loop.close()
+
+
 def test_without_a_bound_loop_a_private_loop_is_used_and_closed(tmp_path, network):
     preferences(tmp_path, "direct")
     network.handlers["github.com"] = ok()
