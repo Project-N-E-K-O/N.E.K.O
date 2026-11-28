@@ -75,9 +75,12 @@ export interface PythonPackagesSnapshot {
   task: PythonPackagesTask | null
   operation: string | null
 }
-/** Mirrors plugin_tool_runtime.ProgressPhase. */
+/**
+ * Mirrors plugin_tool_runtime.ProgressPhase. The layer may report a phase this
+ * page has no label for (older layers report `waiting`); it shows "Preparing".
+ */
 export type ToolProgressPhase =
-  'waiting' | 'downloading_uv' | 'checking_uv' | 'installing_python' | 'checking_python'
+  'downloading_uv' | 'checking_uv' | 'installing_python' | 'checking_python' | (string & {})
 /** Mirrors plugin_tool_runtime.ErrorCode. */
 export type ToolErrorCode =
   | 'unsupported_platform'
@@ -87,8 +90,9 @@ export type ToolErrorCode =
   | 'python_mismatch'
   | 'canceled'
   | 'timeout'
-  | 'busy'
   | 'internal_error'
+  // Anything else (an older layer's `busy`) shows the generic failure text.
+  | (string & {})
 export interface ToolProgress {
   phase: ToolProgressPhase
   downloaded_bytes: number | null

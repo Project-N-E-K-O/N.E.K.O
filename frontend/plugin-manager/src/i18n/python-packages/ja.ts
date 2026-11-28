@@ -74,7 +74,6 @@ const messages: PythonPackageMessages = {
     '初回同期では、インストールツールと互換性のある Python をダウンロードしてアプリのデータ領域に保存します。',
   toolsPreparing: 'インストールツールを準備しています。',
   toolsFailed: '前回のインストールツールの準備に失敗しました。次回の同期で再試行します。',
-  toolWaiting: '別の準備処理の完了を待っています',
   toolDownloadingUv: 'uv をダウンロード中',
   toolCheckingUv: 'uv を確認中',
   toolInstallingPython: 'Python をインストール中',
@@ -90,8 +89,6 @@ const messages: PythonPackageMessages = {
     '依存関係用の Python インタープリターをインストールできませんでした。ネットワーク接続を確認して再試行してください。',
   toolErrorPythonMismatch: '準備した Python インタープリターがこのアプリケーションと一致しません。',
   toolErrorTimeout: 'インストールツールの準備に時間がかかりすぎました。',
-  toolErrorBusy:
-    '別の N.E.K.O. プロセスがインストールツールを準備中です。しばらくしてから再試行してください。',
   toolErrorInternal:
     'インストールツールの準備中に予期しないエラーが発生しました。技術的な詳細を確認してください。',
   installerMissing:

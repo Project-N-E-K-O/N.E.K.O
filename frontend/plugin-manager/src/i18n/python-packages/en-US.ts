@@ -80,7 +80,6 @@ const messages = {
     'The first sync downloads installation tools and a compatible Python interpreter into application data.',
   toolsPreparing: 'Installation tools are being prepared.',
   toolsFailed: 'The last preparation of the installation tools failed. The next sync tries again.',
-  toolWaiting: 'Waiting for another preparation to finish',
   toolDownloadingUv: 'Downloading uv',
   toolCheckingUv: 'Checking uv',
   toolInstallingPython: 'Installing Python',
@@ -96,7 +95,6 @@ const messages = {
     'Could not install the Python interpreter for dependencies. Check the network connection and try again.',
   toolErrorPythonMismatch: 'The prepared Python interpreter does not match this application.',
   toolErrorTimeout: 'Preparing the installation tools took too long.',
-  toolErrorBusy: 'Another N.E.K.O. process is preparing the installation tools. Try again later.',
   toolErrorInternal: 'Preparing the installation tools failed unexpectedly. See technical details.',
   installerMissing:
     'No package installer was found. Install uv, or pip for the Python that runs N.E.K.O.',

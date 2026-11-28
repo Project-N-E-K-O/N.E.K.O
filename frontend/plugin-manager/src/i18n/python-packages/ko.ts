@@ -72,7 +72,6 @@ const messages: PythonPackageMessages = {
     '첫 동기화에서 설치 도구와 호환 Python을 내려받아 앱 데이터 디렉터리에 저장합니다.',
   toolsPreparing: '설치 도구를 준비하는 중입니다.',
   toolsFailed: '지난번 설치 도구 준비에 실패했습니다. 다음 동기화 때 다시 시도합니다.',
-  toolWaiting: '다른 준비 작업이 끝나기를 기다리는 중',
   toolDownloadingUv: 'uv 다운로드 중',
   toolCheckingUv: 'uv 확인 중',
   toolInstallingPython: 'Python 설치 중',
@@ -88,7 +87,6 @@ const messages: PythonPackageMessages = {
     '의존성용 Python 인터프리터를 설치할 수 없습니다. 네트워크 연결을 확인한 후 다시 시도하세요.',
   toolErrorPythonMismatch: '준비된 Python 인터프리터가 이 애플리케이션과 일치하지 않습니다.',
   toolErrorTimeout: '설치 도구 준비가 너무 오래 걸렸습니다.',
-  toolErrorBusy: '다른 N.E.K.O. 프로세스가 설치 도구를 준비하고 있습니다. 잠시 후 다시 시도하세요.',
   toolErrorInternal:
     '설치 도구를 준비하는 중 예기치 않은 오류가 발생했습니다. 기술 세부 정보를 확인하세요.',
   installerMissing:

@@ -76,7 +76,6 @@ const messages: PythonPackageMessages = {
   toolsPreparing: 'Se están preparando las herramientas de instalación.',
   toolsFailed:
     'La última preparación de las herramientas de instalación falló. La próxima sincronización lo intentará de nuevo.',
-  toolWaiting: 'Esperando a que termine otra preparación',
   toolDownloadingUv: 'Descargando uv',
   toolCheckingUv: 'Comprobando uv',
   toolInstallingPython: 'Instalando Python',
@@ -92,8 +91,6 @@ const messages: PythonPackageMessages = {
     'No se pudo instalar el intérprete de Python para las dependencias. Comprueba la conexión de red e inténtalo de nuevo.',
   toolErrorPythonMismatch: 'El intérprete de Python preparado no coincide con esta aplicación.',
   toolErrorTimeout: 'La preparación de las herramientas de instalación tardó demasiado.',
-  toolErrorBusy:
-    'Otro proceso de N.E.K.O. está preparando las herramientas de instalación. Inténtalo más tarde.',
   toolErrorInternal:
     'La preparación de las herramientas de instalación falló de forma inesperada. Consulta los detalles técnicos.',
   installerMissing:

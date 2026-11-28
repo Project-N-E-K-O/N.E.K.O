@@ -93,11 +93,10 @@ metadata; a compatible uv already installed is only a fallback when that
 download fails, so on a slow network the fallback waits for that download to
 fail), then installs the CPython release matching the application's
 exact version and architecture with `--no-bin --no-registry`, so no system
-interpreter is registered. Preparation can be canceled with the task, counts
-against the task's time budget, and waits for another N.E.K.O. process that is
-preparing the same tools. The task reports the layer's phases (waiting,
-downloading uv, checking uv, installing Python, checking Python) and, when it
-fails, the layer's error code. Opening the tab performs no downloads or
+interpreter is registered. Preparation can be canceled with the task and
+counts against the task's time budget. The task reports the layer's phases
+(downloading uv, checking uv, installing Python, checking Python; any other
+phase shows as "Preparing") and, when it fails, the layer's error code. Opening the tab performs no downloads or
 version-probe subprocesses. It reads the layer's status and shows a notice
 only while the tools still need preparing, are being prepared, failed or are
 unsupported; ready tools, and source checkouts, show no notice.

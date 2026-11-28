@@ -75,7 +75,6 @@ const messages: PythonPackageMessages = {
   toolsPreparing: 'Инструменты установки готовятся.',
   toolsFailed:
     'Не удалось подготовить инструменты установки. Следующая синхронизация попробует снова.',
-  toolWaiting: 'Ожидание завершения другой подготовки',
   toolDownloadingUv: 'Загрузка uv',
   toolCheckingUv: 'Проверка uv',
   toolInstallingPython: 'Установка Python',
@@ -91,7 +90,6 @@ const messages: PythonPackageMessages = {
     'Не удалось установить интерпретатор Python для зависимостей. Проверьте подключение к сети и повторите попытку.',
   toolErrorPythonMismatch: 'Подготовленный интерпретатор Python не соответствует этому приложению.',
   toolErrorTimeout: 'Подготовка инструментов установки заняла слишком много времени.',
-  toolErrorBusy: 'Другой процесс N.E.K.O. готовит инструменты установки. Повторите попытку позже.',
   toolErrorInternal:
     'При подготовке инструментов установки произошла непредвиденная ошибка. См. технические подробности.',
   installerMissing:

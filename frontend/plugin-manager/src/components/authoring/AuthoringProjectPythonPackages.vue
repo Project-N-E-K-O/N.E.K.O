@@ -286,8 +286,7 @@ const elapsed = computed(() =>
     )
   )
 )
-const toolPhaseKeys: Record<ToolProgress['phase'], string> = {
-  waiting: 'toolWaiting',
+const toolPhaseKeys: Record<string, string> = {
   downloading_uv: 'toolDownloadingUv',
   checking_uv: 'toolCheckingUv',
   installing_python: 'toolInstallingPython',
@@ -301,7 +300,6 @@ const reasonKeys: Record<string, string> = {
   python_install_failed: 'toolErrorPythonInstallFailed',
   python_mismatch: 'toolErrorPythonMismatch',
   timeout: 'toolErrorTimeout',
-  busy: 'toolErrorBusy',
   internal_error: 'toolErrorInternal',
   installer_missing: 'installerMissing',
 }
@@ -312,7 +310,11 @@ function reasonText(code: string) {
 }
 const megabytes = (bytes: number) => (bytes / (1024 * 1024)).toFixed(1)
 function toolProgressLabel(progress: ToolProgress) {
-  const label = t(`pythonPackages.${toolPhaseKeys[progress.phase] ?? 'prepare'}`)
+  // An unknown phase (an older layer's `waiting`) falls back to "Preparing".
+  const key = Object.hasOwn(toolPhaseKeys, progress.phase)
+    ? toolPhaseKeys[progress.phase]
+    : 'prepare'
+  const label = t(`pythonPackages.${key}`)
   if (progress.phase !== 'downloading_uv' || !progress.downloaded_bytes) return label
   const size = progress.total_bytes
     ? t('pythonPackages.toolBytes', {

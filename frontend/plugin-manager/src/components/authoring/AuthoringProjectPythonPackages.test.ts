@@ -589,6 +589,21 @@ describe('project dependency management', () => {
     const { container } = await mount()
     expect(container.textContent).toContain(label)
   })
+  // An older shared layer still reports `waiting`; no phase shows blank or as a raw key.
+  it.each(['waiting', 'some_future_phase', 'toString'])(
+    'shows the generic preparing label for the unknown tool phase %s',
+    async (phase) => {
+      const running = task({
+        phase: 'preparing',
+        tool_progress: { phase, downloaded_bytes: null, total_bytes: null },
+      })
+      api.getProjectPythonPackages.mockResolvedValue(state({ task: running }))
+      api.getProjectPythonTask.mockResolvedValue(running)
+      const { container } = await mount()
+      expect(container.textContent).toContain(`${en.prepare} ·`)
+      expect(container.textContent).not.toContain('pythonPackages.')
+    }
+  )
   it('shows a localized message when tool preparation failed', async () => {
     api.getProjectPythonPackages.mockResolvedValue(
       state({
@@ -605,5 +620,22 @@ describe('project dependency management', () => {
     expect(document.querySelector('[data-testid="python-tools-error"]')?.textContent).toContain(
       en.toolErrorChecksumMismatch
     )
+  })
+  it('shows the generic failure text for a tool error code it has no text for', async () => {
+    api.getProjectPythonPackages.mockResolvedValue(
+      state({
+        task: task({
+          status: 'failed',
+          phase: 'finished',
+          error_code: 'busy',
+          message: 'tools are being prepared elsewhere',
+          finished_at: Date.now() / 1000,
+        }),
+      })
+    )
+    await mount()
+    const text = document.querySelector('[data-testid="python-tools-error"]')?.textContent
+    expect(text).toContain(en.toolErrorInternal)
+    expect(text).not.toContain('pythonPackages.')
   })
 })
