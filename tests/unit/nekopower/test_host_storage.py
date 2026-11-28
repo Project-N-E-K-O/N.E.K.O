@@ -2803,6 +2803,26 @@ async def test_round12_security_paths_and_storage_guards(tmp_path: Path, monkeyp
         assert view_migrated["transcripts"]["outputs_count"] == 1
         assert view_migrated["transcripts"]["outputs_bytes"] == 175
 
+        # 2b. Manually moved data folder: stale session_dir points to gone old location while current folder holds
+        #     transcript & outputs/; overview must match TaskAgentManager._session_dir_of() and count current folder.
+        hand_sess = await host.ledger.create_session(name="hand-moved", lanlan_name="Lan", project="handproj")
+        await host.ledger.update_session(hand_sess.id, status="idle")
+        missing_old_dir = (
+            tmp_path / "gone_old_root" / "nekopower" / "task_agents" / "projects" / "handproj" / "sessions" / hand_sess.id
+        )
+        cur_hand_dir = host.paths.session_dir(hand_sess.id, "handproj")
+        (cur_hand_dir / "outputs").mkdir(parents=True)
+        (cur_hand_dir / TRANSCRIPT_NAME).write_bytes(b"h" * 64)
+        (cur_hand_dir / "outputs" / "cache.txt").write_bytes(b"c" * 225)
+        await host.ledger.run(
+            lambda conn: conn.execute(
+                "UPDATE sessions SET session_dir = ? WHERE id = ?", (str(missing_old_dir), hand_sess.id)
+            )
+        )
+        view_hand_moved = await host.storage_overview()
+        assert view_hand_moved["transcripts"]["outputs_count"] == 2
+        assert view_hand_moved["transcripts"]["outputs_bytes"] == 175 + 225
+
         # 3. Corrupt archived project.json (huge integer -> OverflowError) must not break storage_overview().
         bad_arch = host.paths.space().archived_dir("2025", "corrupt_arch")
         bad_arch.mkdir(parents=True)

@@ -53,6 +53,7 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from nekopower.host.ledger import ACTIVE_STATUSES, TREE_STATES_LEFT
@@ -775,7 +776,7 @@ class StorageManager:
         self,
     ) -> tuple[
         dict[str, Any],
-        dict[str, tuple[str, float, str, str | None, str | None]],
+        dict[str, tuple[str, float, str, str | None, str | None, str | None, str | None]],
         set[str],
         set[str],
         set[str],
@@ -786,7 +787,7 @@ class StorageManager:
     ]:
         """Read sessions, untruncated session metadata, live workdirs, projects, and trees in one pass."""
         sessions_by_id: dict[str, Any] = {}
-        all_sessions_meta: dict[str, tuple[str, float, str, str | None, str | None]] = {}
+        all_sessions_meta: dict[str, tuple[str, float, str, str | None, str | None, str | None, str | None]] = {}
         active_sessions: set[str] = set()
         live_workdirs: set[str] = set()
 
@@ -799,6 +800,7 @@ class StorageManager:
                 lambda conn: [
                     (
                         str(r["id"]),
+                        str(r["project"]) if r["project"] is not None else None,
                         str(r["status"]),
                         float(r["last_active_at"] or 0.0),
                         str(r["kind"] or ""),
@@ -807,12 +809,12 @@ class StorageManager:
                         str(r["session_dir"]) if r["session_dir"] is not None else None,
                     )
                     for r in conn.execute(
-                        "SELECT id, status, last_active_at, kind, forked_from, workdir, session_dir FROM sessions"
+                        "SELECT id, project, status, last_active_at, kind, forked_from, workdir, session_dir FROM sessions"
                     ).fetchall()
                 ]
             )
-            for sid, status, last_active_at, kind, forked_from, workdir, session_dir in meta_rows:
-                all_sessions_meta[sid] = (status, last_active_at, kind, forked_from, session_dir)
+            for sid, project, status, last_active_at, kind, forked_from, workdir, session_dir in meta_rows:
+                all_sessions_meta[sid] = (status, last_active_at, kind, forked_from, project, workdir, session_dir)
                 if status in _BUSY_SESSION_STATUSES or self._task_agents._in_use(sid):
                     active_sessions.add(sid)
                     if workdir:
@@ -1065,7 +1067,7 @@ class StorageManager:
         uncleared_fork_sources: set[str] = set()
         fork_latest_active: dict[str, float] = {}
         busy_fork_sources: set[str] = set()
-        for sid, (s_status, s_last_active, s_kind, s_forked_from, _s_session_dir) in all_sessions_meta.items():
+        for sid, (s_status, s_last_active, s_kind, s_forked_from, _s_proj, _s_wd, _s_dir) in all_sessions_meta.items():
             if s_kind != "fork" or not s_forked_from or s_status == "cleared":
                 continue
             seen_ancestors: set[str] = {sid}
@@ -1258,6 +1260,36 @@ class StorageManager:
             ta_other_bytes = 0
             ta_other_whole = True
             seen_session_paths: set[str] = set()
+            resolved_session_dirs: dict[str, Path | None] = {}
+            session_dir_resolver = getattr(self._space_keeper, "_session_dir_of", None) or getattr(
+                self._task_agents, "_session_dir_of", None
+            )
+
+            def _resolve_session_dir(
+                sid: str,
+                meta: tuple[str, float, str, str | None, str | None, str | None, str | None] | None,
+            ) -> Path | None:
+                if meta is None:
+                    return None
+                if sid in resolved_session_dirs:
+                    return resolved_session_dirs[sid]
+                _st, _la, _kind, _ff, s_proj, s_wd, s_dir = meta
+                result: Path | None
+                if callable(session_dir_resolver):
+                    try:
+                        stub = SimpleNamespace(id=sid, project=s_proj, workdir=s_wd, session_dir=s_dir)
+                        result = Path(session_dir_resolver(stub))
+                    except (OSError, ValueError):
+                        result = None
+                elif s_dir:
+                    result = Path(s_dir)
+                else:
+                    try:
+                        result = self._paths.session_dir(sid, s_proj)
+                    except ValueError:
+                        result = None
+                resolved_session_dirs[sid] = result
+                return result
 
             def _measure_unclassified(directory: Path, skip: frozenset[str]) -> None:
                 nonlocal ta_other_bytes, ta_other_whole
@@ -1531,10 +1563,8 @@ class StorageManager:
                         _measure_unclassified(sess_path, frozenset(sess_skip))
 
                         seen_session_paths.add(os.path.normcase(os.path.normpath(str(sess_path))))
-                        sess_recorded_dir = sess_meta[4] if sess_meta is not None else None
-                        is_session_dir_match = in_ledger and (
-                            not sess_recorded_dir or _same_path(sess_recorded_dir, sess_path)
-                        )
+                        resolved_dir = _resolve_session_dir(sess_id, sess_meta) if in_ledger else None
+                        is_session_dir_match = in_ledger and resolved_dir is not None and _same_path(resolved_dir, sess_path)
                         combined = sess_record_bytes + sess_outputs_bytes
                         if has_record or has_outputs:
                             transcript_sessions += 1
@@ -1565,11 +1595,14 @@ class StorageManager:
                             elif is_cleanable_outputs:
                                 transcript_reclaimable += sess_outputs_bytes
 
-            # 2b. Account for migrated sessions whose ledger session_dir points to an older data root.
-            for sid, (s_status, s_last_active, _s_kind, _s_forked, s_session_dir) in all_sessions_meta.items():
-                if not s_session_dir:
+            # 2b. Account for migrated sessions whose resolved session directory lies outside the current root.
+            for sid, s_meta in all_sessions_meta.items():
+                s_status, s_last_active, _s_kind, _s_forked, _s_proj, s_wd, s_session_dir = s_meta
+                if not s_session_dir and not s_wd:
                     continue
-                ext_dir = Path(s_session_dir)
+                ext_dir = _resolve_session_dir(sid, s_meta)
+                if ext_dir is None:
+                    continue
                 norm_ext = os.path.normcase(os.path.normpath(str(ext_dir)))
                 if norm_ext in seen_session_paths:
                     continue
