@@ -355,6 +355,11 @@ class _Session:
     # The message that opens the commission was sent to the session, and no
     # event has yet shown that the session took it.
     opening_sent: bool = False
+    # The preset this start opened the session as, where the first message
+    # tells the task agent that its preset was changed and no event has yet
+    # shown that the session took it: on record as what it was started
+    # under once one does (``_note_started_as``). None otherwise.
+    started_as: str | None = None
     # Output permissions of commands still represented in this session’s job registry.
     job_sources: dict[str, tuple[Callable[[], bool], Callable[[], Awaitable[bool]]]] = field(default_factory=dict)
     # Text increments and tool output waiting to be written as one event row.
@@ -2392,9 +2397,10 @@ class TaskAgentManager(TreeWork):
         new one that changes files would be (``seat_of_new_member``):
         beside one that works in the project's directory it works in a
         git worktree of its own. One that no longer changes files is
-        taken off those the project's other members wait for; while a
-        worktree of it holds work that is not landed, it is not made
-        one that cannot land it.
+        taken off those the project's other members wait for. While a
+        worktree of it holds work that is not landed, it is given no
+        preset that cannot change files: what clashes when that work is
+        landed goes back to it to be merged.
 
         Returns ``{"session_id", "preset", "was", "seat", "changed",
         "widened", "at_work"}``; ``at_work`` says a run of it is under
@@ -2436,7 +2442,9 @@ class TaskAgentManager(TreeWork):
             before = False
         widens = bool(after.changes_files) and not before
         narrows = before and not after.changes_files
-        if narrows and await self._ledger.trees(session_id=kept.id, states=sorted(TREE_STATES_PENDING)):
+        # Whatever it can do as it stands: one whose preset cannot be read just now (its
+        # template was removed, or is wrong) may have a worktree all the same, from before.
+        if not after.changes_files and await self._ledger.trees(session_id=kept.id, states=sorted(TREE_STATES_PENDING)):
             raise ValueError("tree_not_landed")
         if widens and by != "user":
             if not commission_id:
@@ -3616,8 +3624,18 @@ class TaskAgentManager(TreeWork):
                 spec = spec.model_copy(update={"instructions": f"{spec.instructions}\n\n{brief}"})
             await runtime.start(spec)
             session.opened_in_runtime = True
+            if not told_as and last_as != now_as:
+                # Nothing to tell it: what it is opened as is on record from here on, whatever
+                # becomes of this start, for the next start to tell a change by; also one made
+                # while this start was under way, which read the preset before it. (With
+                # something to tell, once the session took the message that says it: a start
+                # that is stopped or refused before that tells it with the next one.)
+                session.started_as = now_as
+                await self._note_started_as(session)
             return True
 
+        # Read where the session's template is, below; "" until then.
+        now_as = last_as = told_as = ""
         # The sentence this start was given is the user's from the outset:
         # a failure while it is set up keeps it too.
         session.carried = [prompt] if prompt is not None else []
@@ -3671,11 +3689,13 @@ class TaskAgentManager(TreeWork):
             # What the session may do and is told of its role. One whose
             # preset cannot be used fails here, with the reason.
             template = await self._template_of(kept)
-            # Its preset was changed since its task agent was last given work: the head of
-            # its requests is put together anew for this start, and it is told of the change
-            # with the first message (``duty_note`` below), once.
-            told_as = kept.preset_told if kept.preset_told and kept.preset_told != kept.preset else ""
-            now_as = kept.preset
+            # Its preset is another than the one its task agent was last started under: the
+            # head of its requests is put together anew for this start, and it is told of the
+            # change with the first message (``duty_note`` below), once. What this start opens
+            # it as is the preset read here, whatever it is changed to while the start is
+            # under way: that is put on record once it is opened (``preset_was_told`` below).
+            now_as, last_as = kept.preset, kept.preset_told
+            told_as = last_as if last_as and last_as != now_as else ""
             if (
                 kept.kind == "fork"
                 and kept.forked_from
@@ -4097,17 +4117,18 @@ class TaskAgentManager(TreeWork):
                         continue
                     said_first = opens and not opened and commission.source not in ("session", "ask")
                     nobody = not said_first and all(isinstance(piece, (_Handed, _Unsaid, _Found)) for piece in session.carried)
-                    await self._send_text(runtime, session, "prompt", render(text), opening=opens, wakes=riding, human=not nobody)
+                    if told_as:
+                        # On record as started under this preset once the session took the
+                        # message, which tells it of the change (``_note_opened``).
+                        session.started_as = now_as
+                    try:
+                        await self._send_text(
+                            runtime, session, "prompt", render(text), opening=opens, wakes=riding, human=not nobody
+                        )
+                    except BaseException:
+                        session.started_as = None
+                        raise
                 break
-            if told_as:
-                # Told, and its requests begin as its preset has them: not again with its next
-                # start. (Not written, it is told once more then, which costs a sentence.)
-                try:
-                    await self._ledger.preset_was_told(session.session_id, now_as)
-                except asyncio.CancelledError:
-                    raise
-                except Exception:  # noqa: BLE001 - told again with the next start
-                    logger.warning("noting that a session was told of its preset failed", exc_info=True)
             session.ready = True
             # What was passed on while the session was being set up. Like the
             # prompt, it is the user's until the run is seen at work.
@@ -5092,6 +5113,7 @@ class TaskAgentManager(TreeWork):
         that is taken up again is then not told a second time what it is;
         one whose start failed before that is.
         """
+        await self._note_started_as(session)
         if not session.opening_sent:
             return
         session.opening_sent = False
@@ -5122,6 +5144,29 @@ class TaskAgentManager(TreeWork):
             except Exception:  # noqa: BLE001 - told again with the next commission, which does little harm
                 logger.warning("noting that a leader was told what came of a commission it handed over failed", exc_info=True)
         self._handed_said.pop(session.commission_id, None)
+
+    async def _note_started_as(self, session: _Session) -> None:
+        """Put on record which preset a session's task agent was started under, where a start has that to say.
+
+        The preset the start opened it as (``Session.preset_told``):
+        what the next start tells a change by. Where the first message
+        of the start tells the task agent of a change, this is called
+        once the session is seen to have taken that message
+        (``_note_opened``), so that a message that never reached it is
+        said again. Not written, it is noted with the next event of the
+        session; never, the task agent is told of the change once more.
+        """
+        preset = session.started_as
+        if preset is None:
+            return
+        session.started_as = None
+        try:
+            await self._ledger.preset_was_told(session.session_id, preset)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - noted with the next event, or told once more with the next start
+            session.started_as = preset
+            logger.warning("noting the preset a session was started under failed", exc_info=True)
 
     def _summary(self, text: str) -> str:
         from config.nekopower_settings import TASK_AGENT_RESULT_SUMMARY_MAX_TOKENS

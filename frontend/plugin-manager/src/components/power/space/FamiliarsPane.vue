@@ -234,6 +234,8 @@ const PAST_VIEWS = ['talk', 'usage'] as const
 const pastView = ref<(typeof PAST_VIEWS)[number]>('talk')
 const editing = ref(false)
 const stopping = ref(false)
+// Counted up whenever the editor is opened: what a save that was under way meanwhile finds out it is no longer the editor's by.
+let editorTurn = 0
 const draft = reactive({ title: '', duty: '', summary: '', preset: '' })
 // The card as it was when the editor was opened, and whose it is.
 const opened = reactive({ id: '', title: '', duty: '', summary: '', preset: '', kind: '', runtime: '' })
@@ -251,9 +253,10 @@ const kinds = computed(() => {
   return offered
 })
 const kindOf = (name: string) => templates.value.find(item => item.name === name)
-// From a kind that changes no files to one that does: said before it is saved.
+// To a kind that changes files, from one that is not known to: said before it is saved. (One whose
+// template is gone or wrong is opened with nothing, and the host takes it for one that changes none.)
 const kindWidens = computed(() =>
-  draft.preset !== opened.preset && kindOf(draft.preset)?.changes_files === true && kindOf(opened.preset)?.changes_files === false)
+  draft.preset !== opened.preset && kindOf(draft.preset)?.changes_files === true && kindOf(opened.preset)?.changes_files !== true)
 // Begun in the other runtime, and to be a kind that runs in the built-in one only: it starts anew there.
 const kindMoves = computed(() =>
   draft.preset !== opened.preset && !!opened.runtime && opened.runtime !== 'builtin' && kindOf(draft.preset)?.needs_builtin === true)
@@ -399,6 +402,7 @@ function edit() {
     runtime: card.runtime ?? '',
   })
   Object.assign(draft, { title: opened.title, duty: opened.duty, summary: opened.summary, preset: opened.preset })
+  editorTurn += 1
   cardError.value = ''
   editing.value = true
   if (kindChanges.value) void readKinds(card.id)
@@ -413,27 +417,36 @@ async function saveCard() {
   if (draft.duty !== opened.duty) lines.duty = draft.duty
   if (draft.summary !== opened.summary) lines.summary = draft.summary
   const id = opened.id
+  // All of what is saved, as it stands now: while a write is under way the editor may be closed and
+  // opened for another familiar, whose choices are not this one's to be sent.
+  const kind = kindChanges.value && draft.preset && draft.preset !== opened.preset ? draft.preset : ''
+  const turn = editorTurn
+  // Whether the editor is still the one this save began in: only then is anything said or closed there.
+  const mine = () => editorTurn === turn && editing.value
   // Not taken: the editor stays open with what was typed, and why is said.
   cardError.value = ''
   if (Object.keys(lines).length && !(await act('card', () => writeCard(id, lines)))) {
-    cardError.value = error.value
+    if (mine()) cardError.value = error.value
     return
   }
-  if (kindChanges.value && draft.preset && draft.preset !== opened.preset) {
+  if (kind) {
     // After its card: a kind that is not taken leaves the lines that were, written.
     let atWork = false
     const change = async () => {
-      atWork = (await changeDuty(id, draft.preset)).at_work
+      atWork = (await changeDuty(id, kind)).at_work
     }
     if (!(await act('card', change))) {
-      cardError.value = error.value
-      // What was written of its card is the card's by now: not sent again with the next try.
-      Object.assign(opened, { title: draft.title, duty: draft.duty, summary: draft.summary })
+      if (mine()) {
+        cardError.value = error.value
+        // What was written of its card is the card's by now: not sent again with the next try. Only
+        // the lines that were sent: one typed while this waited is still to be written.
+        Object.assign(opened, lines)
+      }
       return
     }
     note.value = t(atWork ? 'power.space.familiars.presetChangedAtWork' : 'power.space.familiars.presetChanged')
   }
-  editing.value = false
+  if (mine()) editing.value = false
 }
 
 function treeChanged(tree: string, said: string) {

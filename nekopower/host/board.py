@@ -272,8 +272,8 @@ def card_of(
         "runtime": session.runtime,
         "workdir": session.workdir,
         "preset": session.preset,
-        # The preset its task agent still works under, where its preset was changed and it
-        # was not started since (``Ledger.change_preset``): the change holds from its next start.
+        # The preset its task agent was last started under, where that is another than the one
+        # it has (``Session.preset_told``): the change holds from its next start.
         "preset_was": session.preset_told if session.preset_told and session.preset_told != session.preset else None,
         # A copy is drawn as a copy; a preset whose template cannot be used, plainly.
         "avatar": SHADOW if session.preset == SHADOW else (found.avatar if found is not None else "general"),

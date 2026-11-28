@@ -78,7 +78,7 @@ const messages: PowerMessages = {
     bad_query: 'Digite as palavras que quer procurar.',
     project_busy_tree_not_landed: 'Este projeto tem alterações em cópias que ainda não foram integradas. Resolva-as primeiro (integrar, descartar ou «eu mesmo cuido») e tente de novo.',
     too_many_members: 'Este projeto já tem tantos familiares pegando trabalho quanto pode, então não dá para invocar mais. Passe o trabalho aos que ele tem.',
-    tree_not_landed: 'Ele ainda tem alterações numa cópia que não foram mescladas. Resolva isso primeiro (mesclar, descartar ou cuidar você mesmo) e depois dê a ele uma função que não altere arquivos.',
+    tree_not_landed: 'Ele ainda tem alterações numa cópia que não foram integradas ao projeto. Resolva-as primeiro (integrar, descartar ou «eu mesmo cuido») e depois dê a ele uma função que não altere arquivos.',
     not_changeable: 'Não dá para mudar a função deste familiar.',
     ended: 'Este familiar não pega mais trabalho, então a função dele não pode ser mudada.',
     changed_meanwhile: 'A função dele acabou de ser mudada. Dê uma olhada e tente de novo.',

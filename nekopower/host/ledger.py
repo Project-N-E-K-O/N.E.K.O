@@ -651,12 +651,14 @@ class Session:
     # that was a session of its own before it became a project's, whose
     # directory stays where it is when the project is given another.
     seat: str = ""
-    # The preset its conversation was last under, where that is not (yet)
-    # the one it has: its preset was changed since its task agent was last
-    # given work, and the next start puts the head of its requests together
-    # anew and tells it so (``TaskAgentManager._start``). "" for a session
-    # whose preset was never changed, one that was never opened, and one
-    # that was told.
+    # The preset its task agent was last started under: what the head of
+    # its requests (its system prompt and its tools) was put together for.
+    # Written by every start, with what that start opened it as
+    # (``Ledger.preset_was_told``), and by nothing else: where it is not the
+    # preset the session has, the preset was changed since, and the next
+    # start puts the head together anew and tells the task agent so
+    # (``TaskAgentManager._start``). "" for a session that was never
+    # started (and one last started by a build that did not keep it).
     preset_told: str = ""
 
     @property
@@ -2728,17 +2730,17 @@ class Ledger:
         allowed is of that preset). ``seat`` is written with it when
         given. ``by`` says who changes it (``PRESET_CHANGERS``).
 
-        What its conversation was last under is kept
-        (``Session.preset_told``): the preset it had, where it was ever
-        opened and nothing is kept yet; nothing again once it is back
-        at that one. A session that was never opened has nothing to be
-        told of.
+        What its task agent was last started under
+        (``Session.preset_told``) is not written here: a start that is
+        under way, which read the preset before this, writes what it
+        opened the session as, and the start after it sees that this is
+        another.
 
         The change is an event of a commission of the session, as every
-        event is one of a commission: the one under way in it, else the
-        last one filed in it. A session no commission was ever worked on
-        in has none, and nothing is recorded but the preset: the third
-        value is None then. Looked at and written in one transaction;
+        event is one of a commission: the one its task agent is at, else
+        one that waits for its turn there, else the last one filed in
+        it. A session no commission was ever worked on in has none, and
+        nothing is recorded but the preset: the third value is None then. Looked at and written in one transaction;
         (None, "", None) for a session that is not on record, and the
         session as it stands with nothing written when it has the
         preset already.
@@ -2763,14 +2765,14 @@ class Ledger:
             changes: dict[str, Any] = {"preset": preset}
             if seat is not None:
                 changes["seat"] = seat
-            if current.session_dir:
-                told = current.preset_told or current.preset
-                changes["preset_told"] = "" if told == preset else told
             assignments = ", ".join(f"{name} = ?" for name in changes)
             conn.execute(f"UPDATE sessions SET {assignments} WHERE id = ?", [*changes.values(), session_id])
+            # The one its task agent is at (at work, or waiting for the user) before one that
+            # waits for its turn, and either before one that is over; the last filed of those.
             on = conn.execute(
                 "SELECT id FROM commissions WHERE session_id = ? ORDER BY "
-                f"CASE WHEN status IN ({_ENDED_MARKS}) THEN 1 ELSE 0 END, created_at DESC, rowid DESC LIMIT 1",
+                "CASE WHEN status IN ('working', 'waiting_user') THEN 0 "
+                f"WHEN status IN ({_ENDED_MARKS}) THEN 2 ELSE 1 END, created_at DESC, rowid DESC LIMIT 1",
                 (session_id, *sorted(ENDED_STATUSES)),
             ).fetchone()
             if on is not None:
@@ -2783,18 +2785,16 @@ class Ledger:
         return await self.run(work)
 
     async def preset_was_told(self, session_id: str, preset: str) -> None:
-        """Note that a session's conversation is under ``preset`` now: its task agent was told of the change to it.
+        """Note the preset a session's task agent was started under just now (``Session.preset_told``).
 
-        Nothing is kept from then on where that is the preset it has.
-        One changed again since is told of that change with its next
-        start, and what is kept says what it was told last.
+        What the start opened it as, which need not be the preset it has
+        by now: one changed while that start was under way is another,
+        and the next start is told of the change by the two differing.
         """
 
         def work(conn: sqlite3.Connection) -> None:
             conn.execute(
-                "UPDATE sessions SET preset_told = CASE WHEN preset = ? THEN '' ELSE ? END "
-                "WHERE id = ? AND preset_told != ''",
-                (preset, preset, session_id),
+                "UPDATE sessions SET preset_told = ? WHERE id = ? AND preset_told != ?", (preset, session_id, preset)
             )
 
         await self.run(work)

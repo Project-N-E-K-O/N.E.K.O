@@ -78,7 +78,7 @@ const messages: PowerMessages = {
     bad_query: 'Escribe las palabras que quieres buscar.',
     project_busy_tree_not_landed: 'Este proyecto tiene cambios en copias que aún no se integraron. Resuélvelos primero (integrar, descartar o «me encargo yo») y vuelve a intentarlo.',
     too_many_members: 'Este proyecto ya tiene tantos familiares tomando trabajo como puede, así que no se pueden invocar más. Dale el trabajo a los que tiene.',
-    tree_not_landed: 'Todavía tiene cambios en una copia sin fusionar. Resuélvelos primero (fusionar, descartar o encargarte tú) y luego dale un rol que no cambie archivos.',
+    tree_not_landed: 'Todavía tiene cambios en una copia que aún no se integraron en el proyecto. Resuélvelos primero (integrar, descartar o «me encargo yo») y luego dale un rol que no cambie archivos.',
     not_changeable: 'No se puede cambiar el rol de este familiar.',
     ended: 'Este familiar ya no toma trabajo, así que no se puede cambiar su rol.',
     changed_meanwhile: 'Su rol acaba de cambiar. Échale un vistazo e inténtalo de nuevo.',

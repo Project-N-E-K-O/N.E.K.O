@@ -526,6 +526,95 @@ describe('a familiar up close', () => {
     expect(api.getTemplates).not.toHaveBeenCalled()
   })
 
+  it('warns of a kind that changes files also when the kind it has cannot be read', async () => {
+    const kind = (name: string, changes_files: boolean | null, valid = true) =>
+      ({ name, label: '', description: '', avatar: name, source: 'builtin', valid, error: valid ? '' : 'bad', changes_files, needs_builtin: false })
+    api.getTemplates.mockResolvedValue({ templates: [kind('general', true), kind('scout', false), kind('broken', null, false)] })
+    const offered = () => [...document.querySelectorAll('.el-select-dropdown__item')]
+    // Its template is wrong, or is not there at all: nothing says it changes files as it stands.
+    for (const preset of ['broken', 'gone']) {
+      await show([card({ kind: 'line', preset, leader: false })])
+      await click(byTest('card-edit'))
+      await click(offered().filter(item => item.textContent?.trim() === words.home.presets.general).at(-1))
+      expect(byTest('card-preset-widens')?.textContent, preset).toBe(words.space.familiars.presetWidens)
+      // To one that changes none there is nothing to warn of.
+      await click(offered().filter(item => item.textContent?.trim() === words.home.presets.scout).at(-1))
+      expect(byTest('card-preset-widens'), preset).toBeNull()
+      cleanup?.()
+    }
+  })
+
+  it('a save that is under way sends what it was started with, not what another editor holds by then', async () => {
+    const kind = (name: string, changes_files: boolean) =>
+      ({ name, label: '', description: '', avatar: name, source: 'builtin', valid: true, error: '', changes_files, needs_builtin: false })
+    api.getTemplates.mockResolvedValue({ templates: [kind('general', true), kind('scout', false), kind('planner', false)] })
+    let written!: (value: { written: string[] }) => void
+    api.writeCard.mockReturnValueOnce(new Promise(resolve => { written = resolve }))
+    api.changeDuty.mockResolvedValue({ session_id: 's1', preset: 'general', was: 'scout', seat: '', changed: true, widened: true, at_work: false })
+    const pick = (name: string) =>
+      click([...document.querySelectorAll('.el-select-dropdown__item')].filter(item => item.textContent?.trim() === name).at(-1))
+    const { state } = await show([
+      card({ kind: 'line', preset: 'scout', leader: false }),
+      card({ id: 's2', name: 'Other', title: 'Other one', kind: 'line', preset: 'scout', leader: false }),
+    ])
+    await click(byTest('card-edit'))
+    await type('card-title', 'Bookkeeper')
+    await pick(words.home.presets.general)
+    await click(byTest('card-save'))
+    expect(api.writeCard).toHaveBeenCalledWith('s1', { title: 'Bookkeeper' })
+    expect(api.changeDuty).not.toHaveBeenCalled()
+
+    // While its card is being written the user turns to another familiar, and chooses a kind for that one.
+    state.props = { ...state.props, selectedId: 's2' }
+    await flush()
+    await click(byTest('card-edit'))
+    await pick(words.home.presets.planner)
+    written({ written: ['title'] })
+    await flush()
+    await flush()
+
+    // The first familiar is made what was chosen for it; the other's editor is open still, as it was.
+    expect(api.changeDuty.mock.calls).toEqual([['s1', 'general']])
+    expect(field('card-title').value).toBe('Other one')
+    // (A dialog that is closed is on its way out here: nothing ends a transition in this environment.)
+    const shown = () => !/leave/.test((byTest('card-save')?.closest('.el-overlay') as HTMLElement | null)?.className ?? 'leave')
+    expect(shown()).toBe(true)
+    api.changeDuty.mockResolvedValue({ session_id: 's2', preset: 'planner', was: 'scout', seat: '', changed: true, widened: false, at_work: false })
+    await click(byTest('card-save'))
+    expect(api.changeDuty.mock.calls).toEqual([['s1', 'general'], ['s2', 'planner']])
+    expect(api.writeCard).toHaveBeenCalledTimes(1)
+    // Its own save closes it.
+    expect(shown()).toBe(false)
+  })
+
+  it('after a kind that was not taken, writes again only the lines that were not written yet', async () => {
+    const kind = (name: string, changes_files: boolean) =>
+      ({ name, label: '', description: '', avatar: name, source: 'builtin', valid: true, error: '', changes_files, needs_builtin: false })
+    api.getTemplates.mockResolvedValue({ templates: [kind('general', true), kind('scout', false)] })
+    api.writeCard.mockResolvedValue({ written: ['title'] })
+    let refuse!: (reason: unknown) => void
+    api.changeDuty.mockReturnValueOnce(new Promise((_resolve, reject) => { refuse = reject }))
+    await show([card({ kind: 'line', preset: 'scout', leader: false })])
+    await click(byTest('card-edit'))
+    await type('card-title', 'Bookkeeper')
+    await click([...document.querySelectorAll('.el-select-dropdown__item')]
+      .filter(item => item.textContent?.trim() === words.home.presets.general).at(-1))
+    await click(byTest('card-save'))
+    expect(api.writeCard.mock.calls).toEqual([['s1', { title: 'Bookkeeper' }]])
+    // Typed while the kind was being changed: not written yet.
+    await type('card-duty', 'Keeps the books')
+    refuse(refusal('changed_meanwhile', {}, 409))
+    await flush()
+    await flush()
+    expect(byTest('card-error')?.textContent).toContain(words.errors.changed_meanwhile)
+
+    api.changeDuty.mockResolvedValue({ session_id: 's1', preset: 'general', was: 'scout', seat: '', changed: true, widened: true, at_work: false })
+    await click(byTest('card-save'))
+    // The title was written the first time; the line typed since goes now, and the kind once more.
+    expect(api.writeCard.mock.calls).toEqual([['s1', { title: 'Bookkeeper' }], ['s1', { duty: 'Keeps the books' }]])
+    expect(api.changeDuty).toHaveBeenCalledTimes(2)
+  })
+
   it('sends only the lines the user changed, though the card changed under the open editor', async () => {
     await show([card({ summary: '' })])
     api.writeCard.mockResolvedValue({ written: ['title'] })

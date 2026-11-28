@@ -147,45 +147,49 @@ def _no_question(host: Any, monkeypatch: pytest.MonkeyPatch) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_a_change_of_preset_is_written_with_what_the_conversation_was_under_and_an_event_of_a_commission(
-    hosts, tmp_path
-):
+async def test_a_change_of_preset_is_written_with_an_event_of_the_commission_its_task_agent_is_at(hosts, tmp_path):
     ledger = _host(hosts, tmp_path, ScriptedLLM([])).ledger
     session = await ledger.create_session(lanlan_name="Lan", name="photos", kind="single")
 
-    # Never opened, and no commission was worked on in it: the preset, and nothing else.
-    kept, was, on = await ledger.change_preset(session.id, "scout", by="user")
-    assert (kept.preset, was, on, kept.preset_told) == ("scout", "general", None, "")
+    async def changes(commission_id: str) -> list[dict[str, Any]]:
+        return [event.payload for event in await ledger.events(commission_id) if event.type == "duty_changed"]
 
-    async def filed(title: str, status: str | None = None) -> Any:
+    # No commission was worked on in it: the preset, and nothing else.
+    kept, was, on = await ledger.change_preset(session.id, "scout", by="user")
+    assert (kept.preset, was, on) == ("scout", "general", None)
+
+    async def filed(title: str, *statuses: str) -> Any:
         commission, _created = await ledger.create(
             lanlan_name="Lan", title=title, dispatch_text=title, source="dispatch", route="task_agent", session_id=session.id
         )
-        if status is not None:
-            for step in ("working", status):
-                moved = await ledger.transition(commission.id, step, reason="test", result_summary=title)
-                assert moved.applied, moved.refusal
+        for step in statuses:
+            moved = await ledger.transition(commission.id, step, reason="test", result_summary=title)
+            assert moved.applied, moved.refusal
         return commission
 
-    await filed("one", "done")
-    under_way = await filed("two")
-    await filed("three", "cancelled")
-    await ledger.update_session(session.id, session_dir="D:/sessions/photos")
+    await filed("one", "working", "done")
+    waits = await filed("two")
+    await filed("three", "working", "cancelled")
 
     kept, was, on = await ledger.change_preset(session.id, "worker", by="user", was="scout")
-    # With the commission under way in it, not the one filed last, which is over.
-    assert (kept.preset, was, on, kept.preset_told) == ("worker", "scout", under_way.id, "scout")
-    assert [event.payload for event in await ledger.events(under_way.id) if event.type == "duty_changed"] == [
-        {"session": session.id, "from": "scout", "to": "worker", "by": "user"}
-    ]
-    # Changed again before its task agent was started: what it was last under stays.
-    kept, _was, _on = await ledger.change_preset(session.id, "planner", by="session")
-    assert (kept.preset, kept.preset_told) == ("planner", "scout")
-    # Back at that one: nothing to be told of.
-    kept, _was, _on = await ledger.change_preset(session.id, "scout", by="host")
-    assert (kept.preset, kept.preset_told) == ("scout", "")
+    # With the one that waits for its turn there, not the one filed last, which is over.
+    assert (kept.preset, was, on) == ("worker", "scout", waits.id)
+    assert await changes(waits.id) == [{"session": session.id, "from": "scout", "to": "worker", "by": "user"}]
 
-    recorded = [event for event in await ledger.events(under_way.id) if event.type == "duty_changed"]
+    # With the one its task agent is at, though another was filed after it and waits.
+    at_work = await filed("four", "working")
+    later = await filed("five")
+    _kept, _was, on = await ledger.change_preset(session.id, "planner", by="session")
+    assert on == at_work.id and await changes(later.id) == []
+    moved = await ledger.transition(at_work.id, "waiting_user", reason="test")
+    assert moved.applied, moved.refusal
+    _kept, _was, on = await ledger.change_preset(session.id, "scout", by="host")
+    assert on == at_work.id
+    assert [item["to"] for item in await changes(at_work.id)] == ["planner", "scout"]
+
+    # What its task agent was last started under is no business of a change: a start writes that.
+    assert (await ledger.get_session(session.id)).preset_told == ""
+    recorded = await changes(at_work.id)
     # The preset it has already: nothing is written.
     kept, was, on = await ledger.change_preset(session.id, "scout", by="user")
     assert (kept.preset, was, on) == ("scout", "scout", None)
@@ -196,7 +200,7 @@ async def test_a_change_of_preset_is_written_with_what_the_conversation_was_unde
         await ledger.change_preset(session.id, "worker", by="somebody")
     with pytest.raises(ValueError, match="short word"):
         await ledger.change_preset(session.id, " worker", by="user")
-    assert [event for event in await ledger.events(under_way.id) if event.type == "duty_changed"] == recorded
+    assert await changes(at_work.id) == recorded
     assert (await ledger.get_session(session.id)).preset == "scout"
     assert await ledger.change_preset("no-such-session", "worker", by="user") == (None, "", None)
     # Neither is written with the other columns of a session.
@@ -216,23 +220,21 @@ async def test_only_a_member_and_a_session_of_one_commission_have_their_preset_c
     assert (await ledger.get_session(session.id)).preset == session.preset
 
 
-async def test_what_a_session_was_told_is_noted_and_a_change_since_is_still_to_be_told(hosts, tmp_path):
+async def test_what_a_session_was_started_under_is_what_a_start_says_and_a_change_leaves_it(hosts, tmp_path):
     ledger = _host(hosts, tmp_path, ScriptedLLM([])).ledger
-    session = await ledger.create_session(lanlan_name="Lan", name="photos", kind="line", session_dir="D:/sessions/photos")
+    session = await ledger.create_session(lanlan_name="Lan", name="photos", kind="line")
+    assert session.preset_told == ""
+
+    await ledger.preset_was_told(session.id, "general")
+    assert (await ledger.get_session(session.id)).preset_told == "general"
+    # Changed, and changed again: what it was last started under stands until a start says otherwise.
     await ledger.change_preset(session.id, "scout", by="user")
-
-    await ledger.preset_was_told(session.id, "scout")
-    assert (await ledger.get_session(session.id)).preset_told == ""
-
-    # Told of one, and changed to another while that start was under way.
     await ledger.change_preset(session.id, "planner", by="user")
-    await ledger.change_preset(session.id, "inspector", by="user")
-    await ledger.preset_was_told(session.id, "planner")
-    assert (await ledger.get_session(session.id)).preset_told == "planner"
-    # One nothing is kept for is left as it is.
-    other = await ledger.create_session(lanlan_name="Lan", name="other", kind="line")
-    await ledger.preset_was_told(other.id, "scout")
-    assert (await ledger.get_session(other.id)).preset_told == ""
+    assert (await ledger.get_session(session.id)).preset_told == "general"
+    # A start that opened it as one preset says that one, whatever it has by the time it says so.
+    await ledger.preset_was_told(session.id, "scout")
+    kept = await ledger.get_session(session.id)
+    assert (kept.preset, kept.preset_told) == ("planner", "scout")
 
 
 # ---------------------------------------------------------------------------
@@ -249,6 +251,8 @@ async def test_after_a_change_the_next_start_puts_the_head_of_its_requests_toget
     _no_question(host, monkeypatch)
     first = await _done(host, "fix the header of the shop site")
     assert first.session_id == host.member and (host.workdir / "a.txt").exists()
+    # What it was started under is on record from its first start.
+    assert (await host.ledger.get_session(host.member)).preset_told == "general"
 
     changed = await host.change_duty(host.member, "scout")
 
@@ -283,8 +287,8 @@ async def test_after_a_change_the_next_start_puts_the_head_of_its_requests_toget
     assert "header" in _said(after) and _said(after).count(CHANGED) == 1 and CHANGED not in _said(before)
     kept = await host.ledger.get_session(host.member)
     assert read_snapshot(Path(kept.session_dir)).reason == REASON_PRESET
-    # Told, and its requests begin as its preset has them: nothing is kept to tell.
-    assert kept.preset_told == ""
+    # Told, and its requests begin as its preset has them: nothing more to tell.
+    assert kept.preset_told == "scout"
     assert (await host.board())["projects"][0]["members"][0]["preset_was"] is None
 
     await _done(host, "look at the fonts of the shop site")
@@ -337,6 +341,103 @@ async def test_a_session_that_was_never_opened_is_told_of_nothing(hosts, tmp_pat
     # Opened as what it is, for the first time: nothing was said under another preset.
     assert [spec.renew_head for spec in specs] == [False]
     assert "Your role: scout." in _system(llm.requests[0]) and "preset was changed" not in _said(llm.requests[0])
+    assert (await host.ledger.get_session(host.member)).preset_told == "scout"
+
+
+def _changed_while_starting(host: Any, monkeypatch: pytest.MonkeyPatch, preset: str) -> None:
+    """Have the session's preset changed while its next start is under way: after it read the preset, before it is opened."""
+    manager = host.task_agents
+    spec_of = manager._spec
+    starts = 0
+
+    async def spec(*args: Any, **kwargs: Any) -> Any:
+        nonlocal starts
+        starts += 1
+        if starts == 1:
+            await host.ledger.change_preset(host.member, preset, by="user")
+        return await spec_of(*args, **kwargs)
+
+    monkeypatch.setattr(manager, "_spec", spec)
+
+
+async def test_a_change_made_while_its_first_start_is_under_way_is_told_with_the_next(hosts, tmp_path, monkeypatch):
+    llm = ScriptedLLM([_write("a.txt"), _report("header fixed"), _report("looked")])
+    specs: list[Any] = []
+    host = await _shop(hosts, tmp_path, llm, specs)
+    _changed_while_starting(host, monkeypatch, "scout")
+
+    await _done(host, "fix the header of the shop site")
+
+    # That start went on as it began: opened as the preset it read, with the tools of that one.
+    assert "write" not in specs[0].disabled_tools and (host.workdir / "a.txt").exists()
+    kept = await host.ledger.get_session(host.member)
+    assert (kept.preset, kept.preset_told) == ("scout", "general")
+
+    await _done(host, "look at the footer of the shop site")
+
+    assert [spec.renew_head for spec in specs] == [False, True] and "write" in specs[1].disabled_tools
+    assert "Your role: scout." in _system(llm.requests[2]) and _said(llm.requests[2]).count(CHANGED) == 1
+    assert (await host.ledger.get_session(host.member)).preset_told == "scout"
+
+
+async def test_changed_back_while_the_start_that_opens_it_anew_is_under_way_it_is_opened_anew_once_more(
+    hosts, tmp_path, monkeypatch
+):
+    llm = ScriptedLLM([_report("header fixed"), _report("looked"), _write("b.txt"), _report("footer fixed")])
+    specs: list[Any] = []
+    host = await _shop(hosts, tmp_path, llm, specs)
+    await _done(host, "fix the header of the shop site")
+    await host.change_duty(host.member, "scout")
+    # Back at the preset it was last started under, while the start that opens it as the other is under way.
+    _changed_while_starting(host, monkeypatch, "general")
+
+    await _done(host, "look at the footer of the shop site")
+
+    assert [spec.renew_head for spec in specs] == [False, True] and "write" in specs[1].disabled_tools
+    kept = await host.ledger.get_session(host.member)
+    # What that start opened it as is on record, and not the preset it has by now.
+    assert (kept.preset, kept.preset_told) == ("general", "scout")
+
+    await _done(host, "fix the footer of the shop site")
+
+    assert [spec.renew_head for spec in specs] == [False, True, True] and "write" not in specs[2].disabled_tools
+    assert "Your role:" not in _system(llm.requests[2]) and (host.workdir / "b.txt").exists()
+    back = presets.PRESET_CHANGED.format(was="scout", now="general")
+    assert _said(llm.requests[2]).count(back) == 1 and _said(llm.requests[2]).count(CHANGED) == 1
+    assert (await host.ledger.get_session(host.member)).preset_told == "general"
+
+
+async def test_it_is_on_record_as_told_of_a_change_only_once_its_session_took_the_message(hosts, tmp_path, monkeypatch):
+    llm = ScriptedLLM([_report("header fixed"), _report("looked")])
+    specs: list[Any] = []
+    host = await _shop(hosts, tmp_path, llm, specs)
+    await _done(host, "fix the header of the shop site")
+    await host.change_duty(host.member, "scout")
+    runtime = host.task_agents._runtimes.builtin()
+    sent: list[str] = []
+
+    async def never_arrives(_session_id: str, text: str, **_how: Any) -> None:
+        sent.append(text)
+
+    with pytest.MonkeyPatch.context() as patched:
+        # The first message of its next start is sent, and the session never takes it.
+        patched.setattr(runtime, "prompt", never_arrives)
+        receipt = await _dispatch(host, "look at the footer of the shop site")
+        await wait_until(lambda: bool(sent), what="the first message being sent")
+        await asyncio.sleep(0.2)
+        assert CHANGED in sent[0] and specs[-1].renew_head
+        # Not on record as started under the preset it was not told of.
+        assert (await host.ledger.get_session(host.member)).preset_told == "general"
+        await host.abort(receipt.commission_id, reason="test")
+        await let_go(host)
+    assert (await host.ledger.get_session(host.member)).preset_told == "general"
+
+    await _done(host, "look at the fonts of the shop site")
+
+    # Said again, with the head of its requests put together anew once more: now it is taken.
+    assert [spec.renew_head for spec in specs] == [False, True, True]
+    assert _said(llm.requests[1]).count(CHANGED) == 1
+    assert (await host.ledger.get_session(host.member)).preset_told == "scout"
 
 
 # ---------------------------------------------------------------------------
@@ -458,6 +559,22 @@ async def test_one_with_work_in_a_worktree_that_is_not_landed_is_not_made_one_th
     assert (await host.ledger.get_session(host.member)).preset == "general"
     # To another that changes files it is changed all the same.
     assert (await host.change_duty(host.member, "worker"))["changed"]
+
+    # Nor when the preset it has cannot be read just now (its template is gone, or wrong):
+    # what it cannot do as it stands says nothing of the worktree it has from before.
+    manager = host.task_agents
+    template_of = manager._template_of
+
+    async def unreadable(session: Any) -> Any:
+        if session.preset == "worker":
+            raise RuntimeError("the preset 'worker' cannot be used")
+        return await template_of(session)
+
+    with pytest.MonkeyPatch.context() as patched:
+        patched.setattr(manager, "_template_of", unreadable)
+        with pytest.raises(ValueError, match="tree_not_landed"):
+            await host.change_duty(host.member, "scout")
+    assert (await host.ledger.get_session(host.member)).preset == "worker"
 
     # One the user sees to personally is in nobody's way.
     await host.ledger.update_tree("left", state="kept")
