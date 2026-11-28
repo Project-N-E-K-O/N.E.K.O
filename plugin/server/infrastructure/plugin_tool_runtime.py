@@ -100,8 +100,6 @@ _PYTHON_RELEASE_PREFIXES = (
     "https://github.com/astral-sh/python-build-standalone/releases/download/",
 )
 _PYTHON_GITHUB_PREFIX = _PYTHON_RELEASE_PREFIXES[1]
-# The market's route id for github.com itself; every other route is a mirror.
-_GITHUB_DIRECT = "github-direct"
 _MAX_ARCHIVE_BYTES = 128 * 1024 * 1024
 _MAX_PYTHON_ARCHIVE_BYTES = 256 * 1024 * 1024
 _MAX_BINARY_BYTES = 256 * 1024 * 1024
@@ -623,6 +621,7 @@ def _fetch_accepted(
     which commonly answer with an error page rather than tampered bytes.
     """
     from plugin.server.infrastructure.package_fetch import NoRoutesLeft, RouteFailed
+    from plugin.server.infrastructure.package_sources import GITHUB_DIRECT_SOURCE_ID
 
     excluded: list[str] = []
     rejected: list[str] = []
@@ -636,7 +635,8 @@ def _fetch_accepted(
                 exclude=excluded, single_route=bool(rejected),
             )
         except RouteFailed as exc:
-            # Only raised once one at a time: the transfer has penalized it.
+            # Only raised one route at a time. The transfer has penalized the
+            # route, except for an oversized file: skipped here either way.
             excluded.append(exc.source_id)
             continue
         except _download_failures() as exc:
@@ -648,7 +648,8 @@ def _fetch_accepted(
             _check(cancel, deadline)
             last = exc if isinstance(exc, NoRoutesLeft) else f"{type(exc).__name__}: {exc}"
             code: ErrorCode = (
-                "download_failed" if all(_GITHUB_DIRECT not in sources for sources in rejected_sources)
+                # Only a file GitHub delivered whole counts as GitHub serving wrong bytes.
+                "download_failed" if all(sources != (GITHUB_DIRECT_SOURCE_ID,) for sources in rejected_sources)
                 else "checksum_mismatch"
             )
             raise ToolRuntimeError(
@@ -1263,16 +1264,45 @@ async def ensure_tool_runtime(
     prefer_system_uv: bool = False,
 ) -> ToolRuntime:
     """asyncio wrapper of :func:`prepare_tool_runtime`; cancelling the awaiting
-    task cancels the preparation. ``progress`` runs on the worker thread."""
+    task cancels the preparation. ``progress`` runs on the worker thread.
+
+    The preparation runs on a thread of its own, not in the loop's default
+    executor: calls waiting behind another one's preparation would otherwise
+    hold the executor's threads that the download, running on this loop,
+    needs for its file operations.
+    """
     if not _is_packaged():
         return _source_runtime()
     cancel = threading.Event()
     deadline = time.monotonic() + timeout
+    loop = asyncio.get_running_loop()
+    future: asyncio.Future[ToolRuntime] = loop.create_future()
+
+    def settle(result: ToolRuntime | None, error: BaseException | None) -> None:
+        if future.done():
+            return  # The caller was cancelled.
+        if error is not None:
+            future.set_exception(error)
+        else:
+            future.set_result(result)  # type: ignore[arg-type]
+
+    def work() -> None:
+        result: ToolRuntime | None = None
+        error: BaseException | None = None
+        try:
+            result = prepare_tool_runtime(
+                cancel=cancel, deadline=deadline, progress=progress, prefer_system_uv=prefer_system_uv,
+            )
+        except BaseException as exc:
+            error = exc
+        try:
+            loop.call_soon_threadsafe(settle, result, error)
+        except RuntimeError:
+            pass  # The loop is closed: nobody awaits the outcome any more.
+
+    threading.Thread(target=work, name="plugin-tool-runtime-call", daemon=True).start()
     try:
-        return await asyncio.to_thread(
-            prepare_tool_runtime, cancel=cancel, deadline=deadline, progress=progress,
-            prefer_system_uv=prefer_system_uv,
-        )
+        return await future
     except asyncio.CancelledError:
         cancel.set()
         raise

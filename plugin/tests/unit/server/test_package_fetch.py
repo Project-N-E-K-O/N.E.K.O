@@ -538,3 +538,10 @@ def test_a_stopped_loop_is_not_waited_for(tmp_path):
         assert time.monotonic() - began < 2
     finally:
         loop.close()
+
+
+def test_a_loop_closed_before_the_transfer_starts_is_unavailable(tmp_path):
+    loop = asyncio.new_event_loop()
+    loop.close()  # Closed between package_loop() and the submission.
+    with pytest.raises(fetch.PackageLoopUnavailable):
+        fetch._supervise(loop, lambda: asyncio.sleep(0), lambda: None, lambda: None, 10.0)

@@ -17,8 +17,10 @@ from utils.file_utils import atomic_write_json, read_json_tolerating_replace
 
 logger = get_logger("server.infrastructure.package_sources")
 
+# The route to github.com itself; every other route is a mirror.
+GITHUB_DIRECT_SOURCE_ID = "github-direct"
 GITHUB_DOWNLOAD_SOURCES = (
-    ("github-direct", "https://github.com/"),
+    (GITHUB_DIRECT_SOURCE_ID, "https://github.com/"),
     ("gh-proxy-com", "https://gh-proxy.com/"),
     ("gh-proxy-org", "https://gh-proxy.org/"),
     ("cdn-gh-proxy-org", "https://cdn.gh-proxy.org/"),
@@ -390,7 +392,7 @@ def download_candidates(url: str, preferences: DownloadPreferences) -> list[tupl
     """Routes for one package, best expected completion time first in auto mode."""
     if not is_github_release(url):
         return [(urlparse(url).hostname or "origin", url)]
-    direct = ("github-direct", url)
+    direct = (GITHUB_DIRECT_SOURCE_ID, url)
     if preferences.mode == "direct":
         return [direct]
     mirrors = [(key, prefix + url) for key, prefix in _MIRRORS]
@@ -411,6 +413,6 @@ def download_candidates(url: str, preferences: DownloadPreferences) -> list[tupl
 def warmup_urls(candidates: list[tuple[str, str]]) -> list[str]:
     """Every origin a download over these routes connects to before its first byte."""
     urls = [url for _, url in candidates]
-    if any(source_id == "github-direct" for source_id, _ in candidates):
+    if any(source_id == GITHUB_DIRECT_SOURCE_ID for source_id, _ in candidates):
         urls.append(_GITHUB_ASSET_ORIGIN)
     return urls

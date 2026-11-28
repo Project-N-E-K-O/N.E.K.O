@@ -184,7 +184,11 @@ def _supervise(
         if task is not None:
             task.cancel()
 
-    loop.call_soon_threadsafe(start)
+    try:
+        loop.call_soon_threadsafe(start)
+    except RuntimeError as exc:
+        # Closed since package_loop() returned it: the server is shutting down.
+        raise PackageLoopUnavailable("the server loop stopped before a package download started") from exc
     while not finished.wait(POLL_SECONDS):
         try:
             on_poll()

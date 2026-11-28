@@ -810,6 +810,32 @@ async def test_async_wrapper_returns_the_prepared_runtime(root, monkeypatch):
     assert result.python == uv.python
 
 
+async def test_concurrent_async_calls_do_not_starve_the_loops_default_executor(root, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+
+    release = FakeRelease().install(monkeypatch)
+    monkeypatch.setattr(module, "_run_command", FakeUv(root))
+    loop = asyncio.get_running_loop()
+    fake = module._fetch_release_asset
+
+    def fetch(url, directory, **kwargs):
+        # Like the real transfer: its file operations use the loop's default executor.
+        asyncio.run_coroutine_threadsafe(asyncio.to_thread(lambda: None), loop).result(timeout=5)
+        return fake(url, directory, **kwargs)
+
+    monkeypatch.setattr(module, "_fetch_release_asset", fetch)
+    executor = ThreadPoolExecutor(max_workers=2)
+    loop.set_default_executor(executor)
+    try:
+        results = await asyncio.wait_for(
+            asyncio.gather(*(module.ensure_tool_runtime(timeout=20) for _ in range(3))), timeout=15,
+        )
+    finally:
+        executor.shutdown(wait=False)
+    assert len({result.uv for result in results}) == 1
+    assert [url for url, _exclude in release.requests].count(release.uv_url) == 1
+
+
 # ---------------------------------------------------------------------------
 # Review follow-ups
 
@@ -1438,6 +1464,16 @@ def test_spliced_then_single_route_mismatches_rule_out_each_route_in_turn(root, 
     _expect_failure(FakeUv(root), "checksum_mismatch")
     assert release.penalized == ["github-direct", "route-1"]
     assert [exclude for _url, exclude in release.requests] == [(), (), ("github-direct",), ("github-direct", "route-1")]
+
+
+def test_spliced_file_with_github_bytes_rejected_only_with_mirrors_is_a_download_failure(root, monkeypatch):
+    release = FakeRelease(digest="0" * 64, routes=2).install(monkeypatch)
+    release.spliced = True
+    release.broken_routes = {"github-direct"}
+    # GitHub delivered part of the spliced file and nothing whole: the bad
+    # bytes may be a mirror's error page, so this is no proof of tampering.
+    _expect_failure(FakeUv(root), "download_failed")
+    assert release.penalized == ["route-1"]
 
 
 def test_route_failing_while_tried_alone_is_skipped(root, monkeypatch):

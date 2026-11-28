@@ -265,7 +265,11 @@ async def plugin_server_lifespan(app: FastAPI) -> AsyncIterator[None]:
             bind_package_loop,
         )
 
+        # Closed before unbinding: once unbound, a tool preparation still
+        # downloading moves to a private loop whose client replaces this one.
+        await aclose_package_http_client()
         bind_package_loop(None)
+        # A transfer that was still running here may have opened a new one.
         await aclose_package_http_client()
         from plugin.server.routes.console_proxy import close_console_proxy
 
