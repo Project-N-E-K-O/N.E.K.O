@@ -159,11 +159,8 @@ async def decide_emotion(text: str, *, chat_config, config_manager) -> Optional[
         return None
     answer = answers.get("emotion")
     probs = dict(getattr(answer, "probabilities", None) or {})
-    if not probs:
-        value = getattr(answer, "value", None)
-        if value not in LABELS:
-            return None
-        probs = {value: 1.0}
+    if not any(k in LABELS for k in probs):
+        return None  # no probabilities to read against neutral: ask the chat prompt
     return read_against_neutral(probs)
 
 
@@ -294,7 +291,10 @@ async def collect_pending_reaction(token: str) -> Optional[dict]:
     entry = _pending.pop(str(token or ""), None)
     if entry is None:
         return None
-    task, _made_at = entry
+    task, made_at = entry
+    if time.monotonic() - made_at > PENDING_REACTION_TTL_SECONDS:
+        task.cancel()
+        return None
     try:
         return await asyncio.wait_for(task, PENDING_REACTION_WAIT_SECONDS)
     except Exception as exc:

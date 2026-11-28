@@ -664,8 +664,9 @@ class MemoryRecallReranker:
                     probs[key] = float(value)
                 except (TypeError, ValueError):
                     continue
-            if not probs and getattr(answer, 'value', None) is not None:
-                probs = {answer.value: 1.0}
+            if not probs:
+                # No probabilities to rank by: let the chat rerank order them.
+                return None
             p_none = probs.get("none", 0.0)
             for key, p in probs.items():
                 if key != "none":

@@ -365,3 +365,31 @@ def test_pick_emoji_asks_for_one_emoji_in_16_tokens(em, monkeypatch):
     system = calls["messages"][0]["content"]
     assert "{pool}" not in system and "😊" in system and "only suggestions" in system
     assert calls["messages"][1] == {"role": "user", "content": "thank you so much"}
+
+
+def test_a_pending_reaction_past_its_time_is_not_collected(em, monkeypatch):
+    # Expiry is checked when it is collected too, not only when another is registered.
+    async def _run():
+        async def _ready():
+            return {"emoji": "😊", "author": "NEKO"}
+
+        token = em.ed.register_pending_reaction(_ready)
+        task = em.ed._pending[token][0]
+        later = em.ed._pending[token][1] + em.ed.PENDING_REACTION_TTL_SECONDS + 1
+        from tests.fake_clock import patch_module_clock
+
+        patch_module_clock(monkeypatch, em.ed, monotonic=lambda: later)
+        return await em.ed.collect_pending_reaction(token), task
+
+    got, task = asyncio.run(_run())
+    assert got is None and (task.cancelled() or task.done())
+
+
+def test_a_decision_without_probabilities_uses_the_chat_prompt(em, monkeypatch):
+    import utils.decision_client as dc
+
+    async def _ask(site, **kw):
+        return {"emotion": SimpleNamespace(value="happy", probabilities={})}
+
+    monkeypatch.setattr(dc, "ask_site_questions", _ask)
+    assert asyncio.run(em.ed.decide_emotion("hi", chat_config=OTHER, config_manager=None)) is None

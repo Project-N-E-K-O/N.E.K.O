@@ -1858,7 +1858,7 @@ async def test_memory_recall_on_doubao_uses_the_ark_decision_model():
 
 @pytest.mark.asyncio
 @pytest.mark.unit
-@pytest.mark.parametrize("outcome", ["error", "missing_group", "slow"])
+@pytest.mark.parametrize("outcome", ["error", "missing_group", "no_probabilities", "slow"])
 async def test_memory_recall_falls_back_to_the_chat_rerank(outcome):
     import asyncio
 
@@ -1870,6 +1870,10 @@ async def test_memory_recall_falls_back_to_the_chat_rerank(outcome):
     async def _decide(self, *, state, questions, **kwargs):
         if outcome == "error":
             raise DecisionProtocolError("HTTP 500", status_code=500, protocol="systemone")
+        if outcome == "no_probabilities":
+            return DecisionResponse(
+                answers={g: DecisionAnswer(question_type="choice", value="none") for g in questions},
+                model="decision-model", protocol="systemone")
         if outcome == "missing_group":
             # Only the first of the two groups answered: no half-native order.
             return DecisionResponse(

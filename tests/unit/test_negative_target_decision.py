@@ -100,3 +100,13 @@ def test_decision_question_fits_the_state_budget(monkeypatch):
     for key, obs in by_key.items():
         assert f"[{obs['id']}]" in state
         assert key in questions["target"].criteria
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_a_choice_without_probabilities_falls_back_to_the_chat_prompt(hook):
+    # A bare choice cannot pass the 0.7 threshold: no disputation from it.
+    hook.asked["answers"] = {"target": SimpleNamespace(value="o1", probabilities={})}
+    await se._amaybe_trigger_negative_keyword_hook("Lan", ["stop mentioning work"], "en")
+    hook.fact_store._allm_call_with_retries.assert_awaited_once()
+    assert hook.dispatched[0][0]["target_id"] == "p2"

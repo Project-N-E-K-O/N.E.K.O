@@ -162,3 +162,9 @@ def test_runtime_returns_the_decision_and_skips_the_chat_prompt(monkeypatch):
     # Stage 7 cannot open the window: the normalizer keeps the old rule.
     out7 = asyncio.run(gr_runtime._run_soccer_passive_guard_ai({"session_id": "s", "stage": 7}, "Lan"))
     assert out7["recommendedAction"] == pgd.OBSERVE
+
+
+@pytest.mark.unit
+def test_a_bare_choice_without_probabilities_gives_no_action():
+    bare = SimpleNamespace(value="giving_up", probability=None, probabilities={})
+    assert pgd.action_from_answer(bare, {"stage": 8}) is None

@@ -995,10 +995,8 @@ async def _adecide_negative_targets(
     answer = answers.get("target")
     probs = dict(getattr(answer, "probabilities", None) or {})
     if not probs:
-        value = getattr(answer, "value", None)
-        if value is None:
-            return None
-        probs = {value: 1.0}
+        # A choice without probabilities cannot pass a threshold: ask the chat prompt.
+        return None
     ranked = sorted(
         ((float(p), key) for key, p in probs.items()
          if key in by_key and p is not None and float(p) >= NEGATIVE_TARGET_DECISION_THRESHOLD),

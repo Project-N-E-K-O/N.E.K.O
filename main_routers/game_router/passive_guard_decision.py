@@ -180,8 +180,7 @@ def _probabilities(answer: Any) -> Dict[str, float]:
             probs[k] = float(v or 0.0)
         except (TypeError, ValueError):
             continue
-    if not probs and getattr(answer, "value", None) is not None:
-        probs = {answer.value: 1.0}
+    # Without probabilities there is no threshold to read: the chat prompt decides.
     return probs
 
 

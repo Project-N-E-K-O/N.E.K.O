@@ -630,3 +630,10 @@ def test_analyze_falls_back_to_the_chat_prompt_when_the_decision_misses(monkeypa
     t = MasterEmotionTracker("t")
     r = asyncio.run(t.analyze("我今天很难过", now=100.0))
     assert calls["n"] == 1 and r.valence == -0.5
+
+
+def test_reading_from_decision_needs_probabilities():
+    from main_logic.activity.master_emotion import reading_from_decision
+
+    bare = SimpleNamespace(value="furious", probabilities={}, confidence=None)
+    assert reading_from_decision({"emotion": bare}, now=1.0, source="x") is None

@@ -175,7 +175,7 @@ def _on_tenth_grid(x: float) -> float:
 
 
 def _choice_distribution(answer, keys) -> Optional[dict]:
-    """Probabilities of an answer over *keys*, normalised; one-hot on its value without them."""
+    """Probabilities of an answer over *keys*, normalised; ``None`` without them."""
     if answer is None:
         return None
     probs = {}
@@ -188,9 +188,7 @@ def _choice_distribution(answer, keys) -> Optional[dict]:
     total = sum(probs.values())
     if total > 0:
         return {k: probs.get(k, 0.0) / total for k in keys}
-    value = getattr(answer, "value", None)
-    if value in keys:
-        return {k: (1.0 if k == value else 0.0) for k in keys}
+    # A bare choice says nothing about how sure it is: the chat prompt decides.
     return None
 
 
