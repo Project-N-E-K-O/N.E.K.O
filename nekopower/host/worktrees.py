@@ -1547,14 +1547,20 @@ class WorktreeManager:
             entered_delete = True
 
             def _check_and_remove() -> tuple[bool, bool]:
-                if before_delete is not None and not before_delete(path):
-                    return False, False
-                existed = os.path.lexists(_fs(path))
-                _remove_worktree_dir(path)
-                return True, existed
+                existed = False
+
+                def _guard_and_note(target_path: Path) -> bool:
+                    nonlocal existed
+                    if before_delete is not None and not before_delete(target_path):
+                        return False
+                    existed = os.path.lexists(_fs(target_path))
+                    return True
+
+                proceeded_rm = _remove_worktree_dir(path, before_delete=_guard_and_note)
+                return proceeded_rm, existed
 
             # Waited for to the end: the lock is not let go while it runs, and
-            # before_delete + _remove_tree run back-to-back in one worker thread.
+            # before_delete + _remove_worktree_dir run back-to-back in one worker thread.
             proceeded, deleted_directory = await _to_the_end(asyncio.to_thread(_check_and_remove))
             if not proceeded:
                 return "aborted"
@@ -2102,27 +2108,40 @@ def _restore_surviving_dir_times(saved: list[tuple[str, tuple[int, int], frozens
             continue
 
 
-def _remove_worktree_dir(path: Path) -> None:
-    """Remove non-``.git`` entries before ``.git`` so partial removal keeps worktree identity for retries."""
+def _remove_worktree_dir(path: Path, *, before_delete: Any = None) -> bool:
+    """Remove non-``.git`` entries before ``.git`` so partial removal keeps worktree identity for retries.
+
+    Returns ``False`` when ``before_delete(path)`` rejected deletion (evaluated
+    after directory timestamp snapshotting and immediately before any removal),
+    or ``True`` when deletion proceeded.
+    """
     fs_path = _fs(path)
     try:
         st = os.lstat(fs_path)
     except FileNotFoundError:
-        return
+        if before_delete is not None and not before_delete(path):
+            return False
+        return True
     except OSError:
+        if before_delete is not None and not before_delete(path):
+            return False
         _remove_tree(path)
-        return
+        return True
     if not stat.S_ISDIR(st.st_mode) or not os.path.lexists(_fs(path / ".git")):
+        if before_delete is not None and not before_delete(path):
+            return False
         _remove_tree(path)
-        return
+        return True
     saved_times = _snapshot_dir_times(path)
+    if before_delete is not None and not before_delete(path):
+        return False
     try:
         try:
             with os.scandir(fs_path) as it:
                 entries = list(it)
         except OSError:
             _remove_tree(path)
-            return
+            return True
         for entry in entries:
             if entry.name == ".git":
                 continue
@@ -2146,9 +2165,9 @@ def _remove_worktree_dir(path: Path) -> None:
         try:
             with os.scandir(fs_path) as it:
                 if any(entry.name != ".git" for entry in it):
-                    return
+                    return True
         except OSError:
-            return
+            return True
         git_marker = path / ".git"
         git_fs = _fs(git_marker)
         git_bytes: bytes | None = None
@@ -2167,22 +2186,23 @@ def _remove_worktree_dir(path: Path) -> None:
                     os.chmod(git_fs, stat.S_IWRITE | stat.S_IREAD)
                     os.unlink(git_fs)
             if os.path.lexists(git_fs):
-                return
+                return True
             try:
                 os.rmdir(fs_path)
-                return
+                return True
             except OSError:
                 with contextlib.suppress(OSError):
                     os.chmod(fs_path, stat.S_IWRITE | stat.S_IREAD | stat.S_IEXEC)
                     os.rmdir(fs_path)
-                    return
+                    return True
                 # Root removal failed (e.g. read-only parent or open cwd): restore .git so
                 # _whose() can still prove worktree identity on the next retry.
                 with contextlib.suppress(OSError):
                     with open(git_fs, "wb") as handle:
                         handle.write(git_bytes)
-                return
+                return True
         _remove_tree(path)
+        return True
     finally:
         if os.path.lexists(fs_path):
             _restore_surviving_dir_times(saved_times)

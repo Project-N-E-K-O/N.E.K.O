@@ -637,14 +637,14 @@ class TreeWork:
                 return True
             if not _says_it_is(path, row.id, row.repo_root):
                 return False
+            from nekopower.host.worktrees import _fs, _restore_surviving_dir_times, _snapshot_dir_times
+
+            saved_times = _snapshot_dir_times(path)
             if before_delete is not None and not before_delete(path):
                 return "aborted"
             # The file that says whose the directory is goes last, with the directory: where
             # something of it is in use and stays, what is left still says so when this is
             # tried again (as the host next starts).
-            from nekopower.host.worktrees import _fs, _restore_surviving_dir_times, _snapshot_dir_times
-
-            saved_times = _snapshot_dir_times(path)
             try:
                 for entry in list(path.iterdir()):
                     if entry.name != ".git":

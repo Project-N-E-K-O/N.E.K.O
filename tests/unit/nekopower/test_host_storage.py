@@ -2609,6 +2609,34 @@ async def test_round9_worktree_active_session_protection_and_partial_retry_mtime
             wt_mod._remove_worktree_dir(wt_conc)
         assert (wt_conc / "moved_during_cleanup.bin").exists()
         assert wt_conc.stat().st_mtime > old_ts + DAY
+
+        # 5. If settings/freshness flip during _snapshot_dir_times, before_delete runs AFTER the snapshot,
+        #    aborts removal without touching files, and does NOT rewind the directory's fresh mtime.
+        wt_abort = tmp_path / "abort_after_snap_wt"
+        wt_abort.mkdir()
+        (wt_abort / ".git").write_text("gitdir: /fake/.git/worktrees/abort\n", encoding="utf-8")
+        (wt_abort / "keep.txt").write_text("do not delete", encoding="utf-8")
+        _set_tree_mtime(wt_abort, old_ts)
+        real_snapshot = wt_mod._snapshot_dir_times
+        order: list[str] = []
+
+        def spy_snapshot(p: Path) -> Any:
+            res = real_snapshot(p)
+            order.append("snapshot")
+            # Simulate policy change or fresh touch occurring while snapshot walked the tree.
+            _set_mtime(wt_abort, recent_ts)
+            return res
+
+        def abort_guard(_p: Path) -> bool:
+            order.append("before_delete")
+            return False
+
+        with monkeypatch.context() as mp:
+            mp.setattr(wt_mod, "_snapshot_dir_times", spy_snapshot)
+            assert wt_mod._remove_worktree_dir(wt_abort, before_delete=abort_guard) is False
+        assert order == ["snapshot", "before_delete"]
+        assert (wt_abort / "keep.txt").read_text(encoding="utf-8") == "do not delete"
+        assert wt_abort.stat().st_mtime > old_ts + DAY
     finally:
         await host.shutdown()
 
