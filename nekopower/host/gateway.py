@@ -202,11 +202,17 @@ class CapabilityEnabler(Protocol):
     ``capability`` is ``browser``, ``keyboard_mouse`` or ``plugins``. Both
     calls return whether it can be (or was) done and, if not, why.
     ``can_enable`` changes nothing: it is asked before the user is.
+    ``enable`` is given what the user's answer stands on (``still_valid``)
+    and must look at it again at the moment it writes a switch, after
+    whatever it waited on (a check of the computer): a switch is not
+    written for an answer that no longer stands.
     """
 
     async def can_enable(self, capability: str) -> tuple[bool, str]: ...
 
-    async def enable(self, capability: str, *, lanlan_name: str | None = None) -> tuple[bool, str]: ...
+    async def enable(
+        self, capability: str, *, lanlan_name: str | None = None, still_valid: Callable[[], bool] | None = None
+    ) -> tuple[bool, str]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -1574,13 +1580,25 @@ class CapabilityGateway:
                     done, why = True, ""
                 else:
                     try:
-                        done, why = await self._enabler.enable(target.canonical, lanlan_name=commission.lanlan_name)
+                        done, why = await self._enabler.enable(
+                            target.canonical, lanlan_name=commission.lanlan_name, still_valid=cleared.still_valid
+                        )
                     except asyncio.CancelledError:
                         raise
                     except Exception as exc:  # noqa: BLE001 - the task agent is told and decides how to go on
                         logger.exception("turning on %s failed", target.canonical)
                         done, why = False, type(exc).__name__
                 if not done:
+                    if cleared.still_valid is not None and not cleared.still_valid():
+                        # The switch was not written because the answer stopped standing while it waited
+                        # on the checks of this computer (``CapabilityEnabler.enable``): not a failure of the computer.
+                        await self._ledger.append_event(
+                            commission.id,
+                            "capability_denied",
+                            {"capability": f"host:enable:{target.canonical}", "reason": DENIED_BY_SETTINGS},
+                        )
+                        record.status, record.reason = "denied", "settings"
+                        return _text(DENIED_BY_SETTINGS, error=True)
                     record.status = "failed"
                     if target.builtin_group is None and self._registry.plugins_enabled():
                         # The switch stays on for the plugin server to recover: not "could not be turned on".

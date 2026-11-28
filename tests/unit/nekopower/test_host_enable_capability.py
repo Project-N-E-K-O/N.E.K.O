@@ -60,6 +60,8 @@ class Enabler:
         self.enable_calls: list[tuple[str, str | None]] = []
         # Run while ``enable`` is at work (the user's answer is in, the switch is not yet on): a hook.
         self.during_enable: Any = None
+        # Run first thing in ``enable``, as a check of this computer would be: the switch is not yet written.
+        self.before_commit: Any = None
         # What the process says may not be asked for here (a screen the user must share first).
         self.blocked: set[str] = set()
 
@@ -70,8 +72,15 @@ class Enabler:
         self.can_calls.append(capability)
         return self.can.get(capability, (True, ""))
 
-    async def enable(self, capability: str, *, lanlan_name: str | None = None) -> tuple[bool, str]:
+    async def enable(
+        self, capability: str, *, lanlan_name: str | None = None, still_valid: Any = None
+    ) -> tuple[bool, str]:
         self.enable_calls.append((capability, lanlan_name))
+        if self.before_commit is not None:
+            await self.before_commit()
+        if callable(still_valid) and not still_valid():
+            # What the real enabler does at the moment it writes a switch.
+            return False, "switched off"
         if self.during_enable is not None:
             await self.during_enable()
         done, why = self.result.get(capability, (True, ""))
@@ -806,3 +815,61 @@ async def test_text_added_while_the_registry_is_read_after_the_answer_turns_noth
 
     assert answer["isError"] is True and _text(answer) == DENIED_BY_SETTINGS
     assert world.enabler.enable_calls == [] and not world.permissions.run_grants(grant.commission_id)
+
+
+async def test_text_added_while_the_computer_is_checked_turns_nothing_on(world):
+    # The enabler checks this computer before it writes the switch; what the answer stood on is
+    # looked at again there (#4182 review), not only before the enabler is called.
+    world.permissions.set_asker(asker := Asker("once"))
+    await world.permission_store.set_mode("browser", "first_ask")
+    grant = await _grant_for(world)
+
+    async def text_arrives() -> None:
+        world.permissions.received_external_input(grant.commission_id)
+
+    world.enabler.before_commit = text_arrives
+
+    answer = await _call(world, grant, CALL_TOOL, _enable("browser"))
+
+    assert answer["isError"] is True and _text(answer) == DENIED_BY_SETTINGS
+    assert world.provider.switched_off == set(BUILTIN_NAMES) and len(asker.asked) == 1
+    assert not world.permissions.run_grants(grant.commission_id)
+    events = await world.ledger.events(grant.commission_id)
+    assert "capability_enabled" not in [event.type for event in events]
+    assert len(_denied_events(events, "host:enable:browser")) == 1
+
+
+async def test_a_setting_tightened_and_put_back_while_the_computer_is_checked_turns_nothing_on(world):
+    world.permissions.set_asker(Asker("once"))
+    await world.permission_store.set_mode("browser", "first_ask")
+    grant = await _grant_for(world)
+
+    async def tightened_then_restored() -> None:
+        await world.permission_store.set_mode("browser", "deny")
+        await world.permission_store.set_mode("browser", "first_ask")
+
+    world.enabler.before_commit = tightened_then_restored
+
+    answer = await _call(world, grant, CALL_TOOL, _enable("browser"))
+
+    assert answer["isError"] is True and _text(answer) == DENIED_BY_SETTINGS
+    assert world.provider.switched_off == set(BUILTIN_NAMES)
+    assert not world.permissions.run_grants(grant.commission_id)
+    events = await world.ledger.events(grant.commission_id)
+    assert "capability_enabled" not in [event.type for event in events]
+
+
+async def test_nothing_changing_while_the_computer_is_checked_turns_it_on_as_before(world):
+    world.permissions.set_asker(Asker("once"))
+    grant = await _grant_for(world)
+    seen: list[bool] = []
+
+    async def nothing_happens() -> None:
+        seen.append(True)
+
+    world.enabler.before_commit = nothing_happens
+
+    answer = await _call(world, grant, CALL_TOOL, _enable("browser"))
+
+    assert answer["isError"] is False and seen == [True]
+    assert world.provider.switched_off.isdisjoint(BROWSER_TOOLS)

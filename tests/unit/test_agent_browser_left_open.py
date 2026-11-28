@@ -1367,3 +1367,92 @@ def test_a_capability_switch_is_put_off_in_one_place_which_looks_whether_nekopow
     # drops what was kept in the same breath.
     assert capability == ["_shared.py:_put_switch_off"]
     assert sorted(master) == [("api_routes.py:admin_control", [True]), ("api_routes.py:agent_command", [True])]
+
+
+# ---------------------------------------------------------------------------
+# A switch is not written for an approval that stopped standing while the checks were awaited (#4182 review)
+# ---------------------------------------------------------------------------
+
+
+def _approval(stage: Any) -> Any:
+    """A predicate a test can turn false: the answer a task agent's request stands on."""
+    standing = [True]
+
+    def still_valid() -> bool:
+        return standing[0]
+
+    still_valid.standing = standing  # type: ignore[attr-defined]
+    return still_valid
+
+
+@pytest.mark.parametrize("then_invalid", [False, True])
+async def test_the_browser_switch_is_written_only_while_the_approval_stands(
+    stage: Any, monkeypatch: pytest.MonkeyPatch, then_invalid: bool
+) -> None:
+    stage.state.agent_flags["browser_use_enabled"] = False
+    approval = _approval(stage)
+
+    def availability() -> tuple[bool, str]:
+        # Runs on the thread the route waits on: the user's answer stops standing meanwhile.
+        approval.standing[0] = not then_invalid
+        return True, ""
+
+    monkeypatch.setattr(api_routes, "_browser_availability", availability)
+
+    await api_routes.set_agent_flags(
+        {"browser_use_enabled": True, "_persist_intent": False, "_still_valid": approval}
+    )
+    await stage.settled()
+
+    assert stage.state.agent_flags["browser_use_enabled"] is (not then_invalid)
+    assert stage.state.notification is None
+
+
+@pytest.mark.parametrize("then_invalid", [False, True])
+async def test_the_keyboard_and_mouse_switch_is_written_only_while_the_approval_stands(
+    stage: Any, monkeypatch: pytest.MonkeyPatch, then_invalid: bool
+) -> None:
+    approval = _approval(stage)
+
+    def availability() -> dict[str, Any]:
+        approval.standing[0] = not then_invalid
+        return {"enabled": True, "ready": True, "reasons": []}
+
+    monkeypatch.setattr(api_routes, "_keyboard_mouse_availability", availability)
+
+    await api_routes.set_agent_flags(
+        {"computer_use_enabled": True, "_persist_intent": False, "_still_valid": approval}
+    )
+    await stage.settled()
+
+    assert stage.state.agent_flags["computer_use_enabled"] is (not then_invalid)
+    assert stage.state.notification is None
+
+
+async def test_a_request_whose_approval_has_stopped_standing_touches_nothing(stage: Any) -> None:
+    state = stage.state
+    state.agent_flags.update({"browser_use_enabled": False, "computer_use_enabled": False, "user_plugin_enabled": False})
+    before = (
+        state.browser_use_lifecycle_seq,
+        state.computer_use_switch_seq,
+        state.user_plugin_lifecycle_seq,
+    )
+
+    await api_routes.set_agent_flags(
+        {
+            "browser_use_enabled": True,
+            "computer_use_enabled": True,
+            "user_plugin_enabled": True,
+            "_persist_intent": False,
+            "_still_valid": lambda: False,
+        }
+    )
+    await stage.settled()
+
+    # Neither a switch nor the counters later toggles are compared with: a stale request overtakes nobody.
+    assert (state.browser_use_lifecycle_seq, state.computer_use_switch_seq, state.user_plugin_lifecycle_seq) == before
+    assert [state.agent_flags[key] for key in ("browser_use_enabled", "computer_use_enabled", "user_plugin_enabled")] == [
+        False,
+        False,
+        False,
+    ]

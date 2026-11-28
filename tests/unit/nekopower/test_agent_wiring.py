@@ -346,6 +346,46 @@ async def test_the_enabler_turns_the_switch_on_for_this_run_only(wiring, monkeyp
     assert await world.enabler.enable(capability, lanlan_name="Lan") == (False, "gone")
 
 
+async def test_the_enabler_hands_what_the_answer_stands_on_to_the_route_that_writes_the_switch(wiring, monkeypatch):
+    world = _EnablerWorld(wiring, monkeypatch)
+
+    def stands() -> bool:
+        return True
+
+    assert await world.enabler.enable("browser", lanlan_name="Lan", still_valid=stands) == (True, "")
+    assert await world.enabler.enable("keyboard_mouse", lanlan_name="Lan", still_valid=stands) == (True, "")
+
+    assert world.requests == [
+        {"browser_use_enabled": True, "lanlan_name": "Lan", "_persist_intent": False, "_still_valid": stands},
+        {"computer_use_enabled": True, "lanlan_name": "Lan", "_persist_intent": False, "_still_valid": stands},
+    ]
+
+
+async def test_the_enabler_hands_it_to_the_plugins_route_and_starts_nothing_for_an_answer_that_fell(
+    wiring, monkeypatch
+):
+    world = _EnablerWorld(wiring, monkeypatch)
+
+    async def starting() -> tuple[bool, str]:
+        return True, ""
+
+    world.start_plugins = lambda: asyncio.ensure_future(starting())
+
+    assert await world.enabler.enable("plugins", lanlan_name="Lan", still_valid=lambda: False) == (
+        False,
+        "switched off",
+    )
+    assert world.requests == [] and world.refreshed == []
+
+    def stands() -> bool:
+        return True
+
+    assert await world.enabler.enable("plugins", lanlan_name="Lan", still_valid=stands) == (True, "")
+    assert world.requests == [
+        {"user_plugin_enabled": True, "lanlan_name": "Lan", "_persist_intent": False, "_still_valid": stands}
+    ]
+
+
 async def test_the_enabler_turns_the_plugins_on_and_tells_the_host_once_they_are_up(wiring, monkeypatch):
     world = _EnablerWorld(wiring, monkeypatch)
 

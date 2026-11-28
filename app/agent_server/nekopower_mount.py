@@ -481,7 +481,9 @@ class _HostCapabilityEnabler:
             return not _screen_capture_needs_the_user()
         return capability in ("browser", "plugins")
 
-    async def enable(self, capability: str, *, lanlan_name: Optional[str] = None) -> tuple[bool, str]:
+    async def enable(
+        self, capability: str, *, lanlan_name: Optional[str] = None, still_valid: Optional[Callable[[], bool]] = None
+    ) -> tuple[bool, str]:
         if not _shared.Modules.analyzer_enabled:
             return False, "NekoPower is switched off"
         from .api_routes import set_agent_flags
@@ -490,14 +492,21 @@ class _HostCapabilityEnabler:
             from .nekopower_builtins import _state
 
             flag = "browser_use_enabled" if capability == "browser" else "computer_use_enabled"
-            await set_agent_flags({flag: True, "lanlan_name": lanlan_name, "_persist_intent": False})
+            # ``_still_valid`` is looked at by the route at the moment it writes the switch, after the check
+            # of this computer it awaits: the user's answer may have stopped standing by then.
+            request: Dict[str, Any] = {flag: True, "lanlan_name": lanlan_name, "_persist_intent": False}
+            if still_valid is not None:
+                request["_still_valid"] = still_valid
+            await set_agent_flags(request)
             ready, reason = _state(capability)
             return (True, "") if ready else (False, reason or "not ready")
         if capability == "plugins":
-            return await self._enable_plugins(lanlan_name)
+            return await self._enable_plugins(lanlan_name, still_valid=still_valid)
         return False, f"unknown capability {capability}"
 
-    async def _enable_plugins(self, lanlan_name: Optional[str]) -> tuple[bool, str]:
+    async def _enable_plugins(
+        self, lanlan_name: Optional[str], *, still_valid: Optional[Callable[[], bool]] = None
+    ) -> tuple[bool, str]:
         """Turn the plugins on, or wait for the start that is under way, and say whether they came up.
 
         A start under way is shared, not started over: another ``set_agent_flags`` would end it
@@ -530,15 +539,21 @@ class _HostCapabilityEnabler:
             mount.notify_plugins_changed()
             return True, ""
         else:
+            if still_valid is not None and not still_valid():
+                return False, "switched off"
             made: list[Any] = []
-            await set_agent_flags(
-                {
-                    "user_plugin_enabled": True,
-                    "lanlan_name": lanlan_name,
-                    "_persist_intent": False,
-                    "_on_plugin_task": made.append,
-                }
-            )
+            request: Dict[str, Any] = {
+                "user_plugin_enabled": True,
+                "lanlan_name": lanlan_name,
+                "_persist_intent": False,
+                "_on_plugin_task": made.append,
+            }
+            if still_valid is not None:
+                request["_still_valid"] = still_valid
+            await set_agent_flags(request)
+            if not made and still_valid is not None and not still_valid():
+                # The route did not start the plugins: the answer stopped standing.
+                return False, "switched off"
             starting = made[-1] if made else modules.user_plugin_enable_task
         seen: set[int] = set()
         while True:

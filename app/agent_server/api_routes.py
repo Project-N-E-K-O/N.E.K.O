@@ -252,6 +252,18 @@ async def set_agent_flags(payload: Dict[str, Any]):
     # past intents through this same function with ``_persist_intent=False``
     # so the replay doesn't re-write what it's reading.
     persist_intent = bool((payload or {}).get("_persist_intent", True))
+    # ``_still_valid`` (an in-process callable, never part of a request body): the user's
+    # answer to a task agent's request may stop standing while the checks below are
+    # awaited. A switch is not written once it no longer stands; nothing is switched off
+    # for it either (the switch was off when the request came).
+    still_valid = (payload or {}).get("_still_valid")
+
+    def _approval_stands() -> bool:
+        return not callable(still_valid) or bool(still_valid())
+
+    if callable(still_valid) and not _approval_stands():
+        # Already stale at the door: nothing is touched, no later toggle is overtaken by it.
+        return {"success": True, "agent_flags": _agent_flags_snapshot()}
     # Agent API gate: if any agent sub-feature is being enabled, gate must pass.
     gate = _check_agent_api_gate()
     changed = False
@@ -314,6 +326,9 @@ async def set_agent_flags(payload: Dict[str, Any]):
                 # The switch was set anew while this one waited for the
                 # check: that later setting stands.
                 logger.info("[Agent] Computer Use enable request overtaken by a later one; left as it is")
+            elif not _approval_stands():
+                # Looked at with nothing awaited between it and the write below.
+                logger.info("[Agent] Computer Use enable skipped: the approval no longer stands")
             elif failed is not None:
                 _put_switch_off("computer_use_enabled")
                 Modules.notification = json.dumps({"code": "AGENT_CU_ENABLE_FAILED", "details": {"error": str(failed)}})
@@ -347,6 +362,9 @@ async def set_agent_flags(payload: Dict[str, Any]):
                 # The switch was set anew while this one looked for a
                 # browser: that later setting stands.
                 logger.info("[Agent] Browser Use enable request overtaken by a later one; left as it is")
+            elif not _approval_stands():
+                # Looked at with nothing awaited between it and the write below.
+                logger.info("[Agent] Browser Use enable skipped: the approval no longer stands")
             else:
                 ready, reason = dependency_ready, dependency_error
                 if not _set_capability("browser_use", ready, reason, started=started):
@@ -379,7 +397,9 @@ async def set_agent_flags(payload: Dict[str, Any]):
         )
 
     if isinstance(uf, bool):
-        if uf:  # Attempting to enable UserPlugin — non-blocking (like CUA)
+        if uf and not _approval_stands():
+            logger.info("[Agent] UserPlugin enable skipped: the approval no longer stands")
+        elif uf:  # Attempting to enable UserPlugin — non-blocking (like CUA)
             Modules.agent_flags["user_plugin_enabled"] = True
             Modules.notification = json.dumps({"code": "AGENT_UP_ENABLED_CHECKING"})
 
