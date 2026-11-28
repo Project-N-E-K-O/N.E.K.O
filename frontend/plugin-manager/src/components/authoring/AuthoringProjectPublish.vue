@@ -56,7 +56,7 @@
         <AuthoringPublishGuide page-id="toolchain" :params="guideParams" :open="guideOpen('toolchain')" />
         <AuthoringPublishToolchain :page="flow.toolchain" :error="toolchainError" />
         <p v-if="toolchain" class="authoring-muted">
-          {{ t(TOOL_ENV_LABELS[toolchain.tool_environment], { error: toolchain.tool_environment_error ?? '' }) }}
+          {{ toolEnvironmentText(toolchain, t) }}
         </p>
         <el-button
           v-if="toolchain && ['missing', 'failed'].includes(toolchain.tool_environment)"
@@ -195,6 +195,7 @@ import {
   type PublishPageId,
   type PublishStepState,
 } from '@/components/authoring/publishFlow'
+import { toolEnvironmentText } from '@/components/authoring/toolEnvironment'
 import type { GuideParams } from '@/components/authoring/publishGuide'
 import {
   cancelPluginProjectPublishTask,
@@ -364,14 +365,6 @@ async function loadToolchain(): Promise<boolean> {
   }
 }
 
-const TOOL_ENV_LABELS: Record<Toolchain['tool_environment'], string> = {
-  source: 'authoring.toolEnvironmentSource',
-  ready: 'authoring.toolEnvironmentReady',
-  preparing: 'authoring.toolEnvironmentPreparing',
-  missing: 'authoring.toolEnvironmentMissing',
-  failed: 'authoring.toolEnvironmentFailed',
-  unavailable: 'authoring.toolEnvironmentUnavailable',
-}
 const preparingEnvironment = ref(false)
 let environmentPoll: Promise<void> | null = null
 const MAX_FAILED_ENVIRONMENT_READS = 5

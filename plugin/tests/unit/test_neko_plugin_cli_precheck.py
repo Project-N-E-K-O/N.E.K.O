@@ -211,3 +211,14 @@ def test_precheck_prints_environment_issues_without_json(
     out = capsys.readouterr().out
     assert "[WARNING] git status failed" in out
     assert "precheck passed" in out
+
+
+def test_ruff_command_runs_through_a_configured_uv(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Packaged N.E.K.O. builds prepare uv without uvx and point the CLI at it.
+    from plugin.neko_plugin_cli.core.lint import UV_EXECUTABLE_ENV
+
+    monkeypatch.setenv(UV_EXECUTABLE_ENV, "/tools/uv")
+    command = ruff_command("some/dir")
+    assert command[:4] == ["/tools/uv", "tool", "run", f"ruff=={RUFF_LINT_SPEC.version}"]
+    monkeypatch.delenv(UV_EXECUTABLE_ENV)
+    assert ruff_command("some/dir")[:2] == ["uvx", f"ruff=={RUFF_LINT_SPEC.version}"]

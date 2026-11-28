@@ -80,12 +80,18 @@ def cli_child_env() -> dict[str, str]:
 
 
 def start_cli(
-    argv: list[str], *, cwd: Path, merge_stderr: bool, env: Mapping[str, str] | None = None
+    argv: list[str], *, cwd: Path, merge_stderr: bool,
+    env: Mapping[str, str] | None = None,
+    replace_env: bool = False,
 ) -> subprocess.Popen[str]:
+    """Start a CLI child. ``env`` is added to :func:`cli_child_env`, or with
+    ``replace_env`` is the whole environment (e.g. a prepared plugin tool
+    runtime's, which must not regain the inherited variables it dropped)."""
+    base = {} if replace_env else cli_child_env()
     return subprocess.Popen(
         argv,
         cwd=cwd,
-        env=cli_child_env() if env is None else env,
+        env={**base, **(env or {}), "PYTHONUNBUFFERED": "1"},
         text=True,
         encoding="utf-8",
         errors="replace",
@@ -143,6 +149,7 @@ def terminate_process_tree(process: subprocess.Popen[str]) -> None:
 async def run_cli(
     argv: list[str], *, cwd: Path, timeout: float, merge_stderr: bool = False,
     env: Mapping[str, str] | None = None,
+    replace_env: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     """Run the CLI to completion.
 
@@ -150,7 +157,7 @@ async def run_cli(
     once the tree was killed after ``timeout``. Cancelling the caller kills
     the tree too, so a server shutdown leaves nothing running.
     """
-    process = start_cli(argv, cwd=cwd, merge_stderr=merge_stderr, env=env)
+    process = start_cli(argv, cwd=cwd, merge_stderr=merge_stderr, env=env, replace_env=replace_env)
     communicate = asyncio.ensure_future(asyncio.to_thread(process.communicate))
     try:
         stdout, stderr = await asyncio.wait_for(asyncio.shield(communicate), timeout)

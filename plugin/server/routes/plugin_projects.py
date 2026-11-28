@@ -182,8 +182,7 @@ async def plugin_project_toolchain(project_id: str):
 @mutation_router.post("/tool-environment")
 async def prepare_tool_environment():
     # Idempotent: starts the one-time packaged tool-environment build.
-    state, error = tool_environment.start_tool_environment_preparation()
-    return {"state": state, "error": error}
+    return tool_environment.start_tool_environment_preparation().as_dict()
 
 
 @router.get("/{project_id}/publish-status")

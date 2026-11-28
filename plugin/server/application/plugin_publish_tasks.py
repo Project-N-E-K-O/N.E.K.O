@@ -375,7 +375,9 @@ def _stream(task: _Task, argv: list[str], environment: ToolEnvironment) -> tuple
         if task.cancel_requested or task.stop_requested:
             return None, ""
     try:
-        process = start_cli(argv, cwd=environment.cwd, merge_stderr=True, env=environment.env)
+        process = start_cli(
+            argv, cwd=environment.cwd, merge_stderr=True, env=environment.env, replace_env=True
+        )
     except OSError as exc:
         return None, f"publish command could not start: {exc}"
     with _lock:

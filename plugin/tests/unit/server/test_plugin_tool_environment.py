@@ -1,9 +1,17 @@
-"""The plugin tool environment seam: source interpreter vs. the prepared venv."""
+"""The plugin tool environment seam: source interpreter vs. the prepared venv.
+
+uv and Python come from the shared plugin tool layer, which is faked here;
+its own behaviour is covered by tests/unit/test_plugin_tool_runtime*.
+"""
 
 from __future__ import annotations
 
 import asyncio
+import json
+import os
+import subprocess
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -14,38 +22,69 @@ from plugin.server.application.plugin_tool_environment import (
     ToolEnvironmentError,
     ToolResources,
 )
+from plugin.server.infrastructure.plugin_tool_runtime import (
+    ProgressEvent,
+    RuntimeStatus,
+    ToolRuntime,
+    ToolRuntimeError,
+)
 
 pytestmark = pytest.mark.plugin_unit
+
+UV = "/tools/uv/0.13.6/uv"
+PYTHON = "/tools/python/cpython-3.11.9/bin/python3"
 
 
 @pytest.fixture(autouse=True)
 def isolated_state(monkeypatch, tmp_path):
     monkeypatch.setattr(tools, "_preparation_task", None)
     monkeypatch.setattr(tools, "_preparation_error", None)
+    monkeypatch.setattr(tools, "_preparation_progress", None)
+    monkeypatch.setattr(tools, "tool_envs_dir", lambda: tmp_path / "tools" / "envs")
     monkeypatch.setattr(
-        tools.settings, "get_plugin_state_root", lambda: tmp_path / "plugins"
+        tools, "tool_runtime_env",
+        lambda: {"PATH": "/usr/bin", "UV_PYTHON_INSTALL_DIR": str(tmp_path / "tools" / "python")},
     )
     return tmp_path
 
 
-def _packaged(monkeypatch):
+def _runtime_status(monkeypatch, state: str, **extra) -> None:
+    status = RuntimeStatus(
+        state, state != "source", "0.13.6",
+        python=PYTHON if state in ("ready", "source") else None,
+        uv=UV if state in ("ready", "source") else None,
+        **extra,
+    )
+    monkeypatch.setattr(tools, "read_tool_runtime_status", lambda: status)
+
+
+def _packaged(monkeypatch, state: str = "missing", **extra) -> None:
     monkeypatch.setattr(plugin_projects, "source_repo_root", lambda: None)
+    _runtime_status(monkeypatch, state, **extra)
 
 
-def _resources(monkeypatch, root: Path, *, ready: bool = False) -> ToolResources:
-    resources = ToolResources(root, "key", "3.11.9", "cli-1.0.0-py3-none-any.whl", {})
+def _resources(monkeypatch, root: Path) -> ToolResources:
+    resources = ToolResources(root, "k" * 64, "3.11.9", "cli-1.0.0-py3-none-any.whl", {})
     monkeypatch.setattr(tools, "tool_resources", lambda: resources)
-    if ready:
-        monkeypatch.setattr(ToolResources, "is_ready", lambda self: True)
+    monkeypatch.setattr(tools, "verify_tool_resources", lambda resources: None)
     return resources
+
+
+def _built(resources: ToolResources, python: str = PYTHON) -> None:
+    resources.executable.parent.mkdir(parents=True, exist_ok=True)
+    resources.executable.write_text("", encoding="utf-8")
+    resources.ready_file.write_text(json.dumps({"key": resources.key, "python": python}), encoding="utf-8")
 
 
 def test_source_mode_runs_the_checkout_interpreter(monkeypatch, tmp_path):
     monkeypatch.setattr(plugin_projects, "source_repo_root", lambda: tmp_path)
+    _runtime_status(monkeypatch, "source")
     env = {"MARKER": "1"}
     monkeypatch.setattr(tools, "cli_child_env", lambda: dict(env))
 
-    assert tools.tool_environment_status() == ("source", None)
+    status = tools.tool_environment_status()
+    assert status.state == "source"
+    assert status.tools["state"] == "source"
     environment = tools.tool_environment()
     assert environment.python == Path(sys.executable)
     assert environment.cwd == tmp_path
@@ -55,103 +94,232 @@ def test_source_mode_runs_the_checkout_interpreter(monkeypatch, tmp_path):
     ]
 
 
+def test_source_without_a_checkout_is_unavailable(monkeypatch):
+    monkeypatch.setattr(plugin_projects, "source_repo_root", lambda: None)
+    _runtime_status(monkeypatch, "source")
+
+    assert tools.tool_environment_status().state == "unavailable"
+    with pytest.raises(ToolEnvironmentError, match="no source checkout"):
+        tools.tool_environment()
+
+
 def test_packaged_without_valid_resources_is_unavailable(monkeypatch):
-    _packaged(monkeypatch)
-    state, error = tools.tool_environment_status()
-    assert state == "unavailable"
-    assert "no compatible plugin tooling resources" in error
+    _packaged(monkeypatch, "ready")
+    status = tools.tool_environment_status()
+    assert status.state == "unavailable"
+    assert status.error_code == "resources_unavailable"
+    assert "no compatible plugin tooling resources" in status.error
     with pytest.raises(ToolEnvironmentError, match="no compatible plugin tooling"):
         tools.tool_environment()
 
 
-def test_packaged_not_prepared_is_missing_and_tool_environment_refuses(monkeypatch, tmp_path):
-    _packaged(monkeypatch)
+@pytest.mark.parametrize("runtime_state", ["missing", "ready"])
+def test_packaged_not_prepared_is_missing_and_tool_environment_refuses(monkeypatch, tmp_path, runtime_state):
+    # Neither the shared uv / Python nor the venv on top of them, or only the former.
+    _packaged(monkeypatch, runtime_state)
     _resources(monkeypatch, tmp_path / "resources")
 
-    assert tools.tool_environment_status() == ("missing", None)
+    assert tools.tool_environment_status().state == "missing"
     with pytest.raises(ToolEnvironmentError, match="not prepared yet"):
         tools.tool_environment()
 
 
-def test_packaged_ready_uses_the_venv_with_test_config(monkeypatch, tmp_path):
-    _packaged(monkeypatch)
-    _resources(monkeypatch, tmp_path / "resources", ready=True)
-    monkeypatch.setattr(tools, "cli_child_env", lambda: {"BASE": "1"})
+def test_a_venv_built_on_another_python_needs_preparing_again(monkeypatch, tmp_path):
+    _packaged(monkeypatch, "ready")
+    _built(_resources(monkeypatch, tmp_path / "resources"), python="/old/python")
 
-    assert tools.tool_environment_status() == ("ready", None)
+    assert tools.tool_environment_status().state == "missing"
+
+
+def test_a_venv_without_its_shared_runtime_is_not_ready(monkeypatch, tmp_path):
+    # E.g. the tools root was regenerated after a storage migration.
+    _packaged(monkeypatch, "missing")
+    _built(_resources(monkeypatch, tmp_path / "resources"))
+
+    assert tools.tool_environment_status().state == "missing"
+
+
+def test_packaged_ready_uses_the_venv_with_the_shared_runtime_env(monkeypatch, tmp_path):
+    _packaged(monkeypatch, "ready")
+    resources = _resources(monkeypatch, tmp_path / "resources")
+    _built(resources)
+    monkeypatch.setenv("UV_INDEX_URL", "https://mirror.example/simple")
+    monkeypatch.setenv("UV_CACHE_DIR", "/elsewhere")
+
+    assert tools.tool_environment_status().state == "ready"
     environment = tools.tool_environment()
-    environment_root = (
-        tools.settings.get_plugin_state_root().parent / ".neko-plugin-tools" / "key"
-    )
+    environment_root = tmp_path / "tools" / "envs" / f"plugin-cli-{'k' * 16}"
     assert environment.python == environment_root / (
         "Scripts/python.exe" if sys.platform == "win32" else "bin/python"
     )
     assert environment.cwd == environment_root
-    assert environment.env["NEKO_PLUGIN_TEST_CONFIG"] == str(tmp_path / "resources" / "pytest.ini")
-    assert environment.env["NEKO_STORAGE_SELECTED_ROOT"] == str(environment_root / "state")
-    assert environment.env["BASE"] == "1"
+    env = environment.env
+    assert env["NEKO_PLUGIN_TEST_CONFIG"] == str(tmp_path / "resources" / "pytest.ini")
+    assert env["NEKO_STORAGE_SELECTED_ROOT"] == str(environment_root / "state")
+    # The CLI's sync and ruff use the prepared uv; PATH finds it as well.
+    assert env["UV"] == UV
+    assert env["NEKO_PLUGIN_UV"] == UV
+    assert env["PATH"].split(os.pathsep) == [str(Path(UV).parent), "/usr/bin"]
+    # The layer's environment, plus only the user's package index settings.
+    assert env["UV_PYTHON_INSTALL_DIR"] == str(tmp_path / "tools" / "python")
+    assert env["UV_INDEX_URL"] == "https://mirror.example/simple"
+    assert "UV_CACHE_DIR" not in env
 
 
-async def test_preparation_runs_once_and_reports_ready(monkeypatch, tmp_path):
-    _packaged(monkeypatch)
-    _resources(monkeypatch, tmp_path / "resources")
-    calls = []
+class _FakeLayer:
+    """prepare_tool_runtime() and run_cli() of a packaged build."""
 
-    async def prepare(resources, env):
-        calls.append(resources)
-        monkeypatch.setattr(ToolResources, "is_ready", lambda self: True)
+    def __init__(self, monkeypatch, tmp_path):
+        self.runtime_calls: list[dict] = []
+        self.commands: list[tuple[list[str], dict]] = []
+        self.runtime_error: Exception | None = None
+        self.command_result = 0
+        self.command_output = ""
+        self.before_return: threading.Event | None = None
+        self.runtime = ToolRuntime(PYTHON, UV, {"RUNTIME": "1"}, tmp_path / "tools", True)
+        self._monkeypatch = monkeypatch
+        monkeypatch.setattr(tools, "prepare_tool_runtime", self.prepare)
+        monkeypatch.setattr(tools, "run_cli", self.run_cli)
 
-    monkeypatch.setattr(tools, "_prepare", prepare)
-    assert tools.start_tool_environment_preparation() == ("preparing", None)
+    def prepare(self, *, cancel, deadline, progress):
+        self.runtime_calls.append({"cancel": cancel, "deadline": deadline})
+        progress(ProgressEvent("downloading_uv", 10, 100))
+        if self.before_return is not None:
+            assert self.before_return.wait(10)
+        if self.runtime_error is not None:
+            raise self.runtime_error
+        _runtime_status(self._monkeypatch, "ready")
+        return self.runtime
+
+    async def run_cli(self, argv, **kwargs):
+        self.commands.append((argv, kwargs))
+        if argv[1] == "venv":
+            executable = Path(argv[-1]) / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
+            executable.parent.mkdir(parents=True, exist_ok=True)
+            executable.write_text("", encoding="utf-8")
+        return subprocess.CompletedProcess(argv, self.command_result, self.command_output, "")
+
+
+async def test_preparation_builds_the_venv_on_the_shared_runtime(monkeypatch, tmp_path):
+    _packaged(monkeypatch, "missing")
+    resources = _resources(monkeypatch, tmp_path / "resources")
+    layer = _FakeLayer(monkeypatch, tmp_path)
+    monkeypatch.setenv("UV_DEFAULT_INDEX", "https://mirror.example/simple")
+
+    assert tools.start_tool_environment_preparation().state == "preparing"
     task = tools._preparation_task
-    assert tools.start_tool_environment_preparation() == ("preparing", None)
+    assert tools.start_tool_environment_preparation().state == "preparing"
     assert tools._preparation_task is task  # a second call joins, it does not respawn
     await task
-    assert calls and len(calls) == 1
-    assert tools.tool_environment_status() == ("ready", None)
+
+    assert len(layer.runtime_calls) == 1
+    assert isinstance(layer.runtime_calls[0]["cancel"], threading.Event)
+    assert [argv[:3] for argv, _ in layer.commands] == [
+        [UV, "venv", "--no-config"], [UV, "pip", "sync"], [UV, "pip", "install"],
+    ]
+    venv, _ = layer.commands[0]
+    assert venv[venv.index("--python") + 1] == PYTHON
+    for _argv, kwargs in layer.commands:
+        # The runtime's environment replaces the inherited one; index settings return.
+        assert kwargs["replace_env"] is True
+        assert kwargs["env"] == {"RUNTIME": "1", "UV_DEFAULT_INDEX": "https://mirror.example/simple"}
+    assert json.loads(resources.ready_file.read_text(encoding="utf-8")) == {
+        "key": resources.key, "python": PYTHON,
+    }
+    status = tools.tool_environment_status()
+    assert status.state == "ready"
+    assert status.tool_progress is None
 
 
-async def test_failed_preparation_is_reported_until_the_next_start(monkeypatch, tmp_path):
-    _packaged(monkeypatch)
+async def test_preparation_reports_the_shared_layer_progress(monkeypatch, tmp_path):
+    _packaged(monkeypatch, "missing")
     _resources(monkeypatch, tmp_path / "resources")
+    layer = _FakeLayer(monkeypatch, tmp_path)
+    layer.before_return = threading.Event()
 
-    async def fail(resources, env):
-        raise ToolEnvironmentError("uv exploded")
-
-    monkeypatch.setattr(tools, "_prepare", fail)
     tools.start_tool_environment_preparation()
+    try:
+        for _ in range(500):
+            status = tools.tool_environment_status()
+            if status.tool_progress is not None:
+                break
+            await asyncio.sleep(0.01)
+        assert status.state == "preparing"
+        assert status.tool_progress == {"phase": "downloading_uv", "downloaded_bytes": 10, "total_bytes": 100}
+    finally:
+        layer.before_return.set()
     await tools._preparation_task
-    assert tools.tool_environment_status() == ("failed", "uv exploded")
-
-    prepared = asyncio.Event()
-
-    async def ok(resources, env):
-        prepared.set()
-        monkeypatch.setattr(ToolResources, "is_ready", lambda self: True)
-
-    monkeypatch.setattr(tools, "_prepare", ok)
-    tools.start_tool_environment_preparation()
-    await tools._preparation_task
-    assert prepared.is_set()
-    assert tools.tool_environment_status() == ("ready", None)
+    assert tools.tool_environment_status().state == "ready"
 
 
-async def test_an_unexpected_preparation_error_is_reported_as_failed(monkeypatch, tmp_path):
-    _packaged(monkeypatch)
+async def test_a_shared_layer_failure_is_reported_with_its_code_until_the_next_start(monkeypatch, tmp_path):
+    _packaged(monkeypatch, "missing")
     _resources(monkeypatch, tmp_path / "resources")
+    layer = _FakeLayer(monkeypatch, tmp_path)
+    layer.runtime_error = ToolRuntimeError(
+        "download_failed", "GET https://user:secret@mirror.example/uv failed",
+    )
 
-    async def explode(resources, env):
-        raise RuntimeError("disk went away")
-
-    monkeypatch.setattr(tools, "_prepare", explode)
     tools.start_tool_environment_preparation()
     await tools._preparation_task
-    assert tools.tool_environment_status() == ("failed", "disk went away")
+    status = tools.tool_environment_status()
+    assert status.state == "failed"
+    assert status.error_code == "download_failed"
+    assert "secret" not in status.error
+    assert not layer.commands
+
+    layer.runtime_error = None
+    assert tools.start_tool_environment_preparation().state == "preparing"
+    await tools._preparation_task
+    assert tools.tool_environment_status().state == "ready"
+
+
+async def test_a_failed_venv_command_is_reported_redacted(monkeypatch, tmp_path):
+    _packaged(monkeypatch, "missing")
+    _resources(monkeypatch, tmp_path / "resources")
+    layer = _FakeLayer(monkeypatch, tmp_path)
+    layer.command_result = 2
+    layer.command_output = "error: https://token@mirror.example/simple returned 403\n"
+
+    tools.start_tool_environment_preparation()
+    await tools._preparation_task
+    status = tools.tool_environment_status()
+    assert status.state == "failed"
+    assert status.error_code == "environment_failed"
+    assert "403" in status.error
+    assert "token" not in status.error
+    assert len(layer.commands) == 1  # stops at the first failing command
+
+
+async def test_an_unexpected_preparation_error_is_reported_as_internal(monkeypatch, tmp_path):
+    _packaged(monkeypatch, "missing")
+    _resources(monkeypatch, tmp_path / "resources")
+    layer = _FakeLayer(monkeypatch, tmp_path)
+    layer.runtime_error = RuntimeError("disk went away")
+
+    tools.start_tool_environment_preparation()
+    await tools._preparation_task
+    status = tools.tool_environment_status()
+    assert (status.state, status.error, status.error_code) == ("failed", "disk went away", "internal_error")
+
+
+async def test_an_unsupported_shared_runtime_is_failed_and_retryable(monkeypatch, tmp_path):
+    _packaged(
+        monkeypatch, "unsupported",
+        error_code="unsupported_platform", error_detail="No uv for this platform",
+    )
+    _resources(monkeypatch, tmp_path / "resources")
+    _FakeLayer(monkeypatch, tmp_path)
+
+    status = tools.tool_environment_status()
+    assert (status.state, status.error_code) == ("failed", "unsupported_platform")
+    assert tools.start_tool_environment_preparation().state == "preparing"
+    await tools._preparation_task
+    assert tools.tool_environment_status().state == "ready"
 
 
 def test_tampered_resource_hashes_fail_verification(tmp_path, monkeypatch):
     import hashlib
-    import json
 
     root = tmp_path / "resources"
     root.mkdir()

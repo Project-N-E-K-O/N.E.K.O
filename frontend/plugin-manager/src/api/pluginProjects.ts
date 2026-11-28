@@ -2,6 +2,7 @@ import type { AxiosError } from 'axios'
 import { del, get, post, put } from './index'
 import { openLocalPath } from '@/utils/openExternal'
 import { readErrorCode } from '@/utils/request'
+import type { ToolErrorCode, ToolProgress, ToolProgressPhase, ToolRuntimeStatus } from './pluginToolRuntime'
 
 export interface PluginProjectRequest {
   parent_dir: string
@@ -200,15 +201,34 @@ export interface Toolchain {
   uv: { installed: boolean; version: string | null }
   gh: { installed: boolean; version: string | null; authenticated: boolean; login: string | null }
   /** Checks, repository creation and publishing run the CLI through the plugin tool environment. */
-  tool_environment: 'source' | 'ready' | 'preparing' | 'missing' | 'failed' | 'unavailable'
+  tool_environment: ToolEnvironmentState
   tool_environment_error: string | null
+  /** A shared tool layer code, or this environment's own, for localized text. */
+  tool_environment_error_code: ToolEnvironmentErrorCode | null
+  /** While preparing: the latest phase, or `creating_environment` once uv and Python are ready. */
+  tool_progress: ToolEnvironmentProgress | null
+  /** uv and Python of the shared plugin tool layer. */
+  tools: ToolRuntimeStatus
+}
+
+export type ToolEnvironmentState = 'source' | 'ready' | 'preparing' | 'missing' | 'failed' | 'unavailable'
+export type ToolEnvironmentErrorCode = ToolErrorCode | 'resources_unavailable' | 'environment_failed'
+export interface ToolEnvironmentProgress extends Omit<ToolProgress, 'phase'> {
+  phase: ToolProgressPhase | 'creating_environment'
+}
+export interface ToolEnvironmentStatus {
+  state: ToolEnvironmentState
+  error: string | null
+  error_code: ToolEnvironmentErrorCode | null
+  tool_progress: ToolEnvironmentProgress | null
+  tools: ToolRuntimeStatus
 }
 
 /** The publishing tools of the machine running the server, seen from the project folder. Local reads only. */
 export const getPluginToolchain = (projectId: string): Promise<Toolchain> =>
   get(`/plugin-projects/${encodeURIComponent(projectId)}/toolchain`, config)
 
-export const preparePluginToolEnvironment = (): Promise<{ state: string; error: string | null }> =>
+export const preparePluginToolEnvironment = (): Promise<ToolEnvironmentStatus> =>
   post('/plugin-projects/tool-environment', {}, config)
 
 export interface ProjectWorkflowChange {

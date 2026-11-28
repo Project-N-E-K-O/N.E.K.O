@@ -679,7 +679,7 @@ async def precheck_project(project_id: str) -> dict[str, object]:
         argv = environment.command("precheck", str(record.source_dir), "--json")
         try:
             completed = await run_cli(
-                argv, cwd=environment.cwd, timeout=budget, env=environment.env
+                argv, cwd=environment.cwd, timeout=budget, env=environment.env, replace_env=True
             )
         except subprocess.TimeoutExpired as exc:
             raise project_error(

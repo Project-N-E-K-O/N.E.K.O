@@ -128,6 +128,7 @@ async def test_precheck_in_a_packaged_build_uses_the_prepared_venv(
         captured["argv"] = list(argv)
         captured["cwd"] = kwargs.get("cwd")
         captured["env"] = kwargs.get("env")
+        captured["replace_env"] = kwargs.get("replace_env")
         return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(REPORT), stderr="")
 
     venv = tmp_path / "tools-env"
@@ -146,6 +147,7 @@ async def test_precheck_in_a_packaged_build_uses_the_prepared_venv(
     assert captured["argv"][3] == "precheck"
     assert captured["cwd"] == venv
     assert captured["env"]["NEKO_PLUGIN_TEST_CONFIG"] == env["NEKO_PLUGIN_TEST_CONFIG"]
+    assert captured["replace_env"] is True
 
 
 @pytest.mark.asyncio

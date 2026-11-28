@@ -109,6 +109,7 @@ def test_a_packaged_build_uses_the_prepared_venv(monkeypatch):
         captured["argv"] = argv
         captured["cwd"] = kwargs.get("cwd")
         captured["env"] = kwargs.get("env")
+        captured["replace_env"] = kwargs.get("replace_env")
         return subprocess.CompletedProcess(
             argv, 0, "[OK] repository ready: https://github.com/o/n.e.k.o_plugin_demo", ""
         )
@@ -126,6 +127,7 @@ def test_a_packaged_build_uses_the_prepared_venv(monkeypatch):
     assert captured["argv"][3] == "create-repo"
     assert captured["cwd"] == venv
     assert captured["env"] == env
+    assert captured["replace_env"] is True
 
 
 def test_create_repo_is_refused_while_the_project_is_busy(monkeypatch):

@@ -20,6 +20,7 @@ import {
 } from '@/api/pluginProjects'
 import type { SubmissionPanelState, SubmissionPhase } from '@/api/marketSubmissions'
 import type { AuthoringMessageKey } from '@/i18n/authoring'
+import { toolErrorKey } from '@/components/authoring/toolEnvironment'
 
 export type PublishStepId = 'repository' | 'verify' | 'submission' | 'release' | 'market'
 /** Step 0 prepares the machine; it is a page of the publish tab, not a publish step. */
@@ -426,6 +427,8 @@ const bySeverity = (blockers: ActionBlocker[]) => [
  * Step 0. Required: git (the plugin's own repository, commits need an author),
  * uv (`uvx` runs the pinned ruff in checks and `publish`). gh is recommended:
  * it creates the repository and signs GitHub reads in; without it those are done by hand.
+ * A packaged build reports the uv its tool environment prepares; whether that
+ * is ready yet is the environment blocker's concern.
  */
 function toolchainPage(toolchain: Toolchain | null | undefined): ToolchainPage {
   const check = (
@@ -466,8 +469,12 @@ function toolEnvironmentBlocker(toolchain: Toolchain): ActionBlocker | null {
       return null
     case 'preparing':
       return hard('toolchain', message('toolEnvironmentPreparing'))
-    case 'failed':
-      return hard('toolchain', message('toolEnvironmentFailed', { error: toolchain.tool_environment_error ?? '' }))
+    case 'failed': {
+      const reason = toolErrorKey(toolchain.tool_environment_error_code)
+      return hard('toolchain', reason
+        ? message(reason)
+        : message('toolEnvironmentFailed', { error: toolchain.tool_environment_error ?? '' }))
+    }
     case 'unavailable':
       return hard('toolchain', message('toolEnvironmentUnavailable'))
     default:

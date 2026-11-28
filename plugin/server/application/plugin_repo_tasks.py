@@ -68,7 +68,8 @@ async def _run(source_dir: Path, *, private: bool) -> dict[str, object]:
     budget = env_seconds("NEKO_PLUGIN_REPO_CREATE_BUDGET", 180.0)
     try:
         completed = await run_cli(
-            argv, cwd=environment.cwd, timeout=budget, merge_stderr=True, env=environment.env
+            argv, cwd=environment.cwd, timeout=budget, merge_stderr=True,
+            env=environment.env, replace_env=True,
         )
     except subprocess.TimeoutExpired as exc:
         raise project_error(

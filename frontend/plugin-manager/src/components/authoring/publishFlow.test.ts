@@ -485,6 +485,12 @@ describe('publishFlow step 0 (toolchain)', () => {
     gh: { installed: true, version: '2.101.0', authenticated: true, login: 'octocat' },
     tool_environment: 'source',
     tool_environment_error: null,
+    tool_environment_error_code: null,
+    tool_progress: null,
+    tools: {
+      state: 'source', packaged: false, uv_version: '0.13.6', python: '/usr/bin/python3', uv: '/usr/bin/uv',
+      progress: null, error_code: null, error_detail: null,
+    },
   })
   const tool = (flow: ReturnType<typeof publishFlow>, id: string) =>
     flow.toolchain.tools.find((item) => item.id === id)!
@@ -552,6 +558,25 @@ describe('publishFlow step 0 (toolchain)', () => {
       severity: 'hard',
       step: 'toolchain',
       reason: { key: 'toolEnvironmentFailed', params: { error: 'uv not found' } },
+    })
+  })
+
+  it('hard-blocks with the localized reason when the failure has a known code', () => {
+    const flow = flowOf({
+      status: status(),
+      submission: approved(),
+      task: null,
+      toolchain: {
+        ...ready(),
+        tool_environment: 'failed',
+        tool_environment_error: 'GET https://pypi.org/... timed out',
+        tool_environment_error_code: 'download_failed',
+      },
+    })
+    expect(flow.blockers.github).toContainEqual({
+      severity: 'hard',
+      step: 'toolchain',
+      reason: { key: 'toolErrorDownloadFailed' },
     })
   })
 

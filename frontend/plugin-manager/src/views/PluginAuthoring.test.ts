@@ -244,8 +244,21 @@ const readyToolchain = (overrides: Partial<Toolchain> = {}): Toolchain => ({
   gh: { installed: true, version: '2.101.0', authenticated: true, login: 'octocat' },
   tool_environment: 'source',
   tool_environment_error: null,
+  tool_environment_error_code: null,
+  tool_progress: null,
+  tools: {
+    state: 'source', packaged: false, uv_version: '0.13.6', python: '/usr/bin/python3', uv: '/usr/bin/uv',
+    progress: null, error_code: null, error_detail: null,
+  },
   ...overrides,
 })
+const preparing = {
+  state: 'preparing' as const,
+  error: null,
+  error_code: null,
+  tool_progress: null,
+  tools: readyToolchain().tools,
+}
 const NativeMutationObserver = globalThis.MutationObserver
 let cleanup: (() => void) | undefined
 
@@ -995,7 +1008,7 @@ describe('authoring workbench backed by the server project list', () => {
     api.getPluginToolchain
       .mockResolvedValueOnce(readyToolchain({ tool_environment: 'missing' }))
       .mockResolvedValue(readyToolchain({ tool_environment: 'ready' }))
-    api.preparePluginToolEnvironment.mockResolvedValue({ state: 'preparing', error: null })
+    api.preparePluginToolEnvironment.mockResolvedValue(preparing)
     const container = await mount()
     await openPublish(container)
     const tools = page('toolchain')
@@ -1016,7 +1029,7 @@ describe('authoring workbench backed by the server project list', () => {
       .mockResolvedValueOnce(readyToolchain({ tool_environment: 'missing' }))
       .mockRejectedValueOnce(new Error('temporarily unavailable'))
       .mockResolvedValue(readyToolchain({ tool_environment: 'ready' }))
-    api.preparePluginToolEnvironment.mockResolvedValue({ state: 'preparing', error: null })
+    api.preparePluginToolEnvironment.mockResolvedValue(preparing)
     const container = await mount()
     await openPublish(container)
     const tools = page('toolchain')
@@ -1026,6 +1039,30 @@ describe('authoring workbench backed by the server project list', () => {
     expect(api.getPluginToolchain.mock.calls.length).toBeGreaterThanOrEqual(3)
     expect(tools.textContent).toContain(en.toolEnvironmentReady)
   }, 10_000)
+
+  it('shows the phase of the shared tool layer while preparing, and a localized failure', async () => {
+    api.route.query = { project: 'p1' }
+    api.listPluginProjects.mockResolvedValue([listed])
+    api.getPluginProjectPublishStatus.mockResolvedValue(publishStatus())
+    api.getPluginToolchain
+      .mockResolvedValueOnce(readyToolchain({
+        tool_environment: 'preparing',
+        tool_progress: { phase: 'downloading_uv', downloaded_bytes: 5 * 1024 * 1024, total_bytes: 20 * 1024 * 1024 },
+      }))
+      .mockResolvedValue(readyToolchain({
+        tool_environment: 'failed',
+        tool_environment_error: 'GET https://pypi.org/... failed',
+        tool_environment_error_code: 'download_failed',
+      }))
+    const container = await mount()
+    await openPublish(container)
+    const tools = page('toolchain')
+    expect(tools.textContent).toContain(`${en.toolDownloadingUv} (5.0 / 20.0 MB)`)
+    await new Promise((resolve) => setTimeout(resolve, 2_300))
+    await settle()
+    expect(tools.textContent).toContain(en.toolEnvironmentFailed.replace('{error}', en.toolErrorDownloadFailed))
+    expect(buttons(en.toolEnvironmentPrepare)).toHaveLength(1)
+  })
 
   it('polls the toolchain when it loads while the environment is preparing', async () => {
     api.route.query = { project: 'p1' }
