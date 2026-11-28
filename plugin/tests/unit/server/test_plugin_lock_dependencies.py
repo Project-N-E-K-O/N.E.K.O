@@ -510,3 +510,7 @@ def test_status_never_pairs_awaiting_confirmation_with_an_empty_list():
     status = RacingTask("demo", Path(".")).as_dict()
 
     assert not (status["state"] == "awaiting_confirmation" and status["packages"] == [])
+    # Sizes describe exactly the list returned with them.
+    sizes = [package["size"] for package in status["packages"]]
+    assert status["total_size"] == sum(size for size in sizes if size is not None)
+    assert status["size_complete"] is all(size is not None for size in sizes)

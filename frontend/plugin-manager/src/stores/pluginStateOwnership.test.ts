@@ -336,6 +336,26 @@ describe('plugin state ownership and registry cache invalidation', () => {
     expectVisibleStatus(store, 'dependencies_pending')
   })
 
+  it('a running status requested after pending metadata ends it even when it arrives first', async () => {
+    const store = usePluginStore()
+    await store.fetchPluginSummaries()  // older metadata: stopped
+    let resolveMetadata!: (value: { plugins: ReturnType<typeof plugin>[]; message: string }) => void
+    vi.mocked(getPluginSummaries).mockImplementationOnce(() => new Promise((resolve) => { resolveMetadata = resolve }))
+    // The pending metadata is requested first...
+    const metadata = store.fetchPluginSummaries(true)
+    // ...a running status requested afterwards answers first...
+    vi.mocked(getPluginStatus).mockResolvedValueOnce(runtime('running'))
+    await store.fetchPluginStatus('demo')
+    // ...and the pending metadata lands last.
+    resolveMetadata({ plugins: [plugin({ status: 'dependencies_pending' })], message: '' })
+    await metadata
+    expectVisibleStatus(store, 'running')
+
+    vi.mocked(getPluginStatus).mockResolvedValueOnce(runtime('stopped'))
+    await store.fetchPluginStatus('demo')
+    expectVisibleStatus(store, 'stopped')
+  })
+
   it('retains readable runtime state after a failed refresh', async () => {
     const store = usePluginStore()
     await store.fetchPluginSummaries()

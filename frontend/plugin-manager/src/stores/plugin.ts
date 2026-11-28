@@ -77,16 +77,16 @@ export const usePluginStore = defineStore('plugin', () => {
   const registryRevision = ref(0)
   let statusReadSequence = 0
   const runtimeStatusTickets = new Map<string, number>()
-  // Metadata ticket of a dependencies_pending entry a later runtime status
-  // showed running: that entry is stale even if a metadata refresh failed.
-  const dependenciesPendingEnded = new Map<string, number>()
+  // Request ticket of the latest running status per plugin. Metadata and
+  // status requests share one sequence, so one rule covers every arrival
+  // order: a dependencies_pending entry requested before a running status
+  // was requested is over (the dependencies got installed and it started),
+  // even if it arrives later or a metadata refresh failed; one requested
+  // after it still shows.
+  const lastRunningTicket = new Map<string, number>()
   function noteRuntimeStatus(pluginId: string, data: PluginStatusData | undefined, statusTicket: number) {
-    const metadata = metadataStatuses.value[pluginId]
-    // Only a running status requested after that metadata ends it: a slow,
-    // older response must not retire a pending entry that is still current.
-    if (runtimeStatus(data) === 'running' && metadata?.status === 'dependencies_pending'
-      && statusTicket >= metadata.ticket) {
-      dependenciesPendingEnded.set(pluginId, metadata.ticket)
+    if (runtimeStatus(data) === 'running') {
+      lastRunningTicket.set(pluginId, Math.max(statusTicket, lastRunningTicket.get(pluginId) ?? 0))
     }
   }
   const metadataStatuses = ref<Record<string, { status: string; ticket: number }>>({})
@@ -155,10 +155,10 @@ export const usePluginStore = defineStore('plugin', () => {
     // status says it runs: installing them and starting it ends the state for
     // that metadata entry, even if the metadata refresh afterwards failed.
     if (status === 'dependencies_pending') {
-      if (dependenciesPendingEnded.get(plugin.id) === (metadata?.ticket ?? 0)) {
+      if ((lastRunningTicket.get(plugin.id) ?? -1) >= (metadata?.ticket ?? 0)) {
         return runtimeIsNewer ? runtime : StatusEnum.STOPPED
       }
-      return runtimeIsNewer && runtime === 'running' ? runtime : status
+      return status
     }
     return runtimeIsNewer ? runtime : status
   }
