@@ -375,6 +375,17 @@ describe('PluginPermissions tab', () => {
       expect(q(root, 'decide-items')).toBeNull()
     })
 
+    it('is no longer offered when the pending list and the panel both cannot be read again', async () => {
+      serve(undecided(), { pending: { first_use: [], incomplete: [], to_confirm: [{ plugin_id: 'demo', items: [NET] }] } })
+      const root = await mount()
+      api.getPendingPermissions.mockRejectedValue(new Error('offline'))
+      api.getPermissionPanel.mockRejectedValue(new Error('offline'))
+      reload()
+      await flush()
+      expect(q(root, `row-${NET}`)).not.toBeNull()
+      expect(q(root, 'decide-items')).toBeNull()
+    })
+
     it('is no longer offered after a save when the pending list cannot be read again', async () => {
       serve(undecided(), { pending: { first_use: [], incomplete: [], upgraded: [{ plugin_id: 'demo', items: [NET] }] } })
       const root = await mount()

@@ -224,6 +224,11 @@ watch(
   () => props.panel,
   (next) => {
     if (sourceChanged(next, current.value)) answered.clear()
+    // A tab panel that already shows an answer given here is as new: its row is used.
+    for (const row of next.rows) {
+      const kept = answered.get(row.permission)
+      if (kept && kept.state === row.state && kept.condition === row.condition) answered.delete(row.permission)
+    }
     current.value = answered.size
       ? { ...next, rows: next.rows.map((row) => answered.get(row.permission) ?? row) }
       : next
@@ -244,6 +249,14 @@ const usedRow = computed(() =>
 const choices = computed(() => (usedRow.value ? conditionChoices(usedRow.value) : []))
 const lock = computed(() => (usedRow.value ? conditionLock(usedRow.value, current.value.manifest) : null))
 const condition = ref<PermissionCondition>('in_use')
+// What the tab's "Allow" would save, so the folded "When it may" changes nothing by itself.
+watch(
+  () => usedRow.value?.permission,
+  () => {
+    if (usedRow.value) condition.value = grantCondition(usedRow.value)
+  },
+  { immediate: true },
+)
 
 const title = computed(() => {
   const name = props.pluginName
@@ -310,7 +323,7 @@ async function save(row: PanelRow, state: 'granted' | 'denied', chosen?: Permiss
       showFresh(next)
     } else {
       // An answer of another shape: show the choice made, the tab reads it again.
-      const shown = { ...row, state }
+      const shown = { ...row, state, condition: state === 'granted' ? keep : null }
       answered.set(row.permission, shown)
       current.value = {
         ...current.value,

@@ -240,6 +240,19 @@ describe('dialog ① before the first start', () => {
     expect(q(root, `dialog-allow-${NET}`)!.dataset.type).toBe('primary')
   })
 
+  it('uses a newer tab row that already shows the answer given here', async () => {
+    const p = firstPanel()
+    const { root, props } = await mount({ panel: p, request: { kind: 'first', items: [NET] }, start: true })
+    api.decidePermission.mockResolvedValueOnce(withState(p, { [NET]: 'granted' }))
+    q(root, `dialog-allow-${NET}`)!.click()
+    await flush()
+    // The scan moved NET to another tier; the row says the same answer.
+    props.panel = { ...p, rows: p.rows.map((r) => (r.permission === NET ? { ...r, state: 'granted' as const, tier: 'medium' as const } : r)) }
+    await flush()
+    expect(q(root, 'dialog-tier-medium')!.parentElement!.querySelector(`[data-test="dialog-item-${NET}"]`)).not.toBeNull()
+    expect(q(root, `dialog-allow-${NET}`)!.dataset.type).toBe('primary')
+  })
+
   it('follows a newer panel from the tab, keeping the answers given here', async () => {
     const p = firstPanel()
     const { root, props } = await mount({ panel: p, request: { kind: 'first', items: [NET] }, start: true })
@@ -343,6 +356,25 @@ describe('dialog ② for an item used before it was decided', () => {
     await flush()
     expect(api.decidePermission).toHaveBeenCalledWith('demo', MEMORY, 'granted', 'anytime')
     expect(closed).toEqual([{ start: false, changed: true }])
+  })
+
+  it('grants a required item "any time" when nothing was chosen, as the tab does', async () => {
+    const p = panel({ rows: [row({ permission: MEMORY, state: 'undecided', condition: null, anytime_allowed: true, declared: ask({ level: 'require' }) })] })
+    const { root } = await mount({ panel: p, request: { kind: 'firstUse', permission: MEMORY }, pending: usedPending() })
+    api.decidePermission.mockResolvedValue(p)
+    expect((q(root, 'dialog-when-anytime')!.querySelector('input') as HTMLInputElement).checked).toBe(true)
+    q(root, 'dialog-allow')!.click()
+    await flush()
+    expect(api.decidePermission).toHaveBeenCalledWith('demo', MEMORY, 'granted', 'anytime')
+  })
+
+  it('grants an optional item "while I use it" when nothing was chosen', async () => {
+    const p = firstPanel()
+    const { root } = await mount({ panel: p, request: { kind: 'firstUse', permission: MEMORY }, pending: usedPending() })
+    api.decidePermission.mockResolvedValue(p)
+    q(root, 'dialog-allow')!.click()
+    await flush()
+    expect(api.decidePermission).toHaveBeenCalledWith('demo', MEMORY, 'granted', 'in_use')
   })
 
   it('refuses, and stays open when the save fails', async () => {

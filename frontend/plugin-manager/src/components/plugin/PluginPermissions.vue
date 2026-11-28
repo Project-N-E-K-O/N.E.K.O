@@ -491,13 +491,16 @@ async function load(timed = false) {
     // Without a current answer, nothing is claimed about unused time.
     audit.value = validHistory(nextAudit) ? nextAudit : null
     if (validPending(nextPending)) pending.value = nextPending
-    else if (pending.value && validPanel(nextPanel)) {
-      // The old counts belong to the rows before this answer: not shown for them.
-      pending.value = {
-        ...pending.value,
-        ...withoutStartEntries(pending.value, props.pluginId),
-        first_use: pending.value.first_use.filter((use) => use.plugin_id !== props.pluginId),
-        incomplete: pending.value.incomplete.filter((id) => id !== props.pluginId),
+    else if (pending.value) {
+      // What waits for this plugin belongs to an older answer: "Decide item by item" does not use it.
+      pending.value = { ...pending.value, ...withoutStartEntries(pending.value, props.pluginId) }
+      if (validPanel(nextPanel)) {
+        // The old counts belong to the rows before this answer: not shown for them.
+        pending.value = {
+          ...pending.value,
+          first_use: pending.value.first_use.filter((use) => use.plugin_id !== props.pluginId),
+          incomplete: pending.value.incomplete.filter((id) => id !== props.pluginId),
+        }
       }
     }
     // Follow a running scan or a held declaration; retry a failed refresh too, waiting longer each time.

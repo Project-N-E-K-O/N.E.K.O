@@ -291,7 +291,11 @@ describe('grantCondition', () => {
 
   it('falls back to "while in use" for a stored "any time" the server does not allow', () => {
     expect(grantCondition(row({ condition: 'anytime', anytime_allowed: false }))).toBe('in_use')
-    expect(grantCondition(row({ condition: 'anytime', anytime_allowed: null }))).toBe('in_use')
+    // Unreadable for now: the stored condition is sent, and the server asks to retry.
+    expect(grantCondition(row({ condition: 'anytime', anytime_allowed: null }))).toBe('anytime')
+    expect(grantCondition(row({ condition: null, anytime_allowed: null }))).toBe('in_use')
+    const required = row({ declared: { ...row().declared!, level: 'require' }, condition: null, anytime_allowed: null })
+    expect(grantCondition(required)).toBe('in_use')
     // An explicit choice is still sent as chosen.
     expect(grantCondition(row({ condition: 'anytime', anytime_allowed: false }), 'anytime')).toBe('anytime')
   })

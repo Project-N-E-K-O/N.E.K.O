@@ -86,12 +86,14 @@ export function enforcementTag(row: Pick<PanelRow, 'enforced' | 'usage_tracked'>
  * The condition to grant with. A required item has no "when it may" control:
  * it is granted "any time" when the server allows it (the declaration covers
  * background use), so background use is not left off with no way to turn it on.
- * A stored "any time" the server no longer allows falls back to "while in use".
+ * A stored "any time" the server no longer allows falls back to "while in use";
+ * while the declaration cannot be read (``null``) the stored condition is
+ * sent as it is, and the server asks to try again later.
  */
 export function grantCondition(row: PanelRow, chosen?: PermissionCondition): PermissionCondition {
   if (chosen) return chosen
-  if (row.anytime_allowed !== true) return 'in_use'
-  if (row.declared?.level === 'require') return 'anytime'
+  if (row.anytime_allowed === false) return 'in_use'
+  if (row.declared?.level === 'require' && row.anytime_allowed === true) return 'anytime'
   return row.condition ?? 'in_use'
 }
 
