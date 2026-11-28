@@ -806,6 +806,21 @@ def _read_landing_intent(meta_dir: Path) -> dict[str, Any] | None:
     return raw if isinstance(raw, dict) else {"status": "corrupt"}
 
 
+def _has_unfinalized_landing_intent(meta_dir: Path, copy_path: Path) -> bool:
+    """Return True when a landing intent marker exists and has not yet been finalized in base_manifest.json."""
+    landing_intent = _read_landing_intent(meta_dir)
+    if landing_intent is None:
+        return False
+    intent_digest = str(landing_intent.get("digest") or "")
+    if not intent_digest or landing_intent.get("status") == "corrupt":
+        return True
+    base = read_base_manifest(copy_path)
+    if base is None:
+        return True
+    base_digest = str(base.get("digest") or "")
+    return not (base_digest == intent_digest and base.get("source") == "landed")
+
+
 def _merged_file_mode(existing_mode: int | None, chosen_mode: int) -> int:
     """Preserve an existing POSIX file's permission bits while applying execute-bit transitions."""
     if existing_mode is None:
@@ -1022,12 +1037,8 @@ def copy_has_changes(
     meta_dir = copy_meta_dir(copy_path)
     if _has_incomplete_rollback(meta_dir):
         return True
-    landing_intent = _read_landing_intent(meta_dir)
-    if landing_intent is not None:
-        intent_digest = str(landing_intent.get("digest") or "")
-        base_digest = str(base.get("digest") or "")
-        if not (intent_digest and base_digest == intent_digest and base.get("source") == "landed"):
-            return True
+    if _has_unfinalized_landing_intent(meta_dir, copy_path):
+        return True
     if unresolved_non_marker_conflicts(copy_path):
         return True
     links = active_links(copy_path, meta.get("links") or ())
@@ -1613,16 +1624,28 @@ def apply_copy_changes(
     *,
     expected_current: Mapping[str, Mapping[str, Any] | None] | None = None,
     mutated_paths: list[str] | None = None,
+    completed_paths: list[str] | None = None,
     cancel_event: threading.Event | None = None,
 ) -> None:
     """Write merged file changes into ``project_dir``, re-checking each target against ``expected_current`` first."""
     deletes = [rel for rel, kind, _a, _d in changes if kind == "deleted"]
     writes = [(rel, kind) for rel, kind, _a, _d in changes if kind != "deleted"]
     touched: list[str] = mutated_paths if mutated_paths is not None else []
+    done: list[str] | None = completed_paths
+    pruned_dirs: set[str] = set()
 
     def _assert_not_drifted(rel: str) -> None:
         if expected_current is not None and rel in expected_current:
-            drifted = verify_project_unchanged(project_dir, {rel: expected_current[rel]})
+            expected_entry = expected_current[rel]
+            if (
+                isinstance(expected_entry, Mapping)
+                and expected_entry.get("kind") == "replaced_dir"
+                and rel in pruned_dirs
+            ):
+                # This landing already pruned ``rel`` during the delete phase above; verify
+                # nothing external materialized at ``rel`` in the meantime.
+                expected_entry = None
+            drifted = verify_project_unchanged(project_dir, {rel: expected_entry})
             if drifted:
                 raise CopyProjectDrifted(drifted, touched)
 
@@ -1638,11 +1661,16 @@ def apply_copy_changes(
         # Prune newly emptied directories inside project_dir.
         parent = (project_dir / rel).parent
         while parent != project_dir and relative_posix(parent, project_dir):
+            parent_rel = relative_posix(parent, project_dir)
             try:
                 os.rmdir(fs_path(parent))
             except OSError:
                 break
+            if parent_rel:
+                pruned_dirs.add(parent_rel)
             parent = parent.parent
+        if done is not None:
+            done.append(rel)
 
     for rel, _kind in writes:
         _check_cancelled(cancel_event)
@@ -1664,6 +1692,8 @@ def apply_copy_changes(
                 else:
                     os.remove(target)
             os.symlink(str(entry["target"]), target)
+            if done is not None:
+                done.append(rel)
             continue
         if os.path.lexists(target) and (os.path.islink(target) or os.path.isdir(target)):
             if os.path.isdir(target) and not is_dir_link(target_path):
@@ -1685,6 +1715,8 @@ def apply_copy_changes(
             if existing_mode is None or desired_mode != existing_mode:
                 with contextlib.suppress(OSError):
                     os.chmod(target, desired_mode)
+        if done is not None:
+            done.append(rel)
 
 
 def verify_copy_changes(
@@ -1836,7 +1868,7 @@ def prepare_copy_conflicts_sync(
         raise ValueError(
             f"working copy {copy_path} has an incomplete rollback backup under {meta_dir / _PENDING_DIR}; recover or discard it"
         )
-    if _read_landing_intent(meta_dir) is not None:
+    if _has_unfinalized_landing_intent(meta_dir, copy_path):
         raise ValueError(
             f"working copy {copy_path} has an unfinalized landing under {meta_dir / _PENDING_DIR}; recover or discard it"
         )
@@ -2275,6 +2307,8 @@ def _snapshot_conflict_path(copy_path: Path, rel: str) -> dict[str, Any]:
         return {"kind": "dir"}
     try:
         st = os.lstat(target)
+        if not stat.S_ISREG(st.st_mode):
+            return {"kind": "special", "mode": stat.S_IFMT(st.st_mode)}
         return {"kind": "file", "sha256": _hash_file(target), "size": st.st_size}
     except OSError:
         return {"kind": "unreadable"}
@@ -2302,7 +2336,7 @@ def unresolved_non_marker_conflicts(copy_path: Path) -> tuple[str, ...]:
             still_unresolved.append(rel)
             continue
         current = _snapshot_conflict_path(copy_path, rel)
-        if current == expected:
+        if current == expected or current.get("kind") in ("special", "unreadable"):
             still_unresolved.append(rel)
     return tuple(still_unresolved)
 
@@ -2316,24 +2350,31 @@ def resolve_copy_conflict_sync(
     """Explicitly settle a recorded non-text conflict in ``copy_path`` by choosing ``worktree`` or ``project``."""
     if choose not in ("worktree", "project"):
         raise ValueError(f"choose must be 'worktree' or 'project', got {choose!r}")
-    norm_rel = rel.replace("\\", "/").strip("/")
+    raw_rel = rel.strip("/")
     meta_dir = copy_meta_dir(copy_path)
     if _has_incomplete_rollback(meta_dir):
         raise ValueError(
             f"working copy {copy_path} has an incomplete rollback backup under {meta_dir / _PENDING_DIR}; recover or discard it"
         )
-    if _read_landing_intent(meta_dir) is not None:
+    if _has_unfinalized_landing_intent(meta_dir, copy_path):
         raise ValueError(
             f"working copy {copy_path} has an unfinalized landing under {meta_dir / _PENDING_DIR}; recover or discard it"
         )
     unresolved_file = meta_dir / _CONFLICTS_DIR / _UNRESOLVED_CONFLICTS_FILE
     if not unresolved_file.is_file():
-        raise ValueError(f"no unresolved non-text conflict recorded for {norm_rel!r}")
+        raise ValueError(f"no unresolved non-text conflict recorded for {raw_rel!r}")
     try:
         raw = json.loads(unresolved_file.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         raise ValueError(f"could not read unresolved conflict state: {exc}") from exc
     entries = dict(raw.get("entries") or {}) if isinstance(raw, dict) else {}
+    # Match exact scanner-recorded name first; only convert backslashes when backslash is the OS separator.
+    if raw_rel in entries:
+        norm_rel = raw_rel
+    elif os.sep == "\\" and rel.replace("\\", "/").strip("/") in entries:
+        norm_rel = rel.replace("\\", "/").strip("/")
+    else:
+        raise ValueError(f"no unresolved non-text conflict recorded for {raw_rel!r}")
     info = entries.get(norm_rel)
     if not isinstance(info, dict):
         raise ValueError(f"no unresolved non-text conflict recorded for {norm_rel!r}")
@@ -2379,17 +2420,26 @@ def resolve_copy_conflict_sync(
         if not os.path.isfile(fs_path(blob)):
             raise ValueError(f"saved blob {sha} for {norm_rel!r} ({choose}) is missing")
         os.makedirs(fs_path(target_path.parent), exist_ok=True)
-        if os.path.lexists(target) and (os.path.islink(target) or os.path.isdir(target)):
-            if os.path.isdir(target) and not is_dir_link(target_path):
-                os.rmdir(target)
-            elif is_dir_link(target_path):
-                remove_dir_link(target_path)
-            else:
-                os.remove(target)
-        shutil.copyfile(fs_path(blob), target)
-        if sys.platform != "win32" and "mode" in chosen:
+        tmp_path = target_path.parent / f".{target_path.name}.{uuid.uuid4().hex}.tmp"
+        tmp_fs = fs_path(tmp_path)
+        try:
+            shutil.copyfile(fs_path(blob), tmp_fs)
+            if sys.platform != "win32" and "mode" in chosen:
+                with contextlib.suppress(OSError):
+                    os.chmod(tmp_fs, int(chosen["mode"]))
+            if os.path.lexists(target) and (os.path.islink(target) or os.path.isdir(target)):
+                if os.path.isdir(target) and not is_dir_link(target_path):
+                    os.rmdir(target)
+                elif is_dir_link(target_path):
+                    remove_dir_link(target_path)
+                else:
+                    os.remove(target)
+            os.replace(tmp_fs, target)
+        except BaseException:
             with contextlib.suppress(OSError):
-                os.chmod(target, int(chosen["mode"]))
+                if os.path.lexists(tmp_fs):
+                    os.unlink(tmp_fs)
+            raise
     else:
         raise ValueError(f"unsupported conflict entry for {norm_rel!r}: {chosen!r}")
     entries.pop(norm_rel, None)

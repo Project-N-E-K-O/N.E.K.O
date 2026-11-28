@@ -436,7 +436,8 @@ async def test_pull_request_landing_with_gh_cli_shim(tmp_path: Path, monkeypatch
     assert res.pr_url == "https://github.com/acme/demo/pull/456" and res.pr_number == 456
     assert _git(bare, "rev-parse", "refs/heads/feat/gh").strip() == res.commit
     call_data = json.loads(recorded.read_text(encoding="utf-8"))
-    assert "--repo" in call_data["argv"] and "acme/demo" in call_data["argv"]
+    repo_idx = call_data["argv"].index("--repo")
+    assert call_data["argv"][repo_idx + 1] == "acme/demo"
     assert "--draft" in call_data["argv"] and "--head" in call_data["argv"] and "feat/gh" in call_data["argv"]
     assert call_data["stdin"] == "Line 1\nLine 2\n"
     await mgr.remove(tree)
@@ -2442,7 +2443,9 @@ async def test_coderabbit_and_greptile_pr_recovery_and_retargeting(
     assert await fresh_manager.has_pending_delivery(wt_pr_gh) is False
     recorded_calls = json.loads(gh_log.read_text(encoding="utf-8"))
     assert [c[:2] for c in recorded_calls] == [["pr", "create"], ["pr", "list"]]
-    assert all("--repo" in c and "org/repo" in c for c in recorded_calls)
+    for call_argv in recorded_calls:
+        repo_idx = call_argv.index("--repo")
+        assert call_argv[repo_idx + 1] == "org/repo"
     await fresh_manager.remove(wt_pr_gh)
 
     # Cross-process recovery with custom create_pr + find_pr callback.
@@ -3542,5 +3545,313 @@ async def test_round18_git_push_flags_oid_note_delivery_and_dep_links(
         assert "install what you need there" in said_without
         assert texts.TASK_AGENT_TREE_LINKED_DEPS[:20] not in said_without
         await host.task_agents.worktrees.remove(wt_with)
+    finally:
+        await host.shutdown()
+
+
+async def test_round19_greptile_copy_fixes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify dir-to-file replacement landing, atomic conflict resolution staging, and non-blocking FIFO snapshot."""
+    import stat as stat_mod
+
+    mgr = WorktreeManager()
+
+    # 1. Replacing directory `docs/a.txt` with regular file `docs` lands cleanly (pruned dir accounted for),
+    #    and concurrent external recreation after pruning still triggers drift detection.
+    proj_dir_rep = tmp_path / "dir_rep_proj"
+    _write(proj_dir_rep / "docs" / "a.txt", "nested\n")
+    wt_rep = await mgr.create(proj_dir_rep, tmp_path / "wt" / "dir_rep1")
+    shutil.rmtree(wt_rep.path / "docs")
+    _write(wt_rep.path / "docs", "now-a-file\n")
+    landed = await mgr.merge_back(wt_rep)
+    assert landed.status == "landed", landed.detail
+    assert (proj_dir_rep / "docs").is_file()
+    assert (proj_dir_rep / "docs").read_text(encoding="utf-8") == "now-a-file\n"
+    await mgr.remove(wt_rep)
+
+    # 2. Failed resolve_conflict copy writes to a temp file first, leaving the original conflicted file
+    #    intact and still blocked as unresolved rather than landing a truncated file.
+    proj_bin = tmp_path / "atomic_resolve_proj"
+    proj_bin.mkdir()
+    (proj_bin / "data.bin").write_bytes(b"\x00\x01base")
+    wt_bin = await mgr.create(proj_bin, tmp_path / "wt" / "atomic_res1")
+    (proj_bin / "data.bin").write_bytes(b"\x00\x02project")
+    (wt_bin.path / "data.bin").write_bytes(b"\x00\x03worktree")
+    clash = await mgr.merge_back(wt_bin)
+    assert clash.status == "conflict"
+    wt_bin = await mgr.prepare_conflicts(wt_bin, clash)
+
+    orig_copyfile = shutil.copyfile
+
+    def fail_mid_copy(src: Any, dst: Any, *args: Any, **kwargs: Any) -> Any:
+        if str(dst).endswith(".tmp"):
+            Path(dst).write_bytes(b"\x00")
+            raise OSError("simulated ENOSPC mid-copy")
+        return orig_copyfile(src, dst, *args, **kwargs)
+
+    with monkeypatch.context() as mp:
+        mp.setattr(shutil, "copyfile", fail_mid_copy)
+        with pytest.raises(WorktreeError, match="simulated ENOSPC mid-copy"):
+            await mgr.resolve_conflict(wt_bin, "data.bin", choose="project")
+    # Original conflicted file stays untouched, no stray .tmp file remains, and landing stays blocked.
+    assert (wt_bin.path / "data.bin").read_bytes() == b"\x00\x03worktree"
+    assert not list(wt_bin.path.glob("*.tmp"))
+    still_blocked = await mgr.merge_back(wt_bin)
+    assert still_blocked.status == "conflict" and "data.bin" in still_blocked.conflicts
+    assert (proj_bin / "data.bin").read_bytes() == b"\x00\x02project"
+
+    # 3. _snapshot_conflict_path checks stat.S_ISREG before hashing so a FIFO never blocks/hangs.
+    orig_lstat = os.lstat
+
+    class _FakeFifoStat:
+        def __init__(self, real: Any) -> None:
+            self.st_mode = stat_mod.S_IFIFO | 0o600
+            self.st_size = 0
+            self.st_dev = real.st_dev
+            self.st_ino = real.st_ino
+
+    def fake_fifo_lstat(p: Any, *args: Any, **kwargs: Any) -> Any:
+        real = orig_lstat(p, *args, **kwargs)
+        if str(p).endswith("data.bin"):
+            return _FakeFifoStat(real)
+        return real
+
+    def forbid_hash(_p: Any) -> str:
+        pytest.fail("_hash_file must not be called for non-regular special files")
+
+    with monkeypatch.context() as mp:
+        mp.setattr(os, "lstat", fake_fifo_lstat)
+        mp.setattr(_copy_trees, "_hash_file", forbid_hash)
+        snap = _copy_trees._snapshot_conflict_path(wt_bin.path, "data.bin")
+        assert snap == {"kind": "special", "mode": stat_mod.S_IFIFO}
+        # FIFO replacement must keep the conflict unresolved (manual intervention required).
+        assert "data.bin" in _copy_trees.unresolved_non_marker_conflicts(wt_bin.path)
+
+    # 4. resolve_copy_conflict_sync preserves literal backslashes on POSIX (exact match before OS sep).
+    unresolved_path = _copy_trees.copy_meta_dir(wt_bin.path) / "conflicts" / _copy_trees._UNRESOLVED_CONFLICTS_FILE
+    saved_unresolved = json.loads(unresolved_path.read_text(encoding="utf-8"))
+    with monkeypatch.context() as mp:
+        mp.setattr(os, "sep", "/")
+        with pytest.raises(ValueError, match="no unresolved"):
+            _copy_trees.resolve_copy_conflict_sync(wt_bin.path, "sub\\data.bin", choose="worktree")
+    unresolved_path.write_text(json.dumps(saved_unresolved), encoding="utf-8")
+    await mgr.remove(wt_bin)
+
+    # 5. External recreation of a pruned replaced_dir right before writing triggers CopyProjectDrifted.
+    proj_rep_drift = tmp_path / "dir_rep_drift_proj"
+    _write(proj_rep_drift / "docs" / "a.txt", "nested\n")
+    wt_rep_drift = await mgr.create(proj_rep_drift, tmp_path / "wt" / "dir_rep_drift1")
+    shutil.rmtree(wt_rep_drift.path / "docs")
+    _write(wt_rep_drift.path / "docs", "now-a-file\n")
+    orig_verify = _copy_trees.verify_project_unchanged
+    recreated = {"done": False}
+
+    def recreate_pruned_docs(project_dir: Path, expected: Any) -> list[str]:
+        if not recreated["done"] and list(expected.keys()) == ["docs"] and expected["docs"] is None:
+            recreated["done"] = True
+            _write(project_dir / "docs", "external-file\n")
+        return orig_verify(project_dir, expected)
+
+    with monkeypatch.context() as mp:
+        mp.setattr(_copy_trees, "verify_project_unchanged", recreate_pruned_docs)
+        drifted_rep = await mgr.merge_back(wt_rep_drift)
+    assert drifted_rep.status == "failed" and "docs" in drifted_rep.detail
+    assert (proj_rep_drift / "docs").read_text(encoding="utf-8") == "external-file\n"
+    await mgr.remove(wt_rep_drift)
+
+    # 6. Rollback in _land_copy preserves a file edited to v3 by the user AFTER apply_copy_changes wrote v2,
+    #    reporting it in left_changed and keeping backup copies.
+    proj_rb = tmp_path / "rb_v3_proj"
+    _write(proj_rb / "a.txt", "a-v1\n")
+    _write(proj_rb / "b.txt", "b-v1\n")
+    wt_rb = await mgr.create(proj_rb, tmp_path / "wt" / "rb_v3_1")
+    _write(wt_rb.path / "a.txt", "a-v2\n")
+    _write(wt_rb.path / "b.txt", "b-v2\n")
+    injected_rb = {"done": False}
+
+    def edit_both_before_b(project_dir: Path, expected: Any) -> list[str]:
+        if not injected_rb["done"] and list(expected.keys()) == ["b.txt"]:
+            injected_rb["done"] = True
+            _write(project_dir / "a.txt", "a-user-v3\n")
+            _write(project_dir / "b.txt", "b-user-v3\n")
+        return orig_verify(project_dir, expected)
+
+    with monkeypatch.context() as mp:
+        mp.setattr(_copy_trees, "verify_project_unchanged", edit_both_before_b)
+        rb_res = await mgr.merge_back(wt_rb)
+    assert rb_res.status == "failed" and "a.txt" in rb_res.left_changed and rb_res.kept_copies
+    assert (proj_rb / "a.txt").read_text(encoding="utf-8") == "a-user-v3\n"
+    assert (proj_rb / "b.txt").read_text(encoding="utf-8") == "b-user-v3\n"
+    await mgr.remove(wt_rb)
+
+    # 7. forget_gone allows cleanup when landing_intent.json is already finalized in base_manifest.json,
+    #    and _remove_what_is_left returns False (incomplete) when copy_matches_identity returns "unknown".
+    proj_fin = tmp_path / "fin_intent_proj"
+    _write(proj_fin / "f.txt", "v1\n")
+    wt_fin = await mgr.create(proj_fin, tmp_path / "wt" / "fin_intent1")
+    _write(wt_fin.path / "f.txt", "v2\n")
+    assert (await mgr.merge_back(wt_fin)).status == "landed"
+    meta_fin = _copy_trees.copy_meta_dir(wt_fin.path)
+    base_fin = _copy_trees.read_base_manifest(wt_fin.path)
+    assert base_fin is not None
+    (meta_fin / "pending").mkdir(parents=True, exist_ok=True)
+    (meta_fin / "pending" / "landing_intent.json").write_text(
+        json.dumps({"status": "applying", "digest": base_fin["digest"]}), encoding="utf-8"
+    )
+    _copy_trees.remove_tree_safe(wt_fin.path)
+    await mgr.forget_gone(proj_fin, wt_fin.path, wt_fin.id, token=wt_fin.token)
+    assert not meta_fin.exists()
+
+    host_u = make_host(tmp_path / "data_unknown", None, task_agent_model=fake_model, decision_llm=FakeDecisionLLM())
+    try:
+        proj_unk = tmp_path / "unk_proj"
+        _write(proj_unk / "u.txt", "u\n")
+        wt_unk = await host_u.task_agents.worktrees.create(proj_unk, host_u.paths.worktree_dir("unk1"))
+        await host_u.ledger.add_tree(
+            id=wt_unk.id,
+            project="Unk",
+            project_dir=str(proj_unk),
+            repo_root="",
+            path=str(wt_unk.path),
+            workdir=str(wt_unk.workdir),
+            token=wt_unk.token,
+            state="unlanded",
+            reason="stopped",
+            lanlan_name="Lan",
+        )
+        shutil.rmtree(proj_unk)
+        row_unk = await host_u.ledger.get_tree(wt_unk.id)
+        assert row_unk is not None
+        with monkeypatch.context() as mp:
+            mp.setattr(_copy_trees, "copy_matches_identity", lambda *_a, **_kw: "unknown")
+            assert await host_u.task_agents._remove_what_is_left(row_unk) is False
+        assert wt_unk.path.is_dir() and _copy_trees.copy_meta_dir(wt_unk.path).is_dir()
+    finally:
+        await host_u.shutdown()
+
+
+@pytest.mark.skipif(REAL_GIT_TOO_OLD, reason="git >= 2.38 required")
+async def test_round19_coderabbit_git_and_tree_work_fixes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verify live dep-link prompt check, pr_pending WorkingFiles/expiry guards, and explicit conflict target persistence."""
+    local, _bare, _other = _make_repo_with_remote(tmp_path / "r19_git")
+    _write(local / ".gitignore", "node_modules/\n")
+    _git(local, "add", ".gitignore")
+    _git(local, "commit", "-q", "--no-gpg-sign", "-m", "ignore node_modules")
+    _git(local, "push", "-q", "origin", "main")
+    _write(local / "node_modules" / "pkg" / "index.js", "module.exports = 1;\n")
+
+    host = make_host(tmp_path / "data_r19_git", None, task_agent_model=fake_model, decision_llm=FakeDecisionLLM())
+    try:
+        # 1. Replacing a cached dependency link with a real directory drops it from _tree_said prompt.
+        wt_dep = await host.task_agents.worktrees.create(local, host.paths.worktree_dir("r19dep1"))
+        opened = await host.open_session("Lan", name="R19", workdir=str(local))
+        comm, _ = await host.ledger.create(
+            lanlan_name="Lan", title="work", dispatch_text="work", user_text="work",
+            source="task_agent", route="task_agent", session_id=opened["session_id"],
+        )
+        await host.ledger.add_tree(
+            id=wt_dep.id,
+            commission_id=comm.id,
+            session_id=opened["session_id"],
+            project="R19",
+            project_dir=str(local),
+            repo_root=str(wt_dep.repo_root),
+            path=str(wt_dep.path),
+            workdir=str(wt_dep.workdir),
+            token=wt_dep.token,
+            state="active",
+            reason="",
+            lanlan_name="Lan",
+        )
+        host.task_agents._tree_handles[wt_dep.id] = wt_dep
+        host.task_agents._tree_of[comm.id] = wt_dep.id
+        assert "outside any shared dependency link" in await host.task_agents._tree_said(comm)
+        _copy_trees.remove_dir_link(wt_dep.path / "node_modules")
+        _write(wt_dep.path / "node_modules" / "local.js", "export const x = 1;\n")
+        said_after_replace = await host.task_agents._tree_said(comm)
+        assert "install what you need there" in said_after_replace
+        assert "outside any shared dependency link" not in said_after_replace
+        await host.task_agents.worktrees.remove(wt_dep)
+
+        # 2. When pr_pending is True, WorkingFiles landing refuses BEFORE touching project files
+        #    and expire_tree skips deletion (both on True and on fail-closed error).
+        wt_pr = await host.task_agents.worktrees.create(
+            local, host.paths.worktree_dir("r19pr1"), RemoteDefaultBranch(fetch=False)
+        )
+        _write(wt_pr.path / "a.txt", "pr-change\nline2\nline3\nline4\nline5\n")
+        orig_a = (local / "a.txt").read_text(encoding="utf-8")
+
+        async def fail_pr(_req: PRRequest) -> PRInfo:
+            raise RuntimeError("transient github 503")
+
+        pr_fail = await host.task_agents.worktrees.merge_back(
+            wt_pr, PullRequest(title="Pending PR", branch="feat/r19-pending", remote="origin", base_branch="main", create_pr=fail_pr)
+        )
+        assert pr_fail.status == "failed"
+        assert await host.task_agents.worktrees.has_pending_delivery(wt_pr) is True
+        await host.ledger.add_tree(
+            id=wt_pr.id,
+            project="R19",
+            project_dir=str(local),
+            repo_root=str(wt_pr.repo_root),
+            path=str(wt_pr.path),
+            workdir=str(wt_pr.workdir),
+            token=wt_pr.token,
+            state="unlanded",
+            reason="failed",
+            lanlan_name="Lan",
+        )
+        host.task_agents._tree_handles[wt_pr.id] = wt_pr
+        _write(wt_pr.path / "extra.txt", "must-not-write-to-project\n")
+        wf_refused = await host.land_worktree(wt_pr.id)
+        assert wf_refused["status"] == "failed" and "pending pull request" in wf_refused["detail"]
+        assert not (local / "extra.txt").exists() and (local / "a.txt").read_text(encoding="utf-8") == orig_a
+        assert wt_pr.path.is_dir()
+
+        exp_res = await host.task_agents.expire_tree(wt_pr.id, until=time.time() + 3600)
+        assert exp_res == {"expired": False, "reason": "pending_delivery"}
+        assert wt_pr.path.is_dir()
+        await host.task_agents.worktrees.remove(wt_pr)
+
+        # 3. After explicit branch conflict preparation, retrying without `landing` (WorkingFiles)
+        #    or with another branch is refused (never returns unchanged or deletes the worktree).
+        wt_cf = await host.task_agents.worktrees.create(
+            local, host.paths.worktree_dir("r19cf1"), RemoteDefaultBranch(fetch=False)
+        )
+        _write(wt_cf.path / "a.txt", "branch-v1\nline2\nline3\nline4\nline5\n")
+        assert (await host.task_agents.worktrees.merge_back(wt_cf, BranchCommit(branch="feat/r19-cf", message="v1"))).status == "landed"
+        ext = tmp_path / "ext_r19_cf"
+        _git(local, "worktree", "add", "-q", str(ext), "feat/r19-cf")
+        _write(ext / "a.txt", "branch-v2\nline2\nline3\nline4\nline5\n")
+        _git(ext, "add", "a.txt")
+        _git(ext, "commit", "-q", "--no-gpg-sign", "-m", "ext v2")
+        _git(local, "worktree", "remove", "--force", str(ext))
+        _write(wt_cf.path / "a.txt", "wt-v2\nline2\nline3\nline4\nline5\n")
+        await host.ledger.add_tree(
+            id=wt_cf.id,
+            project="R19",
+            project_dir=str(local),
+            repo_root=str(wt_cf.repo_root),
+            path=str(wt_cf.path),
+            workdir=str(wt_cf.workdir),
+            token=wt_cf.token,
+            state="unlanded",
+            reason="conflict",
+            lanlan_name="Lan",
+        )
+        host.task_agents._tree_handles[wt_cf.id] = wt_cf
+        cf_ans = await host.land_worktree(wt_cf.id, landing=BranchCommit(branch="feat/r19-cf", message="v2"))
+        assert cf_ans["status"] == "conflict" and cf_ans["resolving"] is False
+        # Resolve back to original project content: default WorkingFiles retry MUST be refused, not unchanged!
+        _write(wt_cf.path / "a.txt", orig_a)
+        no_target = await host.land_worktree(wt_cf.id)
+        assert no_target["status"] == "failed" and "feat/r19-cf" in no_target["detail"]
+        assert wt_cf.path.is_dir()
+        wrong_target = await host.land_worktree(wt_cf.id, landing=BranchCommit(branch="feat/other", message="wrong"))
+        assert wrong_target["status"] == "failed" and "feat/r19-cf" in wrong_target["detail"]
+        right_target = await host.land_worktree(wt_cf.id, landing=BranchCommit(branch="feat/r19-cf", message="resolved"))
+        assert right_target["status"] == "landed", right_target
+        assert _git(local, "show", "feat/r19-cf:a.txt") == orig_a
     finally:
         await host.shutdown()

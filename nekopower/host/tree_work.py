@@ -809,7 +809,10 @@ class TreeWork:
 
                 if row.token and meta.get("token") != row.token:
                     return False
-                if _copy_trees.copy_matches_identity(path, meta, _directory_identity(path)) != "ours":
+                identity_match = _copy_trees.copy_matches_identity(path, meta, _directory_identity(path))
+                if identity_match == "unknown":
+                    return "incomplete"
+                if identity_match != "ours":
                     return False
                 saved_times = _snapshot_dir_times(path, skip_names=frozenset()) if before_delete is not None else []
                 if before_delete is not None and not before_delete(path):
@@ -1059,7 +1062,7 @@ class TreeWork:
                 except (WorktreeError, OSError) as exc:
                     logger.warning("auto-expired worktree %s could not be removed on retry: %s", row.id, exc)
                     return False
-                if outcome == "aborted":
+                if outcome in ("aborted", "pending_delivery"):
                     return False
                 self._forget_tree(row)
                 self._tree_handles.pop(row.id, None)
@@ -1351,11 +1354,17 @@ class TreeWork:
             self._turn_waiters.pop(kept.id, None)
 
     async def _tree_kind_and_links(self, row: Tree) -> tuple[str, tuple[str, ...]]:
-        """Return ``(kind, linked_dependencies)`` for ``row``, falling back to on-disk copy metadata after restart."""
+        """Return ``(kind, active_linked_dependencies)`` for ``row``, checking live links on disk."""
+        from nekopower.host import _copy_trees
+
         handle = self._tree_handles.get(row.id)
         if handle is not None:
-            return getattr(handle, "kind", "git"), tuple(getattr(handle, "linked_dependencies", ()) or ())
-        from nekopower.host import _copy_trees
+            kind = getattr(handle, "kind", "git")
+            cached_links = tuple(getattr(handle, "linked_dependencies", ()) or ())
+            if not cached_links:
+                return kind, ()
+            live_links = await asyncio.to_thread(_copy_trees.active_links, Path(row.path), cached_links)
+            return kind, live_links
 
         def inspect_disk() -> tuple[str, tuple[str, ...]]:
             path = Path(row.path)
@@ -1853,6 +1862,14 @@ class TreeWork:
             async with quiet_cm:
                 if unless is not None and unless():
                     return None
+                if touches_working_files and await self._has_pending_delivery(row, handle):
+                    return MergeResult(
+                        "failed",
+                        detail=(
+                            "a pushed branch in this worktree still has a pending pull request delivery; "
+                            "retry PullRequest delivery or discard this worktree"
+                        ),
+                    )
                 try:
                     result = await (
                         self.worktrees.merge_back(handle, landing)
@@ -1928,14 +1945,6 @@ class TreeWork:
                 # More was said to it while checking delivery state: it is at work in its worktree.
                 await self._ledger.update_tree(row.id, state="active")
                 return "again"
-            if pending_delivery:
-                return await self._not_landed(
-                    row,
-                    commission,
-                    done,
-                    REASON_FAILED,
-                    detail="a pushed branch in this worktree still has a pending pull request delivery",
-                )
             told, shown = self._landed_texts(
                 row,
                 commission.lang,
@@ -1947,6 +1956,10 @@ class TreeWork:
                 commit=getattr(result, "commit", ""),
                 pr_url=getattr(result, "pr_url", ""),
             )
+            if pending_delivery:
+                pending_note = "A pushed branch in this worktree still has a pending pull request delivery; the worktree was kept."
+                told = f"{told}\n\n{pending_note}" if told else pending_note
+                shown = f"{shown}\n\n{pending_note}" if shown else pending_note
             text = "\n\n".join(part for part in (done.text, told) if part)
             # Done first, and its worktree seen to after: what the user says to it while its
             # directory goes is a new commission's, and no run begins in it. Not done under a
@@ -1958,7 +1971,7 @@ class TreeWork:
             # in place: no run begins, or goes on, in one that a host that starts would remove.
             with self._nothing_more_said(commission_id):
                 try:
-                    if not result.skipped:
+                    if not result.skipped and not pending_delivery:
                         # On record as one to remove from here on (what it held is landed): shown nowhere,
                         # in nobody's way, and removed as the host next starts should it end this moment.
                         await self._ledger.update_tree(row.id, state="discarding")
@@ -2514,8 +2527,8 @@ class TreeWork:
                 )
             if await self._has_pending_delivery(row, handle):
                 detail = "a pushed branch in this worktree still has a pending pull request delivery"
-                answer["status"] = "failed"
-                answer["detail"] = detail
+                answer["pending_delivery"] = True
+                answer["detail"] = f"{answer['detail']}; {detail}" if answer["detail"] else detail
                 await self._ledger.update_tree(
                     row.id,
                     state="kept" if was_kept else "unlanded",
@@ -2971,6 +2984,9 @@ class TreeWork:
                         logger.warning("worktree %s expiry skipped before deletion: %s", row.id, exc)
                         await self._clear_pending_expired_trees((row.id,))
                         return {"expired": False, "reason": "not_removable"}
+                    if result == "pending_delivery":
+                        await self._clear_pending_expired_trees((row.id,))
+                        return {"expired": False, "reason": "pending_delivery"}
                     if result == "aborted" or result is False:
                         await self._clear_pending_expired_trees((row.id,))
                         return {"expired": False, "reason": abort_reason[0] if abort_reason else "touched"}

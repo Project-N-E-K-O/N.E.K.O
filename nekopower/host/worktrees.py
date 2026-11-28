@@ -939,7 +939,14 @@ class WorktreeManager:
             except BaseException:
                 await _to_the_end(asyncio.to_thread(_remove_tree, saved))
                 raise
+            common = Path(
+                (await self._git(worktree.repo_root, "rev-parse", "--path-format=absolute", "--git-common-dir")).lines()[0]
+            )
+            prior_delivery = await asyncio.to_thread(
+                _noted_delivery, common, worktree.path, strict=bool(conflict.branch)
+            )
             keep_saved = False
+            wrote_conflict_target = False
             relinked: tuple[str, ...] = active
             try:
                 # Unlink dependency junctions/symlinks before forced checkout so git never traverses them.
@@ -974,6 +981,17 @@ class WorktreeManager:
                     admin = Path((await self._git(worktree.path, "rev-parse", "--absolute-git-dir")).lines()[0])
                     await _to_the_end(asyncio.to_thread(_note_links, admin, relinked))
                 await self._git(worktree.repo_root, "update-ref", _start_ref(worktree.id), conflict.current)
+                if conflict.branch or prior_delivery.get("pending_conflict_target"):
+                    next_delivery = dict(prior_delivery)
+                    if conflict.branch:
+                        next_delivery["pending_conflict_target"] = {
+                            "branch": conflict.branch,
+                            "remote": conflict.remote,
+                        }
+                    else:
+                        next_delivery.pop("pending_conflict_target", None)
+                    await _to_the_end(asyncio.to_thread(_note_delivery, common, worktree.path, next_delivery))
+                    wrote_conflict_target = True
             except BaseException as error:
                 # Its files as they were (the result snapshot holds them) and
                 # its start as it was, so the same conflict can be prepared
@@ -1068,6 +1086,11 @@ class WorktreeManager:
                         await self._put_start_back(worktree, start, error)
                     except Exception as failed:
                         error.add_note(f"the start of worktree {worktree.id} could not be set back to {start}: {failed}")
+                    if wrote_conflict_target:
+                        try:
+                            await asyncio.to_thread(_note_delivery, common, worktree.path, prior_delivery)
+                        except Exception as failed:
+                            error.add_note(f"the delivery note for worktree {worktree.id} could not be put back: {failed}")
 
                 putting = asyncio.ensure_future(put_back())
                 cancelled = await _settle(putting)
@@ -1166,6 +1189,17 @@ class WorktreeManager:
         async with await self._lock(worktree.repo_root):
             if is_untouched is not None and not await asyncio.to_thread(is_untouched, worktree.path):
                 return "aborted"
+            if await asyncio.to_thread(worktree.path.is_dir):
+                common = Path(
+                    (
+                        await self._git(
+                            worktree.repo_root, "rev-parse", "--path-format=absolute", "--git-common-dir"
+                        )
+                    ).lines()[0]
+                )
+                delivery = await asyncio.to_thread(_noted_delivery, common, worktree.path, strict=True)
+                if delivery.get("pr_pending") or delivery.get("pending_pr"):
+                    return "pending_delivery"
             outcome = await self._forget(
                 worktree.repo_root,
                 worktree.path,
@@ -1225,7 +1259,7 @@ class WorktreeManager:
                     ) from exc
                 if not force:
                     has_incomplete = await asyncio.to_thread(_copy_trees._has_incomplete_rollback, meta_dir)
-                    has_intent = await asyncio.to_thread(lambda: _copy_trees._read_landing_intent(meta_dir) is not None)
+                    has_intent = await asyncio.to_thread(_copy_trees._has_unfinalized_landing_intent, meta_dir, target)
                     if has_incomplete or has_intent:
                         raise WorktreeError(
                             f"working copy {target} has pending recovery data under {meta_dir}; recover or discard explicitly"
@@ -2213,6 +2247,23 @@ class WorktreeManager:
 
         common = Path((await self._git(root, "rev-parse", "--path-format=absolute", "--git-common-dir")).lines()[0])
         delivery = await asyncio.to_thread(_noted_delivery, common, worktree.path)
+        pending_conflict = delivery.get("pending_conflict_target")
+        if isinstance(pending_conflict, dict) and pending_conflict.get("branch"):
+            pending_branch = str(pending_conflict["branch"])
+            if target_branch != pending_branch:
+                return MergeResult(
+                    "failed",
+                    detail=(
+                        f"conflicts in this worktree were prepared for branch {pending_branch!r}; "
+                        "retry that branch or discard this worktree"
+                    ),
+                    skipped=result.skipped,
+                    result=result.commit,
+                    result_tree=result.tree,
+                    base=base,
+                    branch=target_branch,
+                    remote=remote_name,
+                )
         ref_name = f"refs/heads/{target_branch}"
         existing_tip = await self._try_resolve(root, ref_name)
         owns_existing = existing_tip is not None and (
@@ -2439,7 +2490,9 @@ class WorktreeManager:
                     remote=remote_name,
                 )
             if same_owned and existing_tip is not None and (
-                not same_branch or (mark_pr_pending and not delivery.get("pr_pending"))
+                not same_branch
+                or (mark_pr_pending and not delivery.get("pr_pending"))
+                or bool(delivery.get("pending_conflict_target"))
             ):
                 finalized_delivery: dict[str, Any] = {
                     "branch": target_branch,
@@ -3532,6 +3585,33 @@ class WorktreeManager:
             stop = threading.Event()
             landed_ok = False
             mutated_paths: list[str] = []
+            completed_paths: list[str] = []
+            change_by_path = {rel: (rel, kind, added, deleted) for rel, kind, added, deleted in raw_changes}
+
+            def _restore_owned_mutations() -> list[str]:
+                mutated_set = set(mutated_paths)
+                completed_set = set(completed_paths)
+                to_restore: list[_Saved] = []
+                skipped_user_edited: list[str] = []
+                for entry in saved:
+                    if entry.name not in mutated_set:
+                        continue
+                    if entry.name in completed_set:
+                        change_item = change_by_path.get(entry.name)
+                        if change_item is not None and not _copy_trees.verify_copy_changes(
+                            project_dir,
+                            [change_item],
+                            computed["merged_entries"],
+                            computed["merged_contents"],
+                        ):
+                            # The file no longer matches what this landing wrote: preserve the
+                            # user's newer version and report it as not restored.
+                            skipped_user_edited.append(entry.name)
+                            continue
+                    to_restore.append(entry)
+                failed_restore = _restore(project_dir, to_restore)
+                return [*skipped_user_edited, *failed_restore]
+
             try:
                 await self._run_copy_worker(
                     _copy_trees.apply_copy_changes,
@@ -3542,6 +3622,7 @@ class WorktreeManager:
                     stop=stop,
                     expected_current=expected_current,
                     mutated_paths=mutated_paths,
+                    completed_paths=completed_paths,
                     cancel_event=stop,
                 )
                 ok = await self._run_copy_worker(
@@ -3562,12 +3643,7 @@ class WorktreeManager:
                 elif isinstance(error, OSError):
                     detail = f"writing the changes failed: {error}"
                 else:
-                    to_restore = (
-                        [entry for entry in saved if entry.name in set(mutated_paths)]
-                        if mutated_paths
-                        else []
-                    )
-                    putting = asyncio.ensure_future(asyncio.to_thread(_restore, project_dir, to_restore))
+                    putting = asyncio.ensure_future(asyncio.to_thread(_restore_owned_mutations))
                     cancelled = await _settle(putting)
                     if putting.exception() is not None:
                         keep = True
@@ -3588,14 +3664,9 @@ class WorktreeManager:
                     asyncio.to_thread(_copy_trees.advance_copy_baseline, worktree.path, computed["result_scan"])
                 )
                 return MergeResult("landed", **counted)
-            # Only restore paths actually mutated during apply_copy_changes so a concurrently edited
-            # drifted file is never overwritten with stale backup contents.
-            to_restore = (
-                [entry for entry in saved if entry.name in set(mutated_paths)]
-                if mutated_paths
-                else []
-            )
-            restoring = asyncio.ensure_future(asyncio.to_thread(_restore, project_dir, to_restore))
+            # Only restore mutated paths that still hold what this landing wrote so a concurrently
+            # edited file is never overwritten with stale backup contents.
+            restoring = asyncio.ensure_future(asyncio.to_thread(_restore_owned_mutations))
             cancelled = await _settle(restoring)
             left = restoring.result()
             keep = bool(left)
@@ -3736,6 +3807,43 @@ class WorktreeManager:
     async def _land_on_working_files(self, worktree: Worktree, result: Snapshot) -> MergeResult:
         root = worktree.repo_root
         base = await self._start(worktree)
+        common = Path((await self._git(root, "rev-parse", "--path-format=absolute", "--git-common-dir")).lines()[0])
+        try:
+            delivery = await asyncio.to_thread(_noted_delivery, common, worktree.path, strict=True)
+        except OSError as exc:
+            return MergeResult(
+                "failed",
+                detail=f"reading delivery state failed: {exc}",
+                skipped=result.skipped,
+                result=result.commit,
+                result_tree=result.tree,
+                base=base,
+            )
+        if delivery.get("pr_pending") or delivery.get("pending_pr"):
+            return MergeResult(
+                "failed",
+                detail=(
+                    "a pushed branch in this worktree still has a pending pull request delivery; "
+                    "retry PullRequest delivery or discard this worktree"
+                ),
+                skipped=result.skipped,
+                result=result.commit,
+                result_tree=result.tree,
+                base=base,
+            )
+        pending_conflict = delivery.get("pending_conflict_target")
+        if isinstance(pending_conflict, dict) and pending_conflict.get("branch"):
+            return MergeResult(
+                "failed",
+                detail=(
+                    f"conflicts in this worktree were prepared for branch {pending_conflict['branch']!r}; "
+                    "retry BranchCommit or PullRequest for that branch instead of WorkingFiles"
+                ),
+                skipped=result.skipped,
+                result=result.commit,
+                result_tree=result.tree,
+                base=base,
+            )
         # The user's files may hold conflict markers of their own then: no
         # landing on top of them.
         unfinished = await self._unfinished(root)  # an operation, or a stash pop's unmerged entries
