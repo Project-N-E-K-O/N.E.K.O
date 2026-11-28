@@ -625,20 +625,29 @@ class MemoryRecallReranker:
         )
         from utils.decision_client import ChoiceQuestion, ask_site_questions
         from utils.decision_client.routing import SITE_MEMORY_RECALL
-        from utils.tokenize import truncate_to_tokens
+        from utils.tokenize import count_tokens, truncate_to_tokens
 
         if not cand_entries:
             return None
         query_budget = max(256, DECISION_STATE_MAX_TOKENS // 4)
         state = RECALL_DECISION_STATE_HEADER + truncate_to_tokens(query_text, query_budget)
+        # The options of all groups together stay within DECISION_STATE_MAX_TOKENS,
+        # as the old per-candidate state did; candidates past it keep their
+        # coarse place behind the asked ones.
+        options: list[str] = []
+        used = 0
+        for cid, _line in cand_entries:
+            option = truncate_to_tokens(id_to_obs[cid].get('text', '') or '', RECALL_PER_CANDIDATE_MAX_TOKENS)
+            cost = count_tokens(option) + 1
+            if options and used + cost > DECISION_STATE_MAX_TOKENS:
+                break
+            options.append(option)
+            used += cost
         questions: dict = {}
-        for start in range(0, len(cand_entries), RECALL_DECISION_GROUP_SIZE):
+        for start in range(0, len(options), RECALL_DECISION_GROUP_SIZE):
             criteria: dict[str, str] = {}
-            for i in range(start, min(start + RECALL_DECISION_GROUP_SIZE, len(cand_entries))):
-                cid = cand_entries[i][0]
-                criteria[f"m{i}"] = truncate_to_tokens(
-                    id_to_obs[cid].get('text', '') or '', RECALL_PER_CANDIDATE_MAX_TOKENS,
-                )
+            for i in range(start, min(start + RECALL_DECISION_GROUP_SIZE, len(options))):
+                criteria[f"m{i}"] = options[i]
             criteria["none"] = RECALL_DECISION_NONE
             questions[f"g{start // RECALL_DECISION_GROUP_SIZE}"] = ChoiceQuestion(
                 instructions=RECALL_DECISION_GROUP_INSTRUCTIONS, criteria=criteria,

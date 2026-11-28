@@ -1585,6 +1585,7 @@ async def _run_soccer_passive_guard_ai(data: Dict[str, Any], lanlan_name: str) -
     # first, by vendor; any miss falls back to the chat prompt below.
     from .passive_guard_decision import decide_passive_guard
 
+    decision_started = time.monotonic()
     try:
         decided = await decide_passive_guard(data, route_state, chat_config=char_info, language=language)
     except Exception as exc:
@@ -1623,7 +1624,9 @@ async def _run_soccer_passive_guard_ai(data: Dict[str, Any], lanlan_name: str) -
                 SystemMessage(content=get_soccer_passive_guard_system_prompt(language)),
                 HumanMessage(content=get_soccer_passive_guard_user_prompt(language).format(payload=prompt_payload)),
             ]),
-            timeout=6.5,
+            # What is left of the time the chat alone had: a decision question
+            # that missed must not make the whole answer later than before.
+            timeout=max(1.0, 6.5 - (time.monotonic() - decision_started)),
         )
 
     raw = _strip_json_fence(str(result.content or ""))

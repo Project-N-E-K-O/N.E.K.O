@@ -2697,3 +2697,29 @@ async def test_connectivity_decision_probe_uses_siliconflow_systemone():
     assert mock_dec.await_args.args[0] == "https://api.siliconflow.cn/v1/systemone"
     assert mock_dec.await_args.kwargs["model"] == "Kev-4B"
     assert mock_dec.await_args.kwargs["protocol"] == "systemone"
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_memory_recall_options_stay_within_the_decision_budget(monkeypatch):
+    # The options of all groups together are bounded like the old per-candidate state.
+    import config
+
+    from utils.decision_client.schema import DecisionAnswer, DecisionResponse
+
+    monkeypatch.setattr(config, "DECISION_STATE_MAX_TOKENS", 300)
+    candidates = [{"id": f"m{i}", "text": "word " * 60, "score": float(40 - i)} for i in range(40)]
+    seen: dict = {}
+
+    async def _decide(self, *, state, questions, **kwargs):
+        seen["options"] = sum(len([k for k in q.criteria if k != "none"]) for q in questions.values())
+        return DecisionResponse(
+            answers={g: DecisionAnswer(question_type="choice", value="none", probabilities={"none": 1.0}) for g in questions},
+            model="decision-model", protocol="systemone")
+
+    with patch.object(DecisionClient, "decide", _decide):
+        ranked = await _recall_rank(candidates, budget=30, cm=_recall_cm())
+    assert 0 < seen["options"] < 40
+    # Candidates past the budget keep their coarse place behind the asked ones.
+    assert [r["id"] for r in ranked] == [f"m{i}" for i in range(30)]
+

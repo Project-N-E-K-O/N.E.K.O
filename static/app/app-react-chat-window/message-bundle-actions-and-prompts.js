@@ -2269,9 +2269,10 @@
     var reactionGeneration = 0;
     var reactionCandidates = new Map();
     var reactionAttempts = new Set();
-    // Any one emoji (owner decision D20): a single grapheme holding a pictograph,
-    // a flag letter or a keycap. Plain text, letters and digits are refused.
-    var REACTION_EMOJI_MARK = /\p{Extended_Pictographic}|\p{Regional_Indicator}|⃣/u;
+    // Any one emoji (owner decision D20): a single grapheme shown as an emoji
+    // (emoji presentation, a variation selector, or a flag letter). Plain text,
+    // letters, digits and text-style symbols are refused.
+    var REACTION_EMOJI_MARK = /\p{Emoji_Presentation}|\u{FE0F}|\p{Regional_Indicator}/u;
     var reactionGraphemes = (typeof Intl !== 'undefined' && typeof Intl.Segmenter === 'function')
         ? new Intl.Segmenter(undefined, { granularity: 'grapheme' }) : null;
     function isSingleReactionEmoji(value) {

@@ -275,6 +275,7 @@ describe('message-schema', () => {
   it.each([
     { emoji: 'invalid', author: 'Neko' },
     { emoji: 'A', author: 'Neko' },
+    { emoji: '\u00a9', author: 'Neko' },
     { emoji: '1', author: 'Neko' },
     { emoji: '😊😄', author: 'Neko' },
     { emoji: ' 😊', author: 'Neko' },

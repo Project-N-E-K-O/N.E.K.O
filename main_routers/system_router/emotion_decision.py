@@ -211,7 +211,7 @@ class FirstTokenReading:
 
     async def full_text(self) -> str:
         """The whole answer, prefill included, once the stream ends."""
-        return EMOTION_PREFILL + self._first_text + await self._rest
+        return EMOTION_PREFILL + await self._rest
 
     def cancel(self) -> None:
         self._rest.cancel()
@@ -246,12 +246,15 @@ async def start_first_token_reading(messages: list[dict], *, chat_config) -> Opt
                     if not first.done() and (chunk.content or chunk.top_logprobs):
                         cands = (chunk.top_logprobs or [[]])[0]
                         first.set_result((label_probabilities(cands), chunk.content or ""))
-                        continue
                     if chunk.content:
                         parts.append(chunk.content)
-        except BaseException as exc:
+        except asyncio.CancelledError:
             if not first.done():
-                first.set_exception(exc if isinstance(exc, Exception) else asyncio.CancelledError())
+                first.cancel()
+            raise
+        except Exception as exc:
+            if not first.done():
+                first.set_exception(exc)
             raise
         if not first.done():
             first.set_result(({}, ""))
@@ -260,6 +263,10 @@ async def start_first_token_reading(messages: list[dict], *, chat_config) -> Opt
     rest = asyncio.ensure_future(_run())
     try:
         probs, first_text = await asyncio.wait_for(asyncio.shield(first), FIRST_TOKEN_TIMEOUT_SECONDS)
+    except asyncio.TimeoutError:
+        # A slow first token: keep the stream, which is the chat prompt itself;
+        # the caller reads the whole answer as text, with no second request.
+        return FirstTokenReading({}, "", rest)
     except BaseException:
         rest.cancel()
         raise
@@ -268,41 +275,59 @@ async def start_first_token_reading(messages: list[dict], *, chat_config) -> Opt
 
 # ── Pending reactions ──────────────────────────────────────────────────
 
-_pending: dict[str, tuple["asyncio.Task[Any]", float]] = {}
+# token -> (what makes the reaction, when it was registered, what to do if nobody collects it)
+_pending: dict[str, tuple[Callable[[], Awaitable[Optional[dict]]], float, Optional[Callable[[], None]]]] = {}
 
 
-def register_pending_reaction(make: Callable[[], Awaitable[Optional[dict]]]) -> str:
-    """Start computing a reaction in the background; the token the frontend collects it by."""
+def _drop(entry) -> None:
+    _make, _made_at, on_drop = entry
+    if on_drop is not None:
+        try:
+            on_drop()
+        except Exception as exc:
+            logger.debug("[Emotion] dropping a pending reaction failed: %s", type(exc).__name__)
+
+
+def register_pending_reaction(
+    make: Callable[[], Awaitable[Optional[dict]]],
+    *,
+    on_drop: Optional[Callable[[], None]] = None,
+) -> str:
+    """Keep a reaction to be made when the frontend asks for it; the token it asks by.
+
+    Nothing runs until it is collected: many turns (proactive ones, agent
+    callbacks, games) have no user message to react to, and the frontend
+    never asks. ``on_drop`` runs when it expires or is pushed out uncollected.
+    """
     now = time.monotonic()
-    for token, (task, made_at) in list(_pending.items()):
-        if now - made_at > PENDING_REACTION_TTL_SECONDS:
-            task.cancel()
-            _pending.pop(token, None)
+    for token, entry in list(_pending.items()):
+        if now - entry[1] > PENDING_REACTION_TTL_SECONDS:
+            _drop(_pending.pop(token))
     while len(_pending) >= _MAX_PENDING_REACTIONS:
         oldest = min(_pending, key=lambda t: _pending[t][1])
-        _pending.pop(oldest)[0].cancel()
+        _drop(_pending.pop(oldest))
     token = secrets.token_urlsafe(12)
-    _pending[token] = (asyncio.ensure_future(make()), now)
+    _pending[token] = (make, now, on_drop)
     return token
 
 
 async def collect_pending_reaction(token: str) -> Optional[dict]:
-    """The reaction for *token* (``None`` when unknown, failed or not ready in time); one collection per token."""
+    """Make the reaction for *token* now (``None`` when unknown, expired, failed or too slow); once per token."""
     entry = _pending.pop(str(token or ""), None)
     if entry is None:
         return None
-    task, made_at = entry
+    make, made_at, _on_drop = entry
     if time.monotonic() - made_at > PENDING_REACTION_TTL_SECONDS:
-        task.cancel()
+        _drop(entry)
         return None
     try:
-        return await asyncio.wait_for(task, PENDING_REACTION_WAIT_SECONDS)
+        return await asyncio.wait_for(make(), PENDING_REACTION_WAIT_SECONDS)
     except Exception as exc:
         logger.info("[Emotion] pending reaction dropped (%s)", type(exc).__name__)
         return None
 
 
 def clear_pending_reactions() -> None:
-    for task, _made_at in _pending.values():
-        task.cancel()
+    for entry in list(_pending.values()):
+        _drop(entry)
     _pending.clear()

@@ -613,10 +613,12 @@ def _push_emotion_update(lanlan_name, emotion, confidence):
         })
 
 
-# One emoji grapheme: a pictograph (with any modifiers, joiners or variation
-# selector), a flag, or a keycap. Plain letters, digits and text are not.
+# One emoji grapheme shown as an emoji: a pictograph with emoji presentation
+# (with any modifiers or joiners), one made an emoji by its variation selector
+# (keycaps included), or a flag. Plain letters, digits, text and text-style
+# symbols such as the copyright or trademark sign without the selector are not.
 _SINGLE_GRAPHEME_RE = regex.compile(r"\X")
-_EMOJI_MARK_RE = regex.compile(r"\p{Extended_Pictographic}|\p{Regional_Indicator}|⃣")
+_EMOJI_MARK_RE = regex.compile(r"\p{Emoji_Presentation}|️|\p{Regional_Indicator}")
 
 
 def _is_single_emoji(value):
@@ -937,7 +939,7 @@ def _strip_markdown_fence(result_text):
     return result_text
 
 
-def _respond_with_pending_reaction(text, label, confidence, lanlan_name, make_emoji):
+def _respond_with_pending_reaction(text, label, confidence, lanlan_name, make_emoji, on_drop=None):
     """Answer with the emotion now; a reaction, if any, follows through POST /emotion/reaction.
 
     *make_emoji* is awaited in the background for the model's emoji (any single
@@ -964,7 +966,7 @@ def _respond_with_pending_reaction(text, label, confidence, lanlan_name, make_em
         return {"emoji": emoji, "author": author} if emoji else None
 
     response["reaction"] = None
-    response["reaction_pending"] = register_pending_reaction(_reaction)
+    response["reaction_pending"] = register_pending_reaction(_reaction, on_drop=on_drop)
     return response, True
 
 
@@ -1025,7 +1027,9 @@ async def _fast_emotion(text, messages, lanlan_name, *, chat_config, config_mana
             return None
         return body.get("emoji")
 
-    response, pending = _respond_with_pending_reaction(text, label, confidence, lanlan_name, _model_emoji)
+    response, pending = _respond_with_pending_reaction(
+        text, label, confidence, lanlan_name, _model_emoji, on_drop=reading.cancel,
+    )
     if not pending:
         reading.cancel()  # no reaction: the rest of the answer is not needed
     return response

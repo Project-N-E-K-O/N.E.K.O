@@ -295,9 +295,10 @@ const turnIdSchema = z.preprocess((value) => {
   return value;
 }, z.string().min(1).optional());
 
-// Any one emoji (owner decision D20): a single grapheme holding a pictograph,
-// a flag letter or a keycap. Plain text, letters and digits are refused.
-const REACTION_EMOJI_MARK = /\p{Extended_Pictographic}|\p{Regional_Indicator}|⃣/u;
+// Any one emoji (owner decision D20): a single grapheme shown as an emoji
+// (emoji presentation, a variation selector, or a flag letter). Plain text,
+// letters, digits and text-style symbols are refused.
+const REACTION_EMOJI_MARK = /\p{Emoji_Presentation}|\u{FE0F}|\p{Regional_Indicator}/u;
 type GraphemeSegmenter = { segment(input: string): Iterable<unknown> };
 type GraphemeSegmenterCtor = new (locale: undefined, options: { granularity: 'grapheme' }) => GraphemeSegmenter;
 // Intl.Segmenter is in every runtime the chat window ships to, but not in this project's TS lib.

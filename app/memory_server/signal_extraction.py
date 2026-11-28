@@ -917,6 +917,8 @@ async def _periodic_signal_extraction_loop():
 # Decision reading (D16): every observation whose choice probability reaches
 # this is a target, at most NEGATIVE_TARGET_DECISION_MAX_PICKS of them.
 NEGATIVE_TARGET_DECISION_THRESHOLD = 0.7
+# The probabilities of one choice add up to 1, so at this threshold at most one
+# observation passes; the cap is the evaluated reading's (k=3) and only a guard.
 NEGATIVE_TARGET_DECISION_MAX_PICKS = 3
 NEGATIVE_TARGET_DECISION_TIMEOUT_SECONDS = 8.0
 # Tokens of an observation's text shown in its option (the state shows more).

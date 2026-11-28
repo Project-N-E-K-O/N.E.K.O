@@ -309,23 +309,24 @@ def test_unknown_or_missing_token_collects_nothing(em):
     assert asyncio.run(em.module.emotion_reaction(_Request({}))) == {"reaction": None}
 
 
-def test_old_pending_reactions_expire(em, monkeypatch):
-    async def _run():
-        async def _slow():
-            await asyncio.sleep(10)
+def test_old_pending_reactions_expire_without_being_made(em, monkeypatch):
+    made, dropped = [], []
 
-        token = em.ed.register_pending_reaction(_slow)
-        task = em.ed._pending[token][0]
+    async def _run():
+        async def _make():
+            made.append(1)
+
+        token = em.ed.register_pending_reaction(_make, on_drop=lambda: dropped.append(1))
         later = em.ed._pending[token][1] + em.ed.PENDING_REACTION_TTL_SECONDS + 1
         from tests.fake_clock import patch_module_clock
 
         patch_module_clock(monkeypatch, em.ed, monotonic=lambda: later)
-        em.ed.register_pending_reaction(_slow)
+        em.ed.register_pending_reaction(_make)
         await asyncio.sleep(0)
-        return token, task
+        return token
 
-    token, task = asyncio.run(_run())
-    assert token not in em.ed._pending and task.cancelled()
+    token = asyncio.run(_run())
+    assert token not in em.ed._pending and dropped == [1] and made == []
 
 
 def test_decide_emotion_asks_one_english_question_without_rehost(em, monkeypatch):
@@ -373,16 +374,15 @@ def test_a_pending_reaction_past_its_time_is_not_collected(em, monkeypatch):
         async def _ready():
             return {"emoji": "😊", "author": "NEKO"}
 
-        token = em.ed.register_pending_reaction(_ready)
-        task = em.ed._pending[token][0]
+        token = em.ed.register_pending_reaction(_ready, on_drop=lambda: dropped.append(1))
         later = em.ed._pending[token][1] + em.ed.PENDING_REACTION_TTL_SECONDS + 1
         from tests.fake_clock import patch_module_clock
 
         patch_module_clock(monkeypatch, em.ed, monotonic=lambda: later)
-        return await em.ed.collect_pending_reaction(token), task
+        return await em.ed.collect_pending_reaction(token)
 
-    got, task = asyncio.run(_run())
-    assert got is None and (task.cancelled() or task.done())
+    dropped: list = []
+    assert asyncio.run(_run()) is None and dropped == [1]
 
 
 def test_a_decision_without_probabilities_uses_the_chat_prompt(em, monkeypatch):
@@ -393,3 +393,50 @@ def test_a_decision_without_probabilities_uses_the_chat_prompt(em, monkeypatch):
 
     monkeypatch.setattr(dc, "ask_site_questions", _ask)
     assert asyncio.run(em.ed.decide_emotion("hi", chat_config=OTHER, config_manager=None)) is None
+
+
+def test_nobody_collecting_means_no_emoji_chat(em, monkeypatch):
+    # Proactive turns, agent callbacks and games have no message to react to:
+    # the frontend never collects, and the small chat must not run.
+    async def _decide(text, *, chat_config, config_manager):
+        return "happy", 0.95
+
+    calls: list = []
+
+    async def _pick(text, *, chat_config):
+        calls.append(text)
+        return "😊"
+
+    monkeypatch.setattr(em.ed, "decide_emotion", _decide)
+    monkeypatch.setattr(em.ed, "pick_emoji", _pick)
+
+    async def _run():
+        resp = await _analyze_async(em, "Yay!")
+        await asyncio.sleep(0.05)
+        return resp
+
+    resp = asyncio.run(_run())
+    assert resp["reaction_pending"] and calls == []
+
+
+def test_a_slow_doubao_first_token_is_read_as_the_chat_answer_without_a_second_request(em, monkeypatch):
+    monkeypatch.setattr(em.ed, "FIRST_TOKEN_TIMEOUT_SECONDS", 0.05)
+
+    class _Slow(_StreamLLM):
+        def astream(self, messages, **kw):
+            self.calls = getattr(self, "calls", 0) + 1
+            outer = self
+
+            async def _gen():
+                await asyncio.sleep(0.2)  # past the first-token wait
+                for c in outer.chunks:
+                    yield c
+
+            return _gen()
+
+    llm = _Slow([_chunk("sad", [("sad", -0.1)]), _chunk('", "confidence": 0.9, "emoji": "😢"}')])
+    _use_doubao(em, monkeypatch, llm)
+    resp = _analyze(em, "I'm sad")
+    assert llm.calls == 1 and em.chat_calls == 0  # the same stream, nothing sent again
+    assert resp["emotion"] == "sad" and resp["reaction"] == {"emoji": "😢", "author": "NEKO"}
+
