@@ -734,6 +734,10 @@ interface PendingClean {
   wtIds: string[]
   wdIds: string[]
   transcriptMode: 'expired' | 'outputs' | null
+  wtBytes?: number
+  wdBytes?: number
+  trBytes?: number
+  trCount?: number
 }
 
 const PREVIEW_LIMIT = 8
@@ -1326,6 +1330,9 @@ function askCleanAllStale() {
       size: formatBytes(overview.value?.transcripts.expired_bytes ?? 0),
     })
   }
+  const wtBytes = staleWorktrees.value.reduce((acc, w) => acc + (w.bytes || 0), 0)
+  const wdBytes = staleWorkDirs.value.reduce((acc, d) => acc + (d.bytes || 0), 0)
+  const trBytes = overview.value?.transcripts.expired_bytes ?? 0
   pending.value = {
     title: t('power.runtime.storage.confirm.staleAllTitle'),
     description: t('power.runtime.storage.confirm.staleAllText', {
@@ -1339,6 +1346,10 @@ function askCleanAllStale() {
     wtIds: s.wtIds,
     wdIds: s.wdIds,
     transcriptMode: s.expiredTranscripts > 0 ? 'expired' : null,
+    wtBytes,
+    wdBytes,
+    trBytes,
+    trCount: s.expiredTranscripts,
   }
   confirmOpen.value = true
 }
@@ -1416,12 +1427,32 @@ async function runConfirmedClean() {
         return true
       })
       if (remainingWt.length || remainingWd.length || remainingTr) {
+        const remainingTrCount = remainingTr ? (job.trCount ?? 0) : 0
+        const remainingBytes = (remainingWt.length ? (job.wtBytes ?? 0) : 0)
+          + (remainingWd.length ? (job.wdBytes ?? 0) : 0)
+          + (remainingTr ? (job.trBytes ?? 0) : 0)
+        const unmergedWarn = t('power.runtime.storage.confirm.worktreesUnmergedWarn')
+        const remainingWarnings = wtDone ? job.warnings.filter(w => w !== unmergedWarn) : job.warnings
+        const remainingDescription = (job.wtBytes !== undefined || job.wdBytes !== undefined || job.trBytes !== undefined)
+          ? t('power.runtime.storage.confirm.staleAllText', {
+              worktrees: remainingWt.length,
+              workDirs: remainingWd.length,
+              transcripts: remainingTrCount,
+              size: formatBytes(remainingBytes),
+            })
+          : job.description
         pending.value = {
           ...job,
+          description: remainingDescription,
+          warnings: remainingWarnings,
           items: remainingItems,
           wtIds: remainingWt,
           wdIds: remainingWd,
           transcriptMode: remainingTr,
+          wtBytes: wtDone ? 0 : job.wtBytes,
+          wdBytes: wdDone ? 0 : job.wdBytes,
+          trBytes: trDone ? 0 : job.trBytes,
+          trCount: trDone ? 0 : job.trCount,
         }
       } else {
         confirmOpen.value = false

@@ -510,6 +510,10 @@ describe('the folders tab', () => {
     expect(byTest('storage-error')?.textContent).toContain(words.errors.agent_unreachable)
     expect(byTest('storage-banner')?.textContent).toContain('250 MB')
     expect(api.getStorage).toHaveBeenCalledTimes(2)
+    // Confirm dialog description and warnings shrink to only the remaining uncompleted steps (160 MB, no unmerged-worktree warn).
+    expect(document.querySelector('.confirm-desc')?.textContent).toContain('160 MB')
+    expect(document.querySelector('.confirm-desc')?.textContent).not.toContain('410 MB')
+    expect(byTest('storage-confirm-warn')).toBeNull()
 
     // Retrying from the open confirmation dialog only submits the remaining work dirs and transcripts.
     await click(byTest('storage-confirm-submit'))

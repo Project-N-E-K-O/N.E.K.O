@@ -648,6 +648,51 @@ class StorageManager:
 
     # -- references & busy checks -----------------------------------------
 
+    async def _read_projects_checked(
+        self, *, include_archived: bool
+    ) -> tuple[dict[str, Any], set[str] | None, bool]:
+        """Read projects while verifying each active project's ``project.json`` is readable.
+
+        ``TaskAgentSpace.list_projects()`` returns stub records with ``workdir=None``
+        when an individual ``project.json`` fails to read. Calling ``read_project()``
+        on each active project lets callers distinguish a real ``workdir=None`` from
+        an unreadable record and fail closed.
+        """
+        projects_by_name: dict[str, Any] = {}
+        active_project_workdirs: set[str] = set()
+        if not await asyncio.to_thread(self._paths.space().root.is_dir):
+            return projects_by_name, active_project_workdirs, True
+        try:
+            listed = await self._space.list_projects(include_archived=include_archived)
+        except OSError:
+            logger.warning("listing projects for storage check failed", exc_info=True)
+            return projects_by_name, None, False
+        read_project = getattr(self._space, "read_project", None)
+        projects_readable = True
+        for proj in listed:
+            if proj.archive_year is None:
+                record = proj
+                if callable(read_project):
+                    try:
+                        checked, ok = await read_project(proj.name)
+                    except OSError:
+                        projects_readable = False
+                        logger.warning("reading project %s for storage check failed", proj.name, exc_info=True)
+                        continue
+                    if not ok:
+                        projects_readable = False
+                        logger.warning("project %s record is unreadable; failing closed for storage cleanup", proj.name)
+                        continue
+                    if checked is None:
+                        continue
+                    record = checked
+                projects_by_name[record.name] = record
+                if record.workdir:
+                    active_project_workdirs.add(os.path.normcase(os.path.normpath(record.workdir)))
+            elif proj.name not in projects_by_name:
+                projects_by_name[proj.name] = proj
+        return projects_by_name, (active_project_workdirs if projects_readable else None), projects_readable
+
     async def _ledger_snapshot(
         self,
     ) -> tuple[dict[str, Any], set[str], set[str], set[str], dict[str, Any], list[Any], bool, bool]:
@@ -655,9 +700,6 @@ class StorageManager:
         sessions_by_id: dict[str, Any] = {}
         active_sessions: set[str] = set()
         live_workdirs: set[str] = set()
-        active_project_workdirs: set[str] = set()
-        projects_by_name: dict[str, Any] = {}
-        projects_readable = True
 
         has_ledger = await asyncio.to_thread(self._paths.ledger_db().is_file)
         if has_ledger:
@@ -679,18 +721,10 @@ class StorageManager:
         else:
             trees = []
 
-        if await asyncio.to_thread(self._paths.space().root.is_dir):
-            try:
-                for proj in await self._space.list_projects(include_archived=True):
-                    if proj.archive_year is None:
-                        projects_by_name[proj.name] = proj
-                        if proj.workdir:
-                            active_project_workdirs.add(os.path.normcase(os.path.normpath(proj.workdir)))
-                    elif proj.name not in projects_by_name:
-                        projects_by_name[proj.name] = proj
-            except OSError:
-                projects_readable = False
-                logger.warning("listing projects for storage scan failed", exc_info=True)
+        projects_by_name, maybe_proj_workdirs, projects_readable = await self._read_projects_checked(
+            include_archived=True
+        )
+        active_project_workdirs = maybe_proj_workdirs if maybe_proj_workdirs is not None else set()
 
         return (
             sessions_by_id,
@@ -701,6 +735,37 @@ class StorageManager:
             trees,
             has_ledger,
             projects_readable,
+        )
+
+    async def _all_session_rows(self) -> list[tuple[str, str | None, str, str | None]]:
+        """Return ``(id, project, status, workdir)`` for every session in the ledger without row-limit truncation."""
+        return await self._ledger.run(
+            lambda conn: [
+                (
+                    str(row["id"]),
+                    str(row["project"]) if row["project"] is not None else None,
+                    str(row["status"]),
+                    str(row["workdir"]) if row["workdir"] is not None else None,
+                )
+                for row in conn.execute("SELECT id, project, status, workdir FROM sessions").fetchall()
+            ]
+        )
+
+    async def _active_commission_refs(self) -> list[tuple[str | None, str | None]]:
+        """Return ``(session_id, workdir)`` for every active commission in the ledger without truncation."""
+        statuses = tuple(ACTIVE_STATUSES)
+        placeholders = ",".join("?" for _ in statuses)
+        return await self._ledger.run(
+            lambda conn: [
+                (
+                    str(row["session_id"]) if row["session_id"] is not None else None,
+                    str(row["workdir"]) if row["workdir"] is not None else None,
+                )
+                for row in conn.execute(
+                    f"SELECT session_id, workdir FROM commissions WHERE status IN ({placeholders})",
+                    statuses,
+                ).fetchall()
+            ]
         )
 
     async def _busy_workdirs(
@@ -728,30 +793,20 @@ class StorageManager:
         live_workdirs: set[str] = set()
         active_project_workdirs: set[str] | None = set()
         if await asyncio.to_thread(self._paths.ledger_db().is_file):
-            all_sessions = await self._ledger.find_sessions(limit=10_000, commissions_each=0)
-            for row in all_sessions:
-                session = row.session
-                in_use = session.status in _BUSY_SESSION_STATUSES or (
-                    session.id not in excluded and self._task_agents._in_use(session.id)
+            for sid, _project, status, workdir in await self._all_session_rows():
+                in_use = status in _BUSY_SESSION_STATUSES or (
+                    sid not in excluded and self._task_agents._in_use(sid)
                 )
                 if in_use:
-                    active_sessions.add(session.id)
-                    if session.workdir:
-                        live_workdirs.add(os.path.normcase(os.path.normpath(session.workdir)))
-            under_way = await self._ledger.select(statuses=tuple(ACTIVE_STATUSES), limit=2000)
-            for commission in under_way:
-                if commission.session_id:
-                    active_sessions.add(commission.session_id)
-                if commission.workdir:
-                    live_workdirs.add(os.path.normcase(os.path.normpath(commission.workdir)))
-        if await asyncio.to_thread(self._paths.space().root.is_dir):
-            try:
-                for proj in await self._space.list_projects(include_archived=False):
-                    if proj.workdir:
-                        active_project_workdirs.add(os.path.normcase(os.path.normpath(proj.workdir)))
-            except OSError:
-                active_project_workdirs = None
-                logger.warning("listing active projects for storage cleanup failed", exc_info=True)
+                    active_sessions.add(sid)
+                    if workdir:
+                        live_workdirs.add(os.path.normcase(os.path.normpath(workdir)))
+            for comm_sid, comm_workdir in await self._active_commission_refs():
+                if comm_sid:
+                    active_sessions.add(comm_sid)
+                if comm_workdir:
+                    live_workdirs.add(os.path.normcase(os.path.normpath(comm_workdir)))
+        _projects, active_project_workdirs, _readable = await self._read_projects_checked(include_archived=False)
         return active_sessions, live_workdirs, active_project_workdirs
 
     # -- overview ---------------------------------------------------------
@@ -860,8 +915,7 @@ class StorageManager:
                 )
                 stale = can_clean and (
                     row.state == "discarding"
-                    or not stats.exists
-                    or (stats.whole and effective_time <= worktree_cutoff)
+                    or (stats.whole and (not stats.exists or effective_time <= worktree_cutoff))
                 )
                 if can_clean and stats.exists:
                     wt_reclaimable += stats.bytes
@@ -1502,15 +1556,13 @@ class StorageManager:
                 held_sids: list[str] = []
                 try:
                     if await asyncio.to_thread(self._paths.ledger_db().is_file):
-                        all_rows = await self._ledger.find_sessions(limit=10_000, commissions_each=0)
-                        for row in all_rows:
-                            sess = row.session
-                            if sess.project == project or (
-                                sess.workdir and _path_is_or_inside(sess.workdir, norm_target)
+                        for sid, sess_proj, _status, sess_workdir in await self._all_session_rows():
+                            if sess_proj == project or (
+                                sess_workdir and _path_is_or_inside(sess_workdir, norm_target)
                             ):
-                                if not self._task_agents.hold_files(sess.id):
+                                if not self._task_agents.hold_files(sid):
                                     return "in_use", 0
-                                held_sids.append(sess.id)
+                                held_sids.append(sid)
                     if await self._project_busy(project) is not None:
                         return "in_use", 0
                     _active_ids, live_workdirs, active_project_workdirs = await self._busy_workdirs(
@@ -1539,10 +1591,27 @@ class StorageManager:
 
         assert session_id is not None
         target = self._paths.work_dir(session_id, project)
+        norm_target = os.path.normcase(os.path.normpath(str(target)))
+        held_sids: list[str] = []
         if not self._task_agents.hold_files(session_id):
             return "in_use", 0
+        held_sids.append(session_id)
         try:
-            if await asyncio.to_thread(self._paths.ledger_db().is_file):
+            has_ledger = await asyncio.to_thread(self._paths.ledger_db().is_file)
+            if has_ledger:
+                # Hold every fork of this session and every other session whose workdir
+                # is inside target so none can start concurrently while target is deleted.
+                extra_sids: set[str] = set()
+                for copy in await self._ledger.forks_of(session_id):
+                    extra_sids.add(copy.id)
+                for sid, _sess_proj, _status, sess_workdir in await self._all_session_rows():
+                    if sid != session_id and sess_workdir and _path_is_or_inside(sess_workdir, norm_target):
+                        extra_sids.add(sid)
+                for sid in sorted(extra_sids - {session_id}):
+                    if not self._task_agents.hold_files(sid):
+                        return "in_use", 0
+                    held_sids.append(sid)
+
                 session = await self._ledger.get_session(session_id)
                 if session is not None:
                     if session.status in _BUSY_SESSION_STATUSES:
@@ -1552,16 +1621,15 @@ class StorageManager:
                     if until is not None and session.last_active_at > until:
                         return "recent", 0
                     for copy in await self._ledger.forks_of(session_id):
-                        if copy.status in _BUSY_SESSION_STATUSES or self._task_agents._in_use(copy.id):
+                        if copy.status in _BUSY_SESSION_STATUSES:
                             return "in_use", 0
                         if await self._ledger.select(session_id=copy.id, statuses=ACTIVE_STATUSES, limit=1):
                             return "in_use", 0
                         if until is not None and copy.status != "cleared" and copy.last_active_at > until:
                             return "recent", 0
             _active_ids, live_workdirs, active_project_workdirs = await self._busy_workdirs(
-                exclude_session_id=session_id
+                exclude_session_ids=frozenset(held_sids)
             )
-            norm_target = os.path.normcase(os.path.normpath(str(target)))
             if any(_path_is_or_inside(wd, norm_target) for wd in live_workdirs):
                 return "in_use", 0
             if skip_project_referenced and (
@@ -1589,7 +1657,8 @@ class StorageManager:
                 return "cleaned", freed
             return "not_removed", freed
         finally:
-            self._task_agents.release_files(session_id)
+            for sid in held_sids:
+                self._task_agents.release_files(sid)
 
     # -- manual cleanup: worktrees ----------------------------------------
 

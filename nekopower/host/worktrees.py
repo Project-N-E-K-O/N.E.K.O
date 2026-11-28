@@ -811,16 +811,22 @@ class WorktreeManager:
     async def remove_if_untouched(self, worktree: Worktree, is_untouched: Any) -> bool:
         """Remove ``worktree`` under its repository lock only if ``is_untouched(path)`` still holds.
 
-        Returns True when removal ran and completed, or False when ``is_untouched``
-        reported recent activity or an incomplete check and left the worktree intact.
+        Checks ``is_untouched`` before git metadata queries and re-checks it
+        immediately before recursive directory deletion (after identity checks)
+        while holding the repository lock. Returns True when removal ran and
+        completed, or False when ``is_untouched`` aborted deletion.
         """
         async with await self._lock(worktree.repo_root):
             if not await asyncio.to_thread(is_untouched, worktree.path):
                 return False
-            await self._forget(
-                worktree.repo_root, worktree.path, worktree.id, remove_directory=False, token=worktree.token
+            return await self._forget(
+                worktree.repo_root,
+                worktree.path,
+                worktree.id,
+                remove_directory=False,
+                token=worktree.token,
+                before_delete=is_untouched,
             )
-            return True
 
     async def reconcile(
         self, project_dir: Path | str, base_dir: Path | str, known: Iterable[str]
@@ -1462,8 +1468,15 @@ class WorktreeManager:
         return paths[1:]
 
     async def _forget(
-        self, repo_root: Path, path: Path, worktree_id: str, *, remove_directory: bool, token: str = ""
-    ) -> None:
+        self,
+        repo_root: Path,
+        path: Path,
+        worktree_id: str,
+        *,
+        remove_directory: bool,
+        token: str = "",
+        before_delete: Any = None,
+    ) -> bool:
         """Drop a worktree's registration, its directory when registered (or ``remove_directory``), and its refs."""
         listed = await self._registered(repo_root)
         registered = any(_same_path(known, path) for known in listed)
@@ -1485,7 +1498,7 @@ class WorktreeManager:
             await _to_the_end(asyncio.to_thread(_drop_registration, common, path))
             if not theirs:
                 await self._delete_refs(repo_root, worktree_id)
-            return
+            return True
         if whose == "unknown":
             raise WorktreeError(
                 f"{path} is no longer known to be this worktree (its .git is gone, and which directory it was "
@@ -1499,6 +1512,8 @@ class WorktreeManager:
         # Ours: registered (and known to be ours above), made by this call,
         # or its .git file still points here.
         if registered or remove_directory or await asyncio.to_thread(_points_into, path, common):
+            if before_delete is not None and not await asyncio.to_thread(before_delete, path):
+                return False
             # Waited for to the end: the lock is not let go while it runs.
             await _to_the_end(asyncio.to_thread(_remove_tree, path))
             if await asyncio.to_thread(os.path.lexists, _fs(path)):
@@ -1507,6 +1522,7 @@ class WorktreeManager:
             await _to_the_end(asyncio.to_thread(_drop_registration, common, path))
         if not theirs:
             await self._delete_refs(repo_root, worktree_id)
+        return True
 
     async def _delete_refs(self, repo_root: Path, worktree_id: str) -> None:
         listed = await self._git(repo_root, "for-each-ref", "--format=%(refname)", f"{REF_PREFIX}{worktree_id}/")

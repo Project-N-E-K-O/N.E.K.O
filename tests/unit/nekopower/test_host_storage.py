@@ -953,3 +953,204 @@ async def test_expired_session_cleanup_survives_estimation_error_and_partial_fre
         assert out_res["freed_bytes"] == 350
     finally:
         await host.shutdown()
+
+
+async def test_unreadable_worktree_is_not_marked_stale_and_project_cleanup_scans_all_sessions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """An unreadable worktree (exists=False, whole=False) must not be marked stale; project cleanup scans all sessions."""
+    from nekopower.host import storage as storage_mod
+
+    clock = Clock(1_800_000_000.0)
+    host = make_host(tmp_path)
+    host.storage._clock = clock
+    host.space_keeper._clock = clock
+    try:
+        # 1. Tracked worktree whose lstat fails (exists=False, whole=False) must stay stale=False.
+        repo_dir = tmp_path / "repo"
+        wt_dir = host.paths.worktree_dir("unrd0001")
+        wt_dir.mkdir(parents=True)
+        sess = await host.ledger.create_session(name="w", lanlan_name="Lan", project="proj")
+        await host.ledger.add_tree(
+            id="unrd0001",
+            session_id=sess.id,
+            commission_id=None,
+            lanlan_name="Lan",
+            project="proj",
+            project_dir=str(repo_dir),
+            repo_root=str(repo_dir),
+            path=str(wt_dir),
+            workdir=str(wt_dir),
+            state="kept",
+        )
+        real_measure = storage_mod.measure_dir
+
+        def unreadable_wt(path: Path, deadline: float, *, skip_names: frozenset[str] = frozenset()) -> storage_mod.DirStats:
+            if path == wt_dir:
+                return storage_mod.DirStats(exists=False, bytes=0, whole=False, file_count=0, newest_mtime=None)
+            return real_measure(path, deadline, skip_names=skip_names)
+
+        monkeypatch.setattr(storage_mod, "measure_dir", unreadable_wt)
+        view = await host.storage_overview()
+        wt_item = next(t for t in view["worktrees"] if t["id"] == "unrd0001")
+        assert wt_item["stale"] is False
+        assert wt_item["bytes_whole"] is False
+
+        # 2. Project-scope work/ cleanup queries all sessions directly without calling find_sessions(limit=...).
+        proj_work = host.paths.project_work_dir("archived-proj")
+        proj_work.mkdir(parents=True)
+        (proj_work / "data.bin").write_bytes(b"d" * 64)
+        old_sess = await host.ledger.create_session(
+            name="ancient", lanlan_name="Lan", project=DEFAULT_PROJECT, workdir=str(proj_work)
+        )
+        await host.ledger.update_session(old_sess.id, status="idle")
+        # Simulate old_sess falling outside any capped find_sessions page: project cleanup must still find & hold it.
+        async def empty_find_sessions(*_args: Any, **_kwargs: Any) -> list[Any]:
+            return []
+
+        monkeypatch.setattr(host.ledger, "find_sessions", empty_find_sessions)
+        assert host.task_agents.hold_files(old_sess.id) is True
+        try:
+            refused = await host.clean_work_dirs([format_work_dir_id("project", "archived-proj")])
+            assert refused["cleaned"] == []
+            assert refused["failed"] == [{"id": format_work_dir_id("project", "archived-proj"), "code": "in_use"}]
+            assert proj_work.is_dir()
+        finally:
+            host.task_agents.release_files(old_sess.id)
+
+        cleaned = await host.clean_work_dirs([format_work_dir_id("project", "archived-proj")])
+        assert cleaned["cleaned"] == [format_work_dir_id("project", "archived-proj")]
+        assert cleaned["freed_bytes"] == 64
+        assert not proj_work.exists()
+    finally:
+        await host.shutdown()
+
+
+async def test_session_cleanup_holds_sharing_sessions_and_rejects_unreadable_project_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Session work/ deletion must hold sharing forks during deletion and fail closed on corrupt project.json."""
+    from nekopower.host import storage as storage_mod
+
+    host = make_host(tmp_path)
+    try:
+        # 1. Corrupt project.json makes list_projects() return a stub with workdir=None, but
+        # read_project() reports readable=False -> must fail closed for both overview and cleanup.
+        sess = await host.ledger.create_session(name="shared-src", lanlan_name="Lan", project="alpha")
+        await host.ledger.update_session(sess.id, status="idle")
+        work_dir = host.paths.work_dir(sess.id, "alpha")
+        work_dir.mkdir(parents=True)
+        (work_dir / "file.txt").write_text("precious", encoding="utf-8")
+        await host.space.touch_project("alpha", workdir=str(work_dir))
+        proj_json = host.paths.space().project_file("alpha")
+        proj_json.write_text("{ corrupt json", encoding="utf-8")
+
+        wid = format_work_dir_id("session", "alpha", sess.id)
+        view = await host.storage_overview()
+        item = next(d for d in view["work_dirs"] if d["id"] == wid)
+        assert item["can_clean"] is False
+
+        refused = await host.clean_work_dirs([wid])
+        assert refused["cleaned"] == []
+        assert refused["failed"] == [{"id": wid, "code": "in_use"}]
+        assert work_dir.is_dir()
+
+        # Repair project.json with a different workdir so sess's work_dir is no longer referenced.
+        elsewhere = tmp_path / "other_project_dir"
+        elsewhere.mkdir()
+        proj_json.unlink()
+        await host.space.touch_project("alpha", workdir=str(elsewhere))
+
+        # 2. Idle fork sharing the same work_dir must ALSO be held in _clearing while remove_dir_safely runs.
+        fork = await host.ledger.create_session(
+            name="shared-fork",
+            lanlan_name="Lan",
+            project="alpha",
+            kind="fork",
+            forked_from=sess.id,
+            workdir=str(work_dir),
+        )
+        await host.ledger.update_session(fork.id, status="idle")
+        observed_holds: dict[str, bool] = {}
+        real_remove = storage_mod.remove_dir_safely
+
+        def spy_remove(target: Path, allowed_root: Path) -> tuple[bool, int]:
+            observed_holds["src"] = sess.id in host.task_agents._clearing
+            observed_holds["fork"] = fork.id in host.task_agents._clearing
+            return real_remove(target, allowed_root)
+
+        monkeypatch.setattr(storage_mod, "remove_dir_safely", spy_remove)
+        cleaned = await host.clean_work_dirs([wid])
+        assert cleaned["cleaned"] == [wid]
+        assert observed_holds == {"src": True, "fork": True}
+        assert sess.id not in host.task_agents._clearing
+        assert fork.id not in host.task_agents._clearing
+    finally:
+        await host.shutdown()
+
+
+async def test_orphan_worktree_rejects_linked_wt_root_before_git_removal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A symlink/junction at ``wt/`` must be rejected before ``worktrees.open`` / ``remove`` is ever called."""
+    import asyncio
+
+    host = make_host(tmp_path)
+    try:
+        outside_wt = tmp_path / "outside_wt"
+        victim = outside_wt / "orph0001"
+        victim.mkdir(parents=True)
+        fake_repo = tmp_path / "real_repo"
+        fake_repo.mkdir()
+        (victim / ".git").write_text(f"gitdir: {(fake_repo / '.git' / 'worktrees' / 'orph0001').as_posix()}\n", encoding="utf-8")
+        secret = victim / "keep.txt"
+        secret.write_text("untouched", encoding="utf-8")
+
+        wt_root = host.paths.worktrees_dir()
+        wt_root.parent.mkdir(parents=True, exist_ok=True)
+        assert await asyncio.to_thread(_make_dir_link, wt_root, outside_wt)
+
+        async def fail_open(*_args: Any, **_kwargs: Any) -> Any:
+            raise AssertionError("worktrees.open must not run when wt/ is a link")
+
+        monkeypatch.setattr(host.task_agents.worktrees, "open", fail_open)
+        with pytest.raises(ValueError, match="unsafe_path"):
+            await host.task_agents.remove_orphan_worktree("orph0001")
+        assert secret.read_text(encoding="utf-8") == "untouched"
+    finally:
+        await host.shutdown()
+
+
+async def test_worktree_forget_aborts_when_before_delete_detects_new_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """``WorktreeManager._forget`` must re-check ``before_delete`` right before ``_remove_tree``."""
+    from nekopower.host.worktrees import WorktreeManager
+
+    mgr = WorktreeManager()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    wt = tmp_path / "wt" / "t1"
+    wt.mkdir(parents=True)
+    saved = wt / "edited.txt"
+    saved.write_text("new save", encoding="utf-8")
+
+    async def fake_registered(_repo: Path) -> list[Path]:
+        return [wt]
+
+    class _FakeRun:
+        def lines(self) -> list[str]:
+            return [str(repo / ".git")]
+
+    async def fake_git(_repo: Path, *_args: str, **_kwargs: Any) -> _FakeRun:
+        return _FakeRun()
+
+    monkeypatch.setattr(mgr, "_registered", fake_registered)
+    monkeypatch.setattr(mgr, "_git", fake_git)
+    monkeypatch.setattr("nekopower.host.worktrees._whose", lambda _p, _c: "ours")
+
+    aborted = await mgr._forget(
+        repo, wt, "t1", remove_directory=False, before_delete=lambda _path: False
+    )
+    assert aborted is False
+    assert saved.read_text(encoding="utf-8") == "new save"

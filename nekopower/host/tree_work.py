@@ -2294,7 +2294,7 @@ class TreeWork:
     async def remove_orphan_worktree(self, tree_id: str) -> dict[str, Any]:
         """Remove an untracked directory inside ``wt/`` safely, unregistering it from git when possible."""
         from nekopower.host.paths import worktree_name
-        from nekopower.host.storage import measure_dir, remove_dir_safely
+        from nekopower.host.storage import _classify_path_safety, measure_dir, remove_dir_safely
         from nekopower.host.worktrees import WorktreeError
         from utils.asyncio_executor import to_thread_through_cancellation
 
@@ -2313,9 +2313,11 @@ class TreeWork:
         try:
             base = self._paths.worktrees_dir()
             target = self._paths.worktree_dir(name)
-            if not await asyncio.to_thread(lambda: os.path.lexists(target)):
+            # Validate base (wt/) and every segment down to target BEFORE invoking git worktree removal.
+            safety = await asyncio.to_thread(_classify_path_safety, target, base)
+            if safety == "missing":
                 return {"removed": True, "freed_bytes": 0}
-            if await asyncio.to_thread(_is_link, target):
+            if safety != "ok":
                 raise ValueError("unsafe_path")
             pre_stats = await asyncio.to_thread(measure_dir, target, time.monotonic() + 0.25)
             est_bytes = pre_stats.bytes if pre_stats.exists else 0
