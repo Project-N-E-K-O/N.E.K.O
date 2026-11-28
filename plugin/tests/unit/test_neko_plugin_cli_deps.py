@@ -1399,7 +1399,7 @@ def test_plugins_sharing_a_vendor_target_share_a_lock(tmp_path, monkeypatch, cap
     monkeypatch.setattr(deps_cmd.subprocess, "run", install)
     assert handle_sync(TestTransactionalDependencyInstall()._args(plugins[0], tmp_path)) == 0
     assert nested == [1]
-    assert "already in progress" in capsys.readouterr().err
+    assert "Another plugin whose vendor/ leads to the same directory" in capsys.readouterr().err
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="directory-handle refill is POSIX only")
@@ -1526,7 +1526,7 @@ def test_plain_vendor_holds_the_lock_of_plugins_linking_to_it(tmp_path, monkeypa
     monkeypatch.setattr(deps_cmd.subprocess, "run", install)
     assert handle_sync(TestTransactionalDependencyInstall()._args(plugins[0], tmp_path)) == 0
     assert nested == [1]
-    assert "already in progress" in capsys.readouterr().err
+    assert "Another plugin whose vendor/ leads to the same directory" in capsys.readouterr().err
 
 
 def test_unfinished_refill_trash_blocks_and_is_not_deleted(tmp_path, monkeypatch, capsys):

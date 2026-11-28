@@ -243,8 +243,10 @@ def sync_vendor(
                         file=sys.stderr,
                     )
                     return 1
-                with _vendor_target_lock(vendor_dir, target.stat):
-                    exit_code = _sync_in_place(vendor_dir, external_deps, args, target)
+                if not _hold_vendor_target_lock(target_lock, vendor_dir, target.stat, emit):
+                    return 1
+                exit_code = _sync_in_place(vendor_dir, external_deps, args, target)
+                target_lock.close()
                 if exit_code != 0:
                     return exit_code
                 _remove_retained_backups(plugin_dir)
@@ -274,7 +276,8 @@ def sync_vendor(
                 # Another plugin's vendor/ may link here and refill it in
                 # place: hold the same target lock until the swap is done, or
                 # the swap would drop what that sync installed.
-                target_lock.enter_context(_vendor_target_lock(vendor_dir, vendor_before))
+                if not _hold_vendor_target_lock(target_lock, vendor_dir, vendor_before, emit):
+                    return 1
             copy_old = not args.clean and vendor_dir.is_dir()
             if copy_old and sys.platform.startswith("linux") and _linux_mount_points() is None:
                 # The copy would follow a same-filesystem bind mount that
@@ -933,6 +936,24 @@ def _vendor_target_lock(vendor_dir: Path, info: os.stat_result) -> portalocker.L
     plugin's vendor/ (a plain directory or a link to it) names it."""
     name = hashlib.sha256(_lock_identity(vendor_dir, info)).hexdigest()
     return portalocker.Lock(_lock_dir() / f"neko-plugin-sync-{name}.lock", timeout=0)
+
+
+def _hold_vendor_target_lock(
+    stack: ExitStack, vendor_dir: Path, info: os.stat_result, emit: Callable[..., None],
+) -> bool:
+    """Take the vendor/ target lock onto stack. Its holder is a sync of
+    another plugin whose vendor/ names the same directory (this plugin's own
+    syncs are excluded by the plugin lock), so say that, not "in progress"."""
+    try:
+        stack.enter_context(_vendor_target_lock(vendor_dir, info))
+    except portalocker.exceptions.LockException:
+        emit(
+            f"[FAIL] Another plugin whose vendor/ leads to the same directory as {vendor_dir} "
+            "is syncing its dependencies into it; retry when that sync finishes.",
+            file=sys.stderr,
+        )
+        return False
+    return True
 
 
 def _lock_identity(plugin_dir: Path, info: os.stat_result | None = None) -> bytes:

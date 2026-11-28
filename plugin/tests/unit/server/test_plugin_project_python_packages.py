@@ -668,6 +668,10 @@ def test_redaction_ignores_the_url_scheme_case():
     assert packages._redact("download Http://user:secret", incomplete=True) == "download Http://[redacted]"
 
 
+def test_redaction_covers_an_unencoded_at_sign_in_the_password():
+    assert packages._redact("GET https://bob:p@ss@mirror/simple x@y") == "GET https://[redacted]@mirror/simple x@y"
+
+
 def test_installer_children_get_the_runtime_environment_only(record, monkeypatch, tmp_path):
     import os
     import time

@@ -107,8 +107,11 @@ inherited `UV_*` variables and variables that redirect Python (`PYTHONPATH`,
 `VIRTUAL_ENV` and the like) are removed. The package install itself
 (`uv pip install`) gets the user's package index settings back
 (`UV_INDEX_URL`, `UV_EXTRA_INDEX_URL`, `UV_DEFAULT_INDEX`, `UV_INDEX`), so a
-PyPI mirror set that way still applies; preparing uv and Python never sees
-them. The desktop build checks (in
+PyPI mirror set that way still applies, as long as it needs no other `UV_*`
+setting: credentials of a named index (`UV_INDEX_<NAME>_USERNAME` /
+`_PASSWORD`), `UV_NATIVE_TLS`, `UV_INDEX_STRATEGY` and `UV_KEYRING_PROVIDER`
+are still removed (credentials inside the index URL itself work). Preparing uv
+and Python never sees any of them. The desktop build checks (in
 `scripts/check_nuitka_dist.py`) that the pinned uv can download the build's
 Python patch release. The tools live under `plugin-runtime/` in the
 application data root, which storage migration treats as regenerable.
