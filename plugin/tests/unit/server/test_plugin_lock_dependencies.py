@@ -21,6 +21,7 @@ _LOCK = """version = 1
 [[package]]
 name = "orjson"
 version = "3.13.0"
+source = { registry = "https://pypi.org/simple" }
 wheels = [
     { url = "https://files.example/orjson-3.13.0-py3-none-any.whl", size = 130518 },
 ]
@@ -298,11 +299,10 @@ def test_plugin_shipping_its_own_vendor_is_not_touched(uv, plugin_dir):
     vendor.mkdir()
     (vendor / "shipped.txt").write_text("mine", encoding="utf-8")
 
-    status = asyncio.run(_run())
+    status = asyncio.run(deps.request_dependency_install("demo"))
 
-    assert status["state"] == "failed"
-    assert status["error_code"] == "not_applicable"
-    assert status["pending"] is False
+    assert status == {"plugin_id": "demo", "state": None, "pending": False}
+    assert "demo" not in deps._tasks
     assert uv.commands == []
     assert sorted(path.name for path in vendor.iterdir()) == ["shipped.txt"]
 
@@ -342,6 +342,10 @@ def test_swap_restores_the_old_vendor_when_the_rename_fails(plugin_dir, monkeypa
         ("Because docopt==0.6.2 has no usable wheels and you require docopt==0.6.2", "no_wheel"),
         ("Because foo was not found in the package registry and you require foo", "not_on_index"),
         ("Failed to fetch: https://pypi.org/simple/httpx/ dns error", "network"),
+        ("error sending request for url (https://pypi.org/simple/x/): connection refused", "network"),
+        # Package names must not read as network failures.
+        ("Because networkx==3.4 has no usable wheels and you require networkx==3.4", "no_wheel"),
+        ("error: Failed to install: tlslite_ng-0.8.0 (something else)", "install_failed"),
         ("something else", "install_failed"),
     ],
 )
@@ -377,3 +381,69 @@ def test_discarding_staging_never_removes_an_installed_plugin(plugin_dir):
     deps._discard_staging(plugin_dir, staging)
 
     assert (plugin_dir / "plugin.toml").is_file() and not staging.exists()
+
+
+
+def test_plugin_dir_replaced_during_install_is_not_swapped_in(uv, plugin_dir):
+    """An upgrade with the same uv.lock renames the plugin away while uv runs."""
+    planned = asyncio.run(_run())
+    original = uv.__call__
+    moved = plugin_dir.parent / "demo.bak"
+
+    def upgrade_while_installing(cmd, **kwargs):
+        if "--target" in cmd and "--dry-run" not in cmd:
+            plugin_dir.rename(moved)  # what the replace transaction does
+            plugin_dir.mkdir()
+            for name in ("plugin.toml", "pyproject.toml", "uv.lock"):
+                (plugin_dir / name).write_bytes((moved / name).read_bytes())
+        return original(cmd, **kwargs)  # uv keeps writing at the same path
+
+    deps.run_tool_command = upgrade_while_installing  # restored by monkeypatch
+    status = asyncio.run(_run(planned["lock_sha256"]))
+
+    assert status["state"] == "failed"
+    assert status["error_code"] == "lock_changed"
+    assert not (plugin_dir / "vendor").exists()
+    assert _leftovers(plugin_dir) == []
+
+
+def test_lock_with_a_url_source_is_refused_before_any_uv_command(uv, plugin_dir, monkeypatch):
+    prepared: list[object] = []
+    monkeypatch.setattr(deps, "prepare_tool_runtime", lambda **kwargs: prepared.append(kwargs))
+    (plugin_dir / "uv.lock").write_text(
+        _LOCK + '\n[[package]]\nname = "evil"\nversion = "1"\nsource = { url = "http://127.0.0.1/x.whl" }\n',
+        encoding="utf-8",
+    )
+
+    status = asyncio.run(_run())
+
+    assert status["state"] == "failed"
+    assert status["error_code"] == "unpinned_source"
+    assert "127.0.0.1" in status["error_detail"]
+    assert uv.commands == [] and prepared == []
+
+
+def test_running_plugin_is_never_given_a_new_vendor(uv, plugin_dir, monkeypatch):
+    monkeypatch.setattr(deps, "_plugin_running", lambda _plugin_id: True)
+
+    assert asyncio.run(deps.request_dependency_install("demo")) == {
+        "plugin_id": "demo", "state": None, "pending": False,
+    }
+    assert uv.commands == []
+
+
+def test_lock_wait_timeout_is_a_retryable_busy(uv, plugin_dir, monkeypatch):
+    from plugin.server.application.plugins.operation_lock import PluginOperationBusy
+
+    def busy(function):
+        async def wrapped(*args, **kwargs):
+            raise PluginOperationBusy("held")
+        return wrapped
+
+    planned = asyncio.run(_run())
+    monkeypatch.setattr(operation_lock, "serialized_plugin_operation", busy)
+
+    status = asyncio.run(_run(planned["lock_sha256"]))
+
+    assert status["error_code"] == "busy"
+    assert not (plugin_dir / "vendor").exists() and _leftovers(plugin_dir) == []

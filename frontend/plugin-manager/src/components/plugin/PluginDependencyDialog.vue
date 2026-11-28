@@ -84,7 +84,7 @@ const POLL_MS = 1000
 const ERROR_CODES = new Set([
   'tools_failed', 'lock_invalid', 'network', 'not_on_index', 'no_wheel', 'hash_mismatch',
   'unpinned_source', 'lock_changed', 'lock_mismatch', 'install_failed', 'not_applicable',
-  'canceled', 'internal_error',
+  'canceled', 'busy', 'internal_error',
 ])
 
 const packages = computed(() => status.value?.packages ?? [])

@@ -1157,6 +1157,7 @@ export default {
       install_failed: 'No se pudieron instalar las dependencias. Vuelve a intentarlo.',
       not_applicable: 'Este complemento no necesita instalar sus dependencias aquí.',
       canceled: 'La instalación se canceló.',
+      busy: 'Hay otra operación de complementos en curso. Vuelve a intentarlo en un momento.',
       internal_error: 'Se produjo un error inesperado durante la instalación. Vuelve a intentarlo.'
     }
   },

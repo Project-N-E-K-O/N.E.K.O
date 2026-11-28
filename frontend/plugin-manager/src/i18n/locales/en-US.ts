@@ -1157,6 +1157,7 @@ export default {
       install_failed: 'The dependencies could not be installed. Please try again.',
       not_applicable: 'This plugin does not need its dependencies installed here.',
       canceled: 'The installation was canceled.',
+      busy: 'Another operation on plugins is in progress. Please try again in a moment.',
       internal_error: 'An unexpected error occurred during the installation. Please try again.'
     }
   },

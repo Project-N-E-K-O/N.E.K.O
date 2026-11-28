@@ -54,6 +54,7 @@ from plugin.neko_plugin_cli.core.uv_lock_install import (
     read_lock,
     runtime_python_tag,
     uv_export_command,
+    unpinned_lock_sources,
     unpinned_requirements,
     uv_install_command,
     write_lock_marker,
@@ -74,7 +75,7 @@ TaskState = Literal["planning", "awaiting_confirmation", "installing", "complete
 ErrorCode = Literal[
     "not_applicable", "tools_failed", "lock_invalid", "network", "not_on_index", "no_wheel",
     "hash_mismatch", "unpinned_source", "lock_changed", "lock_mismatch", "install_failed",
-    "canceled", "internal_error",
+    "canceled", "busy", "internal_error",
 ]
 
 # Preparing uv and Python on first use downloads tens of megabytes; installing
@@ -109,6 +110,9 @@ class _Task:
     runner: asyncio.Task | None = None
     # The lock the user confirmed; a plan for the same lock proceeds without asking again.
     confirmed_lock_sha256: str | None = None
+    # Written into this task's staging directory; a staging directory at the
+    # same path without it belongs to a plugin directory that replaced ours.
+    staging_token: str | None = None
 
     def as_dict(self) -> dict[str, object]:
         sizes = [package.size for package in self.packages]
@@ -136,8 +140,17 @@ class _Failure(Exception):
         self.detail = detail
 
 
+_STAGING_TOKEN_NAME = ".neko-staging-id"
+
 _tasks: dict[str, _Task] = {}
 _tasks_lock = threading.Lock()
+
+
+def _plugin_running(plugin_id: str) -> bool:
+    from plugin.core.state import state
+
+    with state.acquire_plugin_hosts_read_lock():
+        return plugin_id in state.plugin_hosts
 
 
 # ---------------------------------------------------------------------------
@@ -220,9 +233,12 @@ def _classify(output: str) -> ErrorCode:
         return "no_wheel"
     if "not found in the package registry" in lowered or "was not found in the" in lowered:
         return "not_on_index"
+    # Phrases from uv / reqwest error chains, not bare words that package
+    # names can contain (networkx, tlslite...).
     if any(term in lowered for term in (
-        "failed to fetch", "dns error", "error sending request", "connection", "timed out", "tls",
-        "certificate", "network",
+        "failed to fetch", "dns error", "error sending request", "connection refused", "connection reset",
+        "connection closed", "operation timed out", "request timed out", "network is unreachable",
+        "tls handshake", "certificate verify failed", "invalid peer certificate",
     )):
         return "network"
     if "no solution found" in lowered:
@@ -283,17 +299,26 @@ def _export(task: _Task, runtime: ToolRuntime, project: Path, work_dir: Path, de
     return requirements
 
 
+def _checked_lock(project: Path) -> dict[str, object]:
+    """Parse the snapshot's uv.lock and refuse non-index sources, before any uv command runs."""
+    try:
+        lock_data = read_lock(project)
+    except (OSError, ValueError) as exc:
+        raise _Failure("lock_invalid", f"{LOCK_FILE_NAME} cannot be read: {exc}") from exc
+    offending = unpinned_lock_sources(lock_data)
+    if offending:
+        raise _Failure("unpinned_source", _redact("Not from the package index: " + ", ".join(offending))[:_DETAIL_LIMIT])
+    return lock_data
+
+
 def _plan_sync(task: _Task, deadline: float) -> None:
     if not lock_install_applies(task.plugin_dir):
         raise _Failure("not_applicable", "The plugin has no uv.lock, or ships its own vendor/")
-    runtime = _prepare_runtime(task, deadline)
     with tempfile.TemporaryDirectory(prefix="neko-lock-plan-") as temporary:
         work_dir = Path(temporary)
         project, digest = _snapshot(task.plugin_dir, work_dir)
-        try:
-            lock_data = read_lock(project)
-        except (OSError, ValueError) as exc:
-            raise _Failure("lock_invalid", f"{LOCK_FILE_NAME} cannot be read: {exc}") from exc
+        lock_data = _checked_lock(project)
+        runtime = _prepare_runtime(task, deadline)
         requirements = _export(task, runtime, project, work_dir, deadline)
         result = _run(
             task, runtime,
@@ -326,14 +351,25 @@ def _swap_in(plugin_dir: Path, staging: Path) -> None:
 
 def _install_sync(task: _Task, deadline: float) -> Path:
     """Install into a staging directory beside vendor/; returns it, swap not done yet."""
-    runtime = _prepare_runtime(task, deadline)
     staging = task.plugin_dir / f"{VENDOR_SYNC_STAGING_PREFIX}{secrets.token_hex(4)}"
     try:
+        # Created with a token first: if the plugin directory is replaced while
+        # uv runs (an upgrade renames it away), uv's later writes land in a
+        # staging directory of the new tree that lacks the token, and the swap
+        # refuses it instead of installing half the packages.
+        task.staging_token = secrets.token_hex(16)
+        try:
+            staging.mkdir()
+        except FileNotFoundError as exc:
+            raise _Failure("lock_changed", "The plugin was removed before its dependencies were installed") from exc
+        (staging / _STAGING_TOKEN_NAME).write_text(task.staging_token, encoding="utf-8")
         with tempfile.TemporaryDirectory(prefix="neko-lock-install-") as temporary:
             work_dir = Path(temporary)
             project, digest = _snapshot(task.plugin_dir, work_dir)
             if digest != task.lock_sha256:
                 raise _Failure("lock_changed", "uv.lock changed after the user confirmed it")
+            _checked_lock(project)
+            runtime = _prepare_runtime(task, deadline)
             requirements = _export(task, runtime, project, work_dir, deadline)
             task.phase = "installing"
             result = _run(
@@ -374,7 +410,7 @@ def _discard_staging(plugin_dir: Path, staging: Path) -> None:
 
 
 async def _commit(task: _Task, staging: Path) -> None:
-    from plugin.server.application.plugins.operation_lock import serialized_plugin_operation
+    from plugin.server.application.plugins.operation_lock import PluginOperationBusy, serialized_plugin_operation
 
     @serialized_plugin_operation
     async def commit() -> None:
@@ -384,12 +420,24 @@ async def _commit(task: _Task, staging: Path) -> None:
                 raise _Failure("lock_changed", "The plugin changed while its dependencies were installed")
             if lock_sha256(task.plugin_dir) != task.lock_sha256:
                 raise _Failure("lock_changed", "uv.lock changed while its dependencies were installed")
+            token_file = staging / _STAGING_TOKEN_NAME
+            try:
+                token = token_file.read_text(encoding="utf-8")
+            except OSError:
+                token = None
+            if token is None or token != task.staging_token:
+                raise _Failure("lock_changed", "The plugin directory was replaced while its dependencies were installed")
+            token_file.unlink()
+            if _plugin_running(task.plugin_id):
+                raise _Failure("lock_changed", "The plugin was started while its dependencies were installed")
             _swap_in(task.plugin_dir, staging)
 
         await asyncio.to_thread(swap)
 
     try:
         await commit()
+    except PluginOperationBusy as exc:
+        raise _Failure("busy", "Another plugin operation held the lock; try again") from exc
     except OSError as exc:
         # The swap itself failed (the staging directory moved with an upgrade, a locked file...).
         raise _Failure("lock_changed", f"vendor/ could not be replaced: {exc}") from exc
@@ -480,6 +528,15 @@ async def request_dependency_install(plugin_id: str, *, confirm_lock_sha256: str
             message=f"Plugin '{plugin_id}' is built in; its dependencies are not installed here",
             status_code=400, details={"plugin_id": plugin_id},
         )
+    with _tasks_lock:
+        task = _tasks.get(plugin_id)
+        if task is not None and task.runner is not None and not task.runner.done():
+            return task.as_dict()
+    if await asyncio.to_thread(_plugin_running, plugin_id) or not await asyncio.to_thread(
+        dependencies_pending, plugin_dir,
+    ):
+        # Nothing to install (or it runs on its vendor/ right now): never swap vendor/ under it.
+        return {"plugin_id": plugin_id, "state": None, "pending": False}
     with _tasks_lock:
         task = _tasks.get(plugin_id)
         if task is not None and task.runner is not None and not task.runner.done():

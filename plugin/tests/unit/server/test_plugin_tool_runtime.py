@@ -200,6 +200,12 @@ def _no_runner(*_args, **_kwargs):
     pytest.fail("no child process may start here")
 
 
+def _developer_uv(cmd, **_kwargs):
+    """A developer's uv on PATH, new enough; it only gets asked for its version."""
+    assert cmd == ["/developer/bin/uv", "--version"], cmd
+    return subprocess.CompletedProcess(cmd, 0, "uv 0.14.2\n", "")
+
+
 # ---------------------------------------------------------------------------
 # Source checkout
 
@@ -207,8 +213,10 @@ def _no_runner(*_args, **_kwargs):
 def test_source_returns_current_interpreter_without_preparing(root, monkeypatch):
     monkeypatch.setattr(module, "_is_packaged", lambda: False)
     monkeypatch.setattr(module, "_source_uv", lambda: "/developer/bin/uv")
-    result = _prepare(_no_runner)
+    monkeypatch.setattr(module, "_run_command", _developer_uv)
+    result = _prepare(_developer_uv)
     assert result.python == sys.executable
+    assert result.uv == "/developer/bin/uv"
     assert result.packaged is False
     assert result.root is None
     assert module.read_tool_runtime_status().state == "source"
@@ -219,8 +227,9 @@ def test_source_returns_current_interpreter_without_preparing(root, monkeypatch)
 def test_source_environment_keeps_the_developers_uv_settings(root, monkeypatch):
     monkeypatch.setattr(module, "_is_packaged", lambda: False)
     monkeypatch.setattr(module, "_source_uv", lambda: "/developer/bin/uv")
+    monkeypatch.setattr(module, "_run_command", _developer_uv)
     monkeypatch.setenv("UV_INDEX_URL", "https://mirror.invalid/simple")
-    assert _prepare(_no_runner).env["UV_INDEX_URL"] == "https://mirror.invalid/simple"
+    assert _prepare(_developer_uv).env["UV_INDEX_URL"] == "https://mirror.invalid/simple"
 
 
 def test_source_without_uv_downloads_the_pinned_uv_and_keeps_its_interpreter(root, monkeypatch):
@@ -292,6 +301,18 @@ def test_source_without_any_uv_reports_the_download_failure(root, monkeypatch):
         _prepare(FakeUv(root))
     assert caught.value.code == "download_failed"
     assert module.read_tool_runtime_status().state == "source"
+
+
+def test_source_with_an_old_uv_on_path_uses_the_pinned_one(root, monkeypatch):
+    # An old uv would reject flags the lock install passes (--no-default-groups...).
+    monkeypatch.setattr(module, "_is_packaged", lambda: False)
+    monkeypatch.setattr(module, "_source_uv", lambda: "/usr/bin/uv")
+    pypi = FakePyPI().install(monkeypatch)
+
+    result = _prepare(FakeUv(root, versions={"/usr/bin/uv": "0.4.0"}))
+
+    assert result.uv == str(module.cached_uv_path())
+    assert pypi.wheel_downloads == 1
 
 
 # ---------------------------------------------------------------------------
@@ -1152,6 +1173,7 @@ def test_tool_env_drops_variables_that_redirect_python_or_its_environment(root):
 def test_source_environment_keeps_python_settings(root, monkeypatch):
     monkeypatch.setattr(module, "_is_packaged", lambda: False)
     monkeypatch.setattr(module, "_source_uv", lambda: "/developer/bin/uv")
+    monkeypatch.setattr(module, "_run_command", _developer_uv)
     monkeypatch.setenv("VIRTUAL_ENV", "/developer/venv")
     assert module.prepare_tool_runtime(cancel=threading.Event(), deadline=time.monotonic() + 60).env["VIRTUAL_ENV"] == (
         "/developer/venv"

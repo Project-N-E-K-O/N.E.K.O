@@ -959,12 +959,13 @@ def prepare_tool_runtime(
     :class:`ToolRuntimeError`.
     """
     if not _is_packaged():
+        runner = run_command or _run_command
         source_uv = _source_uv()
-        if source_uv is not None:
+        # An older uv on PATH may lack flags tooling relies on (--no-default-groups...):
+        # use it only when it is at least the pinned release, else prepare the pinned one.
+        if source_uv is not None and _uv_version(source_uv, runner, _with_utf8(git_env()), cancel, deadline):
             return _source_runtime(source_uv)
-        return _source_runtime(_prepare_source_uv(
-            run_command or _run_command, _Reporter(progress), cancel, deadline, wait=wait_for_lock,
-        ))
+        return _source_runtime(_prepare_source_uv(runner, _Reporter(progress), cancel, deadline, wait=wait_for_lock))
     if sys.platform not in _SUPPORTED_PLATFORMS:
         raise ToolRuntimeError("unsupported_platform", f"Plugin tools are not available on {sys.platform}")
     try:
@@ -1009,8 +1010,6 @@ async def ensure_tool_runtime(
 ) -> ToolRuntime:
     """asyncio wrapper of :func:`prepare_tool_runtime`; cancelling the awaiting
     task cancels the preparation. ``progress`` runs on the worker thread."""
-    if not _is_packaged() and (source_uv := _source_uv()) is not None:
-        return _source_runtime(source_uv)
     cancel = threading.Event()
     deadline = time.monotonic() + timeout
     try:

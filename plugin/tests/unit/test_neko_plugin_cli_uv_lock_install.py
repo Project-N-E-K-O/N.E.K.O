@@ -253,3 +253,22 @@ def test_unpinned_requirements_does_not_trust_hash_lines_or_url_versions():
         "a==1.0+cpu \\\n    --hash=sha256:aa \\\n    --hash=sha256:bb\nb==1!2.0\n"
         "--hash=sha256:aa --index-url http://e\nc==http://evil/x\n"
     ) == ["--hash=sha256:aa --index-url http://e", "c==http://evil/x"]
+
+
+
+def test_unpinned_lock_sources_allows_only_registry_and_the_root_project():
+    lock = {"package": [
+        {"name": "demo", "version": "1", "source": {"virtual": "."}},
+        {"name": "app", "version": "1", "source": {"editable": "."}},
+        {"name": "idna", "version": "3.20", "source": {"registry": "https://pypi.org/simple"}},
+        {"name": "evil", "version": "1", "source": {"url": "http://127.0.0.1/x.whl"}},
+        {"name": "g", "version": "1", "source": {"git": "https://example/g.git"}},
+        {"name": "p", "version": "1", "source": {"path": "../p.whl"}},
+        {"name": "d", "version": "1", "source": {"directory": "../d"}},
+        {"name": "member", "version": "1", "source": {"editable": "packages/member"}},
+        {"name": "nosource", "version": "1"},
+    ]}
+
+    assert [entry.split(" ")[0] for entry in lock_install.unpinned_lock_sources(lock)] == [
+        "evil", "g", "p", "d", "member", "nosource",
+    ]

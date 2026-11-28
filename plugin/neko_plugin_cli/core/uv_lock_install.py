@@ -309,6 +309,33 @@ def lock_vendor_stale(plugin_dir: Path) -> bool:
     return marker is not None and marker.get("python") != runtime_python_tag()
 
 
+def unpinned_lock_sources(lock_data: Mapping[str, object]) -> list[str]:
+    """Packages of a lock that do not come from a package index.
+
+    Checked on the parsed uv.lock before any uv command: only ``registry``
+    packages are installed, plus the project itself (a ``virtual`` or
+    ``editable`` source at ``.``), which the export leaves out anyway. A
+    ``url``, ``git``, ``path`` or ``directory`` source, or any other root,
+    would point uv at an address the lock chose instead of the one index.
+    """
+    offending: list[str] = []
+    raw_packages = lock_data.get("package")
+    for package in raw_packages if isinstance(raw_packages, list) else []:
+        if not isinstance(package, dict):
+            continue
+        name = str(package.get("name") or "?")
+        source = package.get("source")
+        if not isinstance(source, dict):
+            offending.append(name)
+            continue
+        if set(source) == {"registry"}:
+            continue
+        if len(source) == 1 and source.get("virtual", source.get("editable")) == ".":
+            continue
+        offending.append(f"{name} ({', '.join(f'{key}={value}' for key, value in source.items())})")
+    return offending
+
+
 def unpinned_requirements(exported: str) -> list[str]:
     """Requirements of an exported lock that would not come from the package index.
 

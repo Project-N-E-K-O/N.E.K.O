@@ -1157,6 +1157,7 @@ export default {
       install_failed: '依赖安装失败，请重试。',
       not_applicable: '此插件不需要在这里安装依赖。',
       canceled: '安装已取消。',
+      busy: '插件正在进行其他操作，请稍后重试。',
       internal_error: '安装时出现意外错误，请重试。'
     }
   },

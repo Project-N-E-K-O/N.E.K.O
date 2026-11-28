@@ -1157,6 +1157,7 @@ export default {
       install_failed: '依賴安裝失敗，請重試。',
       not_applicable: '此外掛不需要在這裡安裝依賴。',
       canceled: '安裝已取消。',
+      busy: '外掛正在進行其他操作，請稍後重試。',
       internal_error: '安裝時發生意外錯誤，請重試。'
     }
   },
