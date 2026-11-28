@@ -353,7 +353,6 @@ const store = usePluginStore()
 const consentState = usePluginConsentState()
 const stopAction = usePluginStopAction()
 
-/** Disclosure only: the server takes no refusal for it (back to undecided instead). */
 const panel = ref<PermissionPanel | null>(null)
 const catalog = ref<PermissionCatalog | null>(null)
 const audit = ref<PermissionAuditPage | null>(null)

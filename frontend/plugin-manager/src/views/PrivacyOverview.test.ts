@@ -22,6 +22,8 @@ const pluginStore = vi.hoisted(() => ({
   fetchPluginSummaries: vi.fn().mockResolvedValue(undefined),
 }))
 vi.mock('@/stores/plugin', () => ({ usePluginStore: () => pluginStore }))
+const consentStore = vi.hoisted(() => ({ load: vi.fn().mockResolvedValue(undefined) }))
+vi.mock('@/stores/pluginConsentState', () => ({ usePluginConsentState: () => consentStore }))
 vi.mock('@/i18n', () => ({
   i18n: { global: { t: (key: string) => key } },
   localeLoadState: { pending: null },
@@ -332,6 +334,7 @@ describe('PrivacyOverview: switch', () => {
     ;(q(root, `switch-weather-${MEMORY}`) as HTMLInputElement).dispatchEvent(new Event('change'))
     await flush()
     expect(api.decidePermission).toHaveBeenCalledWith('weather', MEMORY, 'denied', 'in_use')
+    expect(consentStore.load).toHaveBeenCalledWith('weather')
     expect(api.getPermissionPanel).not.toHaveBeenCalled()
     expect(api.getPrivacyOverview).toHaveBeenCalledTimes(2)
   })
@@ -382,6 +385,7 @@ describe('PrivacyOverview: switch', () => {
     await flush()
     expect(api.clearPermission).toHaveBeenCalledWith('weather', PUSH)
     expect(api.decidePermission).not.toHaveBeenCalled()
+    expect(consentStore.load).toHaveBeenCalledWith('weather')
   })
 
   it('keeps what is shown when the reload after a change fails', async () => {
@@ -405,6 +409,7 @@ describe('PrivacyOverview: switch', () => {
     ;(q(root, `switch-weather-${MEMORY}`) as HTMLInputElement).dispatchEvent(new Event('change'))
     await flush()
     expect(ElMessage.error).toHaveBeenCalledWith('pluginConsent.tab.errors.busy')
+    expect(consentStore.load).not.toHaveBeenCalled()
   })
 })
 

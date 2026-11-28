@@ -187,6 +187,7 @@ import {
   type RiskTier,
 } from '@/api/pluginPermissions'
 import { usePluginStore } from '@/stores/plugin'
+import { usePluginConsentState } from '@/stores/pluginConsentState'
 import { capabilityMessageKey } from '@/utils/pluginCapabilities'
 import {
   decisionErrorKey,
@@ -216,6 +217,7 @@ import {
 
 const { t, te } = useI18n()
 const pluginStore = usePluginStore()
+const consentState = usePluginConsentState()
 
 const overview = ref<PrivacyOverview | null>(null)
 const catalog = ref<PermissionCatalog | null>(null)
@@ -383,6 +385,8 @@ async function toggle(line: PluginLine, on: boolean) {
       const request = switchRequest(line, on, on ? await panelRow(line) : undefined)
       if (request.kind === 'clear') await clearPermission(line.pluginId, line.permission)
       else await decidePermission(line.pluginId, line.permission, request.state, request.condition)
+      // The plugin-wide consent record follows its permissions: read it again, as the permission tab does.
+      void consentState.load(line.pluginId).catch(() => undefined)
     } catch (error) {
       ElMessage.error(t(decisionErrorKey(error)))
     }
