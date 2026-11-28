@@ -2604,6 +2604,8 @@ async function fetchModelList(body) {
             const entry = { id: model.id.trim(), name: typeof model.name === 'string' ? model.name.trim() : '' };
             // 后端给 OpenRouter 的原生决策模型打的标记，选择器里显示成标签。
             if (model.decision === true) entry.decision = true;
+            // 语音识别列表里，后端确认能用该服务商识别请求的模型。
+            if (model.asr === true) entry.asr = true;
             return entry;
         });
     if (models.length === 0) return { success: false, error_code: 'empty', error: '' };
@@ -2661,6 +2663,12 @@ function renderModelIdPickerOptions(picker) {
             const tag = document.createElement('span');
             tag.className = 'model-id-picker-option-name';
             tag.textContent = translateModelPickerText('api.modelPicker.decisionTag', '原生决策');
+            item.appendChild(tag);
+        }
+        if (model.asr) {
+            const tag = document.createElement('span');
+            tag.className = 'model-id-picker-option-name';
+            tag.textContent = translateModelPickerText('api.modelPicker.asrTag', '语音识别');
             item.appendChild(tag);
         }
         if (model.name && model.name !== model.id) {
@@ -2881,6 +2889,9 @@ function initModelIdPickers() {
         );
     });
     initModelIdPicker(document.getElementById('imageModelId'), resolveImageModelPickerRequest);
+    if (typeof resolveAsrModelPickerRequest === 'function') {
+        initModelIdPicker(document.getElementById('asrModelId'), resolveAsrModelPickerRequest);
+    }
 
     const imageUrlInput = document.getElementById('imageModelUrl');
     if (imageUrlInput) imageUrlInput.addEventListener('input', () => scheduleModelIdHintsRefresh(['image']));
@@ -2918,6 +2929,8 @@ async function loadApiProviders() {
                 // Store registry and full provider info
                 _apiKeyRegistry = data.api_key_registry || {};
                 populateImageProviders(data.image_providers || {});
+                // 语音识别槽位在 asr_slot_settings.js；单独加载本文件的页面和测试里不存在。
+                if (typeof populateAsrSlotVendors === 'function') populateAsrSlotVendors(data.asr_slot_vendors || []);
                 _coreApiProviders = data.core_api_providers_full || {};
                 _assistApiProviders = data.assist_api_providers_full || {};
                 _assistModelDefaults = data.assist_model_defaults || {};
@@ -3266,6 +3279,7 @@ async function loadCurrentApiKey() {
             setSecretInputValue('recognitionModelApiKey', data.recognitionModelApiKey);
 
             loadImageSettings(data);
+            if (typeof loadAsrSlotSettings === 'function') loadAsrSlotSettings(data);
 
             setInputValue('decisionModelUrl', data.decisionModelUrl);
             setInputValue('decisionModelId', data.decisionModelId);
@@ -3838,6 +3852,7 @@ function confirmClearCustomApi() {
         imageProvider.value = 'disabled';
         onImageProviderChange();
     }
+    if (typeof resetAsrSlotSettings === 'function') resetAsrSlotSettings();
 
     _customTtsDraft = null;
     // 清空 TTS Voice ID
@@ -4197,6 +4212,13 @@ async function save_button_down(e) {
         return;
     }
 
+    // 后端同样会拒绝这些语音识别配置，这里先拦下，提示才能是本地化的。
+    const asrSlotError = typeof validateAsrSlotSettings === 'function' ? validateAsrSlotSettings() : null;
+    if (asrSlotError) {
+        showStatus(asrSlotError, 'error');
+        return;
+    }
+
     // Collect model provider selections
     const modelProviders = {};
     MODEL_TYPES.forEach(mt => {
@@ -4216,6 +4238,7 @@ async function save_button_down(e) {
         ...bookPayload,
         ...doubaoVoiceManagementSettingsPayload(),
         ...imageSettingsPayload(),
+        ...(typeof asrSlotSettingsPayload === 'function' ? asrSlotSettingsPayload() : {}),
         conversationModelUrl, conversationModelId, conversationModelApiKey,
         memoryModelUrl, memoryModelId, memoryModelApiKey,
         gameMainModelUrl, gameMainModelId, gameMainModelApiKey,
@@ -4882,6 +4905,8 @@ const MODEL_CONFIG_ROW_PAIRS = Object.freeze({
     agent: 'agent-advanced',
     'agent-small': 'game',
     game: 'agent-small',
+    image: 'asr',
+    asr: 'image',
 });
 
 function finishModelConfigCollapse(content, pairedContent, transitionId) {
@@ -5005,7 +5030,7 @@ function navigateToCustomModelConfig(modelType) {
 // 页面加载完成后初始化折叠状态
 document.addEventListener('DOMContentLoaded', function () {
     // 初始化所有模型配置为折叠状态
-    const modelTypes = ["conversation", 'memory', 'game', 'game-main', 'game-summary', 'game-recognition', 'recognition', 'decision', 'image', 'agent-advanced', 'agent', 'agent-small', 'omni', 'tts', 'gptsovits'];
+    const modelTypes = ["conversation", 'memory', 'game', 'game-main', 'game-summary', 'game-recognition', 'recognition', 'decision', 'image', 'asr', 'agent-advanced', 'agent', 'agent-small', 'omni', 'tts', 'gptsovits'];
     modelTypes.forEach(modelType => {
         const content = document.getElementById(`${modelType}-model-content`);
         if (content) {

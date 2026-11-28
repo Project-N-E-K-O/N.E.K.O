@@ -368,6 +368,7 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
             agentSmall: rect(cards[8]),
             game: rect(cards[9]),
             image: rect(cards[10]),
+            asr: rect(cards[11]),
             cardCount: cards.length,
         };
     }""")
@@ -386,6 +387,7 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
         "agent-small-model-content",
         "game-model-content",
         "image-model-content",
+        "asr-model-content",
     ]
     assert desktop["titleKeys"] == [
         "api.conversationModelConfig",
@@ -399,6 +401,7 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
         "api.agentSmallApiConfigTitle",
         "api.gameModelsConfig",
         "api.imageModelConfig",
+        "api.asrModelConfig",
     ]
     assert desktop["summaryTypes"] == [
         "conversation",
@@ -425,6 +428,8 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
         "agent": "agent-advanced",
         "agent-small": "game",
         "game": "agent-small",
+        "image": "asr",
+        "asr": "image",
     }
     assert desktop["conversation"]["top"] == desktop["memory"]["top"]
     assert desktop["conversation"]["left"] < desktop["memory"]["left"]
@@ -438,11 +443,13 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
     assert desktop["agentAdvanced"]["top"] > desktop["omni"]["top"]
     assert desktop["agentSmall"]["top"] == desktop["game"]["top"]
     assert desktop["agentSmall"]["left"] < desktop["game"]["left"]
-    # Image generation is the odd card out and sits alone on the last row.
+    # Image generation and speech recognition share the last row.
     assert desktop["image"]["top"] > desktop["game"]["top"]
+    assert desktop["image"]["top"] == desktop["asr"]["top"]
+    assert desktop["image"]["left"] < desktop["asr"]["left"]
     # The retired vision slot has no card any more (stored settings are kept); the
     # minigame recognition slot lives inside the minigame card.
-    assert desktop["cardCount"] == 11
+    assert desktop["cardCount"] == 12
 
     mock_page.evaluate("toggleModelConfig('conversation')")
     mock_page.wait_for_timeout(350)

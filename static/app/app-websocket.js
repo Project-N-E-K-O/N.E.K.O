@@ -2559,19 +2559,32 @@
      * only bypasses completed cache data; the generation fence remains a
      * defensive guard around request publication.
      */
-    function publishCoreApiCapability(provider, capability, localAsrAvailable) {
+    function publishCoreApiCapability(provider, capability, localAsrAvailable, asrSlot) {
         var previousProvider = S.coreApiProvider || '';
         var previousCapability = S.coreApiSupportsIndependentAsr;
         var previousLocalAsrAvailable = S.localAsrAvailable;
+        var previousAsrSlot = [S.asrSlotActive, S.asrSlotProvider, S.asrSlotAvailability].join('|');
         S.coreApiProvider = typeof provider === 'string' ? provider : '';
         S.coreApiSupportsIndependentAsr =
             typeof capability === 'boolean' ? capability : null;
         S.localAsrAvailable =
             typeof localAsrAvailable === 'boolean' ? localAsrAvailable : null;
+        // The speech-recognition slot from API settings. It overrides the Core
+        // route and the panel's independent-ASR choices; unknown stays null.
+        asrSlot = asrSlot && typeof asrSlot === 'object' ? asrSlot : {};
+        S.asrSlotActive = typeof asrSlot.active === 'boolean' ? asrSlot.active : null;
+        S.asrSlotProvider = S.asrSlotActive && typeof asrSlot.provider === 'string'
+            ? asrSlot.provider
+            : '';
+        S.asrSlotAvailability = S.asrSlotActive && typeof asrSlot.availability === 'string'
+            ? asrSlot.availability
+            : '';
         if (
             previousProvider !== S.coreApiProvider
             || previousCapability !== S.coreApiSupportsIndependentAsr
             || previousLocalAsrAvailable !== S.localAsrAvailable
+            || previousAsrSlot
+                !== [S.asrSlotActive, S.asrSlotProvider, S.asrSlotAvailability].join('|')
         ) {
             try {
                 window.dispatchEvent(new CustomEvent(
@@ -2640,7 +2653,12 @@
                     ? data.effectiveCoreApi
                     : data.coreApi,
                 data.supportsIndependentAsr,
-                data.localAsrAvailable
+                data.localAsrAvailable,
+                {
+                    active: data.asrSlotActive,
+                    provider: data.asrSlotProvider,
+                    availability: data.asrSlotAvailability
+                }
             );
         }).catch(function (error) {
             console.warn('[Core API] Failed to refresh ASR capability:', error);

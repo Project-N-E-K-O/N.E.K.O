@@ -66,6 +66,7 @@ LOCALE_VERSION_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}-[a-z0-9][a-z0-9._-]*$")
 # When incrementing LOCALE_VERSION, append old value here.
 RETIRED_LOCALE_VERSIONS = frozenset(
     {
+        "2026-11-28-nekopower-no-capability-removed",
         "2026-11-27-knowledge-nekopower-hints-merge",
         "2026-11-26-knowledge-audio-message-merge",
         "2026-11-26-nekopower-half-on-hints",
@@ -698,7 +699,7 @@ RETIRED_LOCALE_VERSIONS = frozenset(
 #
 # Arrays expand by index too, so appending badminton.lines.* dialogue also fails:
 # stale caches yield undefined, equivalent to missing keys.
-LOCALE_KEY_SIGNATURE = "4b01574784489f9509b58a6d0f067d2805b6e5841aa31725c0581e284937f3f0"
+LOCALE_KEY_SIGNATURE = "b788614280a7a6f6540bdd4002a669aa3e99f2db5799b53ac35b9014bb2095ef"
 
 
 _BUMP_INSTRUCTIONS = (
