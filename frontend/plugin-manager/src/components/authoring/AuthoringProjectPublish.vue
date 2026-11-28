@@ -349,18 +349,21 @@ function guideOpen(id: PublishPageId) {
 const toolchain = ref<Toolchain | null>(null)
 const toolchainFailure = useLocalizedError(describeError, 'toolchainLoadFailed')
 const toolchainError = toolchainFailure.message
+/** Reads overlap (Refresh, reload, polling): only the latest one started may apply. */
+let latestToolchainRead = 0
 /** Resolves to whether the toolchain was read; a failed read keeps the previous state. */
 async function loadToolchain(): Promise<boolean> {
   toolchainFailure.clear()
+  const read = ++latestToolchainRead
   try {
     const next = await getPluginToolchain(props.projectId)
-    if (!disposed) {
+    if (!disposed && read === latestToolchainRead) {
       toolchain.value = next
       if (next.tool_environment === 'preparing') pollToolEnvironment()
     }
     return true
   } catch (error) {
-    if (!disposed) toolchainFailure.set(error)
+    if (!disposed && read === latestToolchainRead) toolchainFailure.set(error)
     return false
   }
 }

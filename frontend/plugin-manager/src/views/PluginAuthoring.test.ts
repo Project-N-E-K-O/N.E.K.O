@@ -1064,6 +1064,28 @@ describe('authoring workbench backed by the server project list', () => {
     expect(buttons(en.toolEnvironmentPrepare)).toHaveLength(1)
   })
 
+  it('ignores a toolchain read that answers after a newer one', async () => {
+    api.route.query = { project: 'p1' }
+    api.listPluginProjects.mockResolvedValue([listed])
+    api.getPluginProjectPublishStatus.mockResolvedValue(publishStatus())
+    let answerStale: (value: Toolchain) => void = () => {}
+    api.getPluginToolchain
+      .mockResolvedValueOnce(readyToolchain({ tool_environment: 'missing' }))
+      .mockReturnValueOnce(new Promise<Toolchain>((resolve) => { answerStale = resolve }))
+      .mockResolvedValue(readyToolchain({ tool_environment: 'ready' }))
+    const container = await mount()
+    await openPublish(container)
+    const tools = page('toolchain')
+    await click(en.publishRefresh) // this read stays pending
+    await click(en.publishRefresh) // a newer read answers ready
+    await settle()
+    expect(tools.textContent).toContain(en.toolEnvironmentReady)
+    answerStale(readyToolchain({ tool_environment: 'missing' }))
+    await settle()
+    expect(tools.textContent).toContain(en.toolEnvironmentReady)
+    expect(tools.textContent).not.toContain(en.toolEnvironmentMissing)
+  })
+
   it('polls the toolchain when it loads while the environment is preparing', async () => {
     api.route.query = { project: 'p1' }
     api.listPluginProjects.mockResolvedValue([listed])

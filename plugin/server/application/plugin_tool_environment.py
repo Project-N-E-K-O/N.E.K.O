@@ -354,7 +354,11 @@ async def _build(resources: ToolResources, runtime: ToolRuntime, deadline: float
             raise ToolEnvironmentError(
                 f"Could not prepare plugin tools: {_redact(' '.join(detail[-3:]))[-500:]}"
             )
-    atomic_write_text(resources.ready_file, json.dumps({"key": resources.key, "python": runtime.python}))
+    # Only after every command succeeded; fsync off the event loop.
+    await asyncio.to_thread(
+        atomic_write_text, resources.ready_file,
+        json.dumps({"key": resources.key, "python": runtime.python}),
+    )
 
 
 async def _prepare_environment(

@@ -117,8 +117,9 @@ async function updateWorkflows() {
       changes.value = applied
       return
     }
-    changes.value = await previewProjectWorkflows(props.projectId)
+    // The files changed: refresh the parent even if the follow-up preview fails.
     emit('created')
+    changes.value = await previewProjectWorkflows(props.projectId)
   } catch (error) {
     workflowFailure.set(error)
   } finally {
