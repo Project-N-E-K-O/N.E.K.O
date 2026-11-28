@@ -37,7 +37,7 @@ import { usePermissionStartDialog } from './stores/permissionStartDialog'
 const startDialog = usePermissionStartDialog()
 // Each handler is bound to its own dialog: a late answer from a replaced one is dropped.
 function resultFor(key: number) {
-  return (result: { start: boolean }) => startDialog.answer(result.start, key)
+  return (result: { start: boolean; changed: boolean }) => startDialog.answer(result.start, key, result.changed)
 }
 function closeFor(key: number) {
   return () => startDialog.answer(true, key)

@@ -380,6 +380,19 @@ describe('PluginPermissions tab', () => {
     })
   })
 
+  it('reads the tab again when the dialog before a start saved something', async () => {
+    serve(panel())
+    await mount()
+    const { usePermissionStartDialog } = await import('@/stores/permissionStartDialog')
+    const store = usePermissionStartDialog()
+    store.answer(false, undefined, false)
+    await flush()
+    expect(api.getPermissionPanel).toHaveBeenCalledTimes(1)
+    store.answer(true, undefined, true)
+    await flush()
+    expect(api.getPermissionPanel).toHaveBeenCalledTimes(2)
+  })
+
   it('keeps the shown table when a refresh answers without the developer lists', async () => {
     serve(panel())
     const root = await mount()

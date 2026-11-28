@@ -123,6 +123,13 @@ it('shows the loaded start dialog and answers with the user\'s choice', async ()
   await vi.waitFor(() => expect(host.textContent).toContain('dialog Second'))
   ;(host.querySelector('[data-test="skip"]') as HTMLElement).click()
   await expect(second).resolves.toBe(false)
+  expect(store.revision).toBe(0)
+
+  const third = ask(store, 'Third')
+  await vi.waitFor(() => expect(host.textContent).toContain('dialog Third'))
+  results.at(-1)!({ start: false, changed: true })
+  await expect(third).resolves.toBe(false)
+  expect(store.revision).toBe(1)
 })
 
 it('ignores a late answer from a dialog that was replaced', async () => {

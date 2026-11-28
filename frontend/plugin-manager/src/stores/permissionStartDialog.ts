@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { shallowRef } from 'vue'
+import { ref, shallowRef } from 'vue'
 import type { PendingPermissions, PermissionPanel } from '@/api/pluginPermissions'
 import type { DialogRequest } from '@/utils/permissionDialogs'
 
@@ -21,6 +21,8 @@ interface Active extends StartDialogRequest {
  */
 export const usePermissionStartDialog = defineStore('permissionStartDialog', () => {
   const active = shallowRef<Active | null>(null)
+  /** Moves when a start dialog saved a decision, so open views read again. */
+  const revision = ref(0)
   let sequence = 0
 
   /** Resolves true when the user chose to start. */
@@ -31,11 +33,12 @@ export const usePermissionStartDialog = defineStore('permissionStartDialog', () 
     })
   }
   /** Answers the open dialog; an answer for a dialog already replaced is dropped. */
-  function answer(start: boolean, key?: number) {
+  function answer(start: boolean, key?: number, changed = false) {
+    if (changed) revision.value++
     const current = active.value
     if (!current || (key !== undefined && key !== current.key)) return
     active.value = null
     current.resolve(start)
   }
-  return { active, ask, answer }
+  return { active, revision, ask, answer }
 })

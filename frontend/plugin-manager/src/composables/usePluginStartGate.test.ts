@@ -173,4 +173,12 @@ describe('usePermissionStartDialog', () => {
     expect(await second).toBe(true)
     expect(dialog.active).toBeNull()
   })
+
+  it('counts answers that saved something, also from a replaced dialog', () => {
+    const dialog = usePermissionStartDialog()
+    dialog.answer(false)
+    expect(dialog.revision).toBe(0)
+    dialog.answer(false, 99, true)
+    expect(dialog.revision).toBe(1)
+  })
 })

@@ -314,7 +314,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, defineComponent, h, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, defineComponent, h, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import type { PropType } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
@@ -336,6 +336,7 @@ import {
 import { usePluginStore } from '@/stores/plugin'
 import { getPluginScan, rescanPlugin, type PluginScanRecord } from '@/api/pluginScan'
 import { usePluginStopAction } from '@/composables/usePluginStopAction'
+import { usePermissionStartDialog } from '@/stores/permissionStartDialog'
 import PluginLegacyConsentBanner from './PluginLegacyConsentBanner.vue'
 import PluginPermissionDialog from './PluginPermissionDialog.vue'
 import { dialogFor, type DialogRequest } from '@/utils/permissionDialogs'
@@ -371,6 +372,7 @@ const props = defineProps<{ pluginId: string }>()
 const { t, te } = useI18n()
 const store = usePluginStore()
 const stopAction = usePluginStopAction()
+const startDialog = usePermissionStartDialog()
 
 const panel = ref<PermissionPanel | null>(null)
 const catalog = ref<PermissionCatalog | null>(null)
@@ -502,6 +504,8 @@ async function load(timed = false) {
   }
 }
 onMounted(() => load())
+// Decisions saved in the dialog before a start are read again here.
+watch(() => startDialog.revision, () => void load())
 // Lets the detail page (and tests) read the tab again.
 defineExpose({ load })
 onBeforeUnmount(() => {
