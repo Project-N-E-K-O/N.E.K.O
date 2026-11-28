@@ -8,6 +8,7 @@ import {
   dialogSections,
   firstUsePermission,
   laterAsks,
+  startRequest,
   unchangedCount,
   undecidedCount,
 } from './permissionDialogs'
@@ -81,6 +82,14 @@ describe('dialogFor', () => {
     expect(dialogFor(p, pending({ to_confirm: [{ plugin_id: 'demo', items: [] }] }))).toBeNull()
     expect(dialogFor(p, null)).toBeNull()
     expect(dialogFor(p, { first_use: [], incomplete: [] })).toBeNull()
+  })
+
+  it('skips entries of another shape, also in the lists of the start dialog', () => {
+    const bad = pending({ to_confirm: [{ plugin_id: 'demo', items: 'network' as never }, null as never] })
+    expect(dialogFor(p, bad)).toBeNull()
+    expect(startRequest(pending({ upgraded: 'demo' as never }), 'demo')).toBeNull()
+    expect(startRequest(pending({ to_confirm: [{ plugin_id: 'demo', items: [1 as never] }] }), 'demo')).toBeNull()
+    expect(startRequest(pending({ upgraded: [{ plugin_id: 'demo', items: [NET] }] }), 'demo')).toEqual({ kind: 'upgrade', items: [NET] })
   })
 })
 

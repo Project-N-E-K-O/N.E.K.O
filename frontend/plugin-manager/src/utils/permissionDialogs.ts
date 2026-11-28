@@ -9,6 +9,7 @@
 import type {
   PanelRow,
   PendingPermissions,
+  PendingPluginItems,
   PermissionCondition,
   PermissionPanel,
   RiskTier,
@@ -40,15 +41,31 @@ export function dialogFor(
   pending: PendingPermissions | null,
 ): DialogRequest | null {
   if (!pending) return null
-  const id = panel.plugin_id
-  const listed = (entries: PendingPermissions['to_confirm']) =>
-    (entries ?? []).find((entry) => entry.plugin_id === id && entry.items.length > 0)
+  const start = startRequest(pending, panel.plugin_id)
+  if (start) return start
+  const used = firstUsePermission(panel, pending)
+  return used ? { kind: 'firstUse', permission: used } : null
+}
+
+/**
+ * The dialog shown before a start, and the first choice of "Decide item by
+ * item": ① while the plugin was never decided, ③ when an update asks for
+ * more. Entries of another shape are skipped.
+ */
+export function startRequest(pending: PendingPermissions, pluginId: string): DialogRequest | null {
+  const listed = (entries: unknown) =>
+    (Array.isArray(entries) ? entries : []).find(
+      (entry): entry is PendingPluginItems =>
+        Boolean(entry)
+        && entry.plugin_id === pluginId
+        && Array.isArray(entry.items)
+        && entry.items.length > 0
+        && entry.items.every((item: unknown) => typeof item === 'string'),
+    )
   const first = listed(pending.to_confirm)
   if (first) return { kind: 'first', items: [...first.items] }
   const upgrade = listed(pending.upgraded)
-  if (upgrade) return { kind: 'upgrade', items: [...upgrade.items] }
-  const used = firstUsePermission(panel, pending)
-  return used ? { kind: 'firstUse', permission: used } : null
+  return upgrade ? { kind: 'upgrade', items: [...upgrade.items] } : null
 }
 
 /** The first undecided permission, in the panel's order, used while not decided. */

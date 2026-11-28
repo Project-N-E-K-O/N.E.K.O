@@ -17,7 +17,7 @@
         :request="startDialog.active.request"
         :plugin-name="startDialog.active.pluginName"
         start
-        :onResult="resultFor(startDialog.active.key)"
+        :onResult="resultFor(startDialog.active.key, startDialog.active.panel.plugin_id)"
         :onClose="closeFor(startDialog.active.key)"
       />
     </div>
@@ -36,8 +36,9 @@ import { usePermissionStartDialog } from './stores/permissionStartDialog'
 // plugin, as a failed read does: the dialog never keeps a plugin from starting.
 const startDialog = usePermissionStartDialog()
 // Each handler is bound to its own dialog: a late answer from a replaced one is dropped.
-function resultFor(key: number) {
-  return (result: { start: boolean; changed: boolean }) => startDialog.answer(result.start, key, result.changed)
+function resultFor(key: number, pluginId: string) {
+  return (result: { start: boolean; changed: boolean }) =>
+    startDialog.answer(result.start, key, result.changed ? pluginId : undefined)
 }
 function closeFor(key: number) {
   return () => startDialog.answer(true, key)

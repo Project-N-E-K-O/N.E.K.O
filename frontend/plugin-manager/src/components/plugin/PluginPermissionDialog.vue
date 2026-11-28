@@ -138,12 +138,13 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, shallowRef } from 'vue'
+import { computed, ref, shallowRef, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
 import '@/assets/styles/permissionPalette.css'
 import {
   decidePermission,
+  getPermissionPanel,
   type PanelRow,
   type PendingPermissions,
   type PermissionCatalog,
@@ -192,7 +193,22 @@ const { t, te } = useI18n()
 
 const current = shallowRef<PermissionPanel>(props.panel)
 const busy = ref<string | null>(null)
+/** A decision was saved, or may have been: the tab reads the plugin again on close. */
 let changed = false
+/** Rows as answered here: a newer panel from the tab (a running scan) keeps them. */
+const answered = new Map<string, PanelRow>()
+
+function withAnswers(next: PermissionPanel): PermissionPanel {
+  if (!answered.size) return next
+  return { ...next, rows: next.rows.map((row) => answered.get(row.permission) ?? row) }
+}
+// The tab reads the panel again while a scan runs: newly found items show up here too.
+watch(
+  () => props.panel,
+  (next) => {
+    current.value = withAnswers(next)
+  },
+)
 
 const sections = computed(() => dialogSections(current.value, props.request))
 const remaining = computed(() => undecidedCount(sections.value))
@@ -269,17 +285,27 @@ async function save(row: PanelRow, state: 'granted' | 'denied', chosen?: Permiss
     const keep = state === 'granted' ? grantCondition(row, chosen) : 'in_use'
     const next = await decidePermission(current.value.plugin_id, row.permission, state, keep)
     changed = true
-    if (validPanel(next)) current.value = next
-    else {
+    if (validPanel(next)) {
+      const saved = next.rows.find((item) => item.permission === row.permission)
+      if (saved) answered.set(row.permission, saved)
+      current.value = withAnswers(next)
+    } else {
       // An answer of another shape: show the choice made, the tab reads it again.
-      current.value = {
-        ...current.value,
-        rows: current.value.rows.map((item) => (item.permission === row.permission ? { ...item, state } : item)),
-      }
+      answered.set(row.permission, { ...row, state })
+      current.value = withAnswers(current.value)
     }
     return true
   } catch (error) {
     ElMessage.error(t(decisionErrorKey(error)))
+    // The server may have stored it before the answer was lost: show what it holds.
+    changed = true
+    answered.delete(row.permission)
+    try {
+      const held = await getPermissionPanel(current.value.plugin_id)
+      if (validPanel(held)) current.value = withAnswers(held)
+    } catch {
+      // Keep what is shown; the tab reads the plugin again on close.
+    }
     return false
   } finally {
     busy.value = null

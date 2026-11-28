@@ -8,7 +8,7 @@ const messages: PluginConsentMessages = {
     denied: '已拒絕',
   },
   banner: {
-    deniedDesc: '自動啟動時會跳過此外掛，手動啟動時會再次詢問。',
+    deniedDesc: '自動啟動時會跳過此外掛。',
   },
   revokeDecision: '撤回決定',
   saveFailed: '確認儲存失敗，請重試。',

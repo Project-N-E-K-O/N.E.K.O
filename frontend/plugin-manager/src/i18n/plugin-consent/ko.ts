@@ -8,7 +8,7 @@ const messages: PluginConsentMessages = {
     denied: '거부함',
   },
   banner: {
-    deniedDesc: '자동 시작 시 이 플러그인을 건너뜁니다. 수동으로 시작하면 다시 묻습니다.',
+    deniedDesc: '자동 시작 시 이 플러그인을 건너뜁니다.',
   },
   revokeDecision: '결정 철회',
   saveFailed: '확인을 저장하지 못했습니다. 다시 시도하세요.',

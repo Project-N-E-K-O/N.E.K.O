@@ -7,7 +7,7 @@ const messages = {
     denied: 'Denied',
   },
   banner: {
-    deniedDesc: 'Autostart will skip this plugin; starting it manually asks again.',
+    deniedDesc: 'Autostart will skip this plugin.',
   },
   revokeDecision: 'Withdraw decision',
   saveFailed: 'The decision could not be saved. Please retry.',

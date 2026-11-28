@@ -8,7 +8,7 @@ const messages: PluginConsentMessages = {
     denied: '拒否済み',
   },
   banner: {
-    deniedDesc: '自動起動ではこのプラグインをスキップします。手動起動時は再度確認されます。',
+    deniedDesc: '自動起動ではこのプラグインをスキップします。',
   },
   revokeDecision: '決定を取り消す',
   saveFailed: '確認を保存できませんでした。再試行してください。',

@@ -8,7 +8,7 @@ const messages: PluginConsentMessages = {
     denied: 'Rechazado',
   },
   banner: {
-    deniedDesc: 'El inicio automático omitirá este plugin; al iniciarlo manualmente se volverá a preguntar.',
+    deniedDesc: 'El inicio automático omitirá este plugin.',
   },
   revokeDecision: 'Retirar decisión',
   saveFailed: 'No se pudo guardar la decisión. Inténtalo de nuevo.',

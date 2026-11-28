@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { createApp, defineComponent, h, nextTick } from 'vue'
+import { createApp, defineComponent, h, nextTick, reactive } from 'vue'
 import { ElMessage } from 'element-plus'
 import PluginPermissionDialog from './PluginPermissionDialog.vue'
 import type { PendingPermissions, PermissionCatalog, PermissionPanel } from '@/api/pluginPermissions'
@@ -9,7 +9,7 @@ import { panel, row } from '@/utils/permissionTab.fixtures'
 import zhCN from '@/i18n/plugin-consent/zh-CN'
 import { allPluginConsentMessages } from '@/i18n/plugin-consent/testing'
 
-const api = vi.hoisted(() => ({ decidePermission: vi.fn() }))
+const api = vi.hoisted(() => ({ decidePermission: vi.fn(), getPermissionPanel: vi.fn() }))
 vi.mock('@/api/pluginPermissions', () => api)
 vi.mock('@/i18n', () => ({
   i18n: { global: { t: (key: string) => key } },
@@ -46,6 +46,8 @@ const flush = async () => {
 interface Mounted {
   root: HTMLElement
   closed: Array<{ start: boolean; changed: boolean }>
+  /** The props, reactive: a change reaches the dialog as the tab's would. */
+  props: Record<string, unknown>
 }
 async function mount(props: {
   panel: PermissionPanel
@@ -57,11 +59,13 @@ async function mount(props: {
   const root = document.createElement('div')
   document.body.append(root)
   const closed: Mounted['closed'] = []
-  const app = createApp(PluginPermissionDialog, {
-    pending: null,
-    pluginName: 'Stickers',
-    ...props,
-    onResult: (result: { start: boolean; changed: boolean }) => closed.push(result),
+  const state = reactive<Record<string, unknown>>({ pending: null, pluginName: 'Stickers', ...props })
+  const app = createApp({
+    render: () =>
+      h(PluginPermissionDialog as never, {
+        ...state,
+        onResult: (result: { start: boolean; changed: boolean }) => closed.push(result),
+      }),
   })
   app.component(
     'el-dialog',
@@ -93,7 +97,7 @@ async function mount(props: {
   app.mount(root)
   apps.push(app)
   await flush()
-  return { root, closed }
+  return { root, closed, props: state }
 }
 const q = (root: HTMLElement, test: string) => root.querySelector(`[data-test="${test}"]`) as HTMLElement | null
 
@@ -168,15 +172,47 @@ describe('dialog ① before the first start', () => {
     expect(closed).toEqual([{ start: false, changed: true }])
   })
 
-  it('keeps the answer unsaved and says so when the save fails', async () => {
-    const { root, closed } = await mount({ panel: firstPanel(), request: { kind: 'first', items: [NET] }, start: true })
+  it('says when a save fails, shows what the server holds, and has the tab read again', async () => {
+    const p = firstPanel()
+    const { root, closed } = await mount({ panel: p, request: { kind: 'first', items: [NET] }, start: true })
     api.decidePermission.mockRejectedValueOnce(new Error('x'))
+    api.getPermissionPanel.mockRejectedValueOnce(new Error('offline'))
     q(root, `dialog-allow-${NET}`)!.click()
     await flush()
     expect(ElMessage.error).toHaveBeenCalledWith('pluginConsent.saveFailed')
     expect(q(root, `dialog-allow-${NET}`)!.dataset.type).toBeUndefined()
+
+    // The answer was lost but the server stored it: the read after the failure shows it.
+    api.decidePermission.mockRejectedValueOnce(new Error('lost'))
+    api.getPermissionPanel.mockResolvedValueOnce({
+      ...p,
+      rows: p.rows.map((r) => (r.permission === NET ? { ...r, state: 'granted' as const } : r)),
+    })
+    q(root, `dialog-allow-${NET}`)!.click()
+    await flush()
+    expect(api.getPermissionPanel).toHaveBeenLastCalledWith('demo')
+    expect(q(root, `dialog-allow-${NET}`)!.dataset.type).toBe('primary')
     q(root, 'x')!.click()
-    expect(closed).toEqual([{ start: false, changed: false }])
+    expect(closed).toEqual([{ start: false, changed: true }])
+  })
+
+  it('follows a newer panel from the tab, keeping the answers given here', async () => {
+    const p = firstPanel()
+    const { root, props } = await mount({ panel: p, request: { kind: 'first', items: [NET] }, start: true })
+    api.decidePermission.mockResolvedValueOnce({
+      ...p,
+      rows: p.rows.map((r) => (r.permission === NET ? { ...r, state: 'granted' as const } : r)),
+    })
+    q(root, `dialog-allow-${NET}`)!.click()
+    await flush()
+    // A scan finished: one more undeclared item; this read predates the answer above.
+    props.panel = {
+      ...p,
+      rows: [...p.rows, row({ permission: 'system.process:spawn', tier: 'high', state: 'undecided', declared: null, reconcile: 'undeclared' })],
+    }
+    await flush()
+    expect(q(root, 'dialog-item-system.process:spawn')).not.toBeNull()
+    expect(q(root, `dialog-allow-${NET}`)!.dataset.type).toBe('primary')
   })
 
   it('cannot be closed while an answer is being saved', async () => {

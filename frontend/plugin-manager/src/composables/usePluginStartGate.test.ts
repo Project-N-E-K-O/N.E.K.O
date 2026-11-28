@@ -64,6 +64,12 @@ describe('readStartReview', () => {
       api.getPendingPermissions.mockResolvedValue(pending({ to_confirm: [{ plugin_id: 'demo', items: [NET] }] }))
       api.getPermissionPanel.mockResolvedValue({ rows: [] })
     }],
+    ['the entry\'s items are not a list', () => {
+      api.getPendingPermissions.mockResolvedValue(pending({ to_confirm: [{ plugin_id: 'demo', items: 'network' }] }))
+    }],
+    ['the lists are not lists', () => {
+      api.getPendingPermissions.mockResolvedValue(pending({ to_confirm: 'demo', upgraded: { demo: [NET] } }))
+    }],
     ['the dialog cannot be loaded', () => {
       api.getPendingPermissions.mockResolvedValue(pending({ to_confirm: [{ plugin_id: 'demo', items: [NET] }] }))
       dialogModule.preload.mockRejectedValue(new Error('chunk'))
@@ -174,11 +180,13 @@ describe('usePermissionStartDialog', () => {
     expect(dialog.active).toBeNull()
   })
 
-  it('counts answers that saved something, also from a replaced dialog', () => {
+  it('names the plugin an answer saved something for, also from a replaced dialog', () => {
     const dialog = usePermissionStartDialog()
     dialog.answer(false)
-    expect(dialog.revision).toBe(0)
-    dialog.answer(false, 99, true)
-    expect(dialog.revision).toBe(1)
+    expect(dialog.saved).toBeNull()
+    dialog.answer(false, 99, 'demo')
+    expect(dialog.saved).toEqual({ pluginId: 'demo', revision: 1 })
+    dialog.answer(false, 99, 'demo')
+    expect(dialog.saved).toEqual({ pluginId: 'demo', revision: 2 })
   })
 })

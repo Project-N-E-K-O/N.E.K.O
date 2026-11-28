@@ -506,7 +506,12 @@ async function load(timed = false) {
 }
 onMounted(() => load())
 // Decisions saved in the dialog before a start are read again here.
-watch(() => startDialog.revision, () => void load())
+watch(
+  () => startDialog.saved,
+  (saved) => {
+    if (saved?.pluginId === props.pluginId) void load()
+  },
+)
 // Lets the detail page (and tests) read the tab again.
 defineExpose({ load })
 onBeforeUnmount(() => {

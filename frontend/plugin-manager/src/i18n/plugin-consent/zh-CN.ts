@@ -8,7 +8,7 @@ const messages: PluginConsentMessages = {
     denied: '已拒绝',
   },
   banner: {
-    deniedDesc: '自启时会跳过此插件，手动启动时会再次询问。',
+    deniedDesc: '自启时会跳过此插件。',
   },
   revokeDecision: '撤回决定',
   saveFailed: '确认保存失败，请重试。',

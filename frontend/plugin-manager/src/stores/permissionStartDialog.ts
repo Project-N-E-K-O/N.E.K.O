@@ -21,8 +21,8 @@ interface Active extends StartDialogRequest {
  */
 export const usePermissionStartDialog = defineStore('permissionStartDialog', () => {
   const active = shallowRef<Active | null>(null)
-  /** Moves when a start dialog saved a decision, so open views read again. */
-  const revision = ref(0)
+  /** The plugin a start dialog last saved a decision for, so its open views read again. */
+  const saved = ref<{ pluginId: string; revision: number } | null>(null)
   let sequence = 0
 
   /** Resolves true when the user chose to start. */
@@ -33,12 +33,12 @@ export const usePermissionStartDialog = defineStore('permissionStartDialog', () 
     })
   }
   /** Answers the open dialog; an answer for a dialog already replaced is dropped. */
-  function answer(start: boolean, key?: number, changed = false) {
-    if (changed) revision.value++
+  function answer(start: boolean, key?: number, changedPlugin?: string) {
+    if (changedPlugin) saved.value = { pluginId: changedPlugin, revision: (saved.value?.revision ?? 0) + 1 }
     const current = active.value
     if (!current || (key !== undefined && key !== current.key)) return
     active.value = null
     current.resolve(start)
   }
-  return { active, revision, ask, answer }
+  return { active, saved, ask, answer }
 })

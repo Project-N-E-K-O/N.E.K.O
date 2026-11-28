@@ -7,7 +7,7 @@ import {
 import { PermissionStartDialog } from '@/components/plugin/permissionStartDialog'
 import { usePermissionStartDialog } from '@/stores/permissionStartDialog'
 import { usePluginStore } from '@/stores/plugin'
-import type { DialogRequest } from '@/utils/permissionDialogs'
+import { startRequest, type DialogRequest } from '@/utils/permissionDialogs'
 import { validPanel, validPending } from '@/utils/permissionTab'
 
 /** How long a manual start waits for the permission reads before it starts anyway. */
@@ -39,19 +39,16 @@ export async function readStartReview(
   pluginId: string,
   timeoutMs = START_REVIEW_TIMEOUT_MS,
 ): Promise<StartReview | null> {
+  // Loaded alongside the first read; only waited for when a dialog is shown.
+  const dialogModule = PermissionStartDialog.preload()
+  dialogModule.catch(() => undefined)
   const read = async (): Promise<StartReview | null> => {
     const pending = await getPendingPermissions()
     if (!validPending(pending)) return null
-    const listed = (entries: PendingPermissions['to_confirm']) =>
-      (entries ?? []).find((entry) => entry.plugin_id === pluginId && entry.items.length > 0)
-    const first = listed(pending.to_confirm)
-    const upgrade = first ? undefined : listed(pending.upgraded)
-    if (!first && !upgrade) return null
-    const [panel] = await Promise.all([getPermissionPanel(pluginId), PermissionStartDialog.preload()])
+    const request = startRequest(pending, pluginId)
+    if (!request) return null
+    const [panel] = await Promise.all([getPermissionPanel(pluginId), dialogModule])
     if (!validPanel(panel)) return null
-    const request: DialogRequest = first
-      ? { kind: 'first', items: [...first.items] }
-      : { kind: 'upgrade', items: [...upgrade!.items] }
     return { panel, pending, request }
   }
   try {
