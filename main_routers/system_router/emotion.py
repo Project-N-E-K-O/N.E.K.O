@@ -21,9 +21,12 @@ Split out of the former monolithic ``main_routers/system_router.py``.
 
 from ._shared import _validate_local_mutation_request, logger, router
 import difflib
+import json
 import math
 import random
 import re
+
+import regex
 from fastapi import Request
 from utils.llm_client import (
     create_chat_llm_async,
@@ -610,6 +613,27 @@ def _push_emotion_update(lanlan_name, emotion, confidence):
         })
 
 
+# One emoji grapheme: a pictograph (with any modifiers, joiners or variation
+# selector), a flag, or a keycap. Plain letters, digits and text are not.
+_SINGLE_GRAPHEME_RE = regex.compile(r"\X")
+_EMOJI_MARK_RE = regex.compile(r"\p{Extended_Pictographic}|\p{Regional_Indicator}|⃣")
+
+
+def _is_single_emoji(value):
+    if not isinstance(value, str):
+        return False
+    value = value.strip()
+    return bool(value) and bool(_SINGLE_GRAPHEME_RE.fullmatch(value)) and bool(_EMOJI_MARK_RE.search(value))
+
+
+def _reaction_emoji(emotion, model_emoji):
+    """The model's emoji when it is one emoji (any, owner decision D20), else one picked for the emotion."""
+    if _is_single_emoji(model_emoji):
+        return model_emoji.strip()
+    candidates = MESSAGE_REACTION_EMOJIS_BY_EMOTION.get(emotion, ())
+    return random.choice(candidates) if candidates else None
+
+
 def _emotion_response(emotion, confidence, lanlan_name=None, model_emoji=None):
     response = {
         "emotion": emotion,
@@ -622,16 +646,9 @@ def _emotion_response(emotion, confidence, lanlan_name=None, model_emoji=None):
                 or emotion == "neutral" or not math.isfinite(confidence)
                 or confidence < MESSAGE_REACTION_CONFIDENCE_THRESHOLD):
             return response
-        if isinstance(model_emoji, str) and any(
-            model_emoji in candidates
-            for candidates in MESSAGE_REACTION_EMOJIS_BY_EMOTION.values()
-        ):
-            emoji = model_emoji
-        else:
-            candidates = MESSAGE_REACTION_EMOJIS_BY_EMOTION.get(emotion, ())
-            if not candidates:
-                return response
-            emoji = random.choice(candidates)
+        emoji = _reaction_emoji(emotion, model_emoji)
+        if not emoji:
+            return response
         response["reaction"] = {"emoji": emoji, "author": lanlan_name}
     except Exception as exc:
         print(f"[Emotion] reaction selection failed: {type(exc).__name__}")
@@ -904,6 +921,215 @@ def _session_user_language(lanlan_name):
     return getattr(session, 'user_language', None)
 
 
+def _strip_markdown_fence(result_text):
+    """The JSON answer without a Markdown code fence (Gemini wraps it in ```json ... ```)."""
+    result_text = (result_text or "").strip()
+    code_block_match = re.search(r"```(?:json)?\s*(.+?)\s*```", result_text, flags=re.S)
+    if code_block_match:
+        return code_block_match.group(1).strip()
+    if result_text.startswith("```"):
+        lines = result_text.split("\n")
+        if lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        return "\n".join(lines).strip()
+    return result_text
+
+
+def _respond_with_pending_reaction(text, label, confidence, lanlan_name, make_emoji):
+    """Answer with the emotion now; a reaction, if any, follows through POST /emotion/reaction.
+
+    *make_emoji* is awaited in the background for the model's emoji (any single
+    emoji is used, anything else picks one for the emotion).
+    """
+    emotion, confidence, reaction_eligible, _ = _interpret_model_result(
+        text, json.dumps({"emotion": label, "confidence": confidence}),
+    )
+    _push_emotion_update(lanlan_name, emotion, confidence)
+    response = _emotion_response(emotion, confidence, lanlan_name if reaction_eligible else None)
+    if response.get("reaction") is None:
+        return response, False
+    from .emotion_decision import register_pending_reaction
+
+    author = response["reaction"]["author"]
+
+    async def _reaction():
+        try:
+            model_emoji = await make_emoji()
+        except Exception as exc:
+            logger.info("[Emotion] reaction emoji failed (%s); picking by emotion", type(exc).__name__)
+            model_emoji = None
+        emoji = _reaction_emoji(emotion, model_emoji)
+        return {"emoji": emoji, "author": author} if emoji else None
+
+    response["reaction"] = None
+    response["reaction_pending"] = register_pending_reaction(_reaction)
+    return response, True
+
+
+async def _fast_emotion(text, messages, lanlan_name, *, chat_config, config_manager):
+    """The response from a decision question or a first-token reading, or ``None`` for the chat prompt.
+
+    Vendors with a native decision model ask the decision question (D21);
+    Doubao streams the chat prompt and reads the emotion from the first token
+    (D22). Either way the avatar emotion comes back at once and the reaction's
+    emoji follows. Every miss returns ``None``.
+    """
+    from . import emotion_decision as ed
+
+    try:
+        decided = await ed.decide_emotion(text, chat_config=chat_config, config_manager=config_manager)
+    except Exception as exc:
+        logger.info("[Emotion] decision skipped (%s)", type(exc).__name__)
+        decided = None
+    if decided is not None:
+        label, confidence = decided
+
+        async def _emoji_chat():
+            return await ed.pick_emoji(text, chat_config=chat_config)
+
+        response, _pending = _respond_with_pending_reaction(text, label, confidence, lanlan_name, _emoji_chat)
+        return response
+
+    if not ed.first_token_reading_usable(chat_config):
+        return None
+    try:
+        reading = await ed.start_first_token_reading(messages, chat_config=chat_config)
+    except Exception as exc:
+        logger.info("[Emotion] first-token reading skipped (%s)", type(exc).__name__)
+        return None
+    if not reading.probs:
+        # No emotion among the first token's candidates: read the whole answer as text.
+        try:
+            full = await reading.full_text()
+        except Exception as exc:
+            logger.info("[Emotion] first-token stream failed (%s)", type(exc).__name__)
+            return None
+        emotion, confidence, reaction_eligible, model_emoji = _interpret_model_result(
+            text, _strip_markdown_fence(full),
+        )
+        _push_emotion_update(lanlan_name, emotion, confidence)
+        return _emotion_response(emotion, confidence, lanlan_name if reaction_eligible else None, model_emoji)
+
+    label, confidence = ed.read_against_neutral(reading.probs)
+
+    async def _model_emoji():
+        from utils.file_utils import robust_json_loads
+
+        body = robust_json_loads(_strip_markdown_fence(await reading.full_text()))
+        if not isinstance(body, dict):
+            return None
+        # The model's emoji only when it wrote the emotion the probabilities chose.
+        if _normalize_emotion_label(body.get("emotion"), body.get("confidence")) != label:
+            return None
+        return body.get("emoji")
+
+    response, pending = _respond_with_pending_reaction(text, label, confidence, lanlan_name, _model_emoji)
+    if not pending:
+        reading.cancel()  # no reaction: the rest of the answer is not needed
+    return response
+
+
+def _interpret_model_result(text, result_text):
+    """Post-process one model answer into the avatar emotion and reaction inputs.
+
+    *result_text* is the model's JSON answer (``{"emotion", "confidence", "emoji"}``),
+    already without a Markdown fence. Returns ``(emotion, confidence,
+    reaction_eligible, model_emoji)``. Every path (chat prompt, decision question,
+    Doubao first-token reading) goes through here, so the label normalizer,
+    keyword heuristics and low-confidence rules stay the same for all of them.
+    """
+    reaction_eligible = False
+    model_emoji = None
+
+    # Try parsing the JSON response.
+    emotion = "neutral"
+    confidence = 0.5
+    decision_source = "degraded_fallback"
+
+    def _apply_degraded_emotion_fallback():
+        heuristic_emotion, heuristic_score = _infer_emotion_from_text(text)
+        if heuristic_emotion:
+            return heuristic_emotion, min(0.62, 0.34 + heuristic_score * 0.1)
+        # Fall back to neutral when model results are unavailable or keyword evidence is insufficient.
+        return "neutral", 0.5
+
+    try:
+        from utils.file_utils import robust_json_loads
+        result = robust_json_loads(result_text)
+        if not isinstance(result, dict):
+            # Valid JSON can also be null/[]/"text"; reuse fallback heuristics then.
+            emotion, confidence = _apply_degraded_emotion_fallback()
+        else:
+            # Get emotion and confidence.
+            model_emoji = result.get("emoji")
+            raw_emotion = result.get("emotion", "neutral")
+            raw_confidence = result.get("confidence", 0.5)
+            emotion = _normalize_emotion_label(raw_emotion, raw_confidence)
+            confidence = _coerce_emotion_confidence(raw_confidence)
+            # Unknown model labels cannot become reaction-eligible through
+            # avatar heuristics. Keep the avatar normalization unchanged.
+            reaction_label = (
+                raw_emotion.strip().lower() if isinstance(raw_emotion, str) else ""
+            )
+            reaction_normalized_label = re.sub(r"[\s\-_]+", " ", reaction_label)
+            reaction_compact_label = re.sub(
+                r"[\W_]+", "", reaction_label, flags=re.UNICODE
+            )
+            reaction_label_valid = "emotion" in result and (
+                reaction_normalized_label in _EMOTION_NORMALIZED_ALIAS_LOOKUP
+                or reaction_compact_label in _EMOTION_COMPACT_ALIAS_LOOKUP
+            )
+            try:
+                reaction_score = float(raw_confidence)
+                reaction_eligible = (reaction_label_valid
+                                     and "confidence" in result
+                                     and not isinstance(raw_confidence, bool)
+                                     and math.isfinite(reaction_score)
+                                     and 0.0 <= reaction_score <= 1.0)
+            except (TypeError, ValueError):
+                reaction_eligible = False
+            decision_source = "model"
+
+            heuristic_emotion, heuristic_score = _infer_emotion_from_text(text)
+            if heuristic_emotion:
+                # Strong override: overturn the model only with high heuristic scores (>=4) and model confidence below 0.8,
+                # preventing one complaint word from changing happy/neutral to angry.
+                if heuristic_emotion != emotion and heuristic_score >= 4 and confidence < 0.8:
+                    emotion = heuristic_emotion
+                    confidence = max(confidence, min(0.86, 0.44 + heuristic_score * 0.07))
+                    decision_source = "heuristic_strong_override"
+                # Keyword evidence cannot determine whose feelings were
+                # quoted. Respect confident model attribution here too,
+                # matching the strong-override confidence ceiling above.
+                elif (heuristic_emotion == "sad" and emotion == "happy"
+                      and heuristic_score >= 2 and confidence < 0.8):
+                    emotion = heuristic_emotion
+                    confidence = max(confidence, min(0.84, 0.5 + heuristic_score * 0.08))
+                    decision_source = "heuristic_sad_override"
+                elif emotion == "neutral" and confidence < 0.6:
+                    emotion = heuristic_emotion
+                    confidence = max(confidence, min(0.78, 0.42 + heuristic_score * 0.12))
+                    decision_source = "heuristic_from_neutral"
+                elif confidence < 0.25:
+                    emotion = heuristic_emotion
+                    confidence = max(confidence, min(0.65, 0.35 + heuristic_score * 0.1))
+                    decision_source = "heuristic_from_low_confidence"
+
+            # Very low confidence automatically becomes neutral to avoid false positives.
+            if confidence < 0.2:
+                emotion = "neutral"
+                decision_source = "neutral_fallback"
+    except ValueError:
+        emotion, confidence = _apply_degraded_emotion_fallback()
+
+    # Avatar heuristics may recover a decision, but must not grant a
+    # message reaction on a corrected or degraded model result.
+    reaction_eligible = reaction_eligible and decision_source == "model"
+    return emotion, confidence, reaction_eligible, model_emoji
+
+
 @router.post('/emotion/analysis')
 async def emotion_analysis(request: Request):
     """
@@ -971,6 +1197,22 @@ async def emotion_analysis(request: Request):
         from utils.token_tracker import set_call_type
         set_call_type("emotion")
 
+        if not data.get('api_key') and not data.get('model'):
+            fast = await _fast_emotion(
+                text,
+                messages,
+                lanlan_name,
+                chat_config={
+                    "model": model,
+                    "base_url": emotion_base_url,
+                    "api_key": api_key,
+                    "provider_type": emotion_provider_type,
+                },
+                config_manager=_config_manager,
+            )
+            if fast is not None:
+                return fast
+
         # Call models asynchronously through the shared factory, handling extra_body / provider compatibility automatically.
         llm = await create_chat_llm_async(
             model,
@@ -985,109 +1227,8 @@ async def emotion_analysis(request: Request):
             result = await llm.ainvoke(messages)
 
         # Parse the response.
-        result_text = result.content.strip()
-
-        # Handle Markdown code blocks; Gemini may return ```json {...} ```.
-        # First extract the initial code block via regex.
-        code_block_match = re.search(r"```(?:json)?\s*(.+?)\s*```", result_text, flags=re.S)
-        if code_block_match:
-            result_text = code_block_match.group(1).strip()
-        elif result_text.startswith("```"):
-            # Fall back to existing line-splitting behavior.
-            lines = result_text.split("\n")
-            if lines[0].startswith("```"):
-                lines = lines[1:]  # Remove the first line.
-            if lines and lines[-1].strip() == "```":
-                lines = lines[:-1]  # Remove the last line.
-            result_text = "\n".join(lines).strip()
-        
-        reaction_eligible = False
-        model_emoji = None
-
-        # Try parsing the JSON response.
-        emotion = "neutral"
-        confidence = 0.5
-        decision_source = "degraded_fallback"
-
-        def _apply_degraded_emotion_fallback():
-            heuristic_emotion, heuristic_score = _infer_emotion_from_text(text)
-            if heuristic_emotion:
-                return heuristic_emotion, min(0.62, 0.34 + heuristic_score * 0.1)
-            # Fall back to neutral when model results are unavailable or keyword evidence is insufficient.
-            return "neutral", 0.5
-
-        try:
-            from utils.file_utils import robust_json_loads
-            result = robust_json_loads(result_text)
-            if not isinstance(result, dict):
-                # Valid JSON can also be null/[]/"text"; reuse fallback heuristics then.
-                emotion, confidence = _apply_degraded_emotion_fallback()
-            else:
-                # Get emotion and confidence.
-                model_emoji = result.get("emoji")
-                raw_emotion = result.get("emotion", "neutral")
-                raw_confidence = result.get("confidence", 0.5)
-                emotion = _normalize_emotion_label(raw_emotion, raw_confidence)
-                confidence = _coerce_emotion_confidence(raw_confidence)
-                # Unknown model labels cannot become reaction-eligible through
-                # avatar heuristics. Keep the avatar normalization unchanged.
-                reaction_label = (
-                    raw_emotion.strip().lower() if isinstance(raw_emotion, str) else ""
-                )
-                reaction_normalized_label = re.sub(r"[\s\-_]+", " ", reaction_label)
-                reaction_compact_label = re.sub(
-                    r"[\W_]+", "", reaction_label, flags=re.UNICODE
-                )
-                reaction_label_valid = "emotion" in result and (
-                    reaction_normalized_label in _EMOTION_NORMALIZED_ALIAS_LOOKUP
-                    or reaction_compact_label in _EMOTION_COMPACT_ALIAS_LOOKUP
-                )
-                try:
-                    reaction_score = float(raw_confidence)
-                    reaction_eligible = (reaction_label_valid
-                                         and "confidence" in result
-                                         and not isinstance(raw_confidence, bool)
-                                         and math.isfinite(reaction_score)
-                                         and 0.0 <= reaction_score <= 1.0)
-                except (TypeError, ValueError):
-                    reaction_eligible = False
-                decision_source = "model"
-
-                heuristic_emotion, heuristic_score = _infer_emotion_from_text(text)
-                if heuristic_emotion:
-                    # Strong override: overturn the model only with high heuristic scores (>=4) and model confidence below 0.8,
-                    # preventing one complaint word from changing happy/neutral to angry.
-                    if heuristic_emotion != emotion and heuristic_score >= 4 and confidence < 0.8:
-                        emotion = heuristic_emotion
-                        confidence = max(confidence, min(0.86, 0.44 + heuristic_score * 0.07))
-                        decision_source = "heuristic_strong_override"
-                    # Keyword evidence cannot determine whose feelings were
-                    # quoted. Respect confident model attribution here too,
-                    # matching the strong-override confidence ceiling above.
-                    elif (heuristic_emotion == "sad" and emotion == "happy"
-                          and heuristic_score >= 2 and confidence < 0.8):
-                        emotion = heuristic_emotion
-                        confidence = max(confidence, min(0.84, 0.5 + heuristic_score * 0.08))
-                        decision_source = "heuristic_sad_override"
-                    elif emotion == "neutral" and confidence < 0.6:
-                        emotion = heuristic_emotion
-                        confidence = max(confidence, min(0.78, 0.42 + heuristic_score * 0.12))
-                        decision_source = "heuristic_from_neutral"
-                    elif confidence < 0.25:
-                        emotion = heuristic_emotion
-                        confidence = max(confidence, min(0.65, 0.35 + heuristic_score * 0.1))
-                        decision_source = "heuristic_from_low_confidence"
-
-                # Very low confidence automatically becomes neutral to avoid false positives.
-                if confidence < 0.2:
-                    emotion = "neutral"
-                    decision_source = "neutral_fallback"
-        except ValueError:
-            emotion, confidence = _apply_degraded_emotion_fallback()
-
-        # Avatar heuristics may recover a decision, but must not grant a
-        # message reaction on a corrected or degraded model result.
-        reaction_eligible = reaction_eligible and decision_source == "model"
+        result_text = _strip_markdown_fence(result.content)
+        emotion, confidence, reaction_eligible, model_emoji = _interpret_model_result(text, result_text)
         _push_emotion_update(lanlan_name, emotion, confidence)
         return _emotion_response(
             emotion, confidence, lanlan_name if reaction_eligible else None, model_emoji
@@ -1100,3 +1241,23 @@ async def emotion_analysis(request: Request):
             "emotion": "neutral",
             "confidence": 0.0
         }
+
+
+@router.post('/emotion/reaction')
+async def emotion_reaction(request: Request):
+    """The reaction an analysis answered as pending (``reaction_pending`` token), once ready.
+
+    Returns ``{"reaction": {"emoji", "author"}}``, or ``{"reaction": null}`` when
+    the token is unknown, was already collected, or the emoji did not come in time.
+    """
+    validation_error = _validate_local_mutation_request(request)
+    if validation_error is not None:
+        return validation_error
+    try:
+        data = await request.json()
+    except Exception:
+        data = None
+    token = data.get('token') if isinstance(data, dict) else None
+    from .emotion_decision import collect_pending_reaction
+
+    return {"reaction": await collect_pending_reaction(token) if token else None}

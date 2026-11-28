@@ -145,6 +145,106 @@ def _normalize_for_match(text: Optional[str]) -> str:
     return hashlib.sha1(norm.encode("utf-8")).hexdigest()
 
 
+# ── Reading from the decision questions (owner decisions D13, D24) ──
+# Each emotional state stands for a fixed (valence, arousal) point, set from the
+# reading bands beforehand and not fitted to data; the reading is the
+# probability-weighted mean of those points.
+EMOTION_STATE_VA: dict[str, tuple[float, float]] = {
+    "neutral": (0.0, 0.25), "calm_positive": (0.35, 0.2), "happy": (0.65, 0.5), "thrilled": (0.95, 0.9),
+    "low": (-0.35, 0.1), "annoyed": (-0.35, 0.6), "sad": (-0.45, 0.3), "upset": (-0.45, 0.75),
+    "despair": (-0.9, 0.4), "furious": (-0.9, 0.95),
+}
+# P(reasoning) at or above this counts as a complex question.
+DECISION_COMPLEXITY_THRESHOLD = 0.35
+# P(info_request) + P(action_request) mapped so this value lands on the agent gate.
+DECISION_EXTERNAL_INTENT_THRESHOLD = 0.2
+
+
+def _agent_gate() -> float:
+    try:
+        from config.nekopower_settings import TURN_CHECK_INTENT_THRESHOLD
+        return float(TURN_CHECK_INTENT_THRESHOLD)
+    except Exception:
+        return 0.2
+
+
+def _on_tenth_grid(x: float) -> float:
+    """Round half away from zero to the 0.1 grid the chat readings use."""
+    sign = -1.0 if x < 0 else 1.0
+    return sign * math.floor(abs(x) * 10 + 0.5) / 10
+
+
+def _choice_distribution(answer, keys) -> Optional[dict]:
+    """Probabilities of an answer over *keys*, normalised; one-hot on its value without them."""
+    if answer is None:
+        return None
+    probs = {}
+    for k, v in (getattr(answer, "probabilities", None) or {}).items():
+        if k in keys:
+            try:
+                probs[k] = max(0.0, float(v))
+            except (TypeError, ValueError):
+                continue
+    total = sum(probs.values())
+    if total > 0:
+        return {k: probs.get(k, 0.0) / total for k in keys}
+    value = getattr(answer, "value", None)
+    if value in keys:
+        return {k: (1.0 if k == value else 0.0) for k in keys}
+    return None
+
+
+def _answer_confidence(answer) -> float:
+    conf = getattr(answer, "confidence", None)
+    if conf is not None:
+        return _clamp(conf, 0.0, 1.0, 0.5)
+    probs = [float(v) for v in (getattr(answer, "probabilities", None) or {}).values()
+             if isinstance(v, (int, float)) and not isinstance(v, bool)]
+    return max(0.0, min(1.0, max(probs))) if probs else 0.5
+
+
+def reading_from_decision(answers, *, now: float, source: str) -> Optional[MasterEmotionReading]:
+    """Turn the ``turn_type`` and ``emotion`` decision answers into a reading.
+
+    ``None`` without a usable emotion answer. A missing message-type answer
+    gives no complexity and no external_intent (the agent gate then fails open).
+    """
+    from config.prompts.prompts_emotion import MASTER_EMOTION_TURN_TYPES
+
+    answers = answers or {}
+    emotion = answers.get("emotion")
+    dist = _choice_distribution(emotion, EMOTION_STATE_VA)
+    if dist is None:
+        return None
+    valence = sum(p * EMOTION_STATE_VA[k][0] for k, p in dist.items())
+    arousal = sum(p * EMOTION_STATE_VA[k][1] for k, p in dist.items())
+    gate = _agent_gate()
+    complexity = 0.0
+    external_intent: Optional[float] = None
+    types = _choice_distribution(answers.get("turn_type"), MASTER_EMOTION_TURN_TYPES)
+    if types is not None:
+        reasoning = types["reasoning"]
+        if reasoning >= DECISION_COMPLEXITY_THRESHOLD:
+            complexity = max(gate, min(1.0, _on_tenth_grid(reasoning)))
+        else:
+            # Below the threshold at most 0.1; small values round to exactly 0.
+            complexity = min(0.1, _on_tenth_grid(reasoning))
+        outward = types["info_request"] + types["action_request"]
+        external_intent = round(
+            max(0.0, min(1.0, outward * gate / max(DECISION_EXTERNAL_INTENT_THRESHOLD, 1e-6))), 4,
+        )
+    return MasterEmotionReading(
+        valence=_on_tenth_grid(max(-1.0, min(1.0, valence))),
+        arousal=_on_tenth_grid(max(0.0, min(1.0, arousal))),
+        confidence=round(_answer_confidence(emotion), 4),
+        updated_at=now,
+        complexity=complexity,
+        external_intent=external_intent,
+        source_excerpt=source[:80],
+        source_norm=_normalize_for_match(source),
+    )
+
+
 # Per-lanlan registry of live trackers, so an out-of-band caller — the
 # cross-server analyze_request publisher at turn_end — can read the latest
 # ``external_intent`` without holding the session / core handle. A
@@ -259,12 +359,16 @@ class MasterEmotionTracker:
         self._seq += 1
         my_seq = self._seq
 
-        raw = await self._invoke(cleaned, ui_language=ui_language)
-        if not raw:
-            return None
-        reading = self._parse(raw, now=now, source=cleaned)
+        # A decision model (or a rehost on a chat model with token probabilities)
+        # first, by vendor; any miss falls back to the original chat prompt.
+        reading = await self._decide(cleaned, now=now)
         if reading is None:
-            return None
+            raw = await self._invoke(cleaned, ui_language=ui_language)
+            if not raw:
+                return None
+            reading = self._parse(raw, now=now, source=cleaned)
+            if reading is None:
+                return None
         # Truncation guard: the model only saw ``cleaned[:MAX_INPUT_CHARS]``. If
         # the turn was longer, an action verb / info request in the unseen tail
         # makes the external_intent read an unreliable basis for the agent gate —
@@ -331,6 +435,52 @@ class MasterEmotionTracker:
         prompt = get_master_emotion_va_prompt(lang) + "\n\n" + bounded
         timeout = float(getattr(config, "MASTER_EMOTION_TIMEOUT_SEC", 8.0))
         return await _invoke_emotion_tier(prompt, timeout=timeout, label="master_emotion")
+
+    async def _decide(self, text: str, *, now: float) -> Optional[MasterEmotionReading]:
+        """The reading from the two decision questions, or ``None`` to use the chat prompt.
+
+        Vendors with a native decision model ask both questions in one request;
+        vendors whose chat model returns token probabilities ask each question
+        as its own one-token chat call, both at once (owner decisions D13, D24,
+        D27); every other vendor, and every miss, returns ``None``.
+        """
+        try:
+            from utils.config_manager import get_config_manager
+            from utils.decision_client import ChoiceQuestion, ask_site_questions
+            from utils.decision_client.routing import SITE_MASTER_EMOTION
+            from config.prompts.prompts_emotion import (
+                MASTER_EMOTION_DECISION_STATE_HEADER,
+                MASTER_EMOTION_STATE_INSTRUCTIONS,
+                MASTER_EMOTION_STATES,
+                MASTER_EMOTION_TURN_TYPE_INSTRUCTIONS,
+                MASTER_EMOTION_TURN_TYPES,
+            )
+
+            cm = get_config_manager()
+            chat_config = await cm.aget_model_api_config('recognition')
+            max_chars = max(1, int(getattr(config, "MASTER_EMOTION_MAX_INPUT_CHARS", 500)))
+            answers = await ask_site_questions(
+                SITE_MASTER_EMOTION,
+                state=MASTER_EMOTION_DECISION_STATE_HEADER + text[:max_chars],
+                questions={
+                    "turn_type": ChoiceQuestion(
+                        instructions=MASTER_EMOTION_TURN_TYPE_INSTRUCTIONS, criteria=MASTER_EMOTION_TURN_TYPES,
+                    ),
+                    "emotion": ChoiceQuestion(
+                        instructions=MASTER_EMOTION_STATE_INSTRUCTIONS, criteria=MASTER_EMOTION_STATES,
+                    ),
+                },
+                chat_config=chat_config,
+                config_manager=cm,
+                timeout=float(getattr(config, "MASTER_EMOTION_TIMEOUT_SEC", 8.0)),
+                call_type="activity_enrichment",
+            )
+        except Exception as exc:
+            logger.debug("[%s] master emotion decision skipped: %s", self.lanlan_name, type(exc).__name__)
+            return None
+        if not answers:
+            return None
+        return reading_from_decision(answers, now=now, source=text)
 
     @staticmethod
     def _resolve_lang(text: str, ui_language: Optional[str] = None) -> str:

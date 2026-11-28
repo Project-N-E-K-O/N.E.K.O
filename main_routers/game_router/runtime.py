@@ -1581,6 +1581,27 @@ async def _run_soccer_passive_guard_ai(data: Dict[str, Any], lanlan_name: str) -
         # Only the sidecar sees this input; logs below intentionally do not print it.
         payload["userSpeech"] = _normalize_short_text(data.get("userSpeech"), max_chars=240)
 
+    # A decision model (or a rehost on a chat model with token probabilities)
+    # first, by vendor; any miss falls back to the chat prompt below.
+    from .passive_guard_decision import decide_passive_guard
+
+    try:
+        decided = await decide_passive_guard(data, route_state, chat_config=char_info, language=language)
+    except Exception as exc:
+        logger.info("🎮 PassiveGuard decision skipped: %s", type(exc).__name__)
+        decided = None
+    if decided is not None:
+        normalized = _normalize_passive_guard_result(decided, stage=stage, prompt_type=prompt_type)
+        logger.info(
+            "🎮 PassiveGuard 判定(决策): stage=%s prompt_type=%s action=%s exit=%s classification=%s",
+            stage,
+            prompt_type,
+            normalized["recommendedAction"],
+            normalized["exitPromptType"],
+            normalized["classification"],
+        )
+        return normalized
+
     prompt_payload = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
     from utils.file_utils import robust_json_loads

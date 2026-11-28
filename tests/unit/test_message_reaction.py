@@ -94,9 +94,13 @@ def test_all_rule_candidates_are_accepted_by_react_schema(emotion):
         Path(__file__).resolve().parents[2]
         / "frontend/react-neko-chat/src/message-schema.ts"
     ).read_text(encoding="utf-8")
+    # Any single emoji is a reaction (owner decision D20): the schema checks the
+    # shape, as the backend does, instead of listing the candidates.
+    reaction_schema = schema.split("export const messageReactionSchema", 1)[1].split("});", 1)[0]
+    assert "refine(isSingleReactionEmoji" in reaction_schema and "z.enum" not in reaction_schema
     for candidates in emotion.MESSAGE_REACTION_EMOJIS_BY_EMOTION.values():
         for emoji in candidates:
-            assert repr(emoji) in schema
+            assert emotion._is_single_emoji(emoji), emoji
 
 
 def test_removed_reaction_route_is_not_registered(emotion):
@@ -164,11 +168,25 @@ def test_model_can_choose_every_candidate_across_emotion_categories(emotion, mon
             }
 
 
-@pytest.mark.parametrize("emoji", [None, True, 1, ["😊"], {}, "", "😀", "😊😄", "😊 ", "✨️"])
+@pytest.mark.parametrize("emoji", [None, True, 1, ["😊"], {}, "", " ", "😊😄", "A", "1", "ok", "😊x", ":)", "none"])
 def test_unusable_model_emoji_uses_existing_rule(emotion, monkeypatch, emoji):
     monkeypatch.setattr(emotion.random, "choice", lambda items: items[-1])
     result = emotion._emotion_response("sad", 0.9, "NEKO", emoji)
     assert result["reaction"] == {"emoji": "💧", "author": "NEKO"}
+
+
+@pytest.mark.parametrize(("emoji", "kept"), [
+    # Owner decision D20: any single emoji, the configured lists are only suggestions.
+    ("😀", "😀"), ("✨️", "✨️"), ("😊 ", "😊"), ("🫠", "🫠"), ("👍🏽", "👍🏽"),
+    ("👩‍💻", "👩‍💻"), ("🇯🇵", "🇯🇵"), ("1️⃣", "1️⃣"),
+])
+def test_any_single_emoji_from_the_model_is_kept(emotion, monkeypatch, emoji, kept):
+    def unexpected_random_choice(items):
+        pytest.fail("a single emoji must bypass random selection")
+
+    monkeypatch.setattr(emotion.random, "choice", unexpected_random_choice)
+    result = emotion._emotion_response("sad", 0.9, "NEKO", emoji)
+    assert result["reaction"] == {"emoji": kept, "author": "NEKO"}
 
 
 @pytest.mark.parametrize("label,confidence,name", [

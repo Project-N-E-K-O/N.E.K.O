@@ -2269,7 +2269,16 @@
     var reactionGeneration = 0;
     var reactionCandidates = new Map();
     var reactionAttempts = new Set();
-    var REACTION_EMOJIS = ['😊', '😄', '🥰', '✨', '🎉', '😢', '🥺', '🤗', '💧', '😮', '😲', '👀', '❗', '😤', '😠', '💢', '😾'];
+    // Any one emoji (owner decision D20): a single grapheme holding a pictograph,
+    // a flag letter or a keycap. Plain text, letters and digits are refused.
+    var REACTION_EMOJI_MARK = /\p{Extended_Pictographic}|\p{Regional_Indicator}|⃣/u;
+    var reactionGraphemes = (typeof Intl !== 'undefined' && typeof Intl.Segmenter === 'function')
+        ? new Intl.Segmenter(undefined, { granularity: 'grapheme' }) : null;
+    function isSingleReactionEmoji(value) {
+        if (typeof value !== 'string' || !value || value !== value.trim() || !REACTION_EMOJI_MARK.test(value)) return false;
+        if (reactionGraphemes) return Array.from(reactionGraphemes.segment(value)).length === 1;
+        return Array.from(value).length <= 8;
+    }
 
     function getReactionCharacterName() {
         return (window.appState && window.appState.lanlan_name)
@@ -2320,7 +2329,7 @@
     window.applyMessageReactionFromEmotion = function (target, result) {
         if (!target || target.generation !== reactionGeneration || getReactionCharacterName() !== target.name
                 || !result || result.error || !result.reaction
-                || result.reaction.author !== target.name || REACTION_EMOJIS.indexOf(result.reaction.emoji) < 0
+                || result.reaction.author !== target.name || !isSingleReactionEmoji(result.reaction.emoji)
                 || (typeof I.isCatLocalChatActive === 'function' && I.isCatLocalChatActive())) return;
         var current = I.state.messages.find(function (m) { return m.id === target.message.id; });
         if (current !== target.message || current.role !== 'user' || current.status !== 'sent'

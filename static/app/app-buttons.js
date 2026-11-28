@@ -1206,6 +1206,34 @@
     window.analyzeEmotion = mod.analyzeEmotion;
 
     /**
+     * Collect a reaction the analysis answered as pending (its emoji comes after the avatar emotion).
+     * @param {string} token
+     * @returns {Promise<Object|null>} the reaction ({emoji, author}) or null
+     */
+    mod.fetchEmotionReaction = async function fetchEmotionReaction(token) {
+        if (!token) return null;
+        try {
+            var headers = { 'Content-Type': 'application/json' };
+            var sec = window.nekoLocalMutationSecurity;
+            if (sec && typeof sec.getMutationHeaders === 'function') {
+                try { Object.assign(headers, await sec.getMutationHeaders()); } catch (_) { }
+            }
+            var response = await fetch('/api/emotion/reaction', {
+                method: 'POST',
+                headers: headers,
+                body: JSON.stringify({ token: token })
+            });
+            if (!response.ok) return null;
+            var result = await response.json();
+            return (result && result.reaction) || null;
+        } catch (error) {
+            console.warn('[Emotion] reaction fetch failed', error);
+            return null;
+        }
+    };
+    window.fetchEmotionReaction = mod.fetchEmotionReaction;
+
+    /**
      * Apply an emotion to the Live2D model.
      * @param {string} emotion
      */

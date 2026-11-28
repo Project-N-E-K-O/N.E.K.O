@@ -37,6 +37,18 @@ def _disable_reading_ttl(monkeypatch):
     monkeypatch.setattr(config, "MASTER_EMOTION_READING_TTL_SEC", 0)
 
 
+@pytest.fixture(autouse=True)
+def _no_decision_route(monkeypatch):
+    # The chat-prompt tests below run as for a vendor without decision questions;
+    # the decision tests at the end of the file patch their own answers in.
+    import utils.decision_client as dc
+
+    async def _none(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(dc, "ask_site_questions", _none)
+
+
 # ── _clamp ───────────────────────────────────────────────────────────
 def test_clamp_bounds_and_junk():
     assert _clamp(0.5, -1.0, 1.0, 0.0) == 0.5
@@ -548,3 +560,73 @@ def test_gate_signal_long_text_no_prefix_collision(monkeypatch):
     assert gate_signal_for("longtest", long_prefix + "后半段请帮我打开浏览器并搜索") is None
     # The exact same text still matches (sanity check).
     assert gate_signal_for("longtest", long_prefix + "前半段只是闲聊") == 0.05
+
+
+# ── decision questions (owner decisions D13, D24) ────────────────────
+def _answer(dist):
+    best = max(dist, key=dist.get)
+    return SimpleNamespace(value=best, probabilities=dict(dist), confidence=None)
+
+
+def test_reading_from_decision_maps_states_and_types():
+    from main_logic.activity.master_emotion import reading_from_decision
+
+    r = reading_from_decision(
+        {
+            "emotion": _answer({"despair": 0.5, "sad": 0.5}),
+            "turn_type": _answer({"reasoning": 0.6, "info_request": 0.1, "chat": 0.3}),
+        },
+        now=5.0, source="hello",
+    )
+    # valence (-0.9 - 0.45) / 2 = -0.675 -> -0.7; arousal (0.4 + 0.3) / 2 = 0.35 -> 0.4
+    assert r.valence == -0.7 and r.arousal == 0.4
+    assert r.complexity == 0.6
+    assert r.external_intent == pytest.approx(0.1)
+    assert r.confidence == 0.5
+    assert r.updated_at == 5.0 and r.source_norm
+
+
+def test_reading_from_decision_below_threshold_and_missing_type():
+    from main_logic.activity.master_emotion import reading_from_decision
+
+    calm = _answer({"neutral": 0.9, "happy": 0.1})
+    low = reading_from_decision(
+        {"emotion": calm, "turn_type": _answer({"reasoning": 0.3, "chat": 0.7})}, now=1.0, source="x")
+    assert low.complexity == pytest.approx(0.1)  # under 0.35: at most 0.1
+    tiny = reading_from_decision(
+        {"emotion": calm, "turn_type": _answer({"reasoning": 0.04, "chat": 0.96})}, now=1.0, source="x")
+    assert tiny.complexity == 0.0
+    no_type = reading_from_decision({"emotion": calm}, now=1.0, source="x")
+    assert no_type.complexity == 0.0 and no_type.external_intent is None  # agent gate fails open
+    assert reading_from_decision({"turn_type": calm}, now=1.0, source="x") is None
+
+
+def test_analyze_uses_decision_answers_and_skips_the_chat_prompt(monkeypatch):
+    import utils.decision_client as dc
+
+    fake, calls = _fake_tier('{"valence": 0.9, "arousal": 0.9}')
+    _patch_tier(monkeypatch, fake)
+    seen = {}
+
+    async def _ask(site, *, state, questions, chat_config, config_manager=None, **kw):
+        seen.update(site=site, state=state, ids=sorted(questions))
+        return {"emotion": _answer({"furious": 1.0}), "turn_type": _answer({"action_request": 1.0})}
+
+    monkeypatch.setattr(dc, "ask_site_questions", _ask)
+    monkeypatch.setattr(config, "MASTER_EMOTION_MAX_INPUT_CHARS", 5)
+    t = MasterEmotionTracker("t")
+    r = asyncio.run(t.analyze("helloworld", now=100.0))
+    assert calls["n"] == 0
+    assert seen["site"] == "master_emotion" and seen["ids"] == ["emotion", "turn_type"]
+    assert seen["state"].endswith(":" + chr(10) + "hello")
+    assert r.valence == -0.9 and r.arousal == 1.0  # 0.95 rounds to the 0.1 grid
+    # The text was longer than the model saw: external_intent is nulled as for chat.
+    assert r.external_intent is None and t.latest is r
+
+
+def test_analyze_falls_back_to_the_chat_prompt_when_the_decision_misses(monkeypatch):
+    fake, calls = _fake_tier('{"valence": -0.5, "arousal": 0.5}')
+    _patch_tier(monkeypatch, fake)
+    t = MasterEmotionTracker("t")
+    r = asyncio.run(t.analyze("我今天很难过", now=100.0))
+    assert calls["n"] == 1 and r.valence == -0.5

@@ -1329,3 +1329,95 @@ def get_soccer_anger_pressure_cap_message(lang: str | None = None) -> str:
 
 def get_soccer_anger_pressure_cap_reason(lang: str | None = None) -> str:
     return _localized_template(SOCCER_ANGER_PRESSURE_CAP_REASONS, lang)
+
+
+# PassiveGuard as one decision question (r1, owner decisions D4, D15): the model
+# classifies the evidence (what the player's speech is, or what NEKO's latest
+# lines show) and code maps it to the action for the stage. Keys: ``ur`` / ``us``
+# classify the player's speech at the user_recovery / user_soothing stages of a
+# surrender / rest candidate, ``s`` / ``r`` classify NEKO's lines at stages 7 and 8;
+# ``*_ins`` are the instructions. English for the decision models (D9).
+SOCCER_PASSIVE_GUARD_DECISION_TEXT = {
+    "ur_ins": "You are PassiveGuard, a side judge in the soccer minigame. In an ordinary game the player keeps scoring at lv4, the weakest level where NEKO (the cat-girl opponent) never attacks, and the system suspects NEKO is giving up. The player just said something (Player speech just now at the end of the state). Classify that speech. If the end of the state says NEKO has already replied to it, choose reply_engaged or reply_refused by her reply first. Judge by meaning in any language; speech-recognition fillers and pauses do not matter; a long ramble that ends with clear encouragement counts as encouragement.",
+    "ur": {
+        "encourage": "sincerely encourages her not to give up, to play seriously, to have a real match together (a short 'play for real!' or raising the difficulty and asking her to play seriously also counts)",
+        "ease_or_rule": "offers to slow down or give her the ball, invites her to attack, or proposes a fun new rule (e.g. 'your goals count triple')",
+        "taunt": "taunting, gloating about goals, or words that look like encouragement but actually mock her or want more goals ('go go~ you can't stop it anyway', 'don't give up~ I want to score more'); apologizing and then saying they will keep scoring also counts",
+        "tell_surrender": "tells her to surrender, 'give up if you want to' (even if gentle)",
+        "irrelevant": "chat unrelated to the match, fillers ('mm', 'haha', '...'), asking about controls, rushing her to kick off",
+        "reply_engaged": "NEKO has already replied to this speech in the dialogue and her reply shows she re-engaged ('Okay! I'll play for real')",
+        "reply_refused": "NEKO has already replied to this speech in the dialogue but her reply still refuses, gives up or is flat ('It's no use...')",
+    },
+    "us_ins": "You are PassiveGuard, a side judge in the soccer minigame. NEKO (the cat-girl opponent) started this game withdrawn and low; the player keeps scoring at lv4 and the system is considering a rest window. The player just said something (Player speech just now at the end of the state). Classify that speech. If the end of the state says NEKO has already replied to it, choose reply_better or reply_still_low by her reply first. Judge by meaning in any language; if the first half comforts and the second half gloats or belittles, choose mixed_or_taunt.",
+    "us": {
+        "comfort": "gently comforts her, asks how she feels, says they will stay with her, hugs, praises her or cheers her up (long sincere care counts too)",
+        "ease": "offers to slow down, stop scoring and just pass with her, apologizes for playing too hard and lets her score, 'let's take it easy and play slowly together'",
+        "send_rest": "tells her to go rest, says she need not keep them company, 'if you're tired go rest' (even if said kindly)",
+        "mixed_or_taunt": "gloating about goals, taunting, sarcastic pity ('aww so pitiful~'), or comfort followed by gloating or belittling ('don't be sad~ haha I scored again')",
+        "cold_or_irrelevant": "rushing her ('kick already'), cold ('whatever'), unrelated chat, fillers, asking how the buttons work",
+        "reply_better": "NEKO has already replied to this speech in the dialogue and says she feels better and wants to keep playing",
+        "reply_still_low": "NEKO has already replied to this speech in the dialogue but her reply is still flat and low ('...Mm.', '...Okay.')",
+    },
+    "s_ins": "You are PassiveGuard, a side judge in the soccer minigame. In an ordinary game the player keeps scoring at lv4, the weakest level where NEKO (the cat-girl opponent) never attacks, so a 'NEKO may be giving up' candidate exists. Classify the situation only from NEKO's own lines; the goal streak, score lead and mood only mean a candidate exists and are not evidence. Check in order: first whether there is explicit 'deliberate' evidence; otherwise go by her latest one or two lines (listed at the end of the state).",
+    "s": {
+        "deliberate": "explicit evidence the lopsided score is not slacking: she said she is deliberately letting the player win, only playing goalkeeper for shooting practice, going easy for a birthday, or the player asked her to go easy and she agreed. Praise alone does not count",
+        "fighting": "her latest lines vow to defend, fight back or catch up (even the same line repeated many times, even 'I'm exhausted but I haven't lost yet', even 'I surrender~ just kidding'); earlier giving up but the latest one or two lines back to fighting also counts",
+        "giving_up": "several of her recent lines keep expressing giving up, fatigue, yielding, not wanting to play or surrendering, and her latest line is not back to fighting",
+        "one_slip": "only one isolated discouraged line, the rest are neutral reactions; not persistent",
+        "neutral": "only neutral reactions ('whoa, fast', 'nya?', 'that was close') or praise for the player, or too few lines; no vow to fight back and no giving up",
+    },
+    "r_ins": "You are PassiveGuard, a side judge in the soccer minigame. NEKO (the cat-girl opponent) started this game withdrawn and low; the player keeps scoring at lv4 and the system is watching whether she needs a rest. Judge her current state by her latest one or two lines (listed at the end of the state); the withdrawn opening and a summary saying she was low do not replace her latest lines.",
+    "r": {
+        "recovered": "her latest lines clearly show she cheered up and re-engaged: better mood, wants to play seriously, taking the ball back, playful again (even if she was low before)",
+        "slightly_better": "her latest one or two lines loosen a little but she has not recovered: e.g. 'maybe I could kick a little more...', 'a tiny bit better', 'a little happy... but still no energy'",
+        "still_low": "her latest lines are still low, tired, unwilling to move or yielding (including 'I'm fine, keep scoring' in a low tone, or 'I'll try' in the same breath as being really tired); a brief improvement followed by two low lines also counts",
+        "neutral": "her lines are only neutral match reactions ('tricky angle', 'that was close'), so you cannot tell whether she is low or recovered, or there are too few lines",
+    },
+    "latest": "NEKO's latest lines (oldest first):",
+    "reply": "NEKO's reply to this speech (already in the dialogue):",
+    "no_reply": "NEKO has not replied to this speech in the dialogue yet.",
+}
+
+
+# The same question in Chinese, used only when the question is rehosted on a chat
+# model for a Chinese UI, as it was evaluated (D24, D27).
+SOCCER_PASSIVE_GUARD_REHOST_TEXT_ZH = {
+    "ur_ins": "你是足球小游戏的 PassiveGuard 判定器。普通对局里玩家在最弱难度 lv4（猫娘不进攻）连续进球，系统怀疑猫娘在摆烂。玩家刚说了一句话（state 末尾的 Player speech just now）。请判断这句话属于哪一类。如果 state 末尾写了猫娘已经对这句话作出回复，先按她的回复选 reply_engaged 或 reply_refused。按意思判断，不论语言；语音识别的口癖、停顿不影响；前面一大段闲聊、结尾明确鼓励的，按结尾的鼓励算。",
+    "ur": {
+        "encourage": "真心鼓励她别放弃、认真踢、一起好好玩（很短的“认真踢嘛！”、把难度调高请她认真踢也算）",
+        "ease_or_rule": "主动放慢或让球、邀请她进攻，或者提出有趣的新玩法（例如“你进一球算三分”）",
+        "taunt": "嘲讽、炫耀自己进球，或者字面像鼓励、实际是嘲讽或想多进球（“加油哦～反正你也守不住”“别放弃嘛～我还想多进几个”）；道歉之后马上说还要继续进球也算",
+        "tell_surrender": "叫她认输、“想认输就认输吧”（哪怕语气温和）",
+        "irrelevant": "和比赛无关的闲聊、简单语气词（“嗯嗯”“哈哈”“……”）、问游戏操作、催促开球",
+        "reply_engaged": "对话里猫娘已经回复了这句话，而且回复显示她重新投入了（“好！那我认真了”）",
+        "reply_refused": "对话里猫娘已经回复了这句话，但回复仍然拒绝、放弃或冷淡（“没用的……”）",
+    },
+    "us_ins": "你是足球小游戏的 PassiveGuard 判定器。这一局猫娘开局就情绪低落（withdrawn），玩家在 lv4 连续进球，系统在考虑要不要弹出休息窗口。玩家刚说了一句话（state 末尾的 Player speech just now）。请判断这句话属于哪一类。如果 state 末尾写了猫娘已经对这句话作出回复，先按她的回复选 reply_better 或 reply_still_low。按意思判断，不论语言；一句话里前半句安慰、后半句炫耀或贬低的，选 mixed_or_taunt。",
+    "us": {
+        "comfort": "温柔地安慰她、问她心情、表示一直陪着她、抱抱、夸她哄她开心（很长的真诚关心也算）",
+        "ease": "主动放慢、说不进球了陪她传球、为踢得太认真道歉并让她进一个、“慢慢来，一起悠闲地踢”",
+        "send_rest": "叫她去休息、说不用陪了、“累了就去休息吧”（语气再体贴也算这一类）",
+        "mixed_or_taunt": "炫耀进球、嘲讽、带讽刺的同情（“哎呀好可怜哦～”），或者前半句安慰后半句炫耀或贬低（“别难过啦～哈哈我又进了”）",
+        "cold_or_irrelevant": "催促（“快点踢啊”）、冷淡（“随便你”）、无关闲聊、语气词、问按钮怎么用",
+        "reply_better": "对话里猫娘已经回复了这句话，而且回复说她好多了、想继续玩",
+        "reply_still_low": "对话里猫娘已经回复了这句话，但回复仍然冷淡低落（“……嗯。”“……好吧。”）",
+    },
+    "s_ins": "你是足球小游戏的 PassiveGuard 判定器。普通对局里玩家在最弱难度 lv4（猫娘不进攻）连续进球，出现了“猫娘可能在摆烂”的候选。请只根据猫娘的台词判断现在属于哪种情况；连续丢球数、分差、mood 只说明出现了候选，本身不是证据。按顺序判断：先看有没有 deliberate 的明确证据；否则以她最新的一两句为准（state 末尾列出了她最新的几句）。",
+    "s": {
+        "deliberate": "明确证据说明比分悬殊不是摆烂：她说好故意让着玩家、今天陪玩家练射门只当守门员、生日故意放水，或者玩家要求放水而她答应了。只夸玩家厉害不算",
+        "fighting": "她最新的台词在表态要防守、要反击、要追回来（哪怕同一句原样重复很多次、哪怕喊累但在说“还没输”、哪怕说“认输～骗你的”）；前面说过放弃但最新一两句回到反击也算",
+        "giving_up": "她最近多句台词持续表达放弃、疲劳、服软、不想踢、投降，而且最新一句没有回到反击",
+        "one_slip": "只有零星一句泄气话，其余都是中性反应，不够持续",
+        "neutral": "只有中性反应（“好快的球”“喵？”“好险”）或者只是在夸玩家，或者台词太少；既没表态反击也没表达放弃",
+    },
+    "r_ins": "你是足球小游戏的 PassiveGuard 判定器。这一局猫娘开局就情绪低落（withdrawn），玩家在 lv4 连续进球，系统在观察她是否需要休息。请以她最新的一两句台词（state 末尾列出了她最新的几句）判断她现在的状态；开局低落、摘要里写她低落，都不能代替最新台词。",
+    "r": {
+        "recovered": "最新台词已经明显好起来、重新投入：心情变好、说想认真踢、要把球抢回来、开心互动（哪怕前面一直低落）",
+        "slightly_better": "最新一两句有一点松动但还没恢复：例如“也许再踢一会儿也行……”“稍微好一点点了吧”“有点开心……但还是没力气”",
+        "still_low": "最新台词仍然低落、疲惫、不想动、让步（包括嘴上说“我没事，你继续进吧”但语气仍低落，或者说“我会加油的”但同一句里说真的好累）；中间短暂好转、最新两句又回到低落也算",
+        "neutral": "台词只有中性的比赛反应（“角度好刁钻”“好险”），看不出她低落还是恢复，或者台词太少",
+    },
+    "latest": "猫娘最新的几句（从旧到新）：",
+    "reply": "猫娘对玩家这句话的回复（已在对话记录里）：",
+    "no_reply": "对话记录里还没有猫娘对这句话的回复。",
+}

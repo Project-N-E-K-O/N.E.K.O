@@ -285,7 +285,11 @@ test('an unidentified voice reply cannot consume an abandoned text candidate',()
 for(const emoji of ['😊','😄','🥰','✨','🎉','😢','🥺','🤗','💧','😮','😲','👀','❗','😤','😠','💢','😾']) test('accepts configured candidate '+emoji,()=>{
  const f=fixture();f.I.appendMessage(message());f.window.applyMessageReactionFromEmotion(f.window.captureMessageReactionTarget('test-request'),result(emoji));assert.equal(f.I.state.messages[0].reaction.emoji,emoji);
 });
-for(const r of [null,{error:'failed'},result('not-emoji'),{reaction:{emoji:'😊',author:'Other'}}]) test('invalid result is ignored '+JSON.stringify(r),()=>{
+// Owner decision D20: any one emoji, not only the configured candidates.
+for(const emoji of ['🫠','😀','✨️','👍🏽','👩‍💻','🇯🇵','1️⃣']) test('accepts any single emoji '+emoji,()=>{
+ const f=fixture();f.I.appendMessage(message());f.window.applyMessageReactionFromEmotion(f.window.captureMessageReactionTarget('test-request'),result(emoji));assert.equal(f.I.state.messages[0].reaction.emoji,emoji);
+});
+for(const r of [null,{error:'failed'},result('not-emoji'),result('A'),result('1'),result('😊😄'),result(' 😊'),result(''),{reaction:{emoji:'😊',author:'Other'}}]) test('invalid result is ignored '+JSON.stringify(r),()=>{
  const f=fixture();f.I.appendMessage(message());f.window.applyMessageReactionFromEmotion(f.window.captureMessageReactionTarget('test-request'),r);assert.equal(f.I.state.messages[0].reaction,undefined);
 });
 
@@ -331,6 +335,23 @@ test('emotion timeout ignores late response',async()=>{
  let resolve;const f=finalizeFixture(()=>new Promise(r=>resolve=r));f.context.finalize('turn');
  const pending=f.timers.find(t=>t.delay===100).fn();f.timers.find(t=>t.delay===5000).fn();await pending;
  resolve(result('😊'));await flush();assert.equal(f.applied.length,0);
+});
+test('a pending reaction is collected after the avatar emotion and attached to the original target',async()=>{
+ let resolveReaction;const fetched=[];
+ const f=finalizeFixture(async()=>({emotion:'happy',confidence:0.9,reaction:null,reaction_pending:'tok-1'}));
+ f.window.fetchEmotionReaction=token=>{fetched.push(token);return new Promise(r=>resolveReaction=r);};
+ f.context.finalize('turn1');await f.timers.find(t=>t.delay===100).fn();
+ // The avatar result is applied first, without a reaction.
+ assert.equal(f.applied.length,1);assert.equal(f.applied[0][1].reaction,null);assert.deepEqual(fetched,['tok-1']);
+ resolveReaction({emoji:'🫠',author:'Neko'});await flush();
+ assert.equal(f.applied.length,2);assert.equal(f.applied[1][0].id,'original');
+ assert.deepEqual(f.applied[1][1].reaction,{emoji:'🫠',author:'Neko'});
+});
+test('a pending reaction is not collected without a reaction target',async()=>{
+ const fetched=[];const f=finalizeFixture(async()=>({emotion:'happy',confidence:0.9,reaction:null,reaction_pending:'tok-2'}));
+ f.window.fetchEmotionReaction=async token=>{fetched.push(token);return null;};
+ f.context.finalize('agent',{enableMusic:false,enableReactions:false});await f.timers.find(t=>t.delay===100).fn();await flush();
+ assert.deepEqual(fetched,[]);
 });
 test('emotion failure never creates a reaction',async()=>{
  const f=finalizeFixture(async()=>{throw new Error('offline');});f.context.finalize('turn');await f.timers.find(t=>t.delay===100).fn();assert.equal(f.applied.length,0);

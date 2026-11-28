@@ -295,8 +295,27 @@ const turnIdSchema = z.preprocess((value) => {
   return value;
 }, z.string().min(1).optional());
 
+// Any one emoji (owner decision D20): a single grapheme holding a pictograph,
+// a flag letter or a keycap. Plain text, letters and digits are refused.
+const REACTION_EMOJI_MARK = /\p{Extended_Pictographic}|\p{Regional_Indicator}|⃣/u;
+type GraphemeSegmenter = { segment(input: string): Iterable<unknown> };
+type GraphemeSegmenterCtor = new (locale: undefined, options: { granularity: 'grapheme' }) => GraphemeSegmenter;
+// Intl.Segmenter is in every runtime the chat window ships to, but not in this project's TS lib.
+const SegmenterCtor = typeof Intl !== 'undefined'
+  ? (Intl as unknown as { Segmenter?: GraphemeSegmenterCtor }).Segmenter
+  : undefined;
+const reactionGraphemes: GraphemeSegmenter | null = typeof SegmenterCtor === 'function'
+  ? new SegmenterCtor(undefined, { granularity: 'grapheme' })
+  : null;
+
+export function isSingleReactionEmoji(value: string): boolean {
+  if (!value || value !== value.trim() || !REACTION_EMOJI_MARK.test(value)) return false;
+  if (reactionGraphemes) return Array.from(reactionGraphemes.segment(value)).length === 1;
+  return Array.from(value).length <= 8;
+}
+
 export const messageReactionSchema = z.object({
-  emoji: z.enum(['😊', '😄', '😃', '🙂', '😌', '🤔', '🧐', '💭', '❓', '👍', '✅', '🙌', '💪', '🎉', '🙏', '🤝', '😮', '👀', '⚠️', '💡', '😔', '😢', '😅', '🙇', '🥳', '✨', '🌟', '💻', '🤖', '📚', '🔧', '❤️', '⭐', '🔥', '🚀', '📌', '😂', '🤗', '🥰', '🥺', '💧', '😲', '❗', '😤', '😠', '💢', '😾']),
+  emoji: z.string().refine(isSingleReactionEmoji, { message: 'reaction must be one emoji' }),
   author: z.string().trim().min(1),
 });
 

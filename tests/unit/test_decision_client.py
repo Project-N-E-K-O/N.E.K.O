@@ -144,12 +144,16 @@ def test_all_assist_providers_have_decision_fields():
     assert len(providers) >= 18
 
     native_expected = {
-        "qwen": ("decision-model-preview", "systemone"),
-        "qwen_intl": ("decision-model-preview", "systemone"),
+        "qwen": ("decision-model", "systemone"),
+        "qwen_intl": ("decision-model", "systemone"),
         "openai": ("gpt-6-luna", "openai_decisions"),
         "gemini": ("gemini-decision-1", "gemini_decisions"),
         "openrouter": ("liquid/d1.2-ultra", "openrouter_decisions"),
         "silicon": ("Kev-4B", "systemone"),
+        "orcarouter": ("typesafe/jev-1.14", "systemone"),
+        "requesty": ("typesafe/jev-1.14.0", "systemone"),
+        "opper": ("typesafe/jev-1.14.0", "systemone"),
+        "doubao": ("doubao-seed-2-1-lite-260915", "systemone"),
     }
     assert set(native_expected.keys()).issubset(providers.keys())
     for key, profile in providers.items():
@@ -1205,7 +1209,7 @@ def test_config_manager_decision_slot_defaults_and_cross_provider(clean_user_dat
     assert qwen_dec["model"] == "qwen3.7-flash"
     assert qwen_dec["decision_protocol"] == "chat_fallback"
     assert qwen_dec["native_unavailable_reason"] == "workspace_missing"
-    assert qwen_dec["native_decision_model"] == "decision-model-preview"
+    assert qwen_dec["native_decision_model"] == "decision-model"
     assert "systemone" not in qwen_dec["decision_url"]
     assert qwen_dec["fallback_model"] == "qwen3.7-flash"
 
@@ -1215,7 +1219,7 @@ def test_config_manager_decision_slot_defaults_and_cross_provider(clean_user_dat
         "assistWorkspaceIdQwen": "LLM-Abc123",
     })
     qwen_ws_dec = cm.get_model_api_config("decision")
-    assert qwen_ws_dec["model"] == "decision-model-preview"
+    assert qwen_ws_dec["model"] == "decision-model"
     assert qwen_ws_dec["decision_protocol"] == "systemone"
     assert qwen_ws_dec["decision_url"] == (
         "https://llm-abc123.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/systemone"
@@ -1373,6 +1377,19 @@ def test_config_manager_decision_slot_defaults_and_cross_provider(clean_user_dat
     assert sf_dec["decision_url"] == "https://api.siliconflow.cn/v1/systemone"
     assert sf_dec["native_unavailable_reason"] == ""
     assert sf_dec["fallback_model"] == "Qwen/Qwen3-VL-30B-A3B-Instruct"
+
+    # The System One routers and Volcengine Ark decide natively on their own /systemone route.
+    for provider, key_field, model, url in (
+        ("orcarouter", "assistApiKeyOrcarouter", "typesafe/jev-1.14", "https://api.orcarouter.ai/v1/systemone"),
+        ("requesty", "assistApiKeyRequesty", "typesafe/jev-1.14.0", "https://router.requesty.ai/v1/systemone"),
+        ("opper", "assistApiKeyOpper", "typesafe/jev-1.14.0", "https://api.opper.ai/v3/compat/v1/systemone"),
+        ("doubao", "assistApiKeyDoubao", "doubao-seed-2-1-lite-260915", "https://ark.cn-beijing.volces.com/api/v1/systemone"),
+    ):
+        _set_cfg({"coreApi": "qwen", "assistApi": provider, key_field: "sk-router"})
+        router_dec = cm.get_model_api_config("decision")
+        assert router_dec["model"] == model, provider
+        assert router_dec["decision_protocol"] == "systemone", provider
+        assert router_dec["decision_url"] == url, provider
 
     _set_cfg({"coreApi": "qwen", "assistApi": "openrouter", "assistApiKeyOpenrouter": "sk-or"})
     or_dec = cm.get_model_api_config("decision")
@@ -1580,7 +1597,7 @@ async def test_connectivity_decision_probe_success_and_auth_error():
         assert mock_dec_probe.await_args.args[0] == (
             "https://llm-abc.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/systemone"
         )
-        assert mock_dec_probe.await_args.kwargs["model"] == "decision-model-preview"
+        assert mock_dec_probe.await_args.kwargs["model"] == "decision-model"
         assert mock_dec_probe.await_args.kwargs["protocol"] == "systemone"
 
     with patch(
@@ -1739,97 +1756,161 @@ async def test_connectivity_decision_probe_success_and_auth_error():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-@pytest.mark.unit
-async def test_memory_recall_reranker_uses_native_decision_and_ranks_by_score():
-    from memory.recall import MemoryRecallReranker
-    from utils.decision_client.schema import DecisionAnswer, DecisionResponse
+_RECALL_DECISION_CFG = {
+    "model": "decision-model",
+    "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "api_key": "sk-test",
+    "decision_protocol": "systemone",
+    "decision_url": "https://llm-abc.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/systemone",
+}
+_RECALL_SUMMARY_CFG = {
+    "model": "qwen3.8-flash",
+    "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "api_key": "sk-test",
+    "provider_type": "openai_compatible",
+}
 
+
+def _recall_cm(decision_cfg=None):
     cm = MagicMock()
-    cm.aget_model_api_config = AsyncMock(return_value={
-        "model": "decision-model-preview",
-        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        "api_key": "sk-test",
-        "decision_protocol": "systemone",
-        "decision_url": "https://dashscope.aliyuncs.com/compatible-mode/v1/systemone",
-    })
-    candidates = [
-        {"id": "m1", "text": "likes apples", "score": 1.0},
-        {"id": "m2", "text": "allergic to peanuts", "score": 1.0},
-        {"id": "m3", "text": "plays guitar", "score": 1.0},
-    ]
-    fake_dec_resp = DecisionResponse(
-        answers={
-            # Question IDs are the candidates' positions (c0 = m1, ...).
-            "c0": DecisionAnswer(question_type="score", value=0.3, score_norm=0.1),
-            "c1": DecisionAnswer(question_type="score", value=2.9, score_norm=0.97),
-            "c2": DecisionAnswer(question_type="score", value=1.5, score_norm=0.5),
-        },
-        model="decision-model-preview",
-        protocol="systemone",
+    dec = decision_cfg or _RECALL_DECISION_CFG
+    cm.aget_model_api_config = AsyncMock(side_effect=lambda tier: dec if tier == "decision" else _RECALL_SUMMARY_CFG)
+    return cm
+
+
+def _recall_fake_chat(content='[{"id": "m1"}, {"id": "m0"}]'):
+    return SimpleNamespace(ainvoke=AsyncMock(return_value=SimpleNamespace(content=content)), aclose=AsyncMock())
+
+
+async def _recall_rank(candidates, *, budget, cm, query="which fact?"):
+    from memory.recall import MemoryRecallReranker
+
+    return await MemoryRecallReranker()._fine_rank(
+        candidates,
+        query_texts=[query],
+        budget=budget,
+        config_manager=cm,
+        prompt_loader=lambda _lang: "{QUERY}\n{CANDIDATES}\n{BUDGET}",
+        lang="en",
     )
-    with patch.object(DecisionClient, "decide", AsyncMock(return_value=fake_dec_resp)) as mock_decide:
-        reranker = MemoryRecallReranker()
-        ranked = await reranker._fine_rank(
-            candidates,
-            query_texts=["what food allergies does the user have?"],
-            budget=2,
-            config_manager=cm,
-            prompt_loader=lambda _lang: "{QUERY}\n{CANDIDATES}\n{BUDGET}",
-            lang="en",
-        )
-    assert mock_decide.await_count == 1
-    assert mock_decide.await_args.kwargs["respect_cooldown"] is True
-    assert [r["id"] for r in ranked] == ["m2", "m3"]
 
 
 @pytest.mark.asyncio
 @pytest.mark.unit
-async def test_memory_recall_sends_question_ids_gemini_accepts_and_maps_answers_back():
-    # Candidate IDs with dots made Gemini's decision API answer 400 on every
-    # request; the wire IDs must match [A-Za-z0-9_-]{1,64}.
+async def test_memory_recall_asks_groups_of_16_in_one_request_and_ranks_against_none():
+    # Owner decision D18: 16 candidates to a single-choice question, each with "none".
     import re
 
-    from memory.recall import MemoryRecallReranker
     from utils.decision_client.schema import DecisionAnswer, DecisionResponse
 
-    cm = MagicMock()
-    cm.aget_model_api_config = AsyncMock(return_value={
-        "model": "gemini-decision-1",
-        "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
-        "api_key": "k",
-        "decision_protocol": "gemini_decisions",
-        "decision_url": "https://generativelanguage.googleapis.com/v1beta/decisions",
-    })
-    candidates = [
-        {"id": "fact.2026-11-01.a", "text": "likes apples", "score": 1.0},
-        {"id": "fact.2026-11-01.b", "text": "allergic to peanuts", "score": 1.0},
-    ]
-    seen: dict = {}
+    candidates = [{"id": f"fact.m.{i}", "text": f"fact number {i}", "score": float(40 - i)} for i in range(40)]
+    calls: list = []
 
     async def _decide(self, *, state, questions, **kwargs):
-        seen["ids"] = list(questions)
-        by_text = {qid: ("peanuts" if "fact.2026-11-01.b" in q.instructions else "apples") for qid, q in questions.items()}
+        calls.append((state, questions, kwargs))
         return DecisionResponse(
             answers={
-                qid: DecisionAnswer(question_type="score", value=0.0, score_norm=0.9 if by_text[qid] == "peanuts" else 0.1)
-                for qid in questions
+                # Group 0: m3 is clearly affected; group 1: m20 faintly beats a strong none;
+                # group 2: only none.
+                "g0": DecisionAnswer(question_type="choice", value="m3", probabilities={"m3": 0.8, "m5": 0.1, "none": 0.1}),
+                "g1": DecisionAnswer(question_type="choice", value="none", probabilities={"m20": 0.3, "none": 0.7}),
+                "g2": DecisionAnswer(question_type="choice", value="none", probabilities={"none": 1.0}),
             },
-            model="gemini-decision-1",
-            protocol="gemini_decisions",
+            model="decision-model",
+            protocol="systemone",
         )
 
     with patch.object(DecisionClient, "decide", _decide):
-        ranked = await MemoryRecallReranker()._fine_rank(
-            candidates,
-            query_texts=["allergies?"],
-            budget=2,
-            config_manager=cm,
-            prompt_loader=lambda _lang: "{QUERY}\n{CANDIDATES}\n{BUDGET}",
-            lang="en",
-        )
-    assert seen["ids"] and all(re.fullmatch(r"[A-Za-z0-9_-]{1,64}", qid) for qid in seen["ids"])
-    assert [r["id"] for r in ranked] == ["fact.2026-11-01.b", "fact.2026-11-01.a"]
+        ranked = await _recall_rank(candidates, budget=5, cm=_recall_cm())
+
+    assert len(calls) == 1
+    state, questions, kwargs = calls[0]
+    assert state == "New facts just extracted from the recent conversation:\n- which fact?"
+    assert list(questions) == ["g0", "g1", "g2"]
+    assert [len(q.criteria) for q in questions.values()] == [17, 17, 9]
+    assert all(re.fullmatch(r"[A-Za-z0-9_-]{1,64}", k) for q in questions.values() for k in q.criteria)
+    assert questions["g0"].criteria["m3"] == "fact number 3" and questions["g2"].criteria["none"]
+    assert kwargs["allow_fallback"] is False and kwargs["timeout"] == 2.0
+    # m3: 0.8/(0.8+0.1); m5: 0.5; m20: 0.3; then the coarse prior keeps coarse order.
+    assert [r["id"] for r in ranked] == ["fact.m.3", "fact.m.5", "fact.m.20", "fact.m.0", "fact.m.1"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_memory_recall_on_doubao_uses_the_ark_decision_model():
+    from utils.decision_client.schema import DecisionAnswer, DecisionResponse
+
+    ark = {
+        "model": "doubao-seed-2-1-lite-260915",
+        "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+        "api_key": "ak",
+        "decision_protocol": "systemone",
+        "decision_url": "https://ark.cn-beijing.volces.com/api/v1/systemone",
+    }
+    decide = AsyncMock(return_value=DecisionResponse(
+        answers={"g0": DecisionAnswer(question_type="choice", value="m1", probabilities={"m1": 0.9, "none": 0.1})},
+        model=ark["model"], protocol="systemone"))
+    with patch.object(DecisionClient, "decide", decide):
+        ranked = await _recall_rank([{"id": "a", "text": "x"}, {"id": "b", "text": "y"}], budget=2, cm=_recall_cm(ark))
+    assert decide.await_args.kwargs["config"] is ark
+    assert [r["id"] for r in ranked] == ["b", "a"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+@pytest.mark.parametrize("outcome", ["error", "missing_group", "slow"])
+async def test_memory_recall_falls_back_to_the_chat_rerank(outcome):
+    import asyncio
+
+    from utils.decision_client.schema import DecisionAnswer, DecisionResponse
+
+    candidates = [{"id": f"m{i}", "text": f"fact {i}", "score": float(20 - i)} for i in range(20)]
+    cancelled = asyncio.Event()
+
+    async def _decide(self, *, state, questions, **kwargs):
+        if outcome == "error":
+            raise DecisionProtocolError("HTTP 500", status_code=500, protocol="systemone")
+        if outcome == "missing_group":
+            # Only the first of the two groups answered: no half-native order.
+            return DecisionResponse(
+                answers={"g0": DecisionAnswer(question_type="choice", value="m3", probabilities={"m3": 1.0})},
+                model="decision-model", protocol="systemone")
+        try:
+            await asyncio.sleep(5)
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    fake_llm = _recall_fake_chat()
+    with (
+        patch.object(DecisionClient, "decide", _decide),
+        patch("utils.llm_client.create_chat_llm_async", AsyncMock(return_value=fake_llm)) as mock_create,
+    ):
+        ranked = await _recall_rank(candidates, budget=2, cm=_recall_cm())
+    assert mock_create.await_count == 1
+    assert [r["id"] for r in ranked] == ["m1", "m0"]
+    if outcome == "slow":
+        assert cancelled.is_set()
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+@pytest.mark.parametrize("decision_cfg", [
+    {"model": "free-mini-model", "base_url": "https://www.lanlan.tech/text/v1", "decision_protocol": "chat_fallback"},
+    {"model": "deepseek-flash", "base_url": "https://api.deepseek.com/v1", "decision_protocol": "chat_fallback"},
+])
+async def test_memory_recall_without_native_decision_uses_the_chat_rerank(decision_cfg):
+    decide = AsyncMock()
+    with (
+        patch.object(DecisionClient, "decide", decide),
+        patch("utils.llm_client.create_chat_llm_async", AsyncMock(return_value=_recall_fake_chat())),
+    ):
+        ranked = await _recall_rank([{"id": "m0", "text": "a"}, {"id": "m1", "text": "b"}], budget=2,
+                                    cm=_recall_cm(decision_cfg))
+    decide.assert_not_awaited()
+    assert [r["id"] for r in ranked] == ["m1", "m0"]
+
+
 
 
 @pytest.mark.asyncio
@@ -1881,150 +1962,8 @@ async def test_memory_recall_reranker_uses_emotion_tier_for_non_native_providers
     assert mock_create_llm.await_args.args[1] == "https://local-emotion.example/v1"
 
 
-@pytest.mark.asyncio
-@pytest.mark.unit
-async def test_memory_recall_reranker_aligns_questions_with_bounded_native_state():
-    from memory.recall import MemoryRecallReranker
-    from utils.decision_client.schema import DecisionAnswer, DecisionResponse
-
-    cm = MagicMock()
-    cm.aget_model_api_config = AsyncMock(return_value={
-        "model": "decision-model-preview",
-        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        "api_key": "sk-test",
-        "decision_protocol": "systemone",
-        "decision_url": "https://dashscope.aliyuncs.com/compatible-mode/v1/systemone",
-    })
-    # Build 80 long candidates (~180 tokens each -> >14,000 tokens total, > 6,000 native state cap)
-    long_text = " ".join(["memorydetail"] * 120)
-    candidates = [
-        {"id": f"m{i}", "text": f"entry {i} {long_text}", "score": float(80 - i)}
-        for i in range(80)
-    ]
-
-    captured: dict = {"batches": []}
-
-    async def _capture_decide(self, *, state, questions, **kwargs):
-        captured["batches"].append((state, [q.instructions.split("[", 1)[1].split("]", 1)[0] for q in questions.values()]))
-        captured["state"] = state
-        captured["question_ids"] = list(questions.keys())
-        return DecisionResponse(
-            answers={
-                qid: DecisionAnswer(question_type="score", value=2.0, score_norm=0.67)
-                for qid in questions
-            },
-            model="decision-model-preview",
-            protocol="systemone",
-        )
-
-    with patch.object(DecisionClient, "decide", _capture_decide):
-        reranker = MemoryRecallReranker()
-        ranked = await reranker._fine_rank(
-            candidates,
-            query_texts=["what is entry 0?"],
-            budget=5,
-            config_manager=cm,
-            prompt_loader=lambda _lang: "{QUERY}\n{CANDIDATES}\n{BUDGET}",
-            lang="en",
-        )
-
-    assert len(ranked) == 5
-    all_ids = [qid for _state, ids in captured["batches"] for qid in ids]
-    assert 0 < len(all_ids) < len(candidates)
-    assert len(all_ids) == len(set(all_ids))
-    for state, ids in captured["batches"]:
-        for qid in ids:
-            assert f"[{qid}]" in state
 
 
-@pytest.mark.asyncio
-@pytest.mark.unit
-async def test_memory_recall_native_rerank_batches_16_questions_per_request():
-    from memory.recall import MemoryRecallReranker
-    from utils.decision_client.schema import DecisionAnswer, DecisionResponse
-
-    cm = MagicMock()
-    cm.aget_model_api_config = AsyncMock(return_value={
-        "model": "decision-model-preview",
-        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        "api_key": "sk-test",
-        "decision_protocol": "systemone",
-        "decision_url": "https://llm-abc.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/systemone",
-    })
-    # 40 short candidates all fit the native state budget -> 16 + 16 + 8.
-    candidates = [{"id": f"m{i}", "text": f"fact number {i}", "score": float(40 - i)} for i in range(40)]
-    batches: list[tuple[str, list[str]]] = []
-
-    async def _decide(self, *, state, questions, **kwargs):
-        batches.append((state, list(questions)))
-        # Later candidates score higher so the native order is visible in the result.
-        return DecisionResponse(
-            answers={
-                qid: DecisionAnswer(question_type="score", value=0.0, score_norm=int(qid[1:]) / 100)
-                for qid in questions
-            },
-            model="decision-model-preview",
-            protocol="systemone",
-        )
-
-    with patch.object(DecisionClient, "decide", _decide):
-        ranked = await MemoryRecallReranker()._fine_rank(
-            candidates,
-            query_texts=["which fact?"],
-            budget=30,
-            config_manager=cm,
-            prompt_loader=lambda _lang: "{QUERY}\n{CANDIDATES}\n{BUDGET}",
-            lang="en",
-        )
-
-    assert [len(ids) for _state, ids in batches] == [16, 16, 8]
-    for state, ids in batches:
-        assert state.startswith("Query:\n- which fact?")
-        # Each batch's state carries only its own candidates.
-        own = set(ids)
-        for i in range(40):
-            assert (f"[m{i}]" in state) == (f"c{i}" in own)
-    assert [r["id"] for r in ranked] == [f"m{i}" for i in range(39, 9, -1)]
-
-    # One failed batch fails the whole native pass -> summary chat rerank is used.
-    calls = {"n": 0}
-
-    async def _decide_one_fails(self, *, state, questions, **kwargs):
-        calls["n"] += 1
-        if "[m20]" in state:
-            raise DecisionProtocolError("HTTP 500", status_code=500, protocol="systemone")
-        return DecisionResponse(
-            answers={qid: DecisionAnswer(question_type="score", value=1.0, score_norm=0.5) for qid in questions},
-            model="decision-model-preview",
-            protocol="systemone",
-        )
-
-    summary_cfg = {
-        "model": "qwen3.8-flash",
-        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        "api_key": "sk-test",
-        "provider_type": "openai_compatible",
-    }
-    decision_cfg = dict(cm.aget_model_api_config.return_value)
-    cm.aget_model_api_config = AsyncMock(side_effect=lambda tier: decision_cfg if tier == "decision" else summary_cfg)
-    fake_llm = SimpleNamespace(
-        ainvoke=AsyncMock(return_value=SimpleNamespace(content='[{"id": "m1"}, {"id": "m0"}]')),
-        aclose=AsyncMock(),
-    )
-    with (
-        patch.object(DecisionClient, "decide", _decide_one_fails),
-        patch("utils.llm_client.create_chat_llm_async", AsyncMock(return_value=fake_llm)),
-    ):
-        fallback_ranked = await MemoryRecallReranker()._fine_rank(
-            candidates,
-            query_texts=["which fact?"],
-            budget=2,
-            config_manager=cm,
-            prompt_loader=lambda _lang: "{QUERY}\n{CANDIDATES}\n{BUDGET}",
-            lang="en",
-        )
-    assert calls["n"] == 3
-    assert [r["id"] for r in fallback_ranked] == ["m1", "m0"]
 
 
 @pytest.mark.asyncio
@@ -2384,125 +2323,8 @@ def test_systemone_score_probabilities_with_digit_labels_are_not_misread_as_inde
     assert by_index.answers["s"].value == pytest.approx(0.8)
 
 
-@pytest.mark.asyncio
-@pytest.mark.unit
-async def test_memory_recall_cancels_in_flight_batches_after_a_failure():
-    import asyncio
-
-    from memory.recall import MemoryRecallReranker
-
-    decision_cfg = {
-        "model": "decision-model-preview",
-        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        "api_key": "sk-test",
-        "decision_protocol": "systemone",
-        "decision_url": "https://llm-abc.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/systemone",
-    }
-    summary_cfg = {
-        "model": "qwen3.8-flash",
-        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        "api_key": "sk-test",
-        "provider_type": "openai_compatible",
-    }
-    cm = MagicMock()
-    cm.aget_model_api_config = AsyncMock(side_effect=lambda tier: decision_cfg if tier == "decision" else summary_cfg)
-    candidates = [{"id": f"m{i}", "text": f"fact {i}", "score": float(20 - i)} for i in range(20)]
-    slow_cancelled = asyncio.Event()
-
-    async def _decide(self, *, state, questions, **kwargs):
-        if "c0" in questions:
-            raise DecisionProtocolError("HTTP 500", status_code=500, protocol="systemone")
-        try:
-            await asyncio.sleep(5)
-        except asyncio.CancelledError:
-            slow_cancelled.set()
-            raise
-        raise AssertionError("slow batch should have been cancelled")
-
-    fake_llm = SimpleNamespace(
-        ainvoke=AsyncMock(return_value=SimpleNamespace(content='[{"id": "m1"}, {"id": "m0"}]')),
-        aclose=AsyncMock(),
-    )
-    with (
-        patch.object(DecisionClient, "decide", _decide),
-        patch("utils.llm_client.create_chat_llm_async", AsyncMock(return_value=fake_llm)),
-    ):
-        ranked = await MemoryRecallReranker()._fine_rank(
-            candidates,
-            query_texts=["q"],
-            budget=2,
-            config_manager=cm,
-            prompt_loader=lambda _lang: "{QUERY}\n{CANDIDATES}\n{BUDGET}",
-            lang="en",
-        )
-    assert slow_cancelled.is_set()
-    assert [r["id"] for r in ranked] == ["m1", "m0"]
 
 
-@pytest.mark.asyncio
-@pytest.mark.unit
-async def test_memory_recall_falls_back_when_one_batch_has_no_valid_scores():
-    from memory.recall import MemoryRecallReranker
-    from utils.decision_client.schema import DecisionAnswer, DecisionResponse
-
-    decision_cfg = {
-        "model": "decision-model-preview",
-        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        "api_key": "sk-test",
-        "decision_protocol": "systemone",
-        "decision_url": "https://llm-abc.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/systemone",
-    }
-    summary_cfg = {
-        "model": "qwen3.8-flash",
-        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        "api_key": "sk-test",
-        "provider_type": "openai_compatible",
-    }
-    cm = MagicMock()
-    cm.aget_model_api_config = AsyncMock(side_effect=lambda tier: decision_cfg if tier == "decision" else summary_cfg)
-    candidates = [{"id": f"m{i}", "text": f"fact {i}", "score": float(20 - i)} for i in range(20)]
-
-    import asyncio
-
-    slow_cancelled = asyncio.Event()
-
-    async def _decide(self, *, state, questions, **kwargs):
-        # First batch (m0..m15): every question refused -> no answers at all.
-        if "c0" in questions:
-            return DecisionResponse(answers={}, model="decision-model-preview", protocol="systemone")
-        # The other batch is slow: it must be cancelled as soon as the empty batch
-        # returns, not awaited to completion.
-        try:
-            await asyncio.sleep(5)
-        except asyncio.CancelledError:
-            slow_cancelled.set()
-            raise
-        return DecisionResponse(
-            answers={qid: DecisionAnswer(question_type="score", value=3.0, score_norm=1.0) for qid in questions},
-            model="decision-model-preview",
-            protocol="systemone",
-        )
-
-    fake_llm = SimpleNamespace(
-        ainvoke=AsyncMock(return_value=SimpleNamespace(content='[{"id": "m0"}, {"id": "m1"}]')),
-        aclose=AsyncMock(),
-    )
-    with (
-        patch.object(DecisionClient, "decide", _decide),
-        patch("utils.llm_client.create_chat_llm_async", AsyncMock(return_value=fake_llm)) as mock_create,
-    ):
-        ranked = await MemoryRecallReranker()._fine_rank(
-            candidates,
-            query_texts=["q"],
-            budget=2,
-            config_manager=cm,
-            prompt_loader=lambda _lang: "{QUERY}\n{CANDIDATES}\n{BUDGET}",
-            lang="en",
-        )
-    # Summary chat rerank decided the order, not the half-scored native pass.
-    assert slow_cancelled.is_set()
-    assert mock_create.await_count == 1
-    assert [r["id"] for r in ranked] == ["m0", "m1"]
 
 
 @pytest.mark.unit
