@@ -50,6 +50,14 @@ document.addEventListener('DOMContentLoaded', async () => {
         return send(true);
     }
 
+    window.requestOptionalPNGTuber = async (url, options = {}) => {
+        if (!options.method || options.method === 'GET') return RequestHelper.fetchJson(url, options);
+        const response = await modelManagerMutationFetch(url, options);
+        const data = await response.json();
+        if (!response.ok || data.success === false) throw new Error(data.error || 'Optional model request failed');
+        return data;
+    };
+
     // ═══ 早期绑定"返回主页"按钮，确保即使初始化失败也能导航 ═══
     const _earlyBackBtn = document.getElementById('backToMainBtn');
     const _earlyBackHandler = () => {
@@ -2239,6 +2247,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             rememberSelectedLive2DModel(modelSelect?.selectedOptions?.[0]);
         }
         currentModelType = type;
+        const optionalPanel = document.getElementById('pngtuber-optional-models');
+        if (optionalPanel) optionalPanel.hidden = type !== 'pngtuber';
         window._modelManagerCurrentAvatarType = type;
         if (type === 'live3d') {
             currentLive3dSubType = (subType === 'vrm' || subType === 'mmd') ? subType : 'mmd';
@@ -3283,6 +3293,20 @@ document.addEventListener('DOMContentLoaded', async () => {
             vrmModelManager.updateButtonText();
         }
     }
+
+    window.addEventListener('pngtuber-optional-installed', async () => {
+        if (currentModelType !== 'pngtuber') return;
+        const previous = modelSelect?.value;
+        const selection = userModelSelectionGeneration;
+        const display = modelDisplaySwitchGeneration;
+        const isStale = () => currentModelType !== 'pngtuber' || selection !== userModelSelectionGeneration || display !== modelDisplaySwitchGeneration;
+        await loadPNGTuberModels({ isStale });
+        if (!isStale() && Array.from(modelSelect?.options || []).some(option => option.value === previous)) {
+            modelSelect.value = previous;
+            updateLive2DModelDropdown();
+            updateLive2DModelSelectButtonText();
+        }
+    });
 
     async function loadPNGTuberModels(options = {}) {
         // 过期判定统一在加载器内做，覆盖所有调用方（切换链传 isStale；上传后/删除后

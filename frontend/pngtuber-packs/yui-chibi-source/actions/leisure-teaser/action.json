@@ -1,8 +1,0 @@
-{
-  "id": "leisure-teaser",
-  "state_index": 21,
-  "group": "leisure",
-  "clip_metadata": "../../metadata.actions.json",
-  "source_id": "leisure-teaser",
-  "speech": false
-}

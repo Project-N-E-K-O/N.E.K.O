@@ -1,8 +1,0 @@
-{
-  "id": "leisure-snack",
-  "state_index": 20,
-  "group": "leisure",
-  "clip_metadata": "../../metadata.actions.json",
-  "source_id": "leisure-snack",
-  "speech": false
-}

@@ -67,7 +67,6 @@ def test_production_pngtuber_packs_unpack_for_static_serving(tmp_path):
         ) == model["archive_sha256"]
 
     assert sorted(path.name for path in output_root.iterdir()) == [
-        "yui-chibi",
         "yui-lolita",
         "yui-origin",
         "yui-sister",

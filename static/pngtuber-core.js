@@ -854,7 +854,7 @@
                 const group = this.hasReviewedActions() ? this.layeredStateCatalog().find(row => row.state_index === next)?.group : null;
                 if (group !== 'visit-leave' && group !== 'visit-return') break;
             }
-            return this.setLayeredStateIndex(next, { source: 'alt-one-cycle-hotkey' });
+            return this.setLayeredStateIndex(next, { source: 'alt-one-cycle-hotkey', force: this.hasReviewedActions() });
         }
 
         isLayeredAssetActionHotkey(event) {
@@ -1495,6 +1495,7 @@
             if (release) {
                 this._reviewedEntries?.clear();
                 this._reviewedIdleResources?.clear();
+                this._reviewedRetainedIdleIndex = null;
                 this._reviewedEntryMetadata = this._reviewedIdleMetadata = null;
                 this._reviewedSessionMetadata = null;
                 this._reviewedTransition = null;
@@ -1717,6 +1718,18 @@
             return this.requestReviewedState(0, { force: true });
         }
 
+        retainReviewedIdle(index) {
+            if (this._reviewedRetainedIdleIndex === index) return;
+            this._reviewedRetainedIdleIndex = index;
+            for (const [other, resource] of this._reviewedIdleResources || []) {
+                if (other === index) continue;
+                for (const frame of resource.cache.keys()) if (frame >= 6) resource.cache.delete(frame);
+                const used = new Set(resource.data.frames.slice(0, 6).map(frame => frame.mouth_patch?.image));
+                for (const patch of resource.patches.keys()) if (!used.has(patch)) resource.patches.delete(patch);
+                resource.bytes = Math.min(6, resource.data.frames.length) * ((resource.data.width || 720) * (resource.data.height || 960) * 4 + 16384);
+            }
+        }
+
         reviewedIdleResources(index) {
             const metadata = this.layeredMetadata;
             if (!this.hasReviewedActions() || !metadata.reviewed_actions.groups.idle?.includes(index)) return null;
@@ -1724,17 +1737,21 @@
             if (!data || data.playback !== 'loop') return null;
             // Only the opted-in idle clips share decoded frames across state changes.
             // Reserve conservatively for RGBA bodies and their small speech plates.
-            const bytes = data.frames.length * ((data.width || 720) * (data.height || 960) * 4 + 16384);
+            const frames = index === this._reviewedRetainedIdleIndex ? data.frames.length : Math.min(6, data.frames.length);
+            const bytes = frames * ((data.width || 720) * (data.height || 960) * 4 + 16384);
             const budget = 512 * 1024 * 1024 - 80 * 1024 * 1024;
             if (this._reviewedIdleMetadata !== metadata) {
                 this._reviewedIdleMetadata = metadata;
                 this._reviewedIdleResources = new Map();
             }
             const resources = this._reviewedIdleResources;
-            if (resources.has(index)) return resources.get(index);
-            const reserved = [...resources.values()].reduce((sum, item) => sum + item.bytes, 0);
-            if (bytes + reserved > budget) return null;
-            const item = { metadata, data, bytes, cache: new Map(), patches: new Map(), pending: new Map(), failures: new Map() };
+            const reserved = [...resources.entries()].reduce((sum, [key, item]) => sum + (key === index ? 0 : item.bytes), 0);
+            if (bytes + reserved > budget) {
+                resources.delete(index);
+                return null;
+            }
+            if (resources.has(index)) { resources.get(index).bytes = bytes; return resources.get(index); }
+            const item = { metadata, index, data, bytes, cache: new Map(), patches: new Map(), pending: new Map(), failures: new Map() };
             resources.set(index, item);
             return item;
         }
@@ -1754,7 +1771,8 @@
                 await Promise.all([image, mouthPatch].filter(Boolean).map(item =>
                     typeof item.decode === 'function' ? item.decode() : Promise.resolve()));
                 if (!this._renderingPaused && !this._reviewedHidden && generation === this._reviewedWarmGeneration
-                    && this.layeredMetadata === resource.metadata && this._reviewedIdleMetadata === resource.metadata) {
+                    && this.layeredMetadata === resource.metadata && this._reviewedIdleMetadata === resource.metadata
+                    && (resource.index === this._reviewedRetainedIdleIndex || index < 6)) {
                     resource.failures.delete(index);
                     resource.cache.set(index, image);
                     if (mouthPatch) resource.patches.set(patch.image, mouthPatch);
@@ -1772,12 +1790,12 @@
         warmReviewedIdle(index) {
             const resource = this.reviewedIdleResources(index);
             if (!resource || resource.warming || this._renderingPaused || this._reviewedHidden
-                || performance.now() < (resource.retryAt || 0) || resource.cache.size === resource.data.frames.length) return;
+                || performance.now() < (resource.retryAt || 0) || resource.cache.size >= Math.min(6, resource.data.frames.length)) return;
             const base = this._trackedPlayback?.baseUrl || this.config.layered_metadata;
             const generation = this._reviewedWarmGeneration;
             let cursor = 0;
             const worker = async () => {
-                while (cursor < resource.data.frames.length && this.layeredMetadata === resource.metadata
+                while (cursor < Math.min(6, resource.data.frames.length) && this.layeredMetadata === resource.metadata
                     && this._reviewedIdleMetadata === resource.metadata && this.hasReviewedActions()
                     && generation === this._reviewedWarmGeneration && !this._renderingPaused && !this._reviewedHidden) {
                     const frame = cursor++;
@@ -1838,6 +1856,14 @@
             }
             if (this.tryReviewedDeadline(timestamp)) return;
             const elapsed = timestamp - this.layeredAnimationStart;
+            const queued = this._reviewedQueued;
+            if (queued && playback.data.playback === 'once' && !queued.warming
+                && elapsed >= playback.data.duration_ms - 500 && elapsed < playback.data.duration_ms) {
+                // Decode the next entry before the current one-shot reaches its last frame.
+                // This prepares resources only; normal request guards still own the handoff.
+                queued.warming = true;
+                this.prepareReviewedEntry(queued.index).catch(() => {});
+            }
             const group = this.layeredStateCatalog().find(x => x.state_index === this.layeredStateIndex)?.group;
             const activity = this.reviewedActivity();
             if (!this._reviewedRecovery && group === 'leisure' && (this.isSpeaking || activity?.proactiveEnabled || activity?.busy
@@ -1981,6 +2007,9 @@
             if (!data) return;
             this.validateTrackedAnimation(data);
             const initialIndex = this.trackedLoopSelection(data, 0).index;
+            if (this.hasReviewedActions() && metadata.reviewed_actions.groups.idle.includes(this.layeredStateIndex)) {
+                this.retainReviewedIdle(this.layeredStateIndex);
+            }
             const idleResource = this.reviewedIdleResources(this.layeredStateIndex);
             this._trackedPlayback = {
                 data, baseUrl, cache: data === metadata.tracked_animation && !data.speech_mouth_patches
@@ -3466,10 +3495,34 @@
                 0.0001,
                 Number(renderTarget?.scaleY ?? this.layeredCanvasScaleY) || 1
             );
+            const playback = this._trackedPlayback;
+            if (!renderTarget && this.hasReviewedActions() && playback?.idleResource
+                && !this.isSpeaking && playback.openness === 0 && !this._reviewedTransition) {
+                this.reviewedPlaybackTick(timestamp);
+                const selection = this.trackedLoopSelection(playback.data, Math.max(0, timestamp - this.layeredAnimationStart));
+                const last = playback.lastCanvasDraw;
+                if (this._trackedPlayback === playback && selection.mix === 0 && last
+                    && playback.cache.has(selection.index) && last.speaking === false
+                    && last.viseme === this._trackedViseme
+                    && last.index === selection.index && last.image === playback.cache.get(selection.index)
+                    && last.width === canvas.width && last.height === canvas.height
+                    && last.scaleX === renderScaleX && last.scaleY === renderScaleY
+                    && last.padding === this.layeredCanvasPadding) return true;
+            }
             ctx.setTransform(1, 0, 0, 1, 0, 0);
             ctx.clearRect(0, 0, canvas.width, canvas.height);
             ctx.setTransform(renderScaleX, 0, 0, renderScaleY, 0, 0);
-            if (this._trackedPlayback) return this.drawTrackedPlayback(ctx, timestamp, Boolean(renderTarget));
+            if (this._trackedPlayback) {
+                const drawn = this.drawTrackedPlayback(ctx, timestamp, Boolean(renderTarget));
+                const active = this._trackedPlayback;
+                if (!renderTarget && drawn && active) active.lastCanvasDraw = {
+                    index: active.lastSelection?.mix ? null : active.lastIndex,
+                    image: active.cache.get(active.lastIndex), width: canvas.width, height: canvas.height,
+                    scaleX: renderScaleX, scaleY: renderScaleY, padding: this.layeredCanvasPadding,
+                    speaking: this.isSpeaking, viseme: this._trackedViseme
+                };
+                return drawn;
+            }
             const layers = Array.isArray(this.layeredMetadata.layers) ? this.layeredMetadata.layers : [];
             if (this.isLayeredPlusModel()) {
                 return this.drawPlusLayerTree(ctx, layers, stateName, timestamp);

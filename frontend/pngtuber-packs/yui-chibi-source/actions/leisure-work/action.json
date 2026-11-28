@@ -1,8 +1,0 @@
-{
-  "id": "leisure-work",
-  "state_index": 22,
-  "group": "leisure",
-  "clip_metadata": "../../metadata.actions.json",
-  "source_id": "leisure-work",
-  "speech": false
-}

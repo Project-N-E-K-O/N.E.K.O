@@ -1,8 +1,0 @@
-{
-  "id": "idle",
-  "state_index": 0,
-  "group": "idle",
-  "clip_metadata": "../../metadata.actions.json",
-  "source_id": "idle-1",
-  "speech": true
-}

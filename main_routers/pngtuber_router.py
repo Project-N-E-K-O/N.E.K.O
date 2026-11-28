@@ -9,11 +9,14 @@ import shutil
 from pathlib import Path, PurePosixPath
 from urllib.parse import urlsplit
 
-from fastapi import APIRouter, Body, File, UploadFile
+from fastapi import APIRouter, Body, File, Request, UploadFile
 from fastapi.responses import JSONResponse
+
+from services.pngtuber_downloads import PNGTuberDownloads
 
 from .pngtuber_importers import PNGTuberImportError, import_pngtuber_package
 from .shared_state import get_config_manager
+from .system_router import _validate_local_mutation_request
 from utils.logger_config import get_module_logger
 
 router = APIRouter(prefix="/api/model/pngtuber", tags=["pngtuber"])
@@ -327,6 +330,11 @@ async def get_pngtuber_models():
         config_mgr = get_config_manager()
         config_mgr.ensure_pngtuber_directory()
         models = []
+        try:
+            optional_folders = {row["package"]["folder"]: PNGTuberDownloads.installation_folder(row) for row in _optional_manager().entries()}
+        except (ValueError, OSError, KeyError, TypeError) as error:
+            logger.warning("Optional PNGTuber catalog unavailable: %s", error)
+            optional_folders = {}
         roots = (
             (config_mgr.project_root / "static" / "pngtuber", "builtin", PNGTUBER_STATIC_PATH),
             (config_mgr.pngtuber_dir, "user", PNGTUBER_USER_PATH),
@@ -336,6 +344,10 @@ async def get_pngtuber_models():
                 continue
             for package_dir in sorted(root.iterdir(), key=lambda p: p.name.lower()):
                 if package_dir.name.startswith(".") or not package_dir.is_dir() or not (package_dir / "model.json").exists():
+                    continue
+                if location == "builtin" and package_dir.name in optional_folders and (
+                    config_mgr.pngtuber_dir / optional_folders[package_dir.name] / ".builtin-pack-sha256"
+                ).is_file():
                     continue
                 try:
                     model_json = await asyncio.to_thread(_read_model_json, package_dir)
@@ -383,3 +395,57 @@ async def delete_pngtuber_model(payload: dict = Body(...)):
         return JSONResponse(status_code=404, content={"success": False, "error": "PNGTuber模型不存在"})
     await asyncio.to_thread(shutil.rmtree, target_dir)
     return JSONResponse(content={"success": True, "message": f"PNGTuber模型 {folder} 已删除"})
+
+
+_optional_downloads = {}
+
+
+def _optional_manager():
+    config = get_config_manager()
+    config.ensure_pngtuber_directory()
+    key = (str(config.project_root), str(config.pngtuber_dir))
+    if key not in _optional_downloads:
+        _optional_downloads[key] = PNGTuberDownloads(
+            config.project_root / "static/pngtuber-catalog.json", config.pngtuber_dir
+        )
+    return _optional_downloads[key]
+
+
+@router.get("/optional")
+async def optional_pngtuber_models():
+    manager = _optional_manager()
+    return {"success": True, "models": [manager.status(row["id"]) for row in manager.entries()]}
+
+
+@router.get("/optional/{model_id}")
+async def optional_pngtuber_status(model_id: str):
+    try:
+        return {"success": True, "model": _optional_manager().status(model_id)}
+    except ValueError as error:
+        return JSONResponse(status_code=400, content={"success": False, "error": str(error)})
+
+
+@router.post("/optional/{model_id}/download")
+async def download_optional_pngtuber(model_id: str, request: Request):
+    rejected = _validate_local_mutation_request(request, error_defaults={"success": False})
+    if rejected is not None:
+        return rejected
+    try:
+        manager = _optional_manager()
+        manager.start(model_id)
+        return {"success": True, "model": manager.status(model_id)}
+    except ValueError as error:
+        return JSONResponse(status_code=400, content={"success": False, "error": str(error)})
+
+
+@router.post("/optional/{model_id}/cancel")
+async def cancel_optional_pngtuber(model_id: str, request: Request):
+    rejected = _validate_local_mutation_request(request, error_defaults={"success": False})
+    if rejected is not None:
+        return rejected
+    try:
+        if not _optional_manager().cancel(model_id):
+            return JSONResponse(status_code=409, content={"success": False, "error": "Download is not cancellable during installation"})
+        return {"success": True}
+    except ValueError as error:
+        return JSONResponse(status_code=400, content={"success": False, "error": str(error)})

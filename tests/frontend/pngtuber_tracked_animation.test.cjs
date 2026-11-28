@@ -984,9 +984,11 @@ test('metadata validation rejects an invalid unselected clip before the current 
     assert.equal(m.layeredStateIndex, 0);
 });
 
-test('all production reviewed tracks and groups pass the real runtime validator', () => {
+test('all production reviewed tracks and groups pass the real runtime validator', t => {
     const { manager: m } = fixture();
-    const metadata = JSON.parse(fs.readFileSync(path.join(__dirname, '../../frontend/pngtuber-packs/yui-chibi-source/metadata.actions.json'), 'utf8'));
+    const directory = process.env.NEKO_YUI_RESOURCE_DIR;
+    if (!directory) { t.skip('Optional asset release validation: set NEKO_YUI_RESOURCE_DIR to an installed resource directory'); return; }
+    const metadata = JSON.parse(fs.readFileSync(path.join(directory, 'metadata.actions.json'), 'utf8'));
     m.validateReviewedMetadata(metadata);
     assert.equal(Object.keys(metadata.tracked_animations).length, 23);
     metadata.reviewed_actions.groups.happy.push(999);
@@ -2681,4 +2683,87 @@ test('model readiness prefers the current visit over a retained closed identity'
     for(const fn of listeners['pngtuber-model-loaded'])fn();assert.deepEqual(messages,[]);
     bridge._state.side='guest';for(const fn of listeners['pngtuber-model-loaded'])fn();
     assert.equal(messages.length,1);assert.equal(messages[0].visit_id,'b'.repeat(22));
+});
+
+function longIdleFixture() {
+    const f=realReviewedFixture(),m=f.manager;
+    for(const index of [0,1]){
+        const data=m.layeredMetadata.tracked_animations[index];data.duration_ms=4000;
+        data.frames=Array.from({length:20},(_,i)=>({...data.frames[0],image:`idle-${index}/${i}.webp`,time_ms:i*200,duration_ms:200}));
+    }
+    m.layeredStateIndex=0;m.initializeTrackedPlayback(m.layeredMetadata,'/model/meta.json');
+    return f;
+}
+
+test('repeated idle selections retain only one full loop plus six alternate entry frames', () => {
+    const {manager:m}=longIdleFixture();
+    for(let n=0;n<8;n++){
+        const current=n%2,other=1-current;
+        m.layeredStateIndex=current;m.initializeTrackedPlayback(m.layeredMetadata,'/model/meta.json');
+        const active=m.reviewedIdleResources(current),backup=m.reviewedIdleResources(other);
+        for(let i=0;i<20;i++)active.cache.set(i,{i});
+        for(let i=0;i<6;i++)backup.cache.set(i,{i});
+        assert.equal(active.cache.size,20);assert.ok(backup.cache.size<=6);
+        assert.equal([...m._reviewedIdleResources.values()].reduce((sum,r)=>sum+r.cache.size,0),26);
+        assert.equal([...m._reviewedIdleResources.values()].reduce((sum,r)=>sum+r.bytes,0),26*(720*960*4+16384));
+    }
+});
+
+test('late decode from a demoted idle cannot refill its evicted body cache', async () => {
+    const {manager:m,images}=longIdleFixture();const old=m.reviewedIdleResources(0);
+    const pending=m.loadReviewedIdleFrame(old,8,'/model/meta.json');
+    m.layeredStateIndex=1;m.initializeTrackedPlayback(m.layeredMetadata,'/model/meta.json');
+    images.at(-1).onload();await pending;assert.equal(old.cache.has(8),false);
+});
+
+test('alternate idle prewarm decodes only its six entry frames', async () => {
+    const {manager:m}=longIdleFixture();const requested=[];
+    m.loadReviewedIdleFrame=async(resource,index)=>{requested.push(index);resource.cache.set(index,{})};
+    m.warmReviewedIdle(1);await m.reviewedIdleResources(1).warming;
+    assert.deepEqual(requested.slice().sort((a,b)=>a-b),[0,1,2,3,4,5]);
+    m.warmReviewedIdle(1);assert.equal(requested.length,6);
+});
+
+test('Alt+1 can immediately advance through successive reviewed one-shot actions', async t => {
+    const {manager:m}=timedReviewedFixture();t.after(()=>m.clearLayeredTimers());
+    m.requestReviewedState(2);await flushReviewed();
+    m.cycleLayeredState();await flushReviewed();assert.equal(m.layeredStateIndex,3);
+    m.cycleLayeredState();await flushReviewed();assert.equal(m.layeredStateIndex,4);
+});
+
+test('identical closed-mouth reviewed idle avoids canvas clearing while deadlines and redraw invalidations remain live', () => {
+    const {manager:m,context}=longIdleFixture();delete m.drawLayeredState;
+    const canvas={width:576,height:768,getContext:()=>context};m.canvasElement=canvas;
+    m.layeredCanvasScaleX=m.layeredCanvasScaleY=1;m.layeredAnimationStart=100;m.isSpeaking=false;
+    const p=m._trackedPlayback;p.data.frames.forEach((_,i)=>p.cache.set(i,{}));
+    let draws=0,ticks=0;m.drawTrackedPlayback=()=>{draws++;p.lastIndex=0;p.lastSelection={index:0,mix:0};return true};
+    m.reviewedPlaybackTick=()=>ticks++;
+    m.drawLayeredState('idle',100);m.drawLayeredState('idle',120);assert.equal(draws,1);assert.ok(ticks>0);
+    m.isSpeaking=true;m.drawLayeredState('idle',125);assert.equal(draws,2);
+    m.isSpeaking=false;m.drawLayeredState('idle',130);assert.equal(draws,3,'speech state changes must redraw');
+    canvas.width++;m.drawLayeredState('idle',135);assert.equal(draws,4);
+    m._reviewedTransition={at:130};m.drawLayeredState('idle',140);assert.equal(draws,5);
+    m._reviewedTransition=null;p.cache.delete(0);m.drawLayeredState('idle',145);assert.equal(draws,6,'missing images must retry rather than freeze');
+    const legacy=fixture().manager;legacy.hasReviewedActions=()=>false;legacy.canvasElement=canvas;legacy.isLayeredActive=()=>true;
+    let legacyDraws=0;legacy.drawTrackedPlayback=()=>{legacyDraws++;return true};legacy.drawLayeredState('idle',100);legacy.drawLayeredState('idle',120);assert.equal(legacyDraws,2);
+});
+
+test('queued action entry is decoded ahead of completion without starting it or blocking the current clock', async t => {
+    const {manager:m,advance}=timedReviewedFixture();t.after(()=>m.clearLayeredTimers());
+    m.requestReviewedState(2);await flushReviewed();m.requestReviewedState(3);
+    const calls=[];m.prepareReviewedEntry=async index=>{calls.push(index);return [{image:{}}]};
+    advance(1700);m.reviewedPlaybackTick(1700);await flushReviewed();
+    assert.deepEqual(calls,[3]);assert.equal(m.layeredStateIndex,2);assert.equal(m._reviewedPreparing,false);
+    m.reviewedPlaybackTick(1750);assert.deepEqual(calls,[3]);
+    advance(2200);m._trackedPlayback.lastIndex=1;m.reviewedPlaybackTick(2200);await flushReviewed();assert.equal(m.layeredStateIndex,3);
+});
+
+test('promoting an oversized prewarmed idle falls back to the bounded rolling cache', () => {
+    const {manager:m}=longIdleFixture();const data=m.layeredMetadata.tracked_animations[1];
+    data.duration_ms=40000;data.width=data.height=1000;
+    data.frames=Array.from({length:200},(_,i)=>({...data.frames[0],time_ms:i*200,duration_ms:200}));
+    assert.ok(m.reviewedIdleResources(1),'six entry frames fit');
+    m.layeredStateIndex=1;m.initializeTrackedPlayback(m.layeredMetadata,'/model/meta.json');
+    assert.equal(m._trackedPlayback.idleResource,null);assert.equal(m._reviewedIdleResources.has(1),false);
+    assert.ok([...m._reviewedIdleResources.values()].reduce((n,r)=>n+r.bytes,0)<=432*1024*1024);
 });

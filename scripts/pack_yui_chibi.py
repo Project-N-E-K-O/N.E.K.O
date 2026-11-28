@@ -51,7 +51,6 @@ def _build(source: Path, packs: Path, compatibility_dir: Path | None = None):
     )
     model = json.loads((source / "model.json").read_text(encoding="utf-8"))
     model.pop("_authoring", None)
-    authoring = packs / "yui-chibi-source"
     records = []
     # This temporary directory is owned by this invocation; never clear the source.
     with tempfile.TemporaryDirectory(prefix="yui-pack-") as temp:
@@ -151,7 +150,6 @@ def _build(source: Path, packs: Path, compatibility_dir: Path | None = None):
         outputs = {}
         for index, group in enumerate(groups, 1):
             name = f"yui-chibi-{index:03}.zip"
-            output = packs / name
             temporary = stage / name
             with zipfile.ZipFile(
                 temporary, "w", zipfile.ZIP_DEFLATED, compresslevel=6
@@ -185,7 +183,7 @@ def _build(source: Path, packs: Path, compatibility_dir: Path | None = None):
             "unpacked_size": sum(p["unpacked_size"] for p in parts),
         }
         manifest_path = packs / "manifest.json"
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.is_file() else {"version": 1, "models": []}
         manifest["models"] = [
             m for m in manifest["models"] if m["folder"] != "yui-chibi"
         ] + [entry]
@@ -212,6 +210,8 @@ def _build(source: Path, packs: Path, compatibility_dir: Path | None = None):
 
 def build(source: Path, packs: Path, compatibility_dir: Path | None = None):
     source, packs = source.resolve(), packs.resolve()
+    if packs == Path(__file__).resolve().parents[1] / "frontend/pngtuber-packs":
+        raise ValueError("Optional resources must be staged outside the built-in pack directory")
     if source == packs or source in packs.parents or packs in source.parents:
         raise ValueError("source and package output must not overlap")
     packs.mkdir(parents=True, exist_ok=True)
@@ -226,7 +226,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--packs-dir",
         type=Path,
-        default=Path(__file__).resolve().parents[1] / "frontend/pngtuber-packs",
+        required=True,
+        help="Independent release staging directory, outside the source repository",
     )
     parser.add_argument(
         "--compatibility-dir",

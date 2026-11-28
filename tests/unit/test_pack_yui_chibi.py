@@ -176,26 +176,20 @@ def test_only_old_owned_temp_directories_are_cleaned(tmp_path):
     assert recent.exists() and foreign.exists()
 
 
-def test_production_pack_assets_stay_identical_to_the_reviewed_manifest():
-    root = Path(__file__).resolve().parents[2] / "frontend/pngtuber-packs"
-    manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
-    entry = next(m for m in manifest["models"] if m["folder"] == "yui-chibi")
-    for part in entry["archives"]:
-        assert hashlib.sha256((root / part["archive"]).read_bytes()).hexdigest() == part["archive_sha256"]
-
-
-def test_distribution_verifier_requires_new_model_and_key_assets(tmp_path):
+def test_optional_catalog_keeps_reviewed_hashes_but_default_distribution_does_not_include_model():
+    root = Path(__file__).resolve().parents[2]
+    builtin = json.loads((root / "frontend/pngtuber-packs/manifest.json").read_text(encoding="utf-8"))
+    assert "yui-chibi" not in {row["folder"] for row in builtin["models"]}
+    catalog = json.loads((root / "static/pngtuber-catalog.json").read_text(encoding="utf-8"))
+    entry = catalog["models"][0]["package"]
+    assert len(entry["archives"]) == 7
+    assert entry["archive_sha256"] == "946399bda0e868b35dc960e9966e31d8d3a0219a242de6e25c4d1bc98dfca9ae"
+    assert sum(p["archive_size"] for p in entry["archives"]) == 280745880
+    assert not list((root / "frontend/pngtuber-packs").glob("yui-chibi-*.zip"))
     from scripts import check_nuitka_dist
-    required = [(rel, name) for rel, name in check_nuitka_dist._REQUIRED_ASSETS if rel == "static/pngtuber/yui-chibi"]
-    assert {name for _, name in required} == {"model.json", "metadata.actions.json", "idle.png"}
-    for rel, name in required:
-        assert check_nuitka_dist._check_asset(tmp_path, rel, name)
-        file = tmp_path / rel / name
-        file.parent.mkdir(parents=True, exist_ok=True)
-        file.write_bytes(b"asset")
-        assert check_nuitka_dist._check_asset(tmp_path, rel, name) is None
-    shell = (Path(__file__).resolve().parents[2] / "scripts/verify_frontend_build.sh").read_text()
-    assert "yui-lolita yui-origin yui-sister yui-chibi" in shell
+    assert not any(rel == "static/pngtuber/yui-chibi" for rel, _ in check_nuitka_dist._REQUIRED_ASSETS)
+    shell = (root / "scripts/verify_frontend_build.sh").read_text()
+    assert "for model in yui-lolita yui-origin yui-sister;" in shell
 
 
 def test_installer_recovers_interrupted_publication_before_reading_parts(tmp_path):
@@ -422,3 +416,17 @@ def test_duplicate_action_names_rejected_before_overwriting_or_publication(tmp_p
         pack.build(src, dest)
     assert snapshot(dest) == before
     assert snapshot(src) == source_before
+
+
+def test_optional_pack_can_be_built_in_an_empty_external_release_directory(tmp_path):
+    src = source(tmp_path)
+    dest = tmp_path / "release"
+    pack.build(src, dest)
+    manifest = json.loads((dest / "manifest.json").read_text())
+    assert [row["folder"] for row in manifest["models"]] == ["yui-chibi"]
+    assert list(dest.glob("yui-chibi-*.zip"))
+
+
+def test_optional_pack_cannot_repopulate_the_builtin_pack_directory(tmp_path):
+    with pytest.raises(ValueError, match="outside the built-in"):
+        pack.build(tmp_path / "source", Path(pack.__file__).resolve().parents[1] / "frontend/pngtuber-packs")

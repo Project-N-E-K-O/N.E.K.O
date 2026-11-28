@@ -10,10 +10,18 @@ for model in yui-lolita yui-origin yui-sister; do
   fi
 done
 
-for model in yui-lolita yui-origin yui-sister yui-chibi; do
+for model in yui-lolita yui-origin yui-sister; do
   required_pngtuber_file="static/pngtuber/$model/model.json"
   if [ ! -s "$required_pngtuber_file" ]; then
     echo "ERROR: missing or empty $required_pngtuber_file after build_frontend.sh" >&2
+    exit 1
+  fi
+done
+
+# The catalog and UI ship with the application; optional image packs do not.
+for file in static/pngtuber-catalog.json static/js/model_manager/pngtuber-downloads.js; do
+  if [ ! -s "$file" ]; then
+    echo "ERROR: missing optional PNGTuber download support: $file" >&2
     exit 1
   fi
 done

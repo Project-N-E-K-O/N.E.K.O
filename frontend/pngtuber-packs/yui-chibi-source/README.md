@@ -1,44 +1,57 @@
-# YUI Chibi PNGTuber
+# YUI Chibi optional resources
 
-运行资源随仓库分发，位于同级 `yui-chibi-*.zip` 中，分包清单和校验信息由上级 `manifest.json` 管理。`metadata.actions.json` 和 `model.json` 为可读源码副本；不依赖开发者工作目录。
+YUI Chibi is downloaded separately and is not part of the built-in manifest or
+of the default desktop distribution. The catalog in `static/pngtuber-catalog.json`
+pins its release version, archive sizes and SHA256 checksums.
 
-## 动作与触发
+The model manager offers Download / Cancel / Retry. Installation verifies every
+part before transactional extraction into the user's PNGTuber directory. It does
+not change the active model; select the installed model explicitly. Existing
+installations remain usable if a download or validation fails. Each resource
+checksum gets a separate installation folder, so a newly downloaded version never
+replaces files still being read by the active renderer; older versions can be
+removed explicitly after switching. Downloaded ZIPs
+are removed after installation. The resource then works offline.
 
-- 待机 2 个；开心、难过、生气、惊讶各 3 个；拖拽 2 个；真实串门出发、返回各 1 个；闲暇 5 个，共 23 个。
-- 18 个普通动作支持 AI 语音驱动口型，保留逐帧位置、旋转和透视参数；闲暇 5 个使用原始动画嘴型。
-- 每次加载或从其他动作返回时随机选择一个待机，之后循环同一段，不在两段之间自动轮换。
-- 主动搭话关闭、当前页面为主页面且无忙碌状态时，空闲达到 `reviewed_actions.leisure_idle_ms` 后随机触发闲暇动作（默认 30000 毫秒）；开启主动搭话后停止闲暇触发。
-- 串门动作只响应当前访问中真实的 guest departed/ended 事件，不响应恢复、邀请或接待方事件。
-- 双指缩放不重启动画；生成快照不推进动作或改变主画布。暂停时冻结动作进度并保留排队动作，显式返回期限仍按原时间计算；隐藏时同时冻结动作与返回期限。
-- 缩放范围 0.15–0.75。新行为通过 `reviewed_actions.version === 1` 按模型启用，其他 PNGTuber 和 Live2D 保留原逻辑。
+The test assets are hosted in UnityMer/N.E.K.O, tag `pngtuber-yui-chibi-v1`.
+Before upstream merge, maintainers should publish the same immutable files to a
+project-controlled release and update only the catalog release URL.
 
-## 构建与校验
+The seven Q90 parts, all PNG mouth patches, frame dimensions and timing are
+unchanged from the reviewed package. Authoring JSON copies are kept with the
+external resource work files rather than in the application repository.
 
-常规前端构建已调用 `scripts/unpack_builtin_pngtuber.py`，自动校验并解压全部分包。无需运行作者机器上的脚本、生成视频或复制外部素材。缺包、校验失败或资源引用缺失会中止安装；发布失败会恢复旧目录。
+To create a future release, run `scripts/pack_yui_chibi.py --source-dir <source>
+--packs-dir <external-staging-dir> --compatibility-dir <installed-resource>`.
+The staging directory may initially be empty. Never use the built-in pack folder
+for an optional release. Preserve the original PNG masters separately.
 
-需要重新打包时，在仓库根运行：
+For resource validation set `NEKO_YUI_RESOURCE_DIR` to the installed directory
+before running `node --test tests/frontend/pngtuber_tracked_animation.test.cjs`.
+Code-only CI does not download the optional model; its model-specific production
+metadata check is skipped when that directory is not provided. Synthetic runtime
+regressions always run.
 
-```powershell
-python scripts/pack_yui_chibi.py --source-dir PATH_TO_APPROVED_UNPACKED_MODEL
-```
+Only one idle variant retains its full decoded loop. Other idle variants retain
+six entry frames. Switching idle variants demotes the old cache and rejects late
+decodes that would refill it. One-shot clips keep the rolling frame cache. No
+images are resized or re-encoded, and no mouth coordinates or timing are changed.
+Queued entries are decoded before the current one-shot finishes, while normal
+request guards retain control over playback. Oversized idle variants retain the
+bounded rolling-cache fallback rather than exceeding the decoded-memory budget.
+The decoded body-frame estimate falls from 390.2 MiB to 208.3–213.6 MiB in steady
+idle; process RSS and GPU memory include additional allocations.
 
-输入目录必须包含完整 `model.json`、`metadata.actions.json` 及其引用的 WebP／PNG 身体帧与 PNG 嘴型贴片。支持旧的 `/static/pngtuber/yui-chibi/` 路径及本包的相对路径。脚本保留 PNG／WebP 后缀并按字节复制身体帧与嘴型贴片，不重新压缩、不修改时序或嘴型几何；保留已有的 idle.png 和 assets/idle-first.png 兼容入口。缺少 PNG 入口且首帧为 WebP 时，仅将首帧无损解码保存为 PNG 入口；固定 ZIP 条目顺序、时间和权限。动作定义保存在源码目录；制作基准图另行归档，不包含在仓库或运行包中。
+Stable closed-mouth idle samples skip redundant canvas writes only when their
+frame, cached image, canvas size, scaling and padding match. Playback deadlines
+still advance. Speech, crossfade, transitions and snapshot rendering bypass this
+optimization.
 
-分包目标为每包 64 MiB 解压大小、最多 600 个文件。解包器仍对每包执行原有 250 MiB、1000 文件和单文件 50 MiB 限制，另外限制总包数 32、总文件数 10000、总解压大小 2 GiB。此支持仅用于内置包，不改用户上传限制。
+A fresh build contains only the three pre-existing built-in PNGTubers. Existing
+local `static/pngtuber/yui-chibi` development resources are deliberately not deleted
+by this change. Do not package them accidentally: the desktop verifier rejects
+a distribution containing that optional folder. Prepare releases from a clean
+checkout or move those local resources outside the source tree before packaging.
 
-当前身体帧为从原始 PNG 直接编码的有损 WebP Q90（method=4、alpha_quality=100），2157 张动画帧保持原尺寸和逐像素 Alpha；1503 张口型覆盖贴片保留原始 PNG。原始 PNG 母版另行归档，不将有损候选当作原始母版。当前分包下载合计约 267.74 MiB；用户已选择 Q90，并在本机启动测试后反馈整体效果良好；真实双端串门和跨平台场景未逐项确认。
-
-## 验证
-
-```powershell
-python -m pytest tests/unit/test_unpack_builtin_pngtuber.py tests/unit/test_check_no_nonascii_asset_names.py -q
-node --test tests/frontend/pngtuber_tracked_animation.test.cjs tests/frontend/pngtuber_preview_type_switch_race.test.cjs
-```
-
-用户已于 2026-11-27 在本机启动测试并反馈整体效果良好。该反馈不等同于真实双端串门、所有交互组合及跨平台性能的逐项验收。音频口型根据振幅和共振峰近似选择元音，不是精确音素对齐。
-
-
-待机常驻缓存有512 MiB预算；当前两段共148张720×960身体帧，仅RGBA理论数据约390 MiB，另有动作和浏览器缓存。Q90压缩主要减少下载和磁盘体积，不等比例降低解码内存。
-
-
-资源打包的失败回滚与恢复由发布事务实现；解包回滚独立处理。
+Removing ZIPs from the working tree does not remove earlier Git history. No
+history rewrite is part of this change; coordinate that separately before merge.
