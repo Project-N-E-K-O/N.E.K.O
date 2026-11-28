@@ -9719,9 +9719,10 @@ def test_subtitle_window_passthrough_poll_backs_off_when_cursor_is_far(
 
 @pytest.mark.frontend
 def test_launcher_packages_top_level_static_html_files():
-    launcher_spec = (PROJECT_ROOT / "specs/launcher.spec").read_text(encoding="utf-8")
+    for name in ("build-desktop.yml", "build-desktop-linux.yml"):
+        workflow = (PROJECT_ROOT / ".github/workflows" / name).read_text(encoding="utf-8")
 
-    assert "add_data('static/*.html', 'static')" in launcher_spec
+        assert "--include-data-dir=static=static" in workflow, name
 
 
 @pytest.mark.frontend

@@ -28,9 +28,33 @@ def extract_archive(archive, destination):
 
 
 class MaintenanceTests(unittest.TestCase):
+    def _write_policy(self, relative, marker):
+        policy = self.repo / relative
+        policy.parent.mkdir(parents=True, exist_ok=True)
+        policy.write_text(
+            json.dumps(
+                {
+                    "suites": [
+                        {
+                            "name": "marker",
+                            "command": [
+                                sys.executable,
+                                "-c",
+                                f"print({marker!r})",
+                            ],
+                        }
+                    ]
+                }
+            )
+        )
+
+    def _verify_log(self):
+        report = max(maintain.state_dir(self.repo).glob("verify-*"))
+        return (report / "marker.log").read_text().strip()
+
     def test_verify_uses_portable_example_without_a_personal_policy(self):
-        policy = self.repo / "local-desktop-ui/regression.example.json"
-        policy.parent.mkdir()
+        policy = self.repo / "scripts/local_maintenance/regression.example.json"
+        policy.parent.mkdir(parents=True, exist_ok=True)
         policy.write_text(
             json.dumps(
                 {
@@ -51,6 +75,19 @@ class MaintenanceTests(unittest.TestCase):
         self.assertEqual(receipt["commit"], self.git("rev-parse", "HEAD"))
         self.assertTrue(receipt["source_unchanged"])
         self.assertEqual(receipt["results"][0]["returncode"], 0)
+
+    def test_verify_falls_back_to_legacy_policy_path(self):
+        self._write_policy("local-desktop-ui/regression.json", "legacy")
+        self.commit("add legacy policy")
+        maintain.verify(self.repo)
+        self.assertEqual(self._verify_log(), "legacy")
+
+    def test_verify_prefers_new_policy_path_over_legacy(self):
+        self._write_policy("local-desktop-ui/regression.json", "legacy")
+        self._write_policy("scripts/local_maintenance/regression.json", "current")
+        self.commit("add both policies")
+        maintain.verify(self.repo)
+        self.assertEqual(self._verify_log(), "current")
 
     def test_explicit_failing_policy_cannot_mark_source_verified(self):
         maintain.verify(self.repo, self.policy())
@@ -496,7 +533,7 @@ class MaintenanceTests(unittest.TestCase):
 
     def test_example_checks_history_index_and_worktree_whitespace(self):
         policy = json.loads(
-            (_ROOT / "local-desktop-ui/regression.example.json").read_text()
+            (_ROOT / "scripts/local_maintenance/regression.example.json").read_text()
         )
         suites = [
             suite
@@ -723,7 +760,7 @@ class MaintenanceTests(unittest.TestCase):
 
     def test_staged_whitespace_does_not_attribute_upstream_errors_to_local_merge(self):
         policy = json.loads(
-            (_ROOT / "local-desktop-ui/regression.example.json").read_text()
+            (_ROOT / "scripts/local_maintenance/regression.example.json").read_text()
         )
         command = next(
             suite["command"]

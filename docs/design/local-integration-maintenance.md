@@ -43,7 +43,9 @@ there is no automatic ours/theirs resolution, reset, push, or deployment.
 `build` rebuilds both frontends with their lockfiles and records the source commit
 and output hashes in Git metadata. `verify --regression path/to/policy.json`
 executes a trusted local manifest and records each result. Without the flag it
-uses `local-desktop-ui/regression.json`, then the tracked example. The example
+uses `scripts/local_maintenance/regression.json`, then the legacy path
+`local-desktop-ui/regression.json`, then the tracked example
+`scripts/local_maintenance/regression.example.json`. The example
 checks the maintenance tool and committed, staged and unstaged whitespace; it is
 **not** a release gate for N.E.K.O. Add tests for changed upstream paths and local features. Verification
 does not substitute for real desktop, audio, or visual acceptance.

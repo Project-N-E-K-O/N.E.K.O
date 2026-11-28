@@ -61,7 +61,7 @@ data/embedding_models/local-text-retrieval-v1/
 
 跨平台 nightly 工作流（`.github/workflows/build-desktop.yml`）在 Windows、macOS、Linux 上用 Nuitka 构建后端。在调用 Nuitka 之前会先用钉死的 `EMBEDDING_MODEL_REVISION` 跑 `scripts/prepare_embedding_model.py`，并把 `tiktoken` 的 o200k_base 缓存预热到 `data/tiktoken_cache/`，然后把两个目录一起打进 standalone 产物。构建完成后会校验所有必需的 embedding 文件（`tokenizer.json`、fp32 和 int8 两个 ONNX 变体、以及对应的 `*.onnx_data` sidecar）存在且非空，并校验 tiktoken 缓存中至少有一个 blob。
 
-`specs/launcher.spec` 同时声明了 `data/embedding_models/` 与 `data/tiktoken_cache/`，因此本地手动跑 PyInstaller 想要复现 nightly 的离线行为时，必须先把这两个目录都填好。前者跑 `scripts/prepare_embedding_model.py`，后者用以下命令预热：
+本地 Nuitka 构建（见 Nuitka 打包页面）会同时打包 `data/embedding_models/` 与 `data/tiktoken_cache/`，因此想要复现 nightly 的离线行为时，必须先把这两个目录都填好。前者跑 `scripts/prepare_embedding_model.py`，后者用以下命令预热：
 
 ```bash
 mkdir -p data/tiktoken_cache
@@ -69,4 +69,21 @@ TIKTOKEN_CACHE_DIR="$(pwd)/data/tiktoken_cache" \
   uv run python -c "import tiktoken; tiktoken.get_encoding('o200k_base')"
 ```
 
-如果 `data/embedding_models/` 已经存在但 `onnxruntime` / `tokenizers` 收集失败，spec 文件会直接中止构建——只打权重不带推理后端的产物会在首次调用时把向量功能 sticky-disable，是个无声坑。
+Windows 上请在 PowerShell 里用下面的命令预热：
+
+```powershell
+New-Item -ItemType Directory -Force data/tiktoken_cache | Out-Null
+$prevTiktokenCacheDir = $env:TIKTOKEN_CACHE_DIR
+try {
+    $env:TIKTOKEN_CACHE_DIR = "$(Get-Location)\data\tiktoken_cache"
+    uv run python -c "import tiktoken; tiktoken.get_encoding('o200k_base')"
+} finally {
+    if ($null -eq $prevTiktokenCacheDir) {
+        Remove-Item Env:TIKTOKEN_CACHE_DIR -ErrorAction SilentlyContinue
+    } else {
+        $env:TIKTOKEN_CACHE_DIR = $prevTiktokenCacheDir
+    }
+}
+```
+
+`scripts/check_nuitka_dist.py` 只校验成品里的 `tokenizer.json` 以及 INT8 模型和它的 sidecar（不检查 FP32 文件，那由 CI 单独把关），不检查 tiktoken 缓存，也不检查编译进可执行文件的推理模块。本地构建后，请确认运行目录里的 `data/tiktoken_cache/` 至少有一个 blob（workflow 做的是同一项检查），并启动一次应用确认向量记忆能加载——只打权重不带推理后端的产物会在首次调用时把向量功能 sticky-disable，是个无声坑。
