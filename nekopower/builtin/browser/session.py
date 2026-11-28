@@ -360,57 +360,28 @@ def _port_guard_script(ports: Collection[int], *, block_http: bool = False) -> s
     return (
         "(() => {"
         f"const k = Symbol.for('{_PORT_GUARD_MARKER}');"
-        "const g = globalThis;"
+        "const root = globalThis;"
         f"const wantHttp = {http_flag};"
-        "let state = g[k];"
-        "if (state && (!wantHttp || state.http)) return;"
-        "if (!state) {"
-        "  state = { ws: false, http: false };"
-        "  try { Object.defineProperty(g, k, { value: state, writable: false, configurable: false }); }"
-        "  catch (_) { try { g[k] = state; } catch (_) {} }"
-        "}"
         # Capture all built-in intrinsics up front using a bound call helper so later page scripts
         # cannot bypass checks even by mutating Function.prototype.call or Reflect methods.
         "const callFn = Function.prototype.call.bind(Function.prototype.call);"
         "const getDesc = Object.getOwnPropertyDescriptor;"
         "const defineProp = Object.defineProperty;"
         "const createObj = Object.create;"
-        "const ArrayCtor = g.Array;"
-        "const URLCtor = g.URL;"
-        "const ProxyCtor = g.Proxy;"
-        "const reflectConstruct = g.Reflect.construct;"
-        "const reflectApply = g.Reflect.apply;"
+        "const ArrayCtor = root.Array;"
+        "const URLCtor = root.URL;"
+        "const ProxyCtor = root.Proxy;"
+        "const reflectConstruct = root.Reflect.construct;"
+        "const reflectApply = root.Reflect.apply;"
         "const Str = String;"
         "const Num = Number;"
         "const TypeErr = TypeError;"
         "const SetCtor = Set;"
         "const setHas = SetCtor.prototype.has;"
+        "const setAdd = SetCtor.prototype.add;"
         "const urlPortGet = (URLCtor && URLCtor.prototype) ? (getDesc(URLCtor.prototype, 'port') || {}).get : null;"
         "const urlProtoGet = (URLCtor && URLCtor.prototype) ? (getDesc(URLCtor.prototype, 'protocol') || {}).get : null;"
-        "const ReqCtor = typeof g.Request === 'function' ? g.Request : null;"
-        "const reqUrlGet = (ReqCtor && ReqCtor.prototype) ? (getDesc(ReqCtor.prototype, 'url') || {}).get : null;"
-        "const locProto = (g.Location && g.Location.prototype) || (g.WorkerLocation && g.WorkerLocation.prototype) || null;"
-        "const locHrefGet = locProto ? (getDesc(locProto, 'href') || {}).get : null;"
         f"const blocked = new SetCtor([{port_list}]);"
-        "const portOf = (raw) => {"
-        "  try {"
-        "    let base = undefined;"
-        "    if (g.location) {"
-        "      base = locHrefGet ? callFn(locHrefGet, g.location) : (typeof g.location.href === 'string' ? g.location.href : undefined);"
-        "    }"
-        "    const u = base ? new URLCtor(raw, base) : new URLCtor(raw);"
-        "    const portStr = urlPortGet ? callFn(urlPortGet, u) : u.port;"
-        "    if (portStr) return Num(portStr);"
-        "    const proto = urlProtoGet ? callFn(urlProtoGet, u) : u.protocol;"
-        "    if (proto === 'http:' || proto === 'ws:') return 80;"
-        "    if (proto === 'https:' || proto === 'wss:') return 443;"
-        "  } catch (_) {}"
-        "  return null;"
-        "};"
-        "const check = (raw) => {"
-        "  const p = portOf(raw);"
-        "  if (p !== null && callFn(setHas, blocked, p)) throw new TypeErr('Blocked by client');"
-        "};"
         "const setDataProp = (target, key, val) => {"
         "  const d = createObj(null);"
         "  d.value = val; d.writable = true; d.enumerable = true; d.configurable = true;"
@@ -423,79 +394,124 @@ def _port_guard_script(ports: Collection[int], *, block_http: bool = False) -> s
         "  for (let i = 0; i < extra; i++) setDataProp(out, head.length + i, args[start + i]);"
         "  return out;"
         "};"
-        "const wrapCtor = (name) => {"
-        "  const Orig = g[name];"
-        "  if (typeof Orig !== 'function') return;"
-        "  const Wrapped = new ProxyCtor(Orig, {"
-        "    construct(target, args, newTarget) {"
-        "      if (args.length > 0) {"
-        "        const raw = Str(args[0]);"
-        "        check(raw);"
-        "        args = copyTail(args, 1, [raw]);"
-        "      }"
-        "      return reflectConstruct(target, args, newTarget === Wrapped ? target : newTarget);"
-        "    },"
-        "    apply(target, thisArg, args) {"
-        "      if (args.length > 0) {"
-        "        const raw = Str(args[0]);"
-        "        check(raw);"
-        "        args = copyTail(args, 1, [raw]);"
-        "      }"
-        "      return reflectApply(target, thisArg, args);"
+        "const seen = new SetCtor();"
+        "const guardRealm = (g) => {"
+        "  if (!g || callFn(setHas, seen, g)) return;"
+        "  callFn(setAdd, seen, g);"
+        "  let state;"
+        "  try { state = g[k]; } catch (_) { return; }"
+        "  if (!state || (wantHttp && !state.http)) {"
+        "    if (!state) {"
+        "      state = { ws: false, http: false };"
+        "      try { defineProp(g, k, { value: state, writable: false, configurable: false }); }"
+        "      catch (_) { try { g[k] = state; } catch (_) {} }"
         "    }"
-        "  });"
-        "  try { defineProp(g, name, { value: Wrapped, writable: false, configurable: false, enumerable: false }); }"
-        "  catch (_) { try { g[name] = Wrapped; } catch (_) {} }"
-        "  if (Orig.prototype) {"
-        "    try { defineProp(Orig.prototype, 'constructor', { value: Wrapped, writable: false, configurable: false, enumerable: false }); }"
-        "    catch (_) { try { Orig.prototype.constructor = Wrapped; } catch (_) {} }"
-        "  }"
-        "};"
-        "if (!state.ws) {"
-        "  wrapCtor('WebSocket');"
-        "  wrapCtor('WebTransport');"
-        "  state.ws = true;"
-        "}"
-        "if (wantHttp && !state.http) {"
-        "  if (typeof g.fetch === 'function') {"
-        "    const origFetch = g.fetch;"
-        "    const wrappedFetch = new ProxyCtor(origFetch, {"
-        "      apply(target, thisArg, args) {"
-        "        if (args.length > 0) {"
-        "          const first = args[0];"
-        "          if (ReqCtor && first instanceof ReqCtor) {"
-        "            const reqUrl = reqUrlGet ? callFn(reqUrlGet, first) : first.url;"
-        "            check(reqUrl);"
-        "          } else {"
-        "            const raw = Str(first);"
+        "    const ReqCtor = typeof g.Request === 'function' ? g.Request : null;"
+        "    const reqUrlGet = (ReqCtor && ReqCtor.prototype) ? (getDesc(ReqCtor.prototype, 'url') || {}).get : null;"
+        "    const locProto = (g.Location && g.Location.prototype) || (g.WorkerLocation && g.WorkerLocation.prototype) || null;"
+        "    const locHrefGet = locProto ? (getDesc(locProto, 'href') || {}).get : null;"
+        "    const portOf = (raw) => {"
+        "      try {"
+        "        let base = undefined;"
+        "        if (g.location) {"
+        "          base = locHrefGet ? callFn(locHrefGet, g.location) : (typeof g.location.href === 'string' ? g.location.href : undefined);"
+        "        }"
+        "        const u = base ? new URLCtor(raw, base) : new URLCtor(raw);"
+        "        const portStr = urlPortGet ? callFn(urlPortGet, u) : u.port;"
+        "        if (portStr) return Num(portStr);"
+        "        const proto = urlProtoGet ? callFn(urlProtoGet, u) : u.protocol;"
+        "        if (proto === 'http:' || proto === 'ws:') return 80;"
+        "        if (proto === 'https:' || proto === 'wss:') return 443;"
+        "      } catch (_) {}"
+        "      return null;"
+        "    };"
+        "    const check = (raw) => {"
+        "      const p = portOf(raw);"
+        "      if (p !== null && callFn(setHas, blocked, p)) throw new TypeErr('Blocked by client');"
+        "    };"
+        "    const wrapCtor = (name) => {"
+        "      const Orig = g[name];"
+        "      if (typeof Orig !== 'function') return;"
+        "      const Wrapped = new ProxyCtor(Orig, {"
+        "        construct(target, args, newTarget) {"
+        "          if (args.length > 0) {"
+        "            const raw = Str(args[0]);"
         "            check(raw);"
         "            args = copyTail(args, 1, [raw]);"
         "          }"
+        "          return reflectConstruct(target, args, newTarget === Wrapped ? target : newTarget);"
+        "        },"
+        "        apply(target, thisArg, args) {"
+        "          if (args.length > 0) {"
+        "            const raw = Str(args[0]);"
+        "            check(raw);"
+        "            args = copyTail(args, 1, [raw]);"
+        "          }"
+        "          return reflectApply(target, thisArg, args);"
         "        }"
-        "        return reflectApply(target, thisArg, args);"
+        "      });"
+        "      try { defineProp(g, name, { value: Wrapped, writable: false, configurable: false, enumerable: false }); }"
+        "      catch (_) { try { g[name] = Wrapped; } catch (_) {} }"
+        "      if (Orig.prototype) {"
+        "        try { defineProp(Orig.prototype, 'constructor', { value: Wrapped, writable: false, configurable: false, enumerable: false }); }"
+        "        catch (_) { try { Orig.prototype.constructor = Wrapped; } catch (_) {} }"
         "      }"
-        "    });"
-        "    try { defineProp(g, 'fetch', { value: wrappedFetch, writable: false, configurable: false }); }"
-        "    catch (_) { try { g.fetch = wrappedFetch; } catch (_) {} }"
-        "  }"
-        "  wrapCtor('EventSource');"
-        "  if (g.XMLHttpRequest && g.XMLHttpRequest.prototype && typeof g.XMLHttpRequest.prototype.open === 'function') {"
-        "    const origOpen = g.XMLHttpRequest.prototype.open;"
-        "    const wrappedOpen = new ProxyCtor(origOpen, {"
-        "      apply(target, thisArg, args) {"
-        "        if (args.length > 1) {"
-        "          const raw = Str(args[1]);"
-        "          check(raw);"
-        "          args = copyTail(args, 2, [args[0], raw]);"
-        "        }"
-        "        return reflectApply(target, thisArg, args);"
+        "    };"
+        "    if (!state.ws) {"
+        "      wrapCtor('WebSocket');"
+        "      wrapCtor('WebTransport');"
+        "      state.ws = true;"
+        "    }"
+        "    if (wantHttp && !state.http) {"
+        "      if (typeof g.fetch === 'function') {"
+        "        const origFetch = g.fetch;"
+        "        const wrappedFetch = new ProxyCtor(origFetch, {"
+        "          apply(target, thisArg, args) {"
+        "            if (args.length > 0) {"
+        "              const first = args[0];"
+        "              if (ReqCtor && first instanceof ReqCtor) {"
+        "                const reqUrl = reqUrlGet ? callFn(reqUrlGet, first) : first.url;"
+        "                check(reqUrl);"
+        "              } else {"
+        "                const raw = Str(first);"
+        "                check(raw);"
+        "                args = copyTail(args, 1, [raw]);"
+        "              }"
+        "            }"
+        "            return reflectApply(target, thisArg, args);"
+        "          }"
+        "        });"
+        "        try { defineProp(g, 'fetch', { value: wrappedFetch, writable: false, configurable: false }); }"
+        "        catch (_) { try { g.fetch = wrappedFetch; } catch (_) {} }"
         "      }"
-        "    });"
-        "    try { defineProp(g.XMLHttpRequest.prototype, 'open', { value: wrappedOpen, writable: false, configurable: false }); }"
-        "    catch (_) {}"
+        "      wrapCtor('EventSource');"
+        "      if (g.XMLHttpRequest && g.XMLHttpRequest.prototype && typeof g.XMLHttpRequest.prototype.open === 'function') {"
+        "        const origOpen = g.XMLHttpRequest.prototype.open;"
+        "        const wrappedOpen = new ProxyCtor(origOpen, {"
+        "          apply(target, thisArg, args) {"
+        "            if (args.length > 1) {"
+        "              const raw = Str(args[1]);"
+        "              check(raw);"
+        "              args = copyTail(args, 2, [args[0], raw]);"
+        "            }"
+        "            return reflectApply(target, thisArg, args);"
+        "          }"
+        "        });"
+        "        try { defineProp(g.XMLHttpRequest.prototype, 'open', { value: wrappedOpen, writable: false, configurable: false }); }"
+        "        catch (_) {}"
+        "      }"
+        "      state.http = true;"
+        "    }"
         "  }"
-        "  state.http = true;"
-        "}"
+        "  try {"
+        "    const frames = g.frames;"
+        "    const len = frames && typeof frames.length === 'number' ? frames.length : 0;"
+        "    for (let i = 0; i < len; i++) {"
+        "      try { guardRealm(frames[i]); } catch (_) {}"
+        "    }"
+        "  } catch (_) {}"
+        "};"
+        "guardRealm(root);"
         "})();"
     )
 
@@ -914,14 +930,27 @@ class BrowserSession:
         ok = True
         if on_new_document:
             try:
+                # ``runImmediately`` evaluates in all existing frames of the target (including
+                # already-loaded cross-origin same-process iframes) on Chromium 123+.
                 await connection.send(
                     "Page.addScriptToEvaluateOnNewDocument",
-                    {"source": script},
+                    {"source": script, "runImmediately": True},
                     session_id=session_id,
                     timeout=timeout,
                 )
-            except (CdpError, CdpTimeout):
-                logger.warning("addScriptToEvaluateOnNewDocument failed for port guard", exc_info=True)
+            except CdpError:
+                try:
+                    await connection.send(
+                        "Page.addScriptToEvaluateOnNewDocument",
+                        {"source": script},
+                        session_id=session_id,
+                        timeout=timeout,
+                    )
+                except (CdpError, CdpTimeout):
+                    logger.warning("addScriptToEvaluateOnNewDocument failed for port guard", exc_info=True)
+                    ok = False
+            except CdpTimeout:
+                logger.warning("addScriptToEvaluateOnNewDocument timed out for port guard", exc_info=True)
                 ok = False
         try:
             result = await connection.send(
@@ -2203,12 +2232,18 @@ class BrowserSession:
         return page
 
     async def close_page(self, page_id: Any, *, owner: str | None = None) -> None:
-        page = self.page_by_id(page_id, owner=owner)
-        if len(self._pages) <= 1:
-            raise BrowserError("The last open page cannot be closed.")
-        if self._user_browser and not page.own:
-            raise BrowserError(f"Page {page.id} is a tab of the user's own, not one opened for this work: it is not closed.")
-        self._closing_targets.add(page.target_id)
+        async with self._tab_alloc_lock:
+            page = self.page_by_id(page_id, owner=owner)
+            if page.target_id in self._closing_targets:
+                raise BrowserError(f"Page {page.id} is already being closed.")
+            remaining = sum(1 for tid in self._pages if tid not in self._closing_targets)
+            if remaining <= 1:
+                raise BrowserError("The last open page cannot be closed.")
+            if self._user_browser and not page.own:
+                raise BrowserError(
+                    f"Page {page.id} is a tab of the user's own, not one opened for this work: it is not closed."
+                )
+            self._closing_targets.add(page.target_id)
         try:
             await self._require_connection().send("Target.closeTarget", {"targetId": page.target_id})
             self._own_pages.pop(page.target_id, None)

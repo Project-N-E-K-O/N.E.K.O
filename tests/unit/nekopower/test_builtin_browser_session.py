@@ -5405,6 +5405,60 @@ async def test_popup_from_forgotten_opener_inherits_owner_from_tab_owners(
     assert popup is not None and popup.owner == "team-a" and popup.own is True
 
 
+async def test_concurrent_close_page_on_last_two_tabs_keeps_one_open(
+    session: BrowserSession, world: BrowserWorld
+) -> None:
+    await session.start()
+    page_a = await session.ensure_owner_page("team-a")
+    page_b = await session.ensure_owner_page("team-b")
+    assert page_a is not None and page_b is not None
+    assert len(session.pages()) == 2
+
+    gate = world.browser.hold("Target.closeTarget")
+    close_a = asyncio.ensure_future(session.close_page(page_a.id, owner="team-a"))
+    try:
+        await asyncio.wait_for(gate.reached.wait(), 5.0)
+        with pytest.raises(BrowserError, match="last open page"):
+            await session.close_page(page_b.id, owner="team-b")
+    finally:
+        gate.release()
+        world.browser.gates.remove(gate)
+    await asyncio.wait_for(close_a, 5.0)
+    assert [p.target_id for p in session.pages()] == [page_b.target_id]
+
+
+async def test_install_port_guard_uses_run_immediately_and_guards_existing_same_origin_frames(
+    make_session: Any, world: BrowserWorld
+) -> None:
+    world.settings(mode="attach")
+    session = make_session(own_ports=lambda: {48911})
+    await session.start()
+    page = session.selected()
+    mark = world.browser.mark()
+    await session.navigate(page, "url", ORDER)
+    add_cmds = [cmd for cmd in world.browser.since(mark) if cmd.method == "Page.addScriptToEvaluateOnNewDocument"]
+    assert add_cmds and add_cmds[0].params.get("runImmediately") is True
+    assert "guardRealm(frames[i])" in str(add_cmds[0].params.get("source"))
+
+    # Also verify fallback to {"source": script} when an older CDP host rejects runImmediately.
+    seen_params: list[dict[str, Any]] = []
+    orig_send = session._connection.send
+
+    async def _reject_run_immediately(method: str, params: dict[str, Any] | None = None, **kwargs: Any) -> Any:
+        if method == "Page.addScriptToEvaluateOnNewDocument":
+            seen_params.append(dict(params or {}))
+            if (params or {}).get("runImmediately"):
+                raise CdpError(method, -32602, "Unknown parameter runImmediately")
+        return await orig_send(method, params, **kwargs)
+
+    session._connection.send = _reject_run_immediately  # type: ignore[method-assign]
+    ok = await session._install_port_guard(session._connection, page.session_id, on_new_document=True)
+    assert ok is True
+    assert len(seen_params) == 2
+    assert seen_params[0].get("runImmediately") is True
+    assert "runImmediately" not in seen_params[1]
+
+
 async def test_orphan_auto_attached_child_is_resumed_and_detached_when_no_ports_blocked(
     make_session: Any, world: BrowserWorld
 ) -> None:
