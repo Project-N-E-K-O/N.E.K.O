@@ -29,13 +29,17 @@ def test_card_drop_character_reference_retries_independently_of_avatar_cache():
     assert "scheduleCharacterReferenceSync('avatar-sync');" in source
     assert (
         "if (hasUsableCachedPreview()) {\n"
-        "            scheduleCharacterReferenceSync(reason || 'cached-preview');"
+        "            if (!cachedPreview.displayOnly) "
+        "scheduleCharacterReferenceSync(reason || 'cached-preview');\n"
+        "            return;"
     ) in source
     assert (
-        "if (cachedPreview && cachedPreview.dataUrl && cachedPreview.cacheKey === newCacheKey) {\n"
+        "if (hasUsableCachedPreview()) {\n"
         "            // 不同猫娘可能复用同一模型/cache key；即使头像无需重抓，也要把当前名称\n"
         "            // 和缓存预览重新同步到 card-drop 角色快照。该函数内部也会安排参考图同步。\n"
-        "            syncAvatarToCardDrop(cachedPreview.dataUrl);"
+        "            if (!cachedPreview.displayOnly) "
+        "syncAvatarToCardDrop(cachedPreview.dataUrl);\n"
+        "            return;"
     ) in source
     assert "scheduleCharacterReferenceSync(reason || 'cached-avatar-model-loaded');" not in source
     assert "captureCharacterReferenceDataUrl().then(function (characterReferenceDataUrl)" not in source
@@ -148,9 +152,15 @@ def test_same_cache_key_reload_invalidates_inflight_capture_revision():
         "function captureCharacterReferenceDataUrl(captureRevision)", 1
     )[1].split("/**\n     * 把当前头像", 1)[0]
 
+    reusable_preview = source.split("function hasUsableCachedPreview()", 1)[1].split(
+        "function getExternalAvatarScope(",
+        1,
+    )[0]
     assert model_loaded_block.index("advanceCardDropModelRevision();") < model_loaded_block.index(
-        "var newCacheKey = getCurrentModelCacheKey();"
+        "if (hasUsableCachedPreview()) {"
     )
+    assert "cachedPreview.cacheKey === getCurrentModelCacheKey() &&" in reusable_preview
+    assert "getExternalAvatarScope(cachedPreview) !== 'stale'" in reusable_preview
     assert "const captureRevision = cardDropModelRevision;" in avatar_capture_block
     assert "if (captureRevision !== cardDropModelRevision)" in avatar_capture_block
     assert "pendingCharacterReferenceRevision === captureRevision" in reference_capture_block
