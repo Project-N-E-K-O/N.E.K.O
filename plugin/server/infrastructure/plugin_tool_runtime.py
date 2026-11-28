@@ -911,6 +911,10 @@ def _rejected_python_archive(installed: subprocess.CompletedProcess[str]) -> boo
     return "failed to extract archive" in output and "os error" not in output
 
 
+class _MirrorInstallFailed(Exception):
+    """uv could not install from the ``file://`` mirror for a reason other than the file."""
+
+
 def _install_downloaded_python(
     download: _PythonDownload, install: list[str],
     run: Callable[[list[str], str], subprocess.CompletedProcess[str]],
@@ -923,8 +927,11 @@ def _install_downloaded_python(
     checked against the digest pinned here); a mismatch fails the install
     and nothing falls back to the network. A file uv rejects is handled as
     in :func:`_fetch_accepted`: its route is penalized and another tried.
-    When no route delivers an acceptable file, uv downloads the build from
-    its own default host, as it did before these routes were used.
+    When no route delivers an acceptable file, or uv fails to install from
+    the mirror for another reason (the mirror path itself may be what it
+    cannot handle), uv downloads the build from its own default host, as it
+    did before these routes were used. A local failure to stage the file
+    does not fall back.
     """
     downloads = tools_root() / ".python-download"
     shutil.rmtree(downloads, ignore_errors=True)
@@ -943,9 +950,9 @@ def _install_downloaded_python(
             if not installed.returncode:
                 return True
             if not _rejected_python_archive(installed):
-                raise ToolRuntimeError(
-                    "python_install_failed", f"uv could not install {download.filename}: {_tail(installed)}",
-                )
+                # Not the file's fault, so no other route is tried: uv's own
+                # download is, in case the mirror is what uv cannot use.
+                raise _MirrorInstallFailed(f"uv could not install {download.filename}: {_tail(installed)}")
             return False
         finally:
             _discard_staged(target)
@@ -953,7 +960,8 @@ def _install_downloaded_python(
     from plugin.server.infrastructure.package_download import PackageDownloadWriteError
 
     try:
-        target.parent.mkdir(parents=True)
+        # The removal above ignores errors: a leftover directory is reused.
+        target.parent.mkdir(parents=True, exist_ok=True)
         try:
             _fetch_accepted(
                 download.url, downloads, maximum_bytes=_MAX_PYTHON_ARCHIVE_BYTES, phase="installing_python",
@@ -964,6 +972,8 @@ def _install_downloaded_python(
             if exc.code not in ("checksum_mismatch", "download_failed"):
                 raise
             market_failure: BaseException = exc
+        except _MirrorInstallFailed as exc:
+            market_failure = exc
         except PackageDownloadWriteError as exc:
             raise ToolRuntimeError(
                 "python_install_failed", f"Could not save the Python download: {exc}",
@@ -984,7 +994,7 @@ def _install_downloaded_python(
     if installed.returncode:
         raise ToolRuntimeError(
             "python_install_failed",
-            f"Could not download {download.filename} over the download routes "
+            f"Could not install {download.filename} over the download routes "
             f"({type(market_failure).__name__}: {market_failure}); uv's own download failed too: {_tail(installed)}",
         )
 

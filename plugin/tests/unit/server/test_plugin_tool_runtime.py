@@ -14,6 +14,7 @@ import json
 import os
 from pathlib import Path
 import struct
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -1273,19 +1274,59 @@ def test_failed_fallback_reports_both_downloads(root, monkeypatch):
     assert not (root / "python.json").exists()
 
 
-def test_other_uv_install_errors_are_not_retried_on_another_route(root, monkeypatch):
-    release = FakeRelease().install(monkeypatch)
+@pytest.mark.parametrize("error", ["error: disk full", "error: No such file or directory (os error 2)"])
+def test_other_uv_mirror_install_errors_fall_back_without_trying_another_route(root, monkeypatch, error):
+    release = FakeRelease(routes=2).install(monkeypatch)
+    uv = FakeUv(root, listing=_listing())
+
+    def mirror_fails(cmd, **kwargs):
+        if cmd[1:3] == ["python", "install"] and "--mirror" in cmd:
+            uv.calls.append((cmd, kwargs["env"]))
+            return subprocess.CompletedProcess(cmd, 1, "", error)
+        return FakeUv.__call__(uv, cmd, **kwargs)
+
+    _prepare(mirror_fails)
+    # The file is not at fault: no route is penalized or retried, and uv's
+    # own download installs the build, as on main.
+    assert [url for url, _exclude in release.requests].count(_python_url()) == 1
+    assert release.penalized == []
+    assert len(_plain_installs(uv)) == 1
+    assert (root / "python.json").exists()
+    assert not (root / ".python-download").exists()
+
+
+def test_uv_failing_with_and_without_the_mirror_reports_both(root, monkeypatch):
+    FakeRelease().install(monkeypatch)
     uv = FakeUv(root, listing=_listing())
 
     def install_fails(cmd, **kwargs):
         if cmd[1:3] == ["python", "install"]:
             uv.calls.append((cmd, kwargs["env"]))
-            return subprocess.CompletedProcess(cmd, 1, "", "error: disk full")
+            reason = "mirror unusable" if "--mirror" in cmd else "disk full"
+            return subprocess.CompletedProcess(cmd, 1, "", f"error: {reason}")
         return FakeUv.__call__(uv, cmd, **kwargs)
 
-    _expect_failure(install_fails, "python_install_failed")
-    assert [url for url, _exclude in release.requests].count(_python_url()) == 1
-    assert release.penalized == []
+    error = _expect_failure(install_fails, "python_install_failed")
+    assert "mirror unusable" in error.detail and "disk full" in error.detail
+    assert len(_plain_installs(uv)) == 1
+
+
+def test_leftover_python_download_directory_does_not_fail_the_install(root, monkeypatch):
+    FakeRelease().install(monkeypatch)
+    leftover = root / ".python-download" / "mirror" / PYTHON_TAG
+    leftover.mkdir(parents=True)
+    # A file another program holds open survives the cleanup on Windows.
+    rmtree = shutil.rmtree
+
+    def held_open(path, *args, **kwargs):
+        if Path(path).name != ".python-download":
+            rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(module.shutil, "rmtree", held_open)
+    uv = FakeUv(root, listing=_listing())
+    _prepare(uv)
+    assert uv.mirrored == [PYTHON_BODY]
+    assert _plain_installs(uv) == []
 
 
 def test_python_routes_unreachable_fall_back_to_uvs_own_download(root, monkeypatch):
