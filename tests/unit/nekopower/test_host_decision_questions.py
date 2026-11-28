@@ -277,3 +277,20 @@ async def test_belongs_uses_the_count_it_is_given_over_the_text():
     }
     # c3 is not an option: nothing reaches the bar, so the request is new.
     assert json.loads(raw) == {"goes_to": 0, "relation": "new"}
+
+
+def test_families_asks_a_judge_of_the_older_form_with_the_messages_only():
+    from nekopower.host import families
+
+    async def old(messages):
+        return None
+
+    async def new(messages, candidates=None):
+        return None
+
+    async def any_kw(messages, **kw):
+        return None
+
+    assert not families._takes_candidates(old)
+    assert families._takes_candidates(new) and families._takes_candidates(any_kw)
+    assert families._takes_candidates(LexicalDecisionModel(_LLM()).belongs_counted)

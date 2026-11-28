@@ -39,6 +39,7 @@ took. No sentence is kept there, only names and numbers.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import time
 from collections.abc import Awaitable, Callable
@@ -56,6 +57,15 @@ logger = logging.getLogger(__name__)
 
 # Asked with the request that says which candidate a sentence belongs with;
 # returns what the small model answered, None when it could not be asked.
+def _takes_candidates(judge: Any) -> bool:
+    """Whether a judge can be told how many candidates the request shows."""
+    try:
+        params = inspect.signature(judge).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    return any(p.name == "candidates" or p.kind is inspect.Parameter.VAR_KEYWORD for p in params)
+
+
 # Asked with the request and how many candidates it shows (``candidates=``);
 # answers the raw answer, or the answer and how many requests it made.
 Judge = Callable[..., Awaitable["str | tuple[str | None, int] | None"]]
@@ -386,7 +396,11 @@ class Families:
         )
         calls = 1
         try:
-            raw = await self._judge(messages, candidates=len(keys))
+            if _takes_candidates(self._judge):
+                raw = await self._judge(messages, candidates=len(keys))
+            else:
+                # A judge of the older form, asked with the messages only.
+                raw = await self._judge(messages)
             if isinstance(raw, tuple):
                 # A judge that counts its requests (``LexicalDecisionModel.belongs_counted``).
                 raw, calls = raw

@@ -364,7 +364,7 @@ async def test_a_session_waiting_for_its_user_is_copied_too(hosts, tmp_path):
     assert (await host.ledger.get(first.id)).status == "waiting_user"
 
 
-@pytest.mark.parametrize("why", ["switched_off", "cold", "too_many", "not_dispatched"])
+@pytest.mark.parametrize("why", ["switched_off", "cold", "no_record", "too_many", "not_dispatched"])
 async def test_a_commission_waits_for_its_session_where_it_is_not_carried_on(hosts, tmp_path, monkeypatch, why):
     release, wait = _gate()
     scripts = {
@@ -381,6 +381,10 @@ async def test_a_commission_waits_for_its_session_where_it_is_not_carried_on(hos
     elif why == "too_many":
         monkeypatch.setattr(settings, "TASK_AGENT_FORK_CONTINUE_MAX_PER_SESSION", 1)
     host = _host(hosts, tmp_path, scripts)
+    if why == "no_record":
+        # As in production: no request of the session on record (its first one
+        # still under way) counts as a cold cache, and the commission waits.
+        host.task_agents._last_request_at = dict(host.task_agents._last_request_at)
     copied = _copies_made(host, monkeypatch)
     first = await _export_at_work(host, scripts)
     if why == "too_many":
