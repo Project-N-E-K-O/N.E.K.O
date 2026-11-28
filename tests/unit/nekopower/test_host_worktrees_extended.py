@@ -2478,11 +2478,17 @@ async def test_round14_greptile_followup_fixes(tmp_path: Path, monkeypatch: pyte
     with monkeypatch.context() as mp:
         mp.setattr(_copy_trees, "stage_copy_landing", slow_stage)
         merge_task = asyncio.create_task(mgr.merge_back(wt_copy))
-        await asyncio.wait_for(staging_started.wait(), timeout=10.0)
-        merge_task.cancel()
-        allow_stage_finish.set()
-        with pytest.raises(asyncio.CancelledError):
-            await merge_task
+        try:
+            await asyncio.wait_for(staging_started.wait(), timeout=10.0)
+            merge_task.cancel()
+            allow_stage_finish.set()
+            with pytest.raises(asyncio.CancelledError):
+                await merge_task
+        finally:
+            allow_stage_finish.set()
+            if not merge_task.done():
+                merge_task.cancel()
+            await asyncio.gather(merge_task, return_exceptions=True)
     assert (proj / "app.txt").read_text(encoding="utf-8") == "base\n"
     assert _copy_trees._read_landing_intent(_copy_trees.copy_meta_dir(wt_copy.path)) is None
     retried = await mgr.merge_back(wt_copy)
@@ -2644,3 +2650,184 @@ async def test_round14_coderabbit_followup_fixes(tmp_path: Path, monkeypatch: py
     await mgr.remove(wt_meta)
     assert not meta_dir_mm.exists() and wt_meta.path.is_dir()
     shutil.rmtree(wt_meta.path)
+
+
+async def test_round15_greptile_and_codex_followup_fixes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify pending_pr reconcile guard, case-sensitive push targets, file-over-dir conflict prep, push-cancel recovery, and stale PR revalidation."""
+    mgr = WorktreeManager()
+
+    # 1. _normalize_push_target preserves repo path case on non-GitHub SSH/HTTP hosts.
+    assert WorktreeManager._normalize_push_target("git@forge.example:team/Repo.git", "origin") != (
+        WorktreeManager._normalize_push_target("git@forge.example:team/repo.git", "origin")
+    )
+    assert WorktreeManager._normalize_push_target("ssh://git@forge.example:2222/team/Repo.git", "origin") != (
+        WorktreeManager._normalize_push_target("ssh://git@forge.example:2222/team/repo.git", "origin")
+    )
+    assert WorktreeManager._normalize_push_target("https://github.com/Team/Repo.git", "origin") == (
+        WorktreeManager._normalize_push_target("git@github.com:team/repo.git", "origin")
+    )
+
+    # 2. Non-git copy replacing directory `d/` with file `d` while project modifies `d/a` relocates
+    # the colliding file to `d.nekopower-conflict` so prepare_conflicts writes `d/a` without FileExistsError.
+    proj_fd = tmp_path / "file_over_dir_proj"
+    _write(proj_fd / "d" / "a", "base-a\n")
+    wt_fd = await mgr.create(proj_fd, tmp_path / "copies" / "fd1")
+    shutil.rmtree(wt_fd.path / "d")
+    _write(wt_fd.path / "d", "copy-replaced-dir-with-file\n")
+    _write(proj_fd / "d" / "a", "project-modified-a\n")
+    conflict_fd = await mgr.merge_back(wt_fd)
+    assert conflict_fd.status == "conflict" and "d" in conflict_fd.conflicts and "d/a" in conflict_fd.conflicts
+    prepared_fd = await mgr.prepare_conflicts(wt_fd, conflict_fd)
+    assert prepared_fd.start == conflict_fd.current
+    assert (wt_fd.path / "d").is_dir()
+    assert (wt_fd.path / "d" / "a").read_text(encoding="utf-8") == "project-modified-a\n"
+    assert (wt_fd.path / "d.nekopower-conflict").read_text(encoding="utf-8") == "copy-replaced-dir-with-file\n"
+    await mgr.remove(wt_fd)
+
+    if REAL_GIT_TOO_OLD:
+        return
+
+    # 3. reconcile() keeps a clean orphan git worktree when delivery metadata records pending_pr=True.
+    local_r, bare_r, _other_r = _make_repo_with_remote(tmp_path / "reconcile_pending_pr")
+    wt_base = tmp_path / "wt_rec_ppr"
+    wt_ppr = await mgr.create(local_r, wt_base / "ppr1", RemoteDefaultBranch(fetch=False))
+    common_r = Path(_git(local_r, "rev-parse", "--path-format=absolute", "--git-common-dir").strip())
+    worktrees._note_delivery(common_r, wt_ppr.path, {"branch": "feat/ppr", "pending_pr": True})
+    rec_ppr = await mgr.reconcile(local_r, wt_base, known=())
+    assert wt_ppr.path in rec_ppr.kept and wt_ppr.path.is_dir()
+    await mgr.remove(wt_ppr)
+
+    # 4. Cancelling during git push after the remote accepts the first push preserves local branch +
+    # pending intent so direct retry recovers ownership and finishes PR creation.
+    wt_cancel = await mgr.create(local_r, tmp_path / "wt" / "push_cancel", RemoteDefaultBranch(fetch=False))
+    _write(wt_cancel.path / "a.txt", "cancel-after-push\nline2\nline3\nline4\nline5\n")
+    orig_git = mgr._git
+    cancel_once = {"done": False}
+
+    async def cancel_after_push(cwd: Path, *args: str, **kwargs: Any) -> Any:
+        res = await orig_git(cwd, *args, **kwargs)
+        if not cancel_once["done"] and args and args[0] == "push":
+            cancel_once["done"] = True
+            raise asyncio.CancelledError
+        return res
+
+    pr_cancel_calls = {"n": 0}
+
+    async def create_after_cancel(_req: PRRequest) -> PRInfo:
+        pr_cancel_calls["n"] += 1
+        return PRInfo(url="https://github.com/org/repo/pull/501", number=501)
+
+    with monkeypatch.context() as mp:
+        mp.setattr(mgr, "_git", cancel_after_push)
+        with pytest.raises(asyncio.CancelledError):
+            await mgr.merge_back(
+                wt_cancel,
+                PullRequest(title="Cancel Push PR", branch="feat/cancel-push", remote="origin", base_branch="main", create_pr=create_after_cancel),
+            )
+    assert cancel_once["done"] is True
+    assert _git(bare_r, "rev-parse", "refs/heads/feat/cancel-push").strip() != ""
+    assert await mgr.has_pending_delivery(wt_cancel) is True
+    recovered_cancel = await mgr.merge_back(
+        wt_cancel,
+        PullRequest(title="Cancel Push PR", branch="feat/cancel-push", remote="origin", base_branch="main", create_pr=create_after_cancel),
+    )
+    assert recovered_cancel.status == "landed", recovered_cancel.detail
+    assert recovered_cancel.pr_number == 501 and pr_cancel_calls["n"] == 1
+    assert await mgr.has_pending_delivery(wt_cancel) is False
+    await mgr.remove(wt_cancel)
+
+    # 5. Cached PRs are revalidated via find_pr/gh before reuse: if the previous PR was closed/merged,
+    # delivering new edits opens a fresh PR; if lookup errors, fails closed with pr_pending=True.
+    wt_reval = await mgr.create(local_r, tmp_path / "wt" / "pr_reval", RemoteDefaultBranch(fetch=False))
+    _write(wt_reval.path / "a.txt", "pr-v1\nline2\nline3\nline4\nline5\n")
+    pr_state: dict[str, Any] = {"open": None, "fail_find": False, "created": []}
+
+    async def create_reval_pr(_req: PRRequest) -> PRInfo:
+        num = 600 + len(pr_state["created"]) + 1
+        info = PRInfo(url=f"https://github.com/org/repo/pull/{num}", number=num)
+        pr_state["created"].append(info)
+        pr_state["open"] = info
+        return info
+
+    async def find_reval_pr(_req: PRRequest) -> PRInfo | None:
+        if pr_state["fail_find"]:
+            raise RuntimeError("github api unavailable")
+        return pr_state["open"]
+
+    pr_cfg = PullRequest(
+        title="Revalidated PR",
+        branch="feat/reval-pr",
+        remote="origin",
+        base_branch="main",
+        create_pr=create_reval_pr,
+        find_pr=find_reval_pr,
+    )
+    land_1 = await mgr.merge_back(wt_reval, pr_cfg)
+    assert land_1.status == "landed" and land_1.pr_number == 601
+    # Still open -> reuses PR #601 without opening a duplicate.
+    _write(wt_reval.path / "a.txt", "pr-v2\nline2\nline3\nline4\nline5\n")
+    land_2 = await mgr.merge_back(wt_reval, pr_cfg)
+    assert land_2.status == "landed" and land_2.pr_number == 601 and len(pr_state["created"]) == 1
+    # Lookup fails transiently -> fails closed and keeps pr_pending=True.
+    pr_state["fail_find"] = True
+    _write(wt_reval.path / "a.txt", "pr-v3\nline2\nline3\nline4\nline5\n")
+    land_err = await mgr.merge_back(wt_reval, pr_cfg)
+    assert land_err.status == "failed" and "verifying existing pull request failed" in land_err.detail
+    assert await mgr.has_pending_delivery(wt_reval) is True
+    # Old PR #601 is now closed/merged -> retry detects no open PR and opens fresh PR #602.
+    pr_state["fail_find"] = False
+    pr_state["open"] = None
+    land_3 = await mgr.merge_back(wt_reval, pr_cfg)
+    assert land_3.status == "landed", land_3.detail
+    assert land_3.pr_number == 602 and len(pr_state["created"]) == 2
+    assert await mgr.has_pending_delivery(wt_reval) is False
+    await mgr.remove(wt_reval)
+
+
+async def test_round15_coderabbit_copy_followup_fixes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify conflict snapshots omit project-only skipped paths and unchanged baseline advance fails closed on missing blobs."""
+    mgr = WorktreeManager()
+
+    # 1. Project-only file under a copy-skipped directory (sub/.git) must not enter conflict baseline
+    # so removing sub/.git later does not delete the project's file.
+    proj_sk = tmp_path / "conflict_skip_proj"
+    _write(proj_sk / "conflict.txt", "base\n")
+    wt_sk = await mgr.create(proj_sk, tmp_path / "copies" / "csk1")
+    _write(wt_sk.path / "sub" / ".git" / "HEAD", "ref: refs/heads/main\n")
+    _write(wt_sk.path / "conflict.txt", "copy-side\n")
+    _write(proj_sk / "conflict.txt", "proj-side\n")
+    _write(proj_sk / "sub" / "new.txt", "project-only-new\n")
+    c_sk = await mgr.merge_back(wt_sk)
+    assert c_sk.status == "conflict" and "conflict.txt" in c_sk.conflicts
+    await mgr.prepare_conflicts(wt_sk, c_sk)
+    base_after_prep = _copy_trees.read_base_manifest(wt_sk.path)
+    assert base_after_prep is not None and "sub/new.txt" not in base_after_prep["files"]
+    # Remove sub/.git and resolve conflict.txt -> project's sub/new.txt must remain intact.
+    shutil.rmtree(wt_sk.path / "sub")
+    _write(wt_sk.path / "conflict.txt", "resolved\n")
+    final_sk = await mgr.merge_back(wt_sk)
+    assert final_sk.status == "landed", final_sk.detail
+    assert (proj_sk / "sub" / "new.txt").read_text(encoding="utf-8") == "project-only-new\n"
+    await mgr.remove(wt_sk)
+
+    # 2. On an unchanged merge where both sides wrote identical v2, if the copy file vanishes before
+    # advance_copy_baseline stores v2's blob, merge_back fails closed and preserves the old baseline.
+    proj_ub = tmp_path / "unchanged_blob_proj"
+    _write(proj_ub / "same.txt", "v1\n")
+    wt_ub = await mgr.create(proj_ub, tmp_path / "copies" / "ub1")
+    old_base = _copy_trees.read_base_manifest(wt_ub.path)
+    assert old_base is not None
+    _write(proj_ub / "same.txt", "v2\n")
+    _write(wt_ub.path / "same.txt", "v2\n")
+    orig_advance = _copy_trees.advance_copy_baseline
+
+    def vanish_before_advance(copy_path: Path, new_scan: Any) -> None:
+        (copy_path / "same.txt").unlink()
+        orig_advance(copy_path, new_scan)
+
+    with monkeypatch.context() as mp:
+        mp.setattr(_copy_trees, "advance_copy_baseline", vanish_before_advance)
+        res_ub = await mgr.merge_back(wt_ub)
+    assert res_ub.status == "failed" and "vanished" in res_ub.detail
+    assert _copy_trees.read_base_manifest(wt_ub.path) == old_base
+    await mgr.remove(wt_ub)

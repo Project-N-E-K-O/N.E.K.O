@@ -1491,7 +1491,12 @@ class TreeWork:
                 # when that run is over.
                 await self._ledger.update_tree(row.id, state="active")
                 return "again"
-            if await self._has_pending_delivery(row, handle):
+            pending_delivery = await self._has_pending_delivery(row, handle)
+            if self._stale(commission_id, done):
+                # More was said to it while checking delivery state: it is at work in its worktree.
+                await self._ledger.update_tree(row.id, state="active")
+                return "again"
+            if pending_delivery:
                 return await self._not_landed(
                     row,
                     commission,
@@ -2072,8 +2077,11 @@ class TreeWork:
                 detail = "a pushed branch in this worktree still has a pending pull request delivery"
                 answer["status"] = "failed"
                 answer["detail"] = detail
-                if not was_kept:
-                    await self._ledger.update_tree(row.id, state="unlanded", reason=REASON_FAILED)
+                await self._ledger.update_tree(
+                    row.id,
+                    state="kept" if was_kept else "unlanded",
+                    reason=row.reason if was_kept else REASON_FAILED,
+                )
                 return answer
             if result.skipped:
                 # Landed, but for what is never carried over: that stays where it is, with the worktree.

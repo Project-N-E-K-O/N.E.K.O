@@ -1491,8 +1491,14 @@ def compute_copy_merge(
             preserved_base_for_skipped = {
                 rel: dict(base_files[rel]) for rel in copy_skipped_untouched if rel in base_files
             }
-            if preserved_base_for_skipped:
-                pending_current_files = {**current_scan.files, **preserved_base_for_skipped}
+            if copy_skipped_untouched:
+                # Never record project-only paths hidden by a skipped subtree in the copy (e.g. sub/.git)
+                # as part of the conflict baseline: they are not written into the copy, so recording them
+                # would cause a later merge after un-skipping to treat them as deletions.
+                pending_current_files = {
+                    rel: entry for rel, entry in current_scan.files.items() if rel not in copy_skipped_untouched
+                }
+                pending_current_files.update(preserved_base_for_skipped)
                 pending_current_digest = manifest_digest(pending_current_files)
             else:
                 pending_current_files = current_scan.files
@@ -1742,8 +1748,11 @@ def advance_copy_baseline(copy_path: Path, new_scan: CopyScan) -> None:
                 continue
             src = copy_path / rel
             src_fs = fs_path(src)
-            if os.path.isfile(src_fs) and not os.path.islink(src_fs) and _hash_file(src_fs) == sha:
-                _store_blob_file(src, sha, blobs_dir)
+            if not os.path.isfile(src_fs) or os.path.islink(src_fs):
+                raise ValueError(f"working copy file vanished before baseline advance ({rel}); merge again")
+            if _hash_file(src_fs) != sha:
+                raise ValueError(f"working copy file changed before baseline advance ({rel}); merge again")
+            _store_blob_file(src, sha, blobs_dir)
     prev_base_file = meta_dir / _BASE_MANIFEST_FILE
     prev_base = read_base_manifest(copy_path)
     prev_skipped = list(prev_base.get("skipped") or ()) if prev_base is not None else []
@@ -1831,12 +1840,37 @@ def prepare_copy_conflicts_sync(
     merged_keys = set(merged_files)
     merged_parents = {up for other in merged_keys for up in _parents(other)}
     to_write = [(rel, entry) for rel, entry in sorted(merged_files.items()) if rel not in merged_parents]
-    touched_set = sorted(set(to_delete) | {rel for rel, _e in to_write})
+    skipped_set = {name.rstrip("/") for name in now.skipped}
+    # If the copy holds a regular file or symlink at a path that must become a directory for merged
+    # descendants (e.g. copy replaced dir `d/` with file `d` while project edited `d/a`), relocate the
+    # colliding file to a sibling conflict path so both sides survive and `d/a` can be written cleanly.
+    colliding_relocations: list[tuple[str, str]] = []
+    reserved_paths = set(merged_keys) | held
+    for parent_rel in sorted(merged_parents):
+        parent_fs = fs_path(copy_path / parent_rel)
+        if os.path.isfile(parent_fs) or os.path.islink(parent_fs):
+            candidate = f"{parent_rel}.nekopower-conflict"
+            suffix = 2
+            while (
+                candidate in reserved_paths
+                or candidate in skipped_set
+                or any(up in skipped_set for up in _parents(candidate))
+                or os.path.lexists(fs_path(copy_path / candidate))
+            ):
+                candidate = f"{parent_rel}.nekopower-conflict.{suffix}"
+                suffix += 1
+            reserved_paths.add(candidate)
+            colliding_relocations.append((parent_rel, candidate))
+    touched_set = sorted(
+        set(to_delete)
+        | {rel for rel, _e in to_write}
+        | {src for src, _dst in colliding_relocations}
+        | {dst for _src, dst in colliding_relocations}
+    )
     for rel in touched_set:
         if has_link_ancestor(copy_path, rel):
             raise ValueError(f"preparing conflicts would traverse a directory link in the working copy: {rel}")
     # Check that writing new files will not clobber skipped files or nested repos in the copy.
-    skipped_set = {name.rstrip("/") for name in now.skipped}
     for rel in sorted(set(merged_files) - held):
         if rel in skipped_set or any(up in skipped_set for up in _parents(rel)):
             raise ValueError(f"preparing would overwrite skipped path in the working copy: {rel}")
@@ -1900,6 +1934,21 @@ def prepare_copy_conflicts_sync(
                 except OSError:
                     break
                 parent = parent.parent
+
+        # Relocate colliding ancestor files/symlinks before writing merged descendants underneath them.
+        for src_rel, dst_rel in colliding_relocations:
+            _check_cancelled(cancel_event)
+            if has_link_ancestor(copy_path, src_rel) or has_link_ancestor(copy_path, dst_rel):
+                raise ValueError(f"refusing to relocate colliding conflict file through directory link: {src_rel}")
+            src_fs = fs_path(copy_path / src_rel)
+            dst_path = copy_path / dst_rel
+            dst_fs = fs_path(dst_path)
+            os.makedirs(fs_path(dst_path.parent), exist_ok=True)
+            if os.path.islink(src_fs):
+                os.symlink(os.readlink(src_fs), dst_fs)
+                os.remove(src_fs)
+            elif os.path.isfile(src_fs):
+                os.replace(src_fs, dst_fs)
 
         # Write merged / conflict-marked files into the copy.
         for rel, entry in to_write:

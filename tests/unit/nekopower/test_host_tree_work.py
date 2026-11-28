@@ -4005,4 +4005,14 @@ async def test_auto_complete_and_manual_land_preserve_worktree_with_pending_deli
     manual = await host.land_worktree(tree.id)
     assert manual["status"] == "failed" and "pending pull request delivery" in manual["detail"]
     (still_there,) = await host.ledger.trees()
-    assert still_there.id == tree_id and trees.removed == [] and Path(tree.path).is_dir()
+    assert still_there.id == tree_id and still_there.state == "unlanded" and trees.removed == [] and Path(tree.path).is_dir()
+
+    # If the worktree was previously kept, a blocked manual land_worktree must restore "kept" (not stay "landing").
+    kept = await host.keep_worktree(tree.id)
+    assert kept["state"] == "kept"
+    manual_kept = await host.land_worktree(tree.id)
+    assert manual_kept["status"] == "failed" and "pending pull request delivery" in manual_kept["detail"]
+    (still_kept,) = await host.ledger.trees()
+    assert still_kept.id == tree_id and still_kept.state == "kept" and trees.removed == []
+    # Not stuck in "landing": explicit discard succeeds without ValueError("at_work").
+    assert await host.discard_worktree(tree.id) == {"removed": True}

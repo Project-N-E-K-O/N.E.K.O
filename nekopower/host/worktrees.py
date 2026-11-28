@@ -1178,7 +1178,7 @@ class WorktreeManager:
                         report.kept.append(path)
                         continue
                     delivery = await asyncio.to_thread(_noted_delivery, common, path, strict=True)
-                    if delivery.get("pr_pending"):
+                    if delivery.get("pr_pending") or delivery.get("pending_pr"):
                         report.kept.append(path)
                         continue
                     await self._forget(repo_root, path, path.name, remove_directory=False)
@@ -1918,7 +1918,7 @@ class WorktreeManager:
 
     @classmethod
     def _normalize_push_target(cls, push_url: str, remote_name: str, root: Path | None = None) -> str:
-        """Return a stable push-endpoint identifier for ``push_url`` while preserving explicit ports."""
+        """Return a stable push-endpoint identifier for ``push_url`` preserving explicit ports and path case."""
         raw = push_url.strip()
         if not raw:
             return f"remote:{remote_name}"
@@ -1927,21 +1927,27 @@ class WorktreeManager:
         if scp:
             host, repo_path = scp.group(1), scp.group(2)
             if not (len(host) == 1 and host.isalpha()):
-                return f"remote-repo:{host.lower()}/{repo_path.rstrip('/').lower()}"
-        # Standard URL syntax: http(s):// or ssh:// (keep non-default ports distinct).
+                norm_host = host.lower()
+                norm_path = repo_path.rstrip("/")
+                if norm_host == "github.com":
+                    norm_path = norm_path.lower()
+                return f"remote-repo:{norm_host}/{norm_path}"
+        # Standard URL syntax: http(s):// or ssh:// (keep non-default ports and non-GitHub path case distinct).
         url_match = re.match(
             r"^(https?|ssh)://(?:[^@/\s]+@)?([A-Za-z0-9._-]+)(?::(\d+))?/([^/\s]+(?:/[^/\s]+)*?)(?:\.git)?/?$",
             raw,
         )
         if url_match:
             scheme = url_match.group(1).lower()
-            host = url_match.group(2).lower()
+            norm_host = url_match.group(2).lower()
             port = url_match.group(3)
-            repo_path = url_match.group(4).rstrip("/").lower()
+            norm_path = url_match.group(4).rstrip("/")
+            if norm_host == "github.com":
+                norm_path = norm_path.lower()
             default_ports = {"http": "80", "https": "443", "ssh": "22"}
             if port and port != default_ports[scheme]:
-                return f"remote-repo:{scheme}:{host}:{port}/{repo_path}"
-            return f"remote-repo:{host}/{repo_path}"
+                return f"remote-repo:{scheme}:{norm_host}:{port}/{norm_path}"
+            return f"remote-repo:{norm_host}/{norm_path}"
         if re.match(r"^[A-Za-z][A-Za-z0-9+.-]*://", raw) or re.match(r"^[^@/\s]+@[^:/\s]+:", raw):
             return raw.rstrip("/")
         if root is not None and not os.path.isabs(raw):
@@ -2464,11 +2470,22 @@ class WorktreeManager:
             except WorktreeError as exc:
                 return MergeResult("failed", detail=str(exc), **counted)
             if remote_oid is not None:
-                return MergeResult(
-                    "failed",
-                    detail=f"remote branch {target_branch!r} already exists on {remote_name!r} and does not belong to this worktree",
-                    **counted,
-                )
+                # Recover ownership if a prior interrupted push actually landed our pending commit.
+                if (
+                    existing_tip is not None
+                    and delivery.get("pending_branch") == target_branch
+                    and delivery.get("pending_commit") == existing_tip
+                    and delivery.get("pending_push_target") == push_target
+                    and remote_oid == existing_tip
+                ):
+                    owns_remote_branch = True
+                    pushed_targets[push_target] = existing_tip
+                else:
+                    return MergeResult(
+                        "failed",
+                        detail=f"remote branch {target_branch!r} already exists on {remote_name!r} and does not belong to this worktree",
+                        **counted,
+                    )
         new_commit = await self._commit_tree(root, target_tree, parent_commit, commit_message, env=identity)
         expected_old = existing_tip if existing_tip is not None else ""
         # Persist verifiable delivery intent BEFORE mutating refs/heads so that if the final
@@ -2507,11 +2524,11 @@ class WorktreeManager:
                 await _to_the_end(asyncio.to_thread(_note_delivery, common, worktree.path, delivery))
 
         if remote_name:
-            try:
-                ok_push, push_err = await _push_owned_branch(new_commit, checked_remote_absent=True)
-            except BaseException:
-                await rollback_branch()
-                raise
+            # On cancellation or timeout, the remote may already have accepted the ref: keep the
+            # local commit and pending delivery intent intact so a retry can inspect the remote OID
+            # and recover cleanly instead of losing ownership proof. Roll back only on a definite
+            # non-zero git push rejection.
+            ok_push, push_err = await _push_owned_branch(new_commit, checked_remote_absent=not owns_remote_branch)
             if not ok_push:
                 await rollback_branch()
                 return MergeResult(
@@ -2691,7 +2708,7 @@ class WorktreeManager:
             else {}
         )
         if branch_result.status == "unchanged":
-            if existing_pr_url:
+            if existing_pr_url and not was_pr_pending:
                 return replace(branch_result, pr_url=existing_pr_url, pr_number=existing_pr_number)
             # Retry PR creation if a previous push to this exact push target succeeded and only PR creation failed.
             pushed_here = bool(
@@ -2711,8 +2728,83 @@ class WorktreeManager:
         else:
             commit_sha = branch_result.commit
 
+        can_verify_pr = pr.find_pr is not None or pr.create_pr is None
         if existing_pr_url:
-            return replace(branch_result, pr_url=existing_pr_url, pr_number=existing_pr_number)
+            if not can_verify_pr:
+                return replace(branch_result, pr_url=existing_pr_url, pr_number=existing_pr_number)
+            verify_request = PRRequest(
+                repo_root=root,
+                remote=remote_name,
+                branch=branch_result.branch,
+                base_branch=base_branch,
+                title=title,
+                body=pr.body,
+                draft=pr.draft,
+                commit=commit_sha,
+                files=branch_result.files,
+            )
+            try:
+                live_pr = (
+                    await pr.find_pr(verify_request)
+                    if pr.find_pr is not None
+                    else await self._find_existing_pr_with_gh(pr.gh, verify_request)
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - fail closed and keep worktree recoverable
+                pushed_targets[push_target] = commit_sha
+                saved_prs.pop(pr_key, None)
+                saved_prs.pop(legacy_pr_key, None)
+                pending_verify: dict[str, Any] = {
+                    **delivery,
+                    "branch": branch_result.branch,
+                    "commit": commit_sha,
+                    "remote": remote_name,
+                    "push_target": push_target,
+                    "base_branch": base_branch,
+                    "pushed": True,
+                    "pushed_commit": commit_sha,
+                    "pushed_targets": pushed_targets,
+                    "pr_pending": True,
+                    "pr_url": "",
+                    "pr_number": None,
+                    "prs": saved_prs,
+                }
+                with contextlib.suppress(OSError):
+                    await _to_the_end(asyncio.to_thread(_note_delivery, common, worktree.path, pending_verify))
+                return replace(
+                    branch_result,
+                    status="failed",
+                    commit=commit_sha,
+                    detail=f"branch {branch_result.branch!r} was pushed to {remote_name!r}, but verifying existing pull request failed: {exc}",
+                )
+            if live_pr is not None and live_pr.url:
+                if live_pr.url != existing_pr_url or live_pr.number != existing_pr_number or delivery.get("pr_pending"):
+                    pushed_targets[push_target] = commit_sha
+                    saved_prs[pr_key] = {"url": live_pr.url, "number": live_pr.number}
+                    refreshed_delivery: dict[str, Any] = {
+                        **delivery,
+                        "branch": branch_result.branch,
+                        "commit": commit_sha,
+                        "remote": remote_name,
+                        "push_target": push_target,
+                        "base_branch": base_branch,
+                        "pushed": True,
+                        "pushed_commit": commit_sha,
+                        "pushed_targets": pushed_targets,
+                        "pr_pending": False,
+                        "pr_url": live_pr.url,
+                        "pr_number": live_pr.number,
+                        "prs": saved_prs,
+                    }
+                    await _to_the_end(asyncio.to_thread(_note_delivery, common, worktree.path, refreshed_delivery))
+                return replace(branch_result, pr_url=live_pr.url, pr_number=live_pr.number)
+            # Cached PR was closed or merged: drop stale cache entry and open a fresh PR below.
+            existing_pr_url = ""
+            existing_pr_number = None
+            saved_prs.pop(pr_key, None)
+            saved_prs.pop(legacy_pr_key, None)
+            was_pr_pending = False
 
         pushed_targets[push_target] = commit_sha
         # Durably record pending PR creation BEFORE awaiting the PR callback/CLI so cancellation
@@ -3134,7 +3226,12 @@ class WorktreeManager:
         if status == "conflict":
             return MergeResult("conflict", conflicts=computed["conflicts"], **common)
         if status == "unchanged":
-            await _to_the_end(asyncio.to_thread(_copy_trees.advance_copy_baseline, worktree.path, computed["result_scan"]))
+            try:
+                await _to_the_end(
+                    asyncio.to_thread(_copy_trees.advance_copy_baseline, worktree.path, computed["result_scan"])
+                )
+            except (OSError, ValueError) as error:
+                return MergeResult("failed", detail=f"advancing working-copy baseline failed: {error}", **common)
             return MergeResult("unchanged", **common)
 
         raw_changes = computed["changes"]
