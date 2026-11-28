@@ -883,6 +883,7 @@ def _dup_fd_above(fd: int, minimum: int = 5) -> int:
                 try:
                     os.close(temp)
                 except OSError:
+                    # Best-effort cleanup of temporary duplicated low FDs.
                     pass
 
 
@@ -933,6 +934,7 @@ def _spawn_pipe_posix(arguments: list[str]) -> tuple[Any, Any]:
             try:
                 os.close(fd)
             except OSError:
+                # Best-effort cleanup of pipe/spawn file descriptors.
                 pass
 
     try:
@@ -967,7 +969,12 @@ def _spawn_pipe_posix(arguments: list[str]) -> tuple[Any, Any]:
     finally:
         close_fd(c_read)
         close_fd(c_write)
-        close_fd(devnull_fd)
+        if devnull_fd is not None:
+            try:
+                os.close(devnull_fd)
+            except OSError:
+                # Best-effort cleanup of /dev/null FD after spawn.
+                pass
         for fd in extra_parent_close:
             close_fd(fd)
 

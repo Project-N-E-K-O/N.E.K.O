@@ -113,6 +113,7 @@ class PipeTransport:
                 try:
                     os.set_blocking(self._write_handle, False)
                 except OSError:
+                    # Non-blocking mode is optional; fall back to blocking writes if unsupported.
                     pass
 
     def start(self, loop: asyncio.AbstractEventLoop) -> None:
@@ -135,6 +136,7 @@ class PipeTransport:
         try:
             loop.call_soon_threadsafe(queue.put_nowait, item)
         except RuntimeError:
+            # The event loop closed concurrently during transport teardown.
             pass
 
     def _emit_from_buffer(self, buf: bytearray) -> None:
@@ -307,6 +309,7 @@ class PipeTransport:
             try:
                 os.write(self._wakeup_w, b"\x00")
             except OSError:
+                # Wakeup pipe already closed or full; reader is already waking or exiting.
                 pass
 
     def _close_write_handle(self, *, timeout: float = 1.5) -> None:
@@ -325,6 +328,7 @@ class PipeTransport:
                 else:
                     os.close(handle)
             except OSError:
+                # Ignore already-closed handle errors during idempotent teardown.
                 pass
         finally:
             self._write_lock.release()
@@ -339,6 +343,7 @@ class PipeTransport:
                 try:
                     os.close(fd)
                 except OSError:
+                    # Ignore already-closed wakeup pipe FDs during teardown.
                     pass
         if handle is not None:
             try:
@@ -347,6 +352,7 @@ class PipeTransport:
                 else:
                     os.close(handle)
             except OSError:
+                # Ignore already-closed read handle errors during teardown.
                 pass
 
     def close_sync(self) -> None:
