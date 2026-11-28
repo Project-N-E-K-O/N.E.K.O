@@ -4730,7 +4730,6 @@
             "connecting": "Conectándose al servidor NekoPower...",
             "ready": "Servidor NekoPower listo",
             "enabled": "NekoPower habilitado",
-            "noCapability": "Activa al menos una opción de abajo para que NekoPower pueda actuar",
             "disabled": "NekoPower desactivado",
             "disabledError": "NekoPower deshabilitado (falló la limpieza parcial)",
             "enableFailed": "Habilitar falló",

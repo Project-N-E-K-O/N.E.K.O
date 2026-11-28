@@ -14,8 +14,8 @@ from types import SimpleNamespace
 import pytest
 
 from app.memory_server.knowledge_routes import _SharedEmbedder
-from knowledge.chunking import derive_chunks
-from knowledge.models import KnowledgeEntry
+from services.knowledge.chunking import derive_chunks
+from services.knowledge.models import KnowledgeEntry
 from memory import embeddings
 from memory._embeddings import spec as spec_module
 from memory._embeddings.resources import _change_stamp

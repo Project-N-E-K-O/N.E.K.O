@@ -135,7 +135,7 @@ def test_nuitka_build_compiles_the_package_of_the_builtin_tools(workflow: str, s
 @pytest.mark.parametrize(("workflow", "step_name"), NUITKA_STEPS)
 def test_nuitka_build_keeps_the_test_only_playwright_out_of_the_bundle(workflow: str, step_name: str) -> None:
     # The build environment installs the dev group, so Playwright is importable
-    # there, and plugin/tests/e2e (inside the compiled `plugin` package) imports it.
+    # there; nothing inside the compiled bundle may pull it in through a test module.
     always = _nuitka_flags(_nuitka_script(workflow, step_name), unconditional_only=True)
     assert "--nofollow-import-to=playwright" in always
 

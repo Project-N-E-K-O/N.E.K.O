@@ -577,6 +577,7 @@ const messages: PowerMessages = {
     default: 'Predeterminado ({what})',
     inherit: 'El modelo de quien lo envía',
     agentModel: 'modelo de los familiares',
+    advancedModel: 'modelo avanzado de los familiares',
     free: 'gratis',
     noModel: 'sin modelo',
     slotEmpty: 'aún sin modelo',
