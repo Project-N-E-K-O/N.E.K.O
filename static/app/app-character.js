@@ -461,6 +461,8 @@
         // 让所有调用方（不光 BC/WS handler）自动受益。
         if (!forceReload && window.lanlan_config && window.lanlan_config.lanlan_name === newCatgirl) {
             if (!sameCurrentCharacterMissingVrm) {
+                // A newer stamped receipt can invalidate the follower's old portrait without reloading the model.
+                if (switchRevision) window.appChatAvatar?.onCharacterScopeCommitted?.(newCatgirl, switchRevision);
                 console.log('[猫娘切换] 已经是当前角色', newCatgirl, '，跳过重复事件（BC + WS 双通道收到同一切换）');
                 return;
             }

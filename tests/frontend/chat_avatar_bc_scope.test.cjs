@@ -23,6 +23,7 @@ function fixture(route, type, options = {}) {
         location: { pathname: route },
         lanlan_config: { lanlan_name: 'A', switch_revision: 10, model_type: type },
         vrmModel: '/Shared.vrm',
+        vrmManager: route === '/' && type === 'vrm' ? { currentModel: { vrm: {} } } : undefined,
         cubism4Model: '/Shared.model3.json',
         live2dManager: route === '/' && type === 'live2d' ? {_lastLoadedModelPath: '/Shared.model3.json'} : undefined,
         appState: { incomingAudioEpoch: 0, dom: {} },
@@ -279,4 +280,47 @@ for (const repeat of [0, 11]) {
         assert.deepEqual(committedRevisions(follower), [11]);
         assert.deepEqual(follower.commits, ['B']);
     });
+}
+
+for (const [route, type] of [['/chat', 'vrm'], ['/chat_full', 'live2d']]) {
+    for (const ownerFirst of [false, true]) {
+        test(route+' preserves an uncached current portrait on a newer same-name receipt ('+(ownerFirst ? 'owner first' : 'follower first')+')', async () => {
+            windows.length = 0; queue.length = 0;
+            const owner = fixture('/', type);
+            const follower = fixture(route, type);
+            await follower.event({action:'avatar_updated',lanlan_name:'A',dataUrl:injectedA,modelType:type});
+            await switchFollower(follower, 'B', 'A', 11);
+            ownerCompletes(owner, 'B', 11, type);
+            await flush();
+            assert.equal(follower.dataUrl(), portraitA);
+            assert.equal(owner.store.has('neko_avatar:B'), false);
+            const late = {action:'avatar_updated',lanlan_name:'B',dataUrl:wrong,modelType:type,
+                avatar_source:'pet',avatar_scope:{name:'B',revision:11,modelKey:follower.modelKey}};
+            if (ownerFirst) {
+                await queueSwitch(owner, 'B', 'B', 12);
+                await flush(); // early owner publication must wait for follower acceptance
+            }
+            await queueSwitch(follower, 'B', 'B', 12);
+            await follower.event(late);
+            await flush();
+            if (!ownerFirst) {
+                assert.equal(follower.dataUrl(), '', 'do not relabel the rev11 image while owner still rev11');
+                await queueSwitch(owner, 'B', 'B', 12);
+                await flush();
+            }
+            assert.equal(follower.dataUrl(), portraitA, 'first usable model portrait after the same-name receipt');
+            assert.deepEqual(committedRevisions(follower), [11, 12]);
+            assert.deepEqual(follower.commits, ['B'], 'the same-name receipt must not reload the model');
+            assert.deepEqual(owner.commits, [], 'the healthy Pet must not reload');
+            await queueSwitch(follower, 'B', 'B', 12);
+            await queueSwitch(follower, 'B', 'B', 0);
+            await queueSwitch(follower, 'B', 'B', 11);
+            await follower.event(late);
+            await flush();
+            assert.deepEqual(committedRevisions(follower), [11, 12], 'duplicates/stale/unstamped receipts publish nothing');
+            assert.equal(follower.dataUrl(), portraitA);
+            assert.deepEqual(follower.writes, []);
+            assert.equal(owner.store.has('neko_avatar:B'), false);
+        });
+    }
 }
