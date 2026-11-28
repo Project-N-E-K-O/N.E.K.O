@@ -4,6 +4,7 @@ import { reactive, ref, shallowRef } from 'vue'
 import zhCN from './locales/zh-CN'
 import zhCnElement from 'element-plus/dist/locale/zh-cn.mjs'
 import { loadLocaleBundle } from './localeBundles'
+import { loadPluginConsentPageMessages } from './pluginConsentPages'
 import { OptionalModuleError } from '@/utils/retryableModule'
 
 export const SUPPORTED_LOCALES = ['zh-CN', 'zh-TW', 'en-US', 'ja', 'ko', 'ru', 'es', 'pt'] as const
@@ -76,6 +77,47 @@ let generation = 0
 let initialized = false
 let failedPersist = true
 
+// Words of the permission tab and the privacy page (`pluginConsent.tab`,
+// `pluginConsent.privacy` except its title) load with those routes, not with
+// the language pack. Once a route asked for them, every language switch loads
+// them too, so a switch never leaves the open page without its words.
+type ConsentPageMessages = Awaited<ReturnType<typeof loadPluginConsentPageMessages>>
+let consentPagesWanted = false
+const consentPages = new Map<AppLocale, ConsentPageMessages>()
+const CONSENT_PAGE_PROBE = 'pluginConsent.tab.loading'
+
+async function consentPagesFor(locale: AppLocale): Promise<ConsentPageMessages> {
+  const cached = consentPages.get(locale)
+  if (cached) return cached
+  const messages = await loadPluginConsentPageMessages(locale)
+  consentPages.set(locale, messages)
+  return messages
+}
+
+// Builds a new dictionary: the language pack modules are never mutated.
+function withConsentPages(messages: Record<string, any>, pages: ConsentPageMessages | undefined) {
+  if (!pages) return messages
+  const base = (messages.pluginConsent ?? {}) as Record<string, any>
+  return {
+    ...messages,
+    pluginConsent: { ...base, ...pages, privacy: { ...base.privacy, ...pages.privacy } },
+  }
+}
+
+/** Loads the permission tab and privacy page words for the applied language
+ * and keeps them loaded across language switches. Route loaders await it. */
+export async function ensurePluginConsentPageMessages(): Promise<void> {
+  consentPagesWanted = true
+  const locale = getLocale()
+  const pages = await consentPagesFor(locale)
+  // A switch committed meanwhile carries its own copy (it saw the flag set).
+  if (getLocale() !== locale || i18n.global.te(CONSENT_PAGE_PROBE, locale)) return
+  i18n.global.setLocaleMessage(
+    locale,
+    withConsentPages(i18n.global.getLocaleMessage(locale), pages) as typeof zhCN
+  )
+}
+
 async function applySetting(setting: LocaleSetting, persist: boolean): Promise<boolean> {
   if (setting !== 'auto' && !SUPPORTED_LOCALES.includes(setting)) return false
   const seq = ++generation
@@ -90,9 +132,19 @@ async function applySetting(setting: LocaleSetting, persist: boolean): Promise<b
         ? { messages: zhCN, element: zhCnElement }
         : await loadLocaleBundle(target as Exclude<AppLocale, 'zh-CN'>)
     if (seq !== generation) return false
+    if (consentPagesWanted) {
+      await consentPagesFor(target)
+      if (seq !== generation) return false
+    }
     // One synchronous commit. No visible locale changes before BOTH app and
     // Element dictionaries are ready; Vue batches their reactive consumers.
-    i18n.global.setLocaleMessage(target, bundle.messages as typeof zhCN)
+    i18n.global.setLocaleMessage(
+      target,
+      withConsentPages(
+        bundle.messages,
+        consentPagesWanted ? consentPages.get(target) : undefined
+      ) as typeof zhCN
+    )
     elementLocale.value = bundle.element
     i18n.global.locale.value = target
     appliedSetting.value = setting

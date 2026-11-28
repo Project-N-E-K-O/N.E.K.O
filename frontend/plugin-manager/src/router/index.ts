@@ -3,8 +3,14 @@
  */
 import { createRouter, createWebHistory } from 'vue-router'
 import type { RouteRecordRaw } from 'vue-router'
-import { i18n } from '@/i18n'
+import { ensurePluginConsentPageMessages, i18n } from '@/i18n'
 import { watch } from 'vue'
+
+// The permission tab and privacy page words are not part of the language pack;
+// the route waits for them so the page never renders raw keys.
+function withConsentPageMessages<T>(view: Promise<T>): Promise<T> {
+  return Promise.all([view, ensurePluginConsentPageMessages()]).then(([loaded]) => loaded)
+}
 
 const routes: RouteRecordRaw[] = [
   {
@@ -32,7 +38,7 @@ const routes: RouteRecordRaw[] = [
       {
         path: 'plugins/_privacy',
         name: 'PrivacyOverview',
-        component: () => import('@/views/PrivacyOverview.vue'),
+        component: () => withConsentPageMessages(import('@/views/PrivacyOverview.vue')),
         meta: { titleKey: 'pluginConsent.privacy.title' },
       },
       {
@@ -52,7 +58,8 @@ const routes: RouteRecordRaw[] = [
       {
         path: 'plugins/:id',
         name: 'PluginDetail',
-        component: () => import('@/views/PluginDetail.vue'),
+        // Hosts the permission tab.
+        component: () => withConsentPageMessages(import('@/views/PluginDetail.vue')),
         meta: {
           titleKey: 'plugins.pluginDetail'
         }

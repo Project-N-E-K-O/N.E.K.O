@@ -20,6 +20,7 @@ import { createJiti } from 'jiti'
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
 const LOCALES_DIR = resolve(__dirname, '../src/i18n/locales')
+const CONSENT_PAGES_DIR = resolve(__dirname, '../src/i18n/plugin-consent-pages')
 
 const REFERENCE = 'en-US'
 const PLACEHOLDER_REGEX = /\{(\w+)\}/g
@@ -74,9 +75,17 @@ async function loadLocale(name) {
   try {
     const mod = await jiti.import(path)
     const messages = mod?.default ?? mod
+    // Permission tab / privacy page words load with their routes, not the pack.
+    const pagesMod = await jiti.import(resolve(CONSENT_PAGES_DIR, `${name}.ts`))
+    const pages = pagesMod?.default ?? pagesMod
     return {
       ...messages,
       plugins: { ...messages.plugins, configUi: configEditorMessages[name] },
+      pluginConsent: {
+        ...messages.pluginConsent,
+        ...pages,
+        privacy: { ...messages.pluginConsent?.privacy, ...pages.privacy },
+      },
     }
   } catch (err) {
     throw new Error(`failed to import locale '${name}': ${err.message}`)
