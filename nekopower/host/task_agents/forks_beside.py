@@ -392,12 +392,12 @@ class ForksBesideMixin:
         Only a project's session of the built-in runtime is copied, and
         only while the commission that holds it is at work or waits for the
         user (one that rests lets the session go). Its conversation is sent
-        with every request of the copy: from a provider's cache, most
-        likely, while the session made a request lately
-        (``TASK_AGENT_FORK_CONTINUE_HOT_SECONDS``); past that, it is not
-        copied when it is long (``TASK_AGENT_FORK_CONTINUE_COLD_MAX_TOKENS``),
-        and the commission waits as it would have. Nor while no place is
-        free, NekoPower is switched off, or everything is being stopped.
+        with every request of the copy, so it is copied only while that
+        conversation is in a provider's cache, most likely: the session made
+        a request lately (``TASK_AGENT_FORK_CONTINUE_HOT_SECONDS``).
+        Otherwise the commission waits as it would have, however short the
+        session. Nor while no place is free, NekoPower is switched off, or
+        everything is being stopped.
 
         Copied (``fork_session``), and looked at again with nothing awaited
         from there to where it takes its place: still queued for the
@@ -419,11 +419,10 @@ class ForksBesideMixin:
             return
 
         def worth_it() -> bool:
-            # Looked at again once it is copied, which takes a moment: a
-            # cache that went cold meanwhile makes a long copy dear as well.
+            # Only a warm cache (owner decision D19). Looked at again once it
+            # is copied, which takes a moment: the cache may go cold meanwhile.
             last = self._last_request_at.get(main)
-            hot = last is not None and asyncio.get_running_loop().time() - last <= settings.TASK_AGENT_FORK_CONTINUE_HOT_SECONDS
-            return hot or kept.context_tokens <= settings.TASK_AGENT_FORK_CONTINUE_COLD_MAX_TOKENS
+            return last is not None and asyncio.get_running_loop().time() - last <= settings.TASK_AGENT_FORK_CONTINUE_HOT_SECONDS
 
         def may() -> bool:
             return (

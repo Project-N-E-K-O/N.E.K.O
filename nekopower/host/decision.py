@@ -300,10 +300,8 @@ class ConfiguredDecisionLLM:
     def __init__(self) -> None:
         self._clients: dict[tuple[Any, ...], Any] = {}
 
-    async def _client(self, tier: str, budget: int) -> Any:
-        from utils.config_manager import get_config_manager
-        from utils.llm_client import create_chat_llm_async
-
+    @staticmethod
+    def _slot(tier: str) -> str:
         from config.nekopower_settings import (
             UNDER_WAY_READ_MODEL_SLOT,
             ORCHESTRATOR_MODEL_SLOT,
@@ -315,7 +313,7 @@ class ConfiguredDecisionLLM:
 
         # The tiers of the task agent space say in the settings which model
         # they use, so that it is changed there and nowhere else.
-        slot = {
+        return {
             TIER_REVIEW: TASK_AGENT_REVIEW_MODEL_SLOT,
             TIER_ARCHIVE: SPACE_ARCHIVE_MODEL_SLOT,
             TIER_CONSOLIDATE: SPACE_CONSOLIDATE_MODEL_SLOT,
@@ -324,6 +322,47 @@ class ConfiguredDecisionLLM:
             TIER_UNDER_WAY: UNDER_WAY_READ_MODEL_SLOT,
             TIER_ANSWER_CHOICE: UNDER_WAY_READ_MODEL_SLOT,
         }.get(tier, "summary" if tier in _SUMMARY_TIERS else "emotion")
+
+    async def decide(
+        self, tier: str, site: str, *, state: str, questions: dict[str, Any], rehost: bool = True,
+    ) -> dict[str, Any] | None:
+        """Ask a site's decision questions on the route the user's vendor allows; None to use the chat prompt.
+
+        The vendor is the decision slot's (native decision) or the chat model
+        of *tier*'s slot (rehost); see :func:`utils.decision_client.ask_site_questions`.
+        """
+        from utils.config_manager import get_config_manager
+        from utils.decision_client import ask_site_questions, site_question_would_send
+
+        from config.nekopower_settings import DECISION_QUESTION_TIMEOUT_SECONDS
+
+        manager = get_config_manager(migrate=False)
+        chat_config = await asyncio.to_thread(manager.get_model_api_config, self._slot(tier))
+        decision_config = await asyncio.to_thread(manager.get_model_api_config, "decision")
+        if not site_question_would_send(site, decision_config=decision_config, chat_config=chat_config, rehost=rehost):
+            # Nothing is sent (the site's chat route, or the native endpoint
+            # in its cooldown after an error): the chat prompt is the only request.
+            return None
+        answers = await ask_site_questions(
+            site,
+            state=state,
+            questions=questions,
+            chat_config=chat_config,
+            decision_config=decision_config,
+            config_manager=manager,
+            rehost=rehost,
+            timeout=DECISION_QUESTION_TIMEOUT_SECONDS,
+            call_type=_CALL_TYPES.get(tier, "agent"),
+        )
+        # Sent but missed (an error, a timeout, no probabilities): empty, so a
+        # caller can count the request it made.
+        return answers if answers is not None else {}
+
+    async def _client(self, tier: str, budget: int) -> Any:
+        from utils.config_manager import get_config_manager
+        from utils.llm_client import create_chat_llm_async
+
+        slot = self._slot(tier)
         config = await asyncio.to_thread(get_config_manager(migrate=False).get_model_api_config, slot)
         key = (slot, config.get("api_key"), config.get("base_url"), config.get("model"), config.get("provider_type"), budget)
         client = self._clients.get(key)
@@ -949,11 +988,96 @@ def _count(name: str, **dims: Any) -> None:
 # ---------------------------------------------------------------------------
 
 
+# Readings of the decision questions (owner decisions D16, D19, D28).
+# A plugin of the coarse screen is kept when its choice probability reaches this.
+COARSE_SCREEN_DECISION_THRESHOLD = 0.05
+# P(look) at or above this makes a commission a side question.
+SIDE_QUESTION_LOOK_THRESHOLD = 0.5
+# Where a commission belongs: a candidate is chosen when its two options hold at
+# least this much and more than "none"; it is the next round of a recurring job
+# when that option holds at least this share of the candidate's.
+BELONGS_ATTACH_THRESHOLD = 0.3
+BELONGS_RECURRENCE_SHARE = 0.4
+# The turn check's second look scales the probability of "nothing to act on" by
+# this before the verdicts are compared.
+TURN_CHECK_NONE_WEIGHT = 0.75
+
+
+def _option_probabilities(answer: Any) -> dict[str, float]:
+    """An answer's option probabilities; empty without them (a bare choice is not read)."""
+    probs: dict[str, float] = {}
+    for key, value in (getattr(answer, "probabilities", None) or {}).items():
+        try:
+            probs[str(key)] = float(value)
+        except (TypeError, ValueError):
+            continue
+    return probs
+
+
+def _candidate_count(request_text: str) -> int:
+    """How many numbered candidates follow ``CANDIDATES:`` in an orchestrator request."""
+    lines = (request_text or "").splitlines()
+    try:
+        start = lines.index("CANDIDATES:")
+    except ValueError:
+        return 0
+    count = 0
+    for line in lines[start + 1:]:
+        if line.startswith(f"{count + 1}. "):
+            count += 1
+    return count
+
+
+def belongs_answer_from(answer: Any, candidates: int) -> str | None:
+    """The orchestrator's JSON answer (``goes_to``, ``relation``) read off a decision answer, or None."""
+    probs = _option_probabilities(answer)
+    if not probs or candidates < 1:
+        return None
+    mass = {k: probs.get(f"c{k}_follow_up", 0.0) + probs.get(f"c{k}_recurrence", 0.0) for k in range(1, candidates + 1)}
+    best = max(mass, key=lambda k: mass[k])
+    if mass[best] < BELONGS_ATTACH_THRESHOLD or mass[best] <= probs.get("none", 0.0):
+        return json.dumps({"goes_to": 0, "relation": "new"})
+    share = probs.get(f"c{best}_recurrence", 0.0) / mass[best] if mass[best] > 0 else 0.0
+    relation = "recurrence" if share >= BELONGS_RECURRENCE_SHARE else "follow_up"
+    return json.dumps({"goes_to": best, "relation": relation})
+
+
+def turn_verdict_from(answer: Any) -> str | None:
+    """The turn check verdict the second look gives, or None without probabilities."""
+    from config.prompts.prompts_nekopower_brain import TURN_CHECK_DECISION_VERDICT_OF, TURN_CHECK_VERDICTS
+
+    probs = _option_probabilities(answer)
+    if not probs:
+        return None
+    mass = {verdict: 0.0 for verdict in TURN_CHECK_VERDICTS}
+    for option, p in probs.items():
+        verdict = TURN_CHECK_DECISION_VERDICT_OF.get(option)
+        if verdict is not None:
+            mass[verdict] += p
+    mass["none"] *= TURN_CHECK_NONE_WEIGHT
+    return max(TURN_CHECK_VERDICTS, key=lambda verdict: mass[verdict])
+
+
 class LexicalDecisionModel:
     """Keyword patterns, BM25, the small-model coarse screen and one fine selection."""
 
     def __init__(self, llm: DecisionLLM) -> None:
         self._llm = llm
+
+    async def _decided(
+        self, tier: str, site: str, state: str, questions: dict[str, Any], *, rehost: bool,
+    ) -> dict[str, Any] | None:
+        """Answers to a site's decision questions (D26): None when none were sent, empty when sent and missed."""
+        decide = getattr(self._llm, "decide", None)
+        if decide is None:
+            return None
+        try:
+            return await decide(tier, site, state=state, questions=questions, rehost=rehost)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - the chat prompt is asked instead
+            logger.info("decision question for %s skipped: %s", site, type(exc).__name__)
+            return {}  # may have been sent: counted as a request that missed
 
     async def side_question(self, dispatch_text: str, user_text: str, waiting_for: str = "") -> bool | None:
         """Say whether a commission is a side question: answered by looking, with nothing changed. None when it cannot be told.
@@ -975,6 +1099,29 @@ class LexicalDecisionModel:
             # what was said since stands) may well be work: not told, and
             # it waits for the session, with no request made.
             return None
+        # On a decision model, or rehosted on a chat model that returns token
+        # probabilities: what kind of request it is, side question = P(look).
+        from config.prompts.prompts_nekopower_brain import (
+            SIDE_QUESTION_DECISION_INSTRUCTIONS,
+            SIDE_QUESTION_DECISION_OPTIONS,
+            SIDE_QUESTION_DECISION_PENDING,
+        )
+        from utils.decision_client import ChoiceQuestion
+        from utils.decision_client.routing import SITE_SIDE_QUESTION
+
+        options = dict(SIDE_QUESTION_DECISION_OPTIONS)
+        if waiting_for.strip():
+            options["pending"] = SIDE_QUESTION_DECISION_PENDING
+        answers = await self._decided(
+            TIER_SIDE_QUESTION,
+            SITE_SIDE_QUESTION,
+            build_side_question_request(task=dispatch_text, user_said=user_text, waiting_for=waiting_for),
+            {"kind": ChoiceQuestion(instructions=SIDE_QUESTION_DECISION_INSTRUCTIONS, criteria=options)},
+            rehost=True,
+        )
+        kinds = _option_probabilities((answers or {}).get("kind"))
+        if kinds:
+            return kinds.get("look", 0.0) >= SIDE_QUESTION_LOOK_THRESHOLD
         messages = [
             {"role": "system", "content": TASK_BRAIN_SIDE_QUESTION_PROMPT},
             {
@@ -1041,15 +1188,76 @@ class LexicalDecisionModel:
         verdict = decision.get("goes_on") if decision is not None else None
         return verdict if isinstance(verdict, bool) else None
 
-    async def belongs(self, messages: list[dict[str, Any]]) -> str | None:
+    async def _belongs_decided(
+        self, messages: list[dict[str, Any]], candidates: int | None = None,
+    ) -> tuple[str | None, bool]:
+        """Where a commission belongs, as one single choice on a native decision model, and whether it was sent.
+
+        The answer is None to ask the chat prompt.
+
+        The options are none, and each candidate either followed up or done
+        again as the next round of a recurring job. Vendors without a native
+        decision model keep the chat prompt (D27).
+        """
+        from config.prompts.prompts_nekopower_brain import (
+            ORCHESTRATOR_DECISION_FOLLOW_UP,
+            ORCHESTRATOR_DECISION_NONE,
+            ORCHESTRATOR_DECISION_RECURRENCE,
+            ORCHESTRATOR_DECISION_TAIL,
+            ORCHESTRATOR_PROMPT,
+        )
+        from utils.decision_client import ChoiceQuestion
+        from utils.decision_client.routing import SITE_BELONGS
+
+        if len(messages) < 2:
+            return None, False
+        request = str(messages[1].get("content") or "")
+        if candidates is None:
+            candidates = _candidate_count(request)
+        if candidates < 1:
+            return None, False
+        criteria = {"none": ORCHESTRATOR_DECISION_NONE}
+        for k in range(1, candidates + 1):
+            criteria[f"c{k}_follow_up"] = ORCHESTRATOR_DECISION_FOLLOW_UP.format(k=k)
+            criteria[f"c{k}_recurrence"] = ORCHESTRATOR_DECISION_RECURRENCE.format(k=k)
+        # The orchestrator's guidance without its last line, the JSON reply format.
+        head, _sep, _tail = ORCHESTRATOR_PROMPT.rpartition("\nReply with JSON")
+        instructions = (head or ORCHESTRATOR_PROMPT) + ORCHESTRATOR_DECISION_TAIL
+        answers = await self._decided(
+            TIER_ORCHESTRATE,
+            SITE_BELONGS,
+            request,
+            {"goes": ChoiceQuestion(instructions=instructions, criteria=criteria)},
+            rehost=False,
+        )
+        return belongs_answer_from((answers or {}).get("goes"), candidates), answers is not None
+
+    async def belongs_counted(
+        self, messages: list[dict[str, Any]], candidates: int | None = None,
+    ) -> tuple[str | None, int]:
+        """``belongs``, with the requests it made: two when a decision question was sent and missed."""
+        decided, sent = await self._belongs_decided(messages, candidates)
+        if decided is not None:
+            return decided, 1
+        return await self._belongs_chat(messages), 2 if sent else 1
+
+    async def belongs(self, messages: list[dict[str, Any]], candidates: int | None = None) -> str | None:
         """Ask which of a few projects and task agents a new commission belongs with; returns the answer as it came, or None.
 
         One request (``TIER_ORCHESTRATE``), with the messages
-        ``orchestrator.question`` put together. Asked only where the words
+        ``orchestrator.question`` put together; ``candidates`` is how many
+        it shows (counted off the request when not given). Asked only where the words
         of the commission neither name nor clearly match or miss what is
         there (``families.Families.decide``). None when the request
         failed: the commission is then a new one of its own.
+
+        On a native decision model it is one single choice instead (D19),
+        whose reading is answered in the same JSON the chat prompt asks for.
         """
+        answer, _calls = await self.belongs_counted(messages, candidates)
+        return answer
+
+    async def _belongs_chat(self, messages: list[dict[str, Any]]) -> str | None:
         try:
             return await self._llm.complete(TIER_ORCHESTRATE, messages)
         except asyncio.CancelledError:
@@ -1416,27 +1624,79 @@ class LexicalDecisionModel:
             return Triage(kind="unsure")
         # Nothing matched by its words and there is no task agent to fall back
         # on. Before saying it cannot be done, let the small model look once.
-        coarse = await self._coarse_screen(match_text, plugins, request.lang)
+        coarse, coarse_calls = await self._coarse_screen(match_text, plugins, request.lang)
         known = {str(plugin.get("id")) for plugin in plugins}
         picked = [plugin_id for plugin_id in coarse if plugin_id in known]
         if picked:
-            return Triage(kind="new", candidate_ids=picked, coarse_ids=coarse, model_calls=1)
-        return Triage(kind="none", reason="no_match", coarse_ids=coarse, model_calls=1)
+            return Triage(kind="new", candidate_ids=picked, coarse_ids=coarse, model_calls=coarse_calls)
+        return Triage(kind="none", reason="no_match", coarse_ids=coarse, model_calls=coarse_calls)
 
-    async def _coarse_screen(self, user_text: str, plugins: Sequence[dict[str, Any]], lang: str) -> list[str]:
-        """Ask the small model which plugins might be relevant; ids only."""
+    async def _coarse_screen_decided(
+        self, user_text: str, shorts: list[tuple[str, str]],
+    ) -> tuple[list[str] | None, bool]:
+        """The coarse screen as one single choice on a native decision model (D16), and whether it was sent.
+
+        The ids are None to ask the chat prompt.
+
+        Each plugin whose choice probability reaches
+        ``COARSE_SCREEN_DECISION_THRESHOLD`` is kept, in catalog order.
+        Vendors without one keep the chat prompt: a single choice read by
+        its probabilities did not hold up for several plugins on chat models.
+        """
+        from config import DECISION_STATE_MAX_TOKENS
+        from config.prompts.prompts_nekopower_brain import (
+            COARSE_SCREEN_DECISION_INSTRUCTIONS,
+            COARSE_SCREEN_DECISION_NONE,
+            COARSE_SCREEN_DECISION_STATE,
+        )
+        from utils.decision_client import ChoiceQuestion
+        from utils.decision_client.routing import SITE_COARSE_SCREEN
+        from utils.tokenize import truncate_to_tokens
+
+        if not shorts:
+            return None, False
+        criteria = {f"p{i}": f"[{pid}] {truncate_to_tokens(short, 24)}" for i, (pid, short) in enumerate(shorts)}
+        criteria["none"] = COARSE_SCREEN_DECISION_NONE
+        state = COARSE_SCREEN_DECISION_STATE.format(user_text=truncate_to_tokens(user_text, DECISION_STATE_MAX_TOKENS // 4))
+        answers = await self._decided(
+            TIER_COARSE,
+            SITE_COARSE_SCREEN,
+            state,
+            {"pick": ChoiceQuestion(instructions=COARSE_SCREEN_DECISION_INSTRUCTIONS, criteria=criteria)},
+            rehost=False,
+        )
+        sent = answers is not None
+        probs = _option_probabilities((answers or {}).get("pick"))
+        if not probs:
+            return None, sent
+        return [
+            pid for i, (pid, _short) in enumerate(shorts)
+            if probs.get(f"p{i}", 0.0) > 0 and probs.get(f"p{i}", 0.0) >= COARSE_SCREEN_DECISION_THRESHOLD
+        ], sent
+
+    async def _coarse_screen(self, user_text: str, plugins: Sequence[dict[str, Any]], lang: str) -> tuple[list[str], int]:
+        """Ask the small model which plugins might be relevant: the ids, and the requests made for them.
+
+        Two requests when a decision question was sent and missed, then the chat prompt.
+        """
         from config import AGENT_PLUGIN_SHORTDESC_MAX_TOKENS
         from config.prompts.prompts_nekopower_brain import TASK_BRAIN_COARSE_SCREEN_PROMPT
         from config.prompts.prompts_sys import _loc
         from utils.tokenize import count_tokens, truncate_to_tokens
 
         summaries = []
+        shorts: list[tuple[str, str]] = []
         for plugin in plugins:
             plugin_id = plugin.get("id", "unknown")
             short = plugin.get("short_description") or plugin.get("description", "")
             if count_tokens(short) > AGENT_PLUGIN_SHORTDESC_MAX_TOKENS:
                 short = truncate_to_tokens(short, AGENT_PLUGIN_SHORTDESC_MAX_TOKENS - count_tokens("...")) + "..."
             summaries.append(f"- {plugin_id}: {short}")
+            shorts.append((str(plugin_id), short))
+        decided, sent = await self._coarse_screen_decided(user_text, shorts)
+        if decided is not None:
+            return decided, 1
+        calls = 2 if sent else 1
         system = _loc(TASK_BRAIN_COARSE_SCREEN_PROMPT, lang).format(
             plugin_summaries="\n".join(summaries),
             user_text=user_text,
@@ -1448,12 +1708,12 @@ class LexicalDecisionModel:
             raw = await self._llm.complete(TIER_COARSE, messages)
             ids = robust_json_loads(_strip_fences(raw))
             if isinstance(ids, list):
-                return [str(item) for item in ids if isinstance(item, (str, int))]
+                return [str(item) for item in ids if isinstance(item, (str, int))], calls
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - keyword and BM25 matches still stand
             logger.warning("coarse screen failed: %s", type(exc).__name__)
-        return []
+        return [], calls
 
     # -- turn check -------------------------------------------------------
 
@@ -1485,11 +1745,36 @@ class LexicalDecisionModel:
             kind = "none"
         task = answer.get("task")
         task = " ".join(task.split()) if isinstance(task, str) else ""
+        calls = 1
+        if kind != "none":
+            # A second look on a decision model (or rehosted on a chat model
+            # with token probabilities) before anything is acted on: its
+            # verdict stands, with the task the chat wrote (owner decision D28).
+            asked, checked = await self._turn_second_look(messages[1]["content"])
+            if asked:
+                calls = 2  # counted whether or not its answer could be read
+            if checked is not None:
+                kind = checked
         return TurnVerdict(
             kind=kind,
             task="" if kind == "none" else truncate_to_tokens(task, TURN_CHECK_TASK_MAX_TOKENS),
-            model_calls=1,
+            model_calls=calls,
         )
+
+    async def _turn_second_look(self, state: str) -> tuple[bool, str | None]:
+        """Whether the turn check's decision question was sent, and its verdict (None when not sent or not read)."""
+        from config.prompts.prompts_nekopower_brain import TURN_CHECK_DECISION_INSTRUCTIONS, TURN_CHECK_DECISION_OPTIONS
+        from utils.decision_client import ChoiceQuestion
+        from utils.decision_client.routing import SITE_TURN_CHECK
+
+        answers = await self._decided(
+            TIER_TURN_CHECK,
+            SITE_TURN_CHECK,
+            state,
+            {"verdict": ChoiceQuestion(instructions=TURN_CHECK_DECISION_INSTRUCTIONS, criteria=dict(TURN_CHECK_DECISION_OPTIONS))},
+            rehost=True,
+        )
+        return answers is not None, turn_verdict_from((answers or {}).get("verdict"))
 
     # -- second round -----------------------------------------------------
 
@@ -1549,11 +1834,11 @@ class LexicalDecisionModel:
                     coarse_ids = list(triage.coarse_ids)
                     kept, _ = await asyncio.to_thread(stage1_filter, match_text, all_plugins)
                 else:
-                    (kept, _), coarse_ids = await asyncio.gather(
+                    (kept, _), (coarse_ids, coarse_calls) = await asyncio.gather(
                         asyncio.to_thread(stage1_filter, match_text, all_plugins),
                         self._coarse_screen(match_text, all_plugins, request.lang),
                     )
-                    calls += 1
+                    calls += coarse_calls
                 selected = {plugin.get("id") for plugin in kept} | set(coarse_ids) | set(hits)
                 shown = [plugin for plugin in all_plugins if plugin.get("id") in selected]
                 lines = build_desc_lines(shown)
