@@ -233,20 +233,27 @@ describe('PluginPermissions tab', () => {
     expect(api.decidePermission).toHaveBeenCalledWith('demo', NET, 'granted', 'in_use')
   })
 
-  it('reads the declaration again while it is held, and stops once it is read', async () => {
+  it('reads the declaration again while it is held, waiting longer each time, and stops once it is read', async () => {
     vi.useFakeTimers()
     try {
       const held = panel({ manifest: 'unavailable', rows: [row({ declared: null, reconcile: null, anytime_allowed: null })] })
       serve(held)
-      api.getPermissionPanel.mockReset().mockResolvedValueOnce(held).mockResolvedValue(panel())
+      api.getPermissionPanel.mockReset().mockResolvedValueOnce(held).mockResolvedValueOnce(held).mockResolvedValue(panel())
       const root = await mount()
       expect(q(root, 'notice-unavailable')).not.toBeNull()
       await vi.advanceTimersByTimeAsync(5000)
       await flush()
       expect(api.getPermissionPanel).toHaveBeenCalledTimes(2)
+      expect(q(root, 'notice-unavailable')).not.toBeNull()
+      // Still held: the next read waits 10 s, not 5 s.
+      await vi.advanceTimersByTimeAsync(5000)
+      expect(api.getPermissionPanel).toHaveBeenCalledTimes(2)
+      await vi.advanceTimersByTimeAsync(5000)
+      await flush()
+      expect(api.getPermissionPanel).toHaveBeenCalledTimes(3)
       expect(q(root, 'notice-unavailable')).toBeNull()
       await vi.advanceTimersByTimeAsync(60000)
-      expect(api.getPermissionPanel).toHaveBeenCalledTimes(2)
+      expect(api.getPermissionPanel).toHaveBeenCalledTimes(3)
     } finally {
       vi.useRealTimers()
     }
@@ -267,16 +274,18 @@ describe('PluginPermissions tab', () => {
   it('drops the counts of uses while undecided when a refresh cannot read them', async () => {
     serve(panel({ rows: [row({ state: 'undecided', condition: null })] }), {
       pending: {
-        incomplete: [],
+        incomplete: ['demo'],
         first_use: [{ plugin_id: 'demo', permission: NET, at: localDay(2026, 11, 27), count: 4, count_is_lower_bound: false }],
       },
     })
     const root = await mount()
     expect(q(root, `first-use-${NET}`)).not.toBeNull()
+    expect(q(root, 'incomplete')).not.toBeNull()
     api.getPendingPermissions.mockRejectedValue(new Error('offline'))
     q(root, 'banner-changed')!.click()
     await flush()
     expect(q(root, `first-use-${NET}`)).toBeNull()
+    expect(q(root, 'incomplete')).toBeNull()
   })
 
   it.each([

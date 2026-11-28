@@ -391,6 +391,8 @@ let reloadAfterSave = false
 let pollTimer: ReturnType<typeof setTimeout> | null = null
 /** Failed refreshes in a row: the next poll waits longer (up to a minute). */
 let failedPolls = 0
+/** Answers in a row with the declaration unreadable: read again less often too. */
+let heldPolls = 0
 const MAX_POLL_MS = 60000
 let unmounted = false
 
@@ -398,11 +400,18 @@ let unmounted = false
  * Whether the panel is read again on its own: a scan still to come, a
  * declaration held by a plugin operation for now, or a failed refresh.
  */
-function needsRefresh(p: PermissionPanel | null): p is PermissionPanel {
+function needsRefresh(p: PermissionPanel | null): boolean {
   return Boolean(p && (scanPending(p) || p.manifest === 'unavailable' || failedPolls > 0))
 }
+/** A running scan is followed every 5 s; a failed refresh or a declaration still unreadable waits longer each time. */
 function nextPollMs() {
-  return Math.min(SCAN_POLL_MS * 2 ** failedPolls, MAX_POLL_MS)
+  const held = panel.value && !scanPending(panel.value) ? Math.max(heldPolls - 1, 0) : 0
+  return Math.min(SCAN_POLL_MS * 2 ** Math.max(failedPolls, held), MAX_POLL_MS)
+}
+function shown(next: PermissionPanel) {
+  panel.value = next
+  failedPolls = 0
+  heldPolls = next.manifest === 'unavailable' ? heldPolls + 1 : 0
 }
 
 function stopPolling() {
@@ -430,8 +439,7 @@ async function load() {
     if (seq !== loadSeq || unmounted) return
     // A refresh that fails keeps what is shown: only the first load can fail the tab.
     if (validPanel(nextPanel)) {
-      panel.value = nextPanel
-      failedPolls = 0
+      shown(nextPanel)
     } else if (panel.value) {
       failedPolls++
     }
@@ -444,6 +452,7 @@ async function load() {
       pending.value = {
         ...pending.value,
         first_use: pending.value.first_use.filter((use) => use.plugin_id !== props.pluginId),
+        incomplete: pending.value.incomplete.filter((id) => id !== props.pluginId),
       }
     }
     // Follow a running scan or a held declaration; retry a failed refresh too, waiting longer each time.
@@ -617,10 +626,7 @@ async function save(row: PanelRow, run: () => Promise<PermissionPanel>) {
   loading.value = false
   try {
     const next = await run()
-    if (validPanel(next)) {
-      panel.value = next
-      failedPolls = 0
-    }
+    if (validPanel(next)) shown(next)
     // The plugin-wide consent line above reads the shared record: it may have moved too.
     void consentState.load(props.pluginId).catch(() => undefined)
     // Uses while undecided count from the last answer, and the last-use
