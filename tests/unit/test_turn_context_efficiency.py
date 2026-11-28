@@ -28,11 +28,11 @@ import pytest
 import memory.embeddings as emb
 import memory.hybrid_recall as hr
 import memory.turn_context as mtc
-from knowledge.models import parse_pack
-from knowledge.retrieval import SemanticMatch, semantic_candidates
-from knowledge.store import NAME_SPAN_MAX_CHARS, KnowledgeStore, _NAME_UNIT_RE
-from knowledge.text import loose_surface, strict_surface
-from tests.unit.test_knowledge_subsystem import _pack, fast_indexer  # noqa: F401
+from services.knowledge.models import parse_pack
+from services.knowledge.retrieval import SemanticMatch, semantic_candidates
+from services.knowledge.store import NAME_SPAN_MAX_CHARS, KnowledgeStore, _NAME_UNIT_RE
+from services.knowledge.text import loose_surface, strict_surface
+from tests.knowledge_fixtures import _pack, fast_indexer  # noqa: F401
 from tests.unit.test_memory_turn_context import _fact, _no_vectors, _stores
 
 pytestmark = pytest.mark.unit
@@ -347,7 +347,7 @@ def test_named_candidates_build_spans_no_longer_than_the_longest_name(tmp_path):
             seen.extend(value)
         return real(value, *args, **kwargs)
 
-    with patch("knowledge.store.json.dumps", spy):
+    with patch("services.knowledge.store.json.dumps", spy):
         assert store.named_candidates("周末" * 100 + "海底捞", pack_ids=["short"])
     assert seen and max(len(key) - 2 for key in seen) <= len("海底捞")
 
@@ -603,18 +603,19 @@ async def test_a_timed_out_knowledge_query_skips_the_other_material_type(tmp_pat
     corpus = _pack("lines", material_type="corpus", entries=[_entry("台词", "愿神明保佑你。")])
     service = await _ready(tmp_path, TopicEmbedder(), packs=[knowledge, corpus])
     try:
-        import knowledge.service as service_module
+        # Inject the scan where queries execute; worker lifetime stays on the service.
+        import services.knowledge.querying as query_module
 
         scanned: list[tuple[str, ...]] = []
         release = threading.Event()
-        real = service_module.semantic_candidates
+        real = query_module.semantic_candidates
 
         def slow_scan(*args, **kwargs):
             scanned.append(tuple(kwargs.get("allowed_pack_ids", ())))
             release.wait(5)
             return real(*args, **kwargs)
 
-        patcher = patch.object(service_module, "semantic_candidates", slow_scan)
+        patcher = patch.object(query_module, "semantic_candidates", slow_scan)
         patcher.start()
         result = await service.turn_context(text="我想多了解一点神明", budget_ms=300)
         assert result["result"] == "timeout"
