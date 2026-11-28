@@ -58,6 +58,10 @@ class IdleCompactMixin:
             # where it goes next, not where it last ran. Nothing of it goes there until the
             # user goes on with it, as below.
             return None
+        if kept is not None and kept.model_was and kept.model_was != kept.model_ident:
+            # The same where the preset it has is the one it was told of: given another and
+            # then this one again, with what this one is sent to set to another model meanwhile.
+            return None
         choice = await self.session_model(kept, record=False) if kept is not None else await self._new_session_model()
         config = choice.config
         if kept is not None and kept.model_ident and choice.ident != kept.model_ident:

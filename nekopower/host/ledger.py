@@ -315,7 +315,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     model_fallback TEXT NOT NULL DEFAULT '',
     model_tier TEXT NOT NULL DEFAULT '',
     seat TEXT NOT NULL DEFAULT '',
-    preset_told TEXT NOT NULL DEFAULT ''
+    preset_told TEXT NOT NULL DEFAULT '',
+    model_was TEXT NOT NULL DEFAULT ''
 );
 CREATE UNIQUE INDEX IF NOT EXISTS sessions_by_name ON sessions (lanlan_name, name);
 CREATE INDEX IF NOT EXISTS sessions_by_project ON sessions (lanlan_name, project, kind);
@@ -662,6 +663,15 @@ class Session:
     # before its task agent took a word. "" for a session that was never
     # started (and one last started by a build that did not keep it).
     preset_told: str = ""
+    # Where its task agent last ran (a ``model_ident``), while its row says it
+    # is sent elsewhere by something other than a start: a change of its
+    # preset writes the model of the preset it is given, which it has not run
+    # on yet (``Ledger.change_preset``). The next start, which sends it
+    # there, takes this away (``Ledger.model_ran``). Nothing of its
+    # conversation goes to the model on its row before that
+    # (``TaskAgentManager._idle_model``): not by the preset it was told of
+    # alone, which a change and a change back leave as it was. "" otherwise.
+    model_was: str = ""
 
     @property
     def tokens(self) -> int:
@@ -697,6 +707,7 @@ _ADDED_SESSION_COLUMNS: tuple[tuple[str, str], ...] = (
     ("model_tier", "TEXT NOT NULL DEFAULT ''"),
     ("seat", "TEXT NOT NULL DEFAULT ''"),
     ("preset_told", "TEXT NOT NULL DEFAULT ''"),
+    ("model_was", "TEXT NOT NULL DEFAULT ''"),
 )
 # The columns that say which model a session's task agent is sent to, other than whether it goes free.
 _MODEL_TEXT_COLUMNS: tuple[str, ...] = ("model_slot", "model_name", "model_ident", "model_fallback", "model_tier")
@@ -711,7 +722,7 @@ _SESSION_UPDATABLE: frozenset[str] = (
     frozenset(_SESSION_COLUMNS)
     - {
         "id", "lanlan_name", "kind", "created_at", "forked_from", "forked_at", "context_tokens", "preset",
-        "preset_told",
+        "preset_told", "model_was",
     }
     - frozenset(_USAGE_COLUMNS)
     - _CARD_COLUMNS
@@ -1999,6 +2010,7 @@ class Ledger:
         row["model_free"] = 0
         row["seat"] = ""
         row["preset_told"] = ""
+        row["model_was"] = ""
         row.update(values)
         if row["seat"] not in SEATS:
             raise ValueError(f"unknown seat of a session {row['seat']!r}")
@@ -2810,6 +2822,16 @@ class Ledger:
                 # or by a start that is under way and has not said yet): as the preset it had.
                 # A start that is under way says what it opened it as, over this.
                 changes["preset_told"] = current.preset
+            if (
+                current.session_dir
+                and current.model_ident
+                and not current.model_was
+                and sent_to.get("model_ident") not in (None, current.model_ident)
+            ):
+                # Its task agent ran where its row says, and the row says another from here on:
+                # where it ran is kept until a start sends it there (``model_ran``). (What is
+                # kept already is where it ran: nothing has started it since.)
+                changes["model_was"] = current.model_ident
             assignments = ", ".join(f"{name} = ?" for name in changes)
             conn.execute(f"UPDATE sessions SET {assignments} WHERE id = ?", [*changes.values(), session_id])
             # The one its task agent is at (at work, or waiting for the user) before one that
@@ -2853,6 +2875,22 @@ class Ledger:
             return done.rowcount > 0
 
         return await self.run(work)
+
+    async def model_ran(self, session_id: str, ident: str) -> None:
+        """Note that a session's task agent was started on a model just now (``Session.model_was``).
+
+        Where that is the model its row says, nothing is left to keep.
+        Where the row says another by now (its preset was changed while
+        the start was under way), this is where it last ran.
+        """
+
+        def work(conn: sqlite3.Connection) -> None:
+            conn.execute(
+                "UPDATE sessions SET model_was = CASE WHEN model_ident = ? THEN '' ELSE ? END WHERE id = ?",
+                (ident, ident, session_id),
+            )
+
+        await self.run(work)
 
     async def preset_was_told(self, session_id: str, preset: str) -> None:
         """Note the preset a session's task agent was started under just now (``Session.preset_told``).

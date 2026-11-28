@@ -2614,6 +2614,51 @@ async def test_a_session_given_another_preset_has_that_presets_model_on_its_row_
     assert (await host.ledger.get_session(member)).preset == "scout"
 
 
+async def test_a_session_whose_preset_was_changed_and_changed_back_is_not_summed_up_on_a_model_it_never_ran_on(
+    hosts, tmp_path
+):
+    manager = _manager(tmp_path, _default_slots())
+    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM([_report()]), manager)
+    agents = host.task_agents
+    member = (await host.open_session("Lan", "Shop site", preset="scout"))["session_id"]
+
+    async def row() -> tuple[str, str, str, bool]:
+        kept = await host.ledger.get_session(member)
+        return kept.preset, kept.preset_told, kept.model_name, bool(kept.model_was)
+
+    await wait_status(host, (await _dispatch(host, "look at the header of the shop site")).commission_id, "done")
+    await let_go(host)
+    ran_on = (await host.ledger.get_session(member)).model_ident
+    assert await row() == ("scout", "scout", "agent-model", False) and await agents._idle_model(member) is not None
+
+    # What its preset is sent to is set to another model; it is given another preset, and then
+    # the one it had: by its preset it is what its task agent knows itself as, and its row says
+    # the model that preset is sent to now, which never had its conversation.
+    await host.set_role_model("scout", OWN_SLOT)
+    await host.change_duty(member, "general")
+    await host.change_duty(member, "scout")
+    assert await row() == ("scout", "scout", "own-model", True)
+    assert (await host.ledger.get_session(member)).model_was == ran_on
+    # Nothing of it goes there before the user goes on with it.
+    assert await agents._idle_model(member) is None
+
+    # Given the other preset once more, where it ran stays what is kept.
+    await host.change_duty(member, "general")
+    assert (await host.ledger.get_session(member)).model_was == ran_on
+    await host.change_duty(member, "scout")
+
+    # Started there, it is where it last ran.
+    await wait_status(host, (await _dispatch(host, "look at the footer of the shop site")).commission_id, "done")
+    await let_go(host)
+    assert await row() == ("scout", "scout", "own-model", False) and await agents._idle_model(member) is not None
+
+    # By the ledger: a start on another model than the row says by then leaves where it ran.
+    await host.ledger.model_ran(member, "another-model")
+    assert (await host.ledger.get_session(member)).model_was == "another-model"
+    await host.ledger.model_ran(member, (await host.ledger.get_session(member)).model_ident)
+    assert (await host.ledger.get_session(member)).model_was == ""
+
+
 async def test_a_session_whose_new_presets_model_cannot_be_told_just_now_stays_where_it_was(hosts, tmp_path, monkeypatch):
     manager = _manager(tmp_path, _default_slots())
     host = _host(hosts, tmp_path, ScriptedLLM([_report()]), manager)

@@ -1479,6 +1479,15 @@ class TaskAgentManager(
                 spec = spec.model_copy(update={"instructions": f"{spec.instructions}\n\n{brief}"})
             await runtime.start(spec)
             session.opened_in_runtime = True
+            if kept.model_was and choice.ident:
+                # Its row said it was sent to another model than its task agent last ran on (its
+                # preset was changed): it runs there from here on.
+                try:
+                    await self._ledger.model_ran(session.session_id, choice.ident)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:  # noqa: BLE001 - it is not summed up while idle until a start says so
+                    logger.warning("noting the model a session was started on failed", exc_info=True)
             if not told_as and last_as != now_as:
                 # Nothing to tell it: what it is opened as is on record from here on, whatever
                 # becomes of this start, for the next start to tell a change by; also one made

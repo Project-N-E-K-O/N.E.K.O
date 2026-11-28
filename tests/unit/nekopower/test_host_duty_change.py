@@ -208,7 +208,7 @@ async def test_a_change_of_preset_is_written_with_an_event_of_the_commission_its
     assert (await ledger.get_session(session.id)).preset == "scout"
     assert await ledger.change_preset("no-such-session", "worker", by="user") == (None, "", None)
     # Neither is written with the other columns of a session.
-    for column in ("preset", "preset_told"):
+    for column in ("preset", "preset_told", "model_was"):
         with pytest.raises(ValueError, match="cannot be updated"):
             await ledger.update_session(session.id, **{column: "worker"})
 
