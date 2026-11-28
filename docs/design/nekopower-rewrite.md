@@ -3439,12 +3439,12 @@ CodeRabbit 在 17.17 那个 PR（#4119）的第 6 轮指出两处叫停没收干
 **1. 远端默认分支起点（`RemoteDefaultBranch`）**
 
 - `Start` 新增子类 `RemoteDefaultBranch(remote="origin", branch=None, fetch=True)`；`WorktreeManager.remote_default_branch(...)` 可单独查询远端默认分支。
-- 发现顺序：`fetch=True` 时先 `git ls-remote --symref -- <remote> HEAD` 读 `ref: refs/heads/<branch>`（失败或仅查本地时回退 `refs/remotes/<remote>/HEAD`）。
+- 发现顺序：`fetch=True` 时先 `git ls-remote --symref -- <remote> HEAD` 读 `ref: refs/heads/<branch>`（查询失败直接抛出 `GitError`；仅当查询成功但未识别到分支、或 `fetch=False` 仅查本地时回退读 `refs/remotes/<remote>/HEAD`）。
 - 拉取用隔离临时引用：`git fetch --no-tags --no-write-fetch-head --refmap= --quiet -- <remote> +refs/heads/<branch>:refs/nekopower/fetch/<随机>`，解析出提交后在 `finally` 中删除临时引用——不改用户本地 `refs/remotes/*`、分支、索引和工作区；同样过子模块、内容过滤器和合并驱动检查。
 
 **2. 分支提交与 PR 交付（`BranchCommit`、`PullRequest`）**
 
-- `Landing` 新增 `BranchCommit(branch="", message="", remote=None, base_branch=None)` 与 `PullRequest(title="", body="", branch="", base_branch=None, remote="origin", draft=True, commit_message="", create_pr=None)`，接口为 `WorktreeManager.merge_back(handle, landing)`，返回扩展后的 `MergeResult`（新增 `branch` / `commit` / `remote` / `pr_url` / `pr_number`）。
+- `Landing` 新增 `BranchCommit(branch="", message="", remote=None, base_branch=None)` 与 `PullRequest(title, body="", branch="", base_branch=None, remote="origin", draft=True, commit_message="", create_pr=None)`（`title` 为必填参数），接口为 `WorktreeManager.merge_back(handle, landing)`，返回扩展后的 `MergeResult`（新增 `branch` / `commit` / `remote` / `pr_url` / `pr_number`）。
 - 安全约束：校验分支名（`git check-ref-format --branch`），拒绝 `main` / `master`、仓库默认分支、任一 worktree 已检出的分支，以及非本工作副本创建的既有分支（在 git worktree admin 目录下 `nekopower-delivery.json` 记录本副本曾交付过的分支和 PR 信息）。
 - 续推与合并：同一工作副本再次交付到自己建过的分支时，若分支尖端等于当前起点则直接提交推进，若分支另有新提交则走无工作区 `git merge-tree --write-tree --merge-base` 三方合并；有冲突直接返回 `conflict`，不触碰用户工作区。
 - 推送与回滚：配置 `remote` 时执行 `git push --no-verify -- <remote> <ref>:<ref>`（绝不 force push）；推送失败则按 CAS 回滚刚更新的本地分支引用。
@@ -3462,15 +3462,15 @@ CodeRabbit 在 17.17 那个 PR（#4119）的第 6 轮指出两处叫停没收干
 
 **4. 非 git 目录并行写（`kind="copy"`）**
 
-- `WorktreeManager(allow_non_git=True)`（默认开启，`probe(..., allow_non_git=False)` 可按需关闭）：对非 git 普通目录、`git` 缺失或版本过旧时的非 git 目录，探测返回 `usable=True, kind="copy", repo_root=None`（`families.in_git` 按 `repo_root is not None` 判断，行为不变）；空/不存在目录、超过上限（`WORKTREE_COPY_MAX_FILES = 20_000` 或 `WORKTREE_COPY_MAX_BYTES = 512 MiB`）返回 `directory_too_large` 不可用；裸仓库和 `.git` 内部目录仍明确拒绝。
+- `WorktreeManager(allow_non_git=True)`（默认开启，`probe(..., allow_non_git=False)` 可按需关闭）：对非 git 普通目录（含空的非 git 目录）、`git` 缺失或版本过旧时的非 git 目录，探测返回 `usable=True, kind="copy", repo_root=None`（`families.in_git` 按 `repo_root is not None` 判断，行为不变）；不存在或不可读的目录返回 `not_a_repository`，超过上限（`WORKTREE_COPY_MAX_FILES = 20_000` 或 `WORKTREE_COPY_MAX_BYTES = 512 MiB`）返回 `directory_too_large` 不可用；裸仓库和 `.git` 内部目录仍明确拒绝。
 - 存储与隔离：元数据、基线快照和备份全部放在副本目录同级 `<copies_base>/.nekopower-copies/<id>/` 下，**不往用户项目目录写入任何元数据文件**；创建时忽略 `.git`、已链接的依赖目录和单文件超过 20 MiB 的大文件。
 - 合回与冲突：`merge_back`（仅支持 `WorkingFiles`；`BranchCommit` / `PullRequest` 及 `FromRef` / `RemoteDefaultBranch` 对非 git 目录明确拒绝）对文本文件做纯 Python diff3 三方合并，二进制文件按内容字节比对；冲突时项目目录零修改，返回 `conflict`，`prepare_conflicts` 将 `<<<<<<< project` / `=======` / `>>>>>>> worktree` 冲突标记写入副本供使魔解决；应用前先备份原文件，写入后逐文件读回校验，任一步失败或被取消则原样回滚；替换空目录时仅用 `os.rmdir`，绝不误删非空用户目录。
-- 生命周期：支持 `open`、`has_changes`、`remove`（校验目录身份 `(dev, ino, birth)`，Linux 无创建时间时回退 `(dev, ino)`）、`reconcile` 以及 `TreeWork` 下的并行成员、组队与监工猫验收（`TASK_AGENT_IN_COPY` / `TREE_COPY_CHECK_BRIEF`）。
+- 生命周期：支持 `open`、`has_changes`、`remove`（校验目录身份 `(dev, ino, birth)`，Linux 无创建时间时优先绑定目录 `user.nekopower.copy_token` 扩展属性）、`reconcile` 以及 `TreeWork` 下的并行成员、组队与监工猫验收（`TASK_AGENT_IN_COPY` / `TREE_COPY_CHECK_BRIEF`）。
 
 **已知边界**
 
 - 链接进副本的依赖目录与项目目录共享同一份磁盘内容：副本里只读运行检查（pytest / eslint / tsc）不受影响，但若在副本里执行 `npm install` / `pip install` 会直接改到项目目录的依赖；提示词已明确告知只读勿改。
-- 非 git 副本的基线快照存副本目录旁 `.nekopower-copies/<id>/baseline/`，大项目会多占一份文本基线磁盘空间，且受 `WORKTREE_COPY_MAX_FILES`（20,000）与 `WORKTREE_COPY_MAX_BYTES`（512 MiB）限制，超限退回单写者排队。
+- 非 git 副本的基线清单与内容对象存副本目录旁 `.nekopower-copies/<id>/base_manifest.json` 与 `blobs/`，大项目会多占一份基线磁盘空间，且受 `WORKTREE_COPY_MAX_FILES`（20,000）与 `WORKTREE_COPY_MAX_BYTES`（512 MiB）限制，超限退回单写者排队。
 - `PullRequest` 未传 `create_pr` 回调时依赖本机已安装并登录 `gh` CLI；未安装或未登录时返回 `failed` 并在 `detail` 中说明原因（分支已推送后重试不会重复提交）。
 
 ## 18. 使魔的角色、职能和编制（方向，还没落地）

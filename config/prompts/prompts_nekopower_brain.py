@@ -1917,8 +1917,9 @@ TASK_AGENT_IN_COPY = (
 # Appended to TASK_AGENT_IN_TREE / TASK_AGENT_IN_COPY when dependency directories were linked.
 # Rendered with str.format (deps).
 TASK_AGENT_TREE_LINKED_DEPS = (
-    " Linked from the project's directory for running checks (shared links; do not modify, delete, "
-    "or reinstall inside them): {deps}."
+    " Note: these dependency directories are linked from the project's directory for running "
+    "checks — use them directly and do not modify, delete, or reinstall inside them (install "
+    "any missing packages only in an isolated location): {deps}."
 )
 # Added to it when an earlier commission of the same task agent left changes
 # that were not merged. Rendered with str.format (title, path, files: empty
@@ -1964,8 +1965,12 @@ TREE_MARKERS_LEFT = (
 TREE_LANDED = "Merged into the project's directory ({project}): {files}."
 # Rendered with str.format (branch, commit, files).
 TREE_LANDED_BRANCH = "Committed to branch {branch} ({commit}): {files}."
+# Rendered with str.format (branch, commit).
+TREE_LANDED_BRANCH_NO_FILES = "Pushed branch {branch} ({commit})."
 # Rendered with str.format (branch, pr_url, files).
 TREE_LANDED_PR = "Pushed branch {branch} and opened pull request {pr_url}: {files}."
+# Rendered with str.format (branch, pr_url).
+TREE_LANDED_PR_NO_FILES = "Pushed branch {branch} and opened pull request {pr_url}."
 # Rendered with str.format (files, path).
 TREE_LANDED_SKIPPED = (
     "Not merged, being too large or a repository of their own: {files}. They are kept in {path}, "

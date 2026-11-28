@@ -145,6 +145,9 @@ def unlink_dependencies(root: Path, links: Iterable[str]) -> list[str]:
     failed: list[str] = []
     ordered = sorted(set(links), key=lambda item: item.count("/"), reverse=True)
     for rel in ordered:
+        if has_link_ancestor(root, rel):
+            # Refuse to unlink through a parent directory that was replaced with a symlink/junction.
+            continue
         candidate = root / rel
         if not os.path.lexists(fs_path(candidate)):
             continue
@@ -167,10 +170,8 @@ def remove_tree_safe(path: Path | str) -> None:
         remove_dir_link(path)
         return
     if os.path.isfile(raw) or os.path.islink(raw):
-        try:
+        with contextlib.suppress(OSError):
             os.chmod(raw, stat.S_IWRITE | stat.S_IREAD)
-        except OSError:
-            pass
         os.unlink(raw)
         return
 
@@ -241,14 +242,19 @@ def is_binary_bytes(data: bytes) -> bool:
     return b"\x00" in data[:_BINARY_PROBE_BYTES]
 
 
+_MAX_DIFF_LINES = 25_000
+
+
 def line_diff_counts(old: bytes | None, new: bytes | None) -> tuple[int | None, int | None]:
-    """Return ``(added_lines, deleted_lines)`` between ``old`` and ``new``, or ``(None, None)`` for binary data."""
+    """Return ``(added_lines, deleted_lines)`` between ``old`` and ``new``, or ``(None, None)`` for binary/oversized data."""
     old_bytes = old or b""
     new_bytes = new or b""
     if is_binary_bytes(old_bytes) or is_binary_bytes(new_bytes):
         return None, None
     old_lines = old_bytes.splitlines()
     new_lines = new_bytes.splitlines()
+    if len(old_lines) + len(new_lines) > _MAX_DIFF_LINES:
+        return None, None
     matcher = difflib.SequenceMatcher(None, old_lines, new_lines, autojunk=False)
     added = 0
     deleted = 0
@@ -348,6 +354,9 @@ def merge3_bytes(
 
     curr_lines = current.splitlines(keepends=True)
     wt_lines = worktree.splitlines(keepends=True)
+    if max(len(base_lines), len(curr_lines), len(wt_lines)) > _MAX_DIFF_LINES:
+        # Avoid worst-case quadratic SequenceMatcher stalls when both sides edit huge files.
+        return worktree, True
     curr_hunks = _diff_hunks(base_lines, curr_lines)
     wt_hunks = _diff_hunks(base_lines, wt_lines)
 
@@ -483,7 +492,7 @@ def manifest_digest(files: Mapping[str, Mapping[str, Any]]) -> str:
         else:
             exec_bit = bool(int(entry.get("mode", 0)) & stat.S_IXUSR) if sys.platform != "win32" else False
             normalized.append((name, "file", str(entry.get("sha256", "")), exec_bit))
-    raw = json.dumps(normalized, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    raw = json.dumps(normalized, separators=(",", ":"), ensure_ascii=True).encode("ascii")
     return hashlib.sha256(raw).hexdigest()
 
 
@@ -546,6 +555,8 @@ def scan_copy_directory(
                 dirs.remove(dname)
                 if os.path.islink(full):
                     files[rel] = {"kind": "symlink", "target": os.readlink(full)}
+                    if max_files is not None and len(files) > max_files:
+                        raise CopyTooLarge(f"{root} has more than {max_files} files")
                 else:
                     skipped.append(rel + "/")
                 continue
@@ -591,13 +602,17 @@ def scan_copy_directory(
     )
 
 
-def _atomic_write_json(path: Path, payload: Any) -> None:
+def _atomic_write_bytes(path: Path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.parent / f".{path.name}.{uuid.uuid4().hex}.tmp"
-    data = json.dumps(payload, indent=1, sort_keys=True).encode("utf-8")
     with open(fs_path(tmp), "wb") as handle:
         handle.write(data)
     os.replace(fs_path(tmp), fs_path(path))
+
+
+def _atomic_write_json(path: Path, payload: Any) -> None:
+    data = json.dumps(payload, indent=1, sort_keys=True).encode("utf-8")
+    _atomic_write_bytes(path, data)
 
 
 def _store_blob_file(src: Path, sha: str, blobs_dir: Path) -> None:
@@ -608,6 +623,9 @@ def _store_blob_file(src: Path, sha: str, blobs_dir: Path) -> None:
     tmp = blobs_dir / f".{sha}.{uuid.uuid4().hex}.tmp"
     shutil.copyfile(fs_path(src), fs_path(tmp))
     try:
+        actual_sha = _hash_file(fs_path(tmp))
+        if actual_sha != sha:
+            raise OSError(f"file changed while storing blob for {src}")
         os.replace(fs_path(tmp), fs_path(dst))
     except OSError:
         with contextlib.suppress(OSError):
@@ -668,6 +686,32 @@ def read_base_manifest(copy_path: Path) -> dict[str, Any] | None:
     except (OSError, ValueError):
         return None
     return raw if isinstance(raw, dict) and isinstance(raw.get("files"), dict) else None
+
+
+_COPY_XATTR_NAME = "user.nekopower.copy_token"
+
+
+def _set_copy_xattr(path: Path, token: str) -> bool:
+    """Bind ``token`` to ``path`` via an extended attribute on platforms without birth time; return whether stored."""
+    setxattr = getattr(os, "setxattr", None)
+    if setxattr is None:
+        return False
+    try:
+        setxattr(fs_path(path), _COPY_XATTR_NAME, token.encode("utf-8"))
+        return True
+    except OSError:
+        return False
+
+
+def _get_copy_xattr(path: Path) -> str | None:
+    """Read the copy token extended attribute on ``path``, or return None."""
+    getxattr = getattr(os, "getxattr", None)
+    if getxattr is None:
+        return None
+    try:
+        return bytes(getxattr(fs_path(path), _COPY_XATTR_NAME)).decode("utf-8", "strict")
+    except (OSError, UnicodeDecodeError):
+        return None
 
 
 def populate_copy(
@@ -777,12 +821,12 @@ def populate_copy(
     }
     if identity:
         meta_payload["identity"] = identity
-    try:
-        st = os.stat(fs_path(target))
+    elif _set_copy_xattr(target, token):
+        meta_payload["xattr"] = True
+    with contextlib.suppress(OSError):
+        st = os.lstat(fs_path(target))
         if st.st_ino:
             meta_payload["stat"] = {"dev": st.st_dev, "ino": st.st_ino}
-    except OSError:
-        pass
     _atomic_write_json(meta_dir / _META_FILE, meta_payload)
     return actual_digest, linked, actual_scan
 
@@ -848,6 +892,39 @@ def verify_project_unchanged(
         target = fs_path(project_dir / rel)
         if expected is None:
             if os.path.lexists(target):
+                changed.append(rel)
+            continue
+        if expected.get("kind") == "replaced_dir":
+            if not os.path.isdir(target) or is_dir_link(project_dir / rel):
+                changed.append(rel)
+                continue
+            allowed = set(expected.get("children") or ())
+            try:
+                def _raise_dir_err(err: OSError) -> None:
+                    raise err
+
+                root_fs = fs_path(project_dir)
+                dir_drifted = False
+                for cur_dir, subdirs, subfiles in os.walk(
+                    target, topdown=True, followlinks=False, onerror=_raise_dir_err
+                ):
+                    for dname in subdirs:
+                        if is_dir_link(os.path.join(cur_dir, dname)):
+                            dir_drifted = True
+                            break
+                    if dir_drifted:
+                        break
+                    rel_cur = os.path.relpath(cur_dir, root_fs).replace(os.sep, "/")
+                    for fname in subfiles:
+                        child_rel = f"{rel_cur}/{fname}"
+                        if child_rel not in allowed:
+                            dir_drifted = True
+                            break
+                    if dir_drifted:
+                        break
+                if dir_drifted:
+                    changed.append(rel)
+            except OSError:
                 changed.append(rel)
             continue
         if expected.get("kind") == "symlink":
@@ -1052,6 +1129,7 @@ def compute_copy_merge(
                 or (b_bytes is not None and is_binary_bytes(b_bytes))
                 or is_binary_bytes(c_bytes)
                 or is_binary_bytes(w_bytes)
+                or merged_b == w_bytes
             ):
                 conflict_versions[rel] = {
                     "project": dict(c_ent) if c_ent is not None else None,
@@ -1059,7 +1137,16 @@ def compute_copy_merge(
                 }
         if merged_b is not None:
             sha = hashlib.sha256(merged_b).hexdigest()
-            mode = int((w_ent or c_ent or b_ent or {}).get("mode", 0o644))
+            if sys.platform != "win32" and b_ent is not None and c_ent is not None and w_ent is not None:
+                b_exec = bool(int(b_ent.get("mode", 0)) & stat.S_IXUSR)
+                c_exec = bool(int(c_ent.get("mode", 0)) & stat.S_IXUSR)
+                w_exec = bool(int(w_ent.get("mode", 0)) & stat.S_IXUSR)
+                if w_exec == b_exec and c_exec != b_exec:
+                    mode = int(c_ent.get("mode", 0o644))
+                else:
+                    mode = int(w_ent.get("mode", 0o644))
+            else:
+                mode = int((w_ent or c_ent or b_ent or {}).get("mode", 0o644))
             merged_entries[rel] = {"kind": "file", "sha256": sha, "size": len(merged_b), "mode": mode}
             merged_contents[rel] = merged_b
             if not clashed:
@@ -1149,6 +1236,10 @@ def compute_copy_merge(
                     "conflict_versions": conflict_versions,
                 },
             )
+        except OSError as exc:
+            with contextlib.suppress(OSError):
+                remove_tree_safe(pending_dir)
+            return {"status": "failed", "detail": f"files changed while recording conflict snapshot: {exc}; merge again"}
         except BaseException:
             with contextlib.suppress(OSError):
                 remove_tree_safe(pending_dir)
@@ -1164,7 +1255,20 @@ def compute_copy_merge(
             "merged_tree": merge_id,
         }
 
-    expected_current = {rel: current_scan.files.get(rel) for rel, _kind, _a, _d in changes}
+    deleted_paths = {rel for rel, kind, _a, _d in changes if kind == "deleted"}
+    replaced_dirs = {up for rel in deleted_paths for up in _parents(rel)}
+    remaining_parents = {up for rel in merged_entries for up in _parents(rel)}
+    expected_current: dict[str, Any] = {}
+    for rel, kind, _a, _d in changes:
+        cur = current_scan.files.get(rel)
+        if cur is None and kind == "added" and rel in replaced_dirs and rel not in remaining_parents:
+            prefix = rel + "/"
+            expected_current[rel] = {
+                "kind": "replaced_dir",
+                "children": sorted(p for p in current_scan.files if p.startswith(prefix)),
+            }
+        else:
+            expected_current[rel] = cur
     return {
         "status": "ready" if changes else "unchanged",
         "changes": tuple(changes),
@@ -1271,6 +1375,13 @@ def verify_copy_changes(
             return False
         if actual != merged_contents[rel]:
             return False
+        if sys.platform != "win32" and "mode" in entry:
+            try:
+                actual_exec = bool(os.lstat(target).st_mode & stat.S_IXUSR)
+            except OSError:
+                return False
+            if actual_exec != bool(int(entry["mode"]) & stat.S_IXUSR):
+                return False
     return True
 
 
@@ -1375,6 +1486,8 @@ def prepare_copy_conflicts_sync(
 
     # Back up every copy path we are about to delete or overwrite so a mid-preparation failure
     # or cancellation restores the copy untouched instead of losing agent edits.
+    old_base_bytes = (meta_dir / _BASE_MANIFEST_FILE).read_bytes()
+    old_meta_bytes = (meta_dir / _META_FILE).read_bytes()
     prep_backup_dir = meta_dir / _PENDING_DIR / f"prep-bak-{uuid.uuid4().hex}"
     prep_backup_dir.mkdir(parents=True, exist_ok=True)
     saved_entries: list[tuple[str, str, str | None]] = []
@@ -1472,11 +1585,8 @@ def prepare_copy_conflicts_sync(
         )
         meta["start"] = new_start
         _atomic_write_json(meta_dir / _META_FILE, meta)
-        _gc_blobs(blobs_dir, keep)
-        remove_tree_safe(pending_dir)
-        return new_start, list(pending.get("conflicts") or ())
     except BaseException:
-        # Roll back any partial mutations to copy_path so agent edits survive intact.
+        # Roll back partial copy mutations AND baseline metadata so copy files and baseline stay in sync.
         for rel, orig_kind, payload in saved_entries:
             dst_path = copy_path / rel
             dst = fs_path(dst_path)
@@ -1511,11 +1621,21 @@ def prepare_copy_conflicts_sync(
                         else:
                             os.remove(dst)
                     shutil.copy2(fs_path(prep_backup_dir / payload), dst, follow_symlinks=False)
+        with contextlib.suppress(OSError):
+            _atomic_write_bytes(meta_dir / _BASE_MANIFEST_FILE, old_base_bytes)
+        with contextlib.suppress(OSError):
+            _atomic_write_bytes(meta_dir / _META_FILE, old_meta_bytes)
         raise
     finally:
         with contextlib.suppress(OSError):
             if prep_backup_dir.exists():
                 remove_tree_safe(prep_backup_dir)
+    # Post-commit cleanup: never roll back committed copy files/baseline if temp cleanup fails.
+    with contextlib.suppress(OSError):
+        _gc_blobs(blobs_dir, keep)
+    with contextlib.suppress(OSError):
+        remove_tree_safe(pending_dir)
+    return new_start, list(pending.get("conflicts") or ())
 
 
 def list_copy_metas_for_project(project_dir: Path, base_dir: Path) -> list[tuple[str, Path, dict[str, Any]]]:
@@ -1546,19 +1666,39 @@ def copy_matches_identity(
     now_identity: Mapping[str, int] | None,
 ) -> Literal["ours", "theirs", "unknown"]:
     """Return whether ``copy_path`` is the directory recorded in ``meta``."""
-    if not os.path.lexists(fs_path(copy_path)):
+    raw = fs_path(copy_path)
+    if not os.path.lexists(raw):
         return "ours"
+    if is_dir_link(copy_path) or not os.path.isdir(raw):
+        return "theirs"
     noted = meta.get("identity")
     keys = {"dev", "ino", "birth"}
-    if isinstance(noted, dict) and keys <= set(noted) and now_identity is not None:
+    if isinstance(noted, dict) and keys <= set(noted):
+        if now_identity is None:
+            return "unknown"
         return "ours" if all(noted[key] == now_identity[key] for key in keys) else "theirs"
-    # Fallback where Python does not expose birth time (e.g. Linux < 3.12): match (dev, ino).
+    # On platforms without birth time (e.g. Linux), require extended-attribute token match when stored.
+    if meta.get("xattr") is True:
+        expected_token = str(meta.get("token") or "")
+        actual_token = _get_copy_xattr(copy_path)
+        if not expected_token or actual_token != expected_token:
+            return "theirs"
+        noted_stat = meta.get("stat")
+        if isinstance(noted_stat, dict) and {"dev", "ino"} <= set(noted_stat):
+            try:
+                st = os.lstat(raw)
+            except OSError:
+                return "unknown"
+            if st.st_ino and (st.st_dev != noted_stat["dev"] or st.st_ino != noted_stat["ino"]):
+                return "theirs"
+        return "ours"
+    # Neither birth time nor xattr is available on this filesystem: never delete on reusable inode alone.
     noted_stat = meta.get("stat")
     if isinstance(noted_stat, dict) and {"dev", "ino"} <= set(noted_stat):
         try:
-            st = os.stat(fs_path(copy_path))
+            st = os.lstat(raw)
         except OSError:
             return "unknown"
-        if st.st_ino:
-            return "ours" if (st.st_dev == noted_stat["dev"] and st.st_ino == noted_stat["ino"]) else "theirs"
+        if st.st_ino and (st.st_dev != noted_stat["dev"] or st.st_ino != noted_stat["ino"]):
+            return "theirs"
     return "unknown"

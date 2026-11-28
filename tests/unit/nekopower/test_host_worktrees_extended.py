@@ -35,7 +35,6 @@ from nekopower.host import _copy_trees, worktrees
 from nekopower.host.worktrees import (
     DIRECTORY_TOO_LARGE,
     NOT_A_REPOSITORY,
-    REF_PREFIX,
     SUBMODULES,
     BranchCommit,
     PRInfo,
@@ -47,8 +46,8 @@ from nekopower.host.worktrees import (
     WorktreeUnavailable,
     parse_git_version,
 )
-from tests.unit.nekopower.fakes import ScriptedLLM, call, finish, say
-from tests.unit.nekopower.host_fakes import FakeDecisionLLM, fake_model, make_host, scripted_runtime, wait_until
+from tests.unit.nekopower.fakes import ScriptedLLM, call, finish
+from tests.unit.nekopower.host_fakes import FakeDecisionLLM, fake_model, make_host, scripted_runtime
 from tests.unit.nekopower.test_host_tree_work import wait_status
 
 GIT = shutil.which("git")
@@ -627,7 +626,7 @@ async def test_host_non_git_project_runs_team_in_parallel_with_linked_deps(
     entered: list[str] = []
 
     def _report(text: str) -> list[Any]:
-        return [call("report", {"status": "ready", "text": text}), finish("tool_calls")]
+        return [call("report", {"status": "ready", "summary": text}), finish("tool_calls")]
 
     def _write_call(path: str, content: str) -> list[Any]:
         return [call("write", {"file_path": path, "content": content}), finish("tool_calls")]
@@ -665,11 +664,6 @@ async def test_host_non_git_project_runs_team_in_parallel_with_linked_deps(
 
     worker_a = ScriptedLLM([[wait_both_a, *_write_call("alpha.txt", "from alpha\n")], _report("alpha done")])
     worker_b = ScriptedLLM([[wait_both_b, *_write_call("beta.txt", "from beta\n")], _report("beta done")])
-
-    def pick(spec: Any) -> ScriptedLLM:
-        if "create alpha.txt" in spec.system_prompt or "alpha" in str(getattr(spec, "name", "")):
-            return worker_a
-        return leader_llm
 
     # Route by commission title/dispatch text via a small dispatcher.
     by_prompt: dict[str, ScriptedLLM] = {}
@@ -836,11 +830,13 @@ async def test_branch_three_way_preserves_shared_files_local_to_pr_and_remote_pr
 
     # Different base branch must not silently return PR #101.
     _git(repo, "branch", "release", "main")
+    _git(repo, "push", "-q", "origin", "release")
     pr2 = await manager.merge_back(
         wt,
         PullRequest(branch="feat/shared", remote="origin", base_branch="release", title="Release PR", create_pr=fake_pr),
     )
     assert pr2.status == "landed" and pr2.pr_number == 102 and len(pr_requests) == 2
+    assert [req.base_branch for req in pr_requests] == ["main", "release"]
 
     # Remote URL parsing for `gh --repo`.
     assert WorktreeManager._github_repo_from_remote_url("git@github.com:Project-N-E-K-O/N.E.K.O.git") == "Project-N-E-K-O/N.E.K.O"
@@ -1410,3 +1406,109 @@ async def test_codex_findings_copy_link_prepare_unreadable_scan_commit_point_and
     assert _git(bare, "rev-parse", "refs/heads/feat/sync").strip() == local_v2
     assert await manager.has_changes(wt) is False
     await manager.remove(wt)
+
+
+async def test_coderabbit_hardening_fixes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    manager = WorktreeManager()
+
+    # 1. Replacing a baseline directory `docs/a.txt` with a regular file `docs` lands cleanly.
+    proj_dir = tmp_path / "dir_to_file"
+    _write(proj_dir / "docs" / "a.txt", "old doc\n")
+    cp = await manager.create(proj_dir, tmp_path / "copies" / "d2f1")
+    shutil.rmtree(cp.path / "docs")
+    _write(cp.path / "docs", "now a plain file\n")
+    landed = await manager.merge_back(cp)
+    assert landed.status == "landed", landed.detail
+    assert (proj_dir / "docs").is_file() and (proj_dir / "docs").read_text(encoding="utf-8") == "now a plain file\n"
+    await manager.remove(cp)
+
+    # 2. Stale copy handle from project A must be rejected when path was reused for project B.
+    proj_a = tmp_path / "proj_a"
+    proj_b = tmp_path / "proj_b"
+    _write(proj_a / "same.txt", "shared\n")
+    _write(proj_b / "same.txt", "shared\n")
+    shared_path = tmp_path / "copies" / "reused1"
+    handle_a = await manager.create(proj_a, shared_path)
+    await manager.remove(handle_a)
+    handle_b = await manager.create(proj_b, shared_path)
+    _write(handle_b.path / "from_b.txt", "secret B\n")
+    stale_land = await manager.merge_back(handle_a)
+    assert stale_land.status == "failed"
+    assert not (proj_a / "from_b.txt").exists()
+    await manager.remove(handle_b)
+
+    # 3. unlink_dependencies refuses to remove a link through a linked parent directory.
+    outside_parent = tmp_path / "moved_sub"
+    outside_dep = tmp_path / "real_dep"
+    outside_parent.mkdir()
+    outside_dep.mkdir()
+    _copy_trees.make_dir_link(outside_dep, outside_parent / "node_modules")
+    fake_wt = tmp_path / "fake_wt"
+    fake_wt.mkdir()
+    _copy_trees.make_dir_link(outside_parent, fake_wt / "sub")
+    assert _copy_trees.unlink_dependencies(fake_wt, ["sub/node_modules"]) == []
+    assert _copy_trees.is_dir_link(outside_parent / "node_modules")
+
+    # 4. _store_blob_file rejects mismatched content hash and deletes temp file.
+    src_file = tmp_path / "blob_src.txt"
+    _write(src_file, "actual-v2\n")
+    blobs_dir = tmp_path / "blobs"
+    with pytest.raises(OSError, match="changed while storing blob"):
+        _copy_trees._store_blob_file(src_file, "0" * 64, blobs_dir)
+    assert not (blobs_dir / ("0" * 64)).exists()
+    assert list(blobs_dir.glob("*.tmp")) == []
+
+    # 5. _create_copy refuses an existing regular file at target without deleting it.
+    race_target = tmp_path / "copies" / "occupied_file"
+    _write(race_target, "keep this file\n")
+    with pytest.raises(WorktreeError):
+        await manager.create(proj_a, race_target)
+    assert race_target.is_file() and race_target.read_text(encoding="utf-8") == "keep this file\n"
+
+    # 6. Diff budget caps quadratic work on huge files and returns safe conflict on concurrent edit.
+    monkeypatch.setattr(_copy_trees, "_MAX_DIFF_LINES", 20)
+    big_base = b"dup\n" * 30
+    big_curr = b"dup\n" * 29 + b"curr\n"
+    big_wt = b"dup\n" * 29 + b"wt\n"
+    assert _copy_trees.line_diff_counts(big_base, big_wt) == (None, None)
+    merged_big, clashed_big = _copy_trees.merge3_bytes(big_base, big_curr, big_wt)
+    assert clashed_big is True and merged_big == big_wt
+
+    # 7. pushurl default branch protection & multi-pushurl rejection + pending PR flag for restart reconcile.
+    local, bare_fetch, _other = _make_repo_with_remote(tmp_path / "cr_pushurl", default_branch="main")
+    bare_push = tmp_path / "cr_push_target.git"
+    _git(tmp_path, "init", "--bare", "-q", "-b", "develop", str(bare_push))
+    _git(local, "push", "-q", str(bare_push), "HEAD:refs/heads/develop")
+    _git(local, "remote", "set-url", "--push", "origin", str(bare_push))
+
+    wt_pu = await manager.create(local, tmp_path / "wt" / "pu1", RemoteDefaultBranch(fetch=False))
+    _write(wt_pu.path / "a.txt", "changed\nline2\nline3\nline4\nline5\n")
+    blocked = await manager.merge_back(wt_pu, BranchCommit(branch="develop", remote="origin", message="nope"))
+    assert blocked.status == "failed" and "protected default branch" in blocked.detail
+
+    # Multiple push URLs configured -> refused before touching refs.
+    _git(local, "remote", "set-url", "--add", "--push", "origin", str(bare_fetch))
+    multi = await manager.merge_back(wt_pu, BranchCommit(branch="feat/multi", remote="origin", message="nope"))
+    assert multi.status == "failed" and "multiple push URLs" in multi.detail
+
+    # Restore single push URL; failed PR creation marks has_pending_delivery=True until PR succeeds.
+    _git(local, "config", "--unset-all", "remote.origin.pushurl")
+
+    async def fail_pr(_req: PRRequest) -> PRInfo:
+        raise RuntimeError("transient API outage")
+
+    failed_pr = await manager.merge_back(
+        wt_pu, PullRequest(title="Retryable PR", branch="feat/retry-pr", remote="origin", base_branch="main", create_pr=fail_pr)
+    )
+    assert failed_pr.status == "failed" and "creating the pull request failed" in failed_pr.detail
+    assert await manager.has_pending_delivery(wt_pu) is True
+
+    async def ok_pr(_req: PRRequest) -> PRInfo:
+        return PRInfo(url="https://github.com/org/repo/pull/77", number=77)
+
+    ok_res = await manager.merge_back(
+        wt_pu, PullRequest(title="Retryable PR", branch="feat/retry-pr", remote="origin", base_branch="main", create_pr=ok_pr)
+    )
+    assert ok_res.status == "landed" and ok_res.pr_number == 77
+    assert await manager.has_pending_delivery(wt_pu) is False
+    await manager.remove(wt_pu)

@@ -535,13 +535,11 @@ class TreeWork:
                     return False
                 if _copy_trees.copy_matches_identity(path, meta, _directory_identity(path)) != "ours":
                     return False
-                try:
+                with contextlib.suppress(OSError):
                     _copy_trees.unlink_dependencies(path, meta.get("links") or ())
                     _copy_trees.remove_tree_safe(path)
                     if not path.exists():
                         _copy_trees.remove_tree_safe(_copy_trees.copy_meta_dir(path))
-                except OSError:
-                    pass
                 return True
             if not _says_it_is(path, row.id, row.repo_root):
                 return False
@@ -2043,18 +2041,30 @@ class TreeWork:
             # (Read as it is settled: its commission may have gone on in another worktree meanwhile.)
             commission = await self._ledger.get(row.commission_id) if row.commission_id else None
             if commission is not None and commission.status == "blocked" and self._stuck_over(row, commission):
-                if getattr(result, "pr_url", "") and files:
-                    text = texts.TREE_LANDED_PR.format(
-                        branch=result.branch,
-                        pr_url=result.pr_url,
-                        files=files_text(files, more, settings.LANDED_NOTE_MAX_TOKENS),
-                    )
-                elif getattr(result, "branch", "") and files:
-                    text = texts.TREE_LANDED_BRANCH.format(
-                        branch=result.branch,
-                        commit=(result.commit or "")[:10],
-                        files=files_text(files, more, settings.LANDED_NOTE_MAX_TOKENS),
-                    )
+                if getattr(result, "pr_url", ""):
+                    if files:
+                        text = texts.TREE_LANDED_PR.format(
+                            branch=result.branch,
+                            pr_url=result.pr_url,
+                            files=files_text(files, more, settings.LANDED_NOTE_MAX_TOKENS),
+                        )
+                    else:
+                        text = texts.TREE_LANDED_PR_NO_FILES.format(
+                            branch=result.branch,
+                            pr_url=result.pr_url,
+                        )
+                elif getattr(result, "branch", "") and (files or getattr(result, "commit", "")):
+                    if files:
+                        text = texts.TREE_LANDED_BRANCH.format(
+                            branch=result.branch,
+                            commit=(result.commit or "")[:10],
+                            files=files_text(files, more, settings.LANDED_NOTE_MAX_TOKENS),
+                        )
+                    else:
+                        text = texts.TREE_LANDED_BRANCH_NO_FILES.format(
+                            branch=result.branch,
+                            commit=(result.commit or "")[:10],
+                        )
                 elif files:
                     text = texts.TREE_LANDED_LATER.format(files=files_text(files, more, settings.LANDED_NOTE_MAX_TOKENS))
                 else:
@@ -2328,7 +2338,17 @@ class TreeWork:
                     raise
                 except Exception:  # noqa: BLE001 - kept: it may hold something
                     changed = True
+                pending_delivery = False
                 if not changed:
+                    check_pending = getattr(self.worktrees, "has_pending_delivery", None)
+                    if check_pending is not None:
+                        try:
+                            pending_delivery = bool(await check_pending(handle))
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception:  # noqa: BLE001 - kept: retryable delivery may remain
+                            pending_delivery = True
+                if not changed and not pending_delivery:
                     await self._remove_tree(row, handle)
                     removed.append(row.id)
                 elif row.state in _AT_WORK:
