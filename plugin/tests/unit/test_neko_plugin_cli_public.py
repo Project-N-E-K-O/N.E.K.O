@@ -1199,3 +1199,79 @@ def test_pack_plugin_and_bundle_normalize_nfd_filenames_to_nfc(tmp_path: Path) -
     assert installed_bundle.installed_plugin_count == 2
     assert (tmp_path / "inst_bundle" / "nfd_a" / nfc_name).is_file()
     assert (tmp_path / "inst_bundle" / "nfd_b" / "plain.txt").is_file()
+
+
+def _rehash_package(package_path: Path) -> None:
+    """Rewrite metadata.toml's payload hash after editing the payload."""
+    with zipfile.ZipFile(package_path) as archive:
+        new_hash = archive_utils.compute_archive_payload_hash(archive)
+        old_hash = (archive_utils.read_metadata(archive) or {})["payload"]["hash"]
+        entries = [(info, archive.read(info.filename)) for info in archive.infolist()]
+    with zipfile.ZipFile(package_path, "w", compression=zipfile.ZIP_DEFLATED) as dst:
+        for info, data in entries:
+            if info.filename == "metadata.toml":
+                data = data.replace(old_hash.encode(), new_hash.encode())
+            dst.writestr(info, data)
+
+
+def _lock_only_package(tmp_path: Path, *, with_lock: bool) -> Path:
+    """A package that declares dependencies, ships no vendor/, with or without uv.lock."""
+    plugin_dir = _make_plugin_dir(tmp_path)
+    if with_lock:
+        (plugin_dir / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    package_path = tmp_path / "demo_plugin.neko-plugin"
+    build_plugin(plugin_dir, package_path)
+    _rewrite_package_without_prefixes(package_path, ["payload/plugins/demo_plugin/vendor/"])
+    _rehash_package(package_path)
+    return package_path
+
+
+def test_inspect_package_accepts_dependencies_locked_instead_of_vendored(tmp_path: Path) -> None:
+    package_path = _lock_only_package(tmp_path, with_lock=True)
+
+    result = inspect_package(package_path)
+
+    assert result.payload_hash_verified is True
+    assert result.dependencies.plugins[0].python_requirements == ["httpx>=0.27", "pydantic>=2.0"]
+
+
+def test_inspect_package_still_rejects_dependencies_without_vendor_or_lock(tmp_path: Path) -> None:
+    package_path = _lock_only_package(tmp_path, with_lock=False)
+
+    with pytest.raises(ValueError, match="nor a uv.lock"):
+        inspect_package(package_path)
+
+
+def test_install_package_keeps_uv_lock_of_a_locked_package(tmp_path: Path) -> None:
+    package_path = _lock_only_package(tmp_path, with_lock=True)
+    plugins_root = tmp_path / "plugins"
+
+    install_package(package_path, plugins_root=plugins_root, profiles_root=tmp_path / "profiles")
+
+    installed = plugins_root / "demo_plugin"
+    assert (installed / "uv.lock").read_text(encoding="utf-8") == "version = 1\n"
+    assert (installed / "pyproject.toml").is_file()
+    assert not (installed / "vendor").exists()
+
+
+def test_install_package_rejects_dependencies_without_vendor_or_lock(tmp_path: Path) -> None:
+    package_path = _lock_only_package(tmp_path, with_lock=False)
+
+    with pytest.raises(ValueError, match="nor a uv.lock"):
+        install_package(package_path, plugins_root=tmp_path / "plugins", profiles_root=tmp_path / "profiles")
+    assert not (tmp_path / "plugins" / "demo_plugin").exists()
+
+
+def test_locked_package_with_vendor_still_checks_the_vendor(tmp_path: Path) -> None:
+    # A package shipping both keeps today's rule: its vendor/ must satisfy pyproject.
+    plugin_dir = _make_plugin_dir(tmp_path)
+    (plugin_dir / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    package_path = tmp_path / "demo_plugin.neko-plugin"
+    build_plugin(plugin_dir, package_path)
+    _rewrite_package_without_prefixes(
+        package_path, ["payload/plugins/demo_plugin/vendor/pydantic-2.0.0.dist-info/"],
+    )
+    _rehash_package(package_path)
+
+    with pytest.raises(ValueError, match="does not satisfy"):
+        inspect_package(package_path)

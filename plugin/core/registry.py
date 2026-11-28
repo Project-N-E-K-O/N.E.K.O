@@ -193,6 +193,25 @@ def _collect_plugin_python_requirements(
     return collected
 
 
+PYTHON_DEPENDENCIES_PENDING = "PythonDependenciesPending"
+
+
+def missing_dependencies_error_type(plugin_dir: Path) -> str:
+    """Error type for a plugin whose declared Python dependencies are missing.
+
+    ``PythonDependenciesPending`` when they install from the plugin's uv.lock
+    (no vendor/ shipped, or one the host installed from the lock), so the
+    plugin manager can offer that; ``MissingPythonDependencies`` otherwise.
+    """
+    from plugin.neko_plugin_cli.core.uv_lock_install import lock_install_applies
+
+    try:
+        applies = lock_install_applies(plugin_dir)
+    except OSError:
+        applies = False
+    return PYTHON_DEPENDENCIES_PENDING if applies else "MissingPythonDependencies"
+
+
 def _plugin_vendor_path(toml_path: Path) -> Path:
     return toml_path.parent / "vendor"
 
@@ -2252,6 +2271,23 @@ def load_plugins_from_roots(
             ctx.python_requirements,
             search_paths=ctx.python_requirement_paths,
         )
+        if unsatisfied_python_requirements and missing_dependencies_error_type(toml_path.parent) == (
+            PYTHON_DEPENDENCIES_PENDING
+        ):
+            logger.info(
+                "Plugin {}: Python dependencies not installed yet; they install from its uv.lock on first start: {}",
+                pid,
+                unsatisfied_python_requirements,
+            )
+            _register_failed_plugin(
+                ctx,
+                logger,
+                plugin_id=pid,
+                error_type=PYTHON_DEPENDENCIES_PENDING,
+                error_message=f"Python dependencies not installed yet: {unsatisfied_python_requirements}",
+                error_phase="python_requirements",
+            )
+            continue
         if unsatisfied_python_requirements:
             logger.error(
                 "Plugin {}: unsatisfied Python dependencies: {}. "

@@ -1,7 +1,8 @@
 """uv and Python for plugin tooling, shared by every packaged-build feature.
 
-Source checkouts already have both: tooling runs on ``sys.executable`` with
-whatever uv is on PATH. A packaged (Nuitka) server has neither a usable
+Source checkouts already have a Python: tooling runs on ``sys.executable``
+with whatever uv is on PATH, or, when there is none, the same pinned uv a
+packaged server downloads (pip cannot install from a uv.lock). A packaged (Nuitka) server has neither a usable
 interpreter nor uv, so this module prepares them on demand under one app-owned
 root::
 
@@ -23,8 +24,8 @@ and a deadline, is single-flight within the process and serialized across
 processes by a file lock polled without blocking, so cancellation stays
 responsive while another process prepares.
 
-Nothing calls this module yet; dependency sync and the plugin CLI tool
-environment are meant to build on it.
+Installing a plugin's locked dependencies (plugin_lock_dependencies.py)
+builds on it; dependency sync and the plugin CLI tool environment are meant to.
 """
 
 from __future__ import annotations
@@ -108,8 +109,8 @@ class ToolRuntimeError(RuntimeError):
 class ToolRuntime:
     python: str
     """``sys.executable`` from source; the managed CPython when packaged."""
-    uv: str | None
-    """May be None from source (callers fall back to pip); always set when packaged."""
+    uv: str
+    """From source: the uv on PATH, else the pinned uv downloaded under the tools root."""
     env: dict[str, str]
     """Child-process environment; see :func:`tool_runtime_env`."""
     root: Path | None
@@ -282,9 +283,9 @@ def tool_runtime_env(base: Mapping[str, str] | None = None, *, root: Path | None
     return _with_utf8(env)
 
 
-def _source_runtime() -> ToolRuntime:
+def _source_runtime(uv: str) -> ToolRuntime:
     # A source checkout keeps the developer's uv configuration (UV_* included).
-    return ToolRuntime(sys.executable, _source_uv(), _with_utf8(git_env()), None, False)
+    return ToolRuntime(sys.executable, uv, _with_utf8(git_env()), None, False)
 
 
 def _source_uv() -> str | None:
@@ -294,6 +295,16 @@ def _source_uv() -> str | None:
         if found:
             return os.path.abspath(found)
     return None
+
+
+def _cached_source_uv() -> str | None:
+    """The pinned uv a source checkout downloaded earlier, when still usable. No child process."""
+    root = _known_tools_root()
+    if root is None:
+        return None
+    name = "uv.exe" if sys.platform == "win32" else "uv"
+    path = root / "uv" / PINNED_UV_VERSION / f"{sys.platform}-{_host_architecture()}" / name
+    return str(path) if _usable_executable(str(path)) else None
 
 
 # ---------------------------------------------------------------------------
@@ -368,7 +379,10 @@ def _on_background_thread() -> bool:
 def read_tool_runtime_status() -> RuntimeStatus:
     """Current state; no child process, network access or directory creation."""
     if not _is_packaged():
-        return RuntimeStatus("source", False, PINNED_UV_VERSION, python=sys.executable, uv=_source_uv())
+        # uv stays None until a preparation has downloaded the pinned one.
+        return RuntimeStatus(
+            "source", False, PINNED_UV_VERSION, python=sys.executable, uv=_source_uv() or _cached_source_uv(),
+        )
     if sys.platform not in _SUPPORTED_PLATFORMS:
         return RuntimeStatus(
             "unsupported", True, PINNED_UV_VERSION, error_code="unsupported_platform",
@@ -466,6 +480,10 @@ def _run_command(
             raise
         result = subprocess.CompletedProcess(cmd, process.returncode, _read_output(stdout), _read_output(stderr))
     return result
+
+
+# For callers running tools with a prepared runtime (same cancel / deadline rules).
+run_tool_command: CommandRunner = _run_command
 
 
 def _tail(result: subprocess.CompletedProcess[str]) -> str:
@@ -846,6 +864,38 @@ def _prepare_locked(
     return result
 
 
+def _prepare_source_uv(
+    run_command: CommandRunner, report: Callable[[ProgressEvent], None],
+    cancel: threading.Event, deadline: float, *, wait: bool,
+) -> str:
+    """The pinned uv for a source checkout that has none on PATH.
+
+    Downloaded and checked exactly as for a packaged server, under the same
+    locks; the interpreter stays ``sys.executable``, so no Python is
+    installed. A failed download falls back to a compatible uv in the usual
+    install locations. The status is not recorded: a source checkout reports
+    "source" whatever happens here.
+    """
+    cached = _cached_source_uv()
+    if cached is not None:
+        return cached
+    _acquire_flight(cancel, deadline, wait=wait)
+    try:
+        root = tools_root()
+        root.mkdir(parents=True, exist_ok=True)
+        lock = portalocker.Lock(root / ".prepare.lock", timeout=0, fail_when_locked=True)
+        _acquire_file_lock(lock, cancel, deadline, wait=wait)
+        try:
+            uv, _version = _ensure_uv(
+                run_command, report, tool_runtime_env(root=root), cancel, deadline, prefer_system_uv=False,
+            )
+        finally:
+            lock.release()
+    finally:
+        _flight.release()
+    return uv
+
+
 def _record_outcome(error: ToolRuntimeError | None) -> None:
     global _last_error, _progress
     with _state_lock:
@@ -911,7 +961,12 @@ def prepare_tool_runtime(
     :class:`ToolRuntimeError`.
     """
     if not _is_packaged():
-        return _source_runtime()
+        source_uv = _source_uv()
+        if source_uv is not None:
+            return _source_runtime(source_uv)
+        return _source_runtime(_prepare_source_uv(
+            run_command or _run_command, _Reporter(progress), cancel, deadline, wait=wait_for_lock,
+        ))
     if sys.platform not in _SUPPORTED_PLATFORMS:
         raise ToolRuntimeError("unsupported_platform", f"Plugin tools are not available on {sys.platform}")
     try:
@@ -956,8 +1011,8 @@ async def ensure_tool_runtime(
 ) -> ToolRuntime:
     """asyncio wrapper of :func:`prepare_tool_runtime`; cancelling the awaiting
     task cancels the preparation. ``progress`` runs on the worker thread."""
-    if not _is_packaged():
-        return _source_runtime()
+    if not _is_packaged() and (source_uv := _source_uv()) is not None:
+        return _source_runtime(source_uv)
     cancel = threading.Event()
     deadline = time.monotonic() + timeout
     try:

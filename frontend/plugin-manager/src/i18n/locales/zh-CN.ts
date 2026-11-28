@@ -1122,6 +1122,43 @@ export default {
     cancelConfirmMessage: 'Run ID: {runId}',
     cancelSuccess: '已发送取消请求'
   },
+  pythonDependencies: {
+    title: '安装运行依赖',
+    introduction: '「{name}」需要先安装以下 Python 依赖才能启动。它们会从软件包下载源下载到插件目录。',
+    columns: {
+      name: '包名',
+      version: '版本',
+      size: '大小'
+    },
+    total: '共 {count} 个，约 {size}',
+    sizeUnknown: '未知',
+    installAndStart: '安装并启动',
+    failedTitle: '依赖没有安装成功，插件暂时无法启动。',
+    details: '技术细节',
+    phases: {
+      planning: '正在读取依赖清单…',
+      tools: '正在准备安装工具（首次使用需要下载）…',
+      installing: '正在下载并安装依赖…',
+      finishing: '正在完成安装…'
+    },
+    backgroundHint: '关闭此窗口不会中断安装，安装完成后再次点击「启动」即可。',
+    startBlocked: '此插件的运行依赖还没有安装，请单独点击它的「启动」按钮来安装。',
+    errors: {
+      tools_failed: '安装工具准备失败，请检查网络后重试。',
+      lock_invalid: '插件的依赖锁文件无法读取，请联系插件作者。',
+      network: '连接不上软件包下载源，请检查网络后重试。',
+      not_on_index: '部分依赖在当前下载源中找不到，请联系插件作者。',
+      no_wheel: '部分依赖没有适合本机的安装包，请联系插件作者。',
+      hash_mismatch: '下载的文件没有通过校验，可能是网络或下载源异常，请稍后重试。',
+      unpinned_source: '插件的依赖包含本地或 Git 来源，无法自动安装，请联系插件作者。',
+      lock_changed: '插件在安装期间被更新了，请重试。',
+      lock_mismatch: '插件的依赖锁文件和它声明的依赖对不上，请联系插件作者。',
+      install_failed: '依赖安装失败，请重试。',
+      not_applicable: '此插件不需要在这里安装依赖。',
+      canceled: '安装已取消。',
+      internal_error: '安装时出现意外错误，请重试。'
+    }
+  },
   status: {
     sourceMissing: '源码目录不可用',
     running: '运行中',
@@ -1130,7 +1167,8 @@ export default {
     loadFailed: '加载失败',
     loading: '加载中',
     disabled: '已禁用',
-    pending: '等待宿主'
+    pending: '等待宿主',
+    dependenciesPending: '依赖未安装'
   },
   logLevel: {
     DEBUG: '调试',

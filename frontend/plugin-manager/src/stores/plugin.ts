@@ -136,7 +136,7 @@ export const usePluginStore = defineStore('plugin', () => {
     const status = metadata?.status || plugin.status || StatusEnum.STOPPED
     // Registry faults cannot be learned from /plugin/status: for a plugin
     // without a host it can synthesize "stopped". Only new metadata clears them.
-    if (status === 'load_failed' || status === 'source_missing') return status
+    if (status === 'load_failed' || status === 'source_missing' || status === 'dependencies_pending') return status
     const runtime = runtimeStatus(pluginStatuses.value[plugin.id])
     return runtime && (runtimeStatusTickets.get(plugin.id) ?? 0) >= (metadata?.ticket ?? 0)
       ? runtime : status

@@ -1122,6 +1122,43 @@ export default {
     cancelConfirmMessage: 'Run ID: {runId}',
     cancelSuccess: 'Cancel requested'
   },
+  pythonDependencies: {
+    title: 'Install dependencies',
+    introduction: '"{name}" needs the following Python packages before it can start. They will be downloaded from the package index into the plugin\'s folder.',
+    columns: {
+      name: 'Package',
+      version: 'Version',
+      size: 'Size'
+    },
+    total: '{count} packages, about {size}',
+    sizeUnknown: 'Unknown',
+    installAndStart: 'Install and start',
+    failedTitle: 'The dependencies were not installed, so the plugin cannot start yet.',
+    details: 'Technical details',
+    phases: {
+      planning: 'Reading the dependency list…',
+      tools: 'Preparing the installer (downloaded on first use)…',
+      installing: 'Downloading and installing dependencies…',
+      finishing: 'Finishing the installation…'
+    },
+    backgroundHint: 'Closing this window does not stop the installation. Click Start again once it has finished.',
+    startBlocked: 'This plugin\'s dependencies are not installed yet. Click its own Start button to install them.',
+    errors: {
+      tools_failed: 'The installer could not be prepared. Check your network connection and try again.',
+      lock_invalid: 'The plugin\'s dependency lock file cannot be read. Please contact the plugin author.',
+      network: 'The package index cannot be reached. Check your network connection and try again.',
+      not_on_index: 'Some dependencies are not available from the current package index. Please contact the plugin author.',
+      no_wheel: 'Some dependencies have no package for this computer. Please contact the plugin author.',
+      hash_mismatch: 'A downloaded file failed its integrity check, possibly due to the network or the package index. Please try again later.',
+      unpinned_source: 'The plugin depends on local or Git sources, which cannot be installed automatically. Please contact the plugin author.',
+      lock_changed: 'The plugin was updated during the installation. Please try again.',
+      lock_mismatch: 'The plugin\'s lock file does not match the dependencies it declares. Please contact the plugin author.',
+      install_failed: 'The dependencies could not be installed. Please try again.',
+      not_applicable: 'This plugin does not need its dependencies installed here.',
+      canceled: 'The installation was canceled.',
+      internal_error: 'An unexpected error occurred during the installation. Please try again.'
+    }
+  },
   status: {
     sourceMissing: 'Source directory unavailable',
     running: 'Running',
@@ -1130,7 +1167,8 @@ export default {
     loadFailed: 'Load Failed',
     loading: 'Loading',
     disabled: 'Disabled',
-    pending: 'Pending Host'
+    pending: 'Pending Host',
+    dependenciesPending: 'Dependencies not installed'
   },
   logLevel: {
     DEBUG: 'Debug',

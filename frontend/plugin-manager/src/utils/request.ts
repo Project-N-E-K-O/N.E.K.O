@@ -439,7 +439,10 @@ service.interceptors.response.use(
       // 服务器返回了错误状态码
       switch (status) {
         case 400:
-          message = formatHttpError(error) || i18n.global.t('messages.badRequest')
+          message = readErrorCode(error) === 'PLUGIN_PYTHON_DEPENDENCIES_PENDING'
+            // A start that bypassed the dependency dialog (e.g. a batch start).
+            ? i18n.global.t('pythonDependencies.startBlocked')
+            : formatHttpError(error) || i18n.global.t('messages.badRequest')
           break
         case 401:
           message = i18n.global.t('auth.unauthorized')

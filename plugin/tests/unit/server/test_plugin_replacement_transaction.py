@@ -1220,3 +1220,69 @@ async def test_committed_install_reconciles_by_manifest_id_not_directory_name(
 
     # Grants are keyed by the manifest id; an unreadable manifest is skipped.
     assert seen == ["demo"]
+
+
+_LOCK_TEXT = "version = 1\n"
+
+
+async def _upgrade_with_lock(
+    tmp_path: Path, *, old_vendor: str, new_lock: str, new_vendor: bool = False,
+) -> Path:
+    """Upgrade an install whose vendor/ is ``old_vendor`` ("locked" or "hand") to a lock-only package."""
+    from plugin.neko_plugin_cli.core import uv_lock_install as lock_install
+
+    target = tmp_path / "plugins" / "demo"
+    target.mkdir(parents=True)
+    (target / "plugin.toml").write_text(OLD_PLUGIN_MANIFEST, encoding="utf-8")
+    (target / "uv.lock").write_text(_LOCK_TEXT, encoding="utf-8")
+    (target / "vendor").mkdir()
+    (target / "vendor" / "dependency.txt").write_text("old", encoding="utf-8")
+    if old_vendor == "locked":
+        lock_install.write_lock_marker(target / "vendor", lock_install.lock_sha256(target))
+
+    async def install_new() -> dict[str, object]:
+        target.mkdir()
+        (target / "plugin.toml").write_text(NEW_PLUGIN_MANIFEST, encoding="utf-8")
+        (target / "uv.lock").write_text(new_lock, encoding="utf-8")
+        if new_vendor:
+            (target / "vendor").mkdir()
+            (target / "vendor" / "dependency.txt").write_text("shipped", encoding="utf-8")
+        return {"installed": True}
+
+    await replace_plugin(
+        layout=resolve_plugin_layout("demo", target, storage_root=tmp_path / "state"),
+        install_new=install_new,
+        validate_channel_specific=_async_none,
+    )
+    return target
+
+
+@pytest.mark.asyncio
+async def test_upgrade_with_an_unchanged_lock_keeps_the_lock_installed_vendor(tmp_path: Path) -> None:
+    target = await _upgrade_with_lock(tmp_path, old_vendor="locked", new_lock=_LOCK_TEXT)
+
+    assert (target / "plugin.toml").read_text(encoding="utf-8") == NEW_PLUGIN_MANIFEST
+    assert (target / "vendor" / "dependency.txt").read_text(encoding="utf-8") == "old"
+    assert (target / "vendor" / ".neko-uv-lock.json").is_file()
+
+
+@pytest.mark.asyncio
+async def test_upgrade_with_a_changed_lock_drops_the_old_vendor(tmp_path: Path) -> None:
+    target = await _upgrade_with_lock(tmp_path, old_vendor="locked", new_lock=_LOCK_TEXT + "# new\n")
+
+    assert not (target / "vendor").exists()
+
+
+@pytest.mark.asyncio
+async def test_upgrade_never_carries_a_hand_copied_vendor_even_with_the_same_lock(tmp_path: Path) -> None:
+    target = await _upgrade_with_lock(tmp_path, old_vendor="hand", new_lock=_LOCK_TEXT)
+
+    assert not (target / "vendor").exists()
+
+
+@pytest.mark.asyncio
+async def test_upgrade_to_a_package_with_its_own_vendor_keeps_the_shipped_one(tmp_path: Path) -> None:
+    target = await _upgrade_with_lock(tmp_path, old_vendor="locked", new_lock=_LOCK_TEXT, new_vendor=True)
+
+    assert (target / "vendor" / "dependency.txt").read_text(encoding="utf-8") == "shipped"
+    assert not (target / "vendor" / ".neko-uv-lock.json").exists()

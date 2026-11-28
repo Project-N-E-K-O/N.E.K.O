@@ -1122,6 +1122,43 @@ export default {
     cancelConfirmMessage: 'ID de ejecución: {runId}',
     cancelSuccess: 'Cancelación solicitada'
   },
+  pythonDependencies: {
+    title: 'Instalar dependencias',
+    introduction: 'Para iniciar «{name}» primero hay que instalar los siguientes paquetes de Python. Se descargarán del índice de paquetes a la carpeta del complemento.',
+    columns: {
+      name: 'Paquete',
+      version: 'Versión',
+      size: 'Tamaño'
+    },
+    total: '{count} paquetes, unos {size}',
+    sizeUnknown: 'Desconocido',
+    installAndStart: 'Instalar e iniciar',
+    failedTitle: 'Las dependencias no se instalaron, así que el complemento todavía no puede iniciarse.',
+    details: 'Detalles técnicos',
+    phases: {
+      planning: 'Leyendo la lista de dependencias…',
+      tools: 'Preparando el instalador (se descarga la primera vez)…',
+      installing: 'Descargando e instalando dependencias…',
+      finishing: 'Terminando la instalación…'
+    },
+    backgroundHint: 'Cerrar esta ventana no detiene la instalación. Cuando termine, vuelve a pulsar Iniciar.',
+    startBlocked: 'Las dependencias de este complemento aún no están instaladas. Pulsa su propio botón Iniciar para instalarlas.',
+    errors: {
+      tools_failed: 'No se pudo preparar el instalador. Comprueba la conexión de red y vuelve a intentarlo.',
+      lock_invalid: 'No se puede leer el archivo de bloqueo de dependencias del complemento. Contacta con su autor.',
+      network: 'No se puede conectar con el índice de paquetes. Comprueba la conexión de red y vuelve a intentarlo.',
+      not_on_index: 'Algunas dependencias no están en el índice de paquetes actual. Contacta con el autor del complemento.',
+      no_wheel: 'Algunas dependencias no tienen paquete para este equipo. Contacta con el autor del complemento.',
+      hash_mismatch: 'Un archivo descargado no superó la comprobación de integridad, quizá por la red o el índice de paquetes. Vuelve a intentarlo más tarde.',
+      unpinned_source: 'El complemento depende de fuentes locales o de Git, que no se pueden instalar automáticamente. Contacta con su autor.',
+      lock_changed: 'El complemento se actualizó durante la instalación. Vuelve a intentarlo.',
+      lock_mismatch: 'El archivo de bloqueo del complemento no coincide con las dependencias que declara. Contacta con su autor.',
+      install_failed: 'No se pudieron instalar las dependencias. Vuelve a intentarlo.',
+      not_applicable: 'Este complemento no necesita instalar sus dependencias aquí.',
+      canceled: 'La instalación se canceló.',
+      internal_error: 'Se produjo un error inesperado durante la instalación. Vuelve a intentarlo.'
+    }
+  },
   status: {
     sourceMissing: 'Directorio de código no disponible',
     running: 'En ejecución',
@@ -1130,7 +1167,8 @@ export default {
     loadFailed: 'Error de carga',
     loading: 'Cargando',
     disabled: 'Deshabilitado',
-    pending: 'Anfitrión pendiente'
+    pending: 'Anfitrión pendiente',
+    dependenciesPending: 'Dependencias sin instalar'
   },
   logLevel: {
     DEBUG: 'Depuración',

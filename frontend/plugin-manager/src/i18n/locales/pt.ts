@@ -1122,6 +1122,43 @@ export default {
     cancelConfirmMessage: 'ID da execução: {runId}',
     cancelSuccess: 'Cancelamento solicitado'
   },
+  pythonDependencies: {
+    title: 'Instalar dependências',
+    introduction: 'Para iniciar "{name}", primeiro é preciso instalar os seguintes pacotes Python. Eles serão baixados do índice de pacotes para a pasta do plugin.',
+    columns: {
+      name: 'Pacote',
+      version: 'Versão',
+      size: 'Tamanho'
+    },
+    total: '{count} pacotes, cerca de {size}',
+    sizeUnknown: 'Desconhecido',
+    installAndStart: 'Instalar e iniciar',
+    failedTitle: 'As dependências não foram instaladas, então o plugin ainda não pode ser iniciado.',
+    details: 'Detalhes técnicos',
+    phases: {
+      planning: 'Lendo a lista de dependências…',
+      tools: 'Preparando o instalador (baixado no primeiro uso)…',
+      installing: 'Baixando e instalando dependências…',
+      finishing: 'Concluindo a instalação…'
+    },
+    backgroundHint: 'Fechar esta janela não interrompe a instalação. Quando terminar, clique em Iniciar novamente.',
+    startBlocked: 'As dependências deste plugin ainda não foram instaladas. Clique no botão Iniciar dele para instalá-las.',
+    errors: {
+      tools_failed: 'Não foi possível preparar o instalador. Verifique a conexão de rede e tente novamente.',
+      lock_invalid: 'O arquivo de bloqueio de dependências do plugin não pode ser lido. Entre em contato com o autor do plugin.',
+      network: 'Não foi possível acessar o índice de pacotes. Verifique a conexão de rede e tente novamente.',
+      not_on_index: 'Algumas dependências não estão disponíveis no índice de pacotes atual. Entre em contato com o autor do plugin.',
+      no_wheel: 'Algumas dependências não têm pacote para este computador. Entre em contato com o autor do plugin.',
+      hash_mismatch: 'Um arquivo baixado não passou na verificação de integridade, talvez por causa da rede ou do índice de pacotes. Tente novamente mais tarde.',
+      unpinned_source: 'O plugin depende de fontes locais ou Git, que não podem ser instaladas automaticamente. Entre em contato com o autor do plugin.',
+      lock_changed: 'O plugin foi atualizado durante a instalação. Tente novamente.',
+      lock_mismatch: 'O arquivo de bloqueio do plugin não corresponde às dependências que ele declara. Entre em contato com o autor do plugin.',
+      install_failed: 'Não foi possível instalar as dependências. Tente novamente.',
+      not_applicable: 'Este plugin não precisa instalar dependências aqui.',
+      canceled: 'A instalação foi cancelada.',
+      internal_error: 'Ocorreu um erro inesperado durante a instalação. Tente novamente.'
+    }
+  },
   status: {
     sourceMissing: 'Diretório de código indisponível',
     running: 'Em execução',
@@ -1130,7 +1167,8 @@ export default {
     loadFailed: 'Falha no carregamento',
     loading: 'Carregando',
     disabled: 'Desabilitado',
-    pending: 'Hospedeiro pendente'
+    pending: 'Hospedeiro pendente',
+    dependenciesPending: 'Dependências não instaladas'
   },
   logLevel: {
     DEBUG: 'Depuração',

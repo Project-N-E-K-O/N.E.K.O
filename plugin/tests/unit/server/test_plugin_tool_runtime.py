@@ -206,6 +206,7 @@ def _no_runner(*_args, **_kwargs):
 
 def test_source_returns_current_interpreter_without_preparing(root, monkeypatch):
     monkeypatch.setattr(module, "_is_packaged", lambda: False)
+    monkeypatch.setattr(module, "_source_uv", lambda: "/developer/bin/uv")
     result = _prepare(_no_runner)
     assert result.python == sys.executable
     assert result.packaged is False
@@ -217,8 +218,59 @@ def test_source_returns_current_interpreter_without_preparing(root, monkeypatch)
 
 def test_source_environment_keeps_the_developers_uv_settings(root, monkeypatch):
     monkeypatch.setattr(module, "_is_packaged", lambda: False)
+    monkeypatch.setattr(module, "_source_uv", lambda: "/developer/bin/uv")
     monkeypatch.setenv("UV_INDEX_URL", "https://mirror.invalid/simple")
     assert _prepare(_no_runner).env["UV_INDEX_URL"] == "https://mirror.invalid/simple"
+
+
+def test_source_without_uv_downloads_the_pinned_uv_and_keeps_its_interpreter(root, monkeypatch):
+    # pip cannot install from uv.lock, so a source checkout no longer falls back to it.
+    monkeypatch.setattr(module, "_is_packaged", lambda: False)
+    monkeypatch.setattr(module, "_source_uv", lambda: None)
+    pypi = FakePyPI().install(monkeypatch)
+    assert module.read_tool_runtime_status().uv is None
+
+    runner = FakeUv(root)
+    result = _prepare(runner)
+
+    assert result.python == sys.executable
+    assert result.packaged is False and result.root is None
+    assert result.uv == str(module.cached_uv_path())
+    assert Path(result.uv).read_bytes() == b"uv-executable"
+    assert pypi.wheel_downloads == 1
+    # No managed Python is installed for a source checkout.
+    assert not any(cmd[1:2] == ["python"] for cmd, _env in runner.calls)
+    assert not (root / "python.json").exists()
+    status = module.read_tool_runtime_status()
+    assert status.state == "source" and status.uv == result.uv
+
+    # Reused afterwards, without downloading or starting anything.
+    assert _prepare(_no_runner).uv == result.uv
+    assert asyncio.run(module.ensure_tool_runtime(timeout=5)).uv == result.uv
+    assert pypi.wheel_downloads == 1
+
+
+def test_source_without_uv_falls_back_to_an_installed_uv_when_the_download_fails(root, monkeypatch):
+    monkeypatch.setattr(module, "_is_packaged", lambda: False)
+    monkeypatch.setattr(module, "_source_uv", lambda: None)
+    FakePyPI(fail=True).install(monkeypatch)
+    monkeypatch.setattr(module, "_system_uv_candidates", lambda: ["/home/dev/.local/bin/uv"])
+
+    result = _prepare(FakeUv(root, versions={"/home/dev/.local/bin/uv": "0.14.0"}))
+
+    assert result.uv == "/home/dev/.local/bin/uv"
+    assert result.python == sys.executable
+
+
+def test_source_without_any_uv_reports_the_download_failure(root, monkeypatch):
+    monkeypatch.setattr(module, "_is_packaged", lambda: False)
+    monkeypatch.setattr(module, "_source_uv", lambda: None)
+    FakePyPI(fail=True).install(monkeypatch)
+
+    with pytest.raises(module.ToolRuntimeError) as caught:
+        _prepare(FakeUv(root))
+    assert caught.value.code == "download_failed"
+    assert module.read_tool_runtime_status().state == "source"
 
 
 # ---------------------------------------------------------------------------
@@ -1078,6 +1130,7 @@ def test_tool_env_drops_variables_that_redirect_python_or_its_environment(root):
 
 def test_source_environment_keeps_python_settings(root, monkeypatch):
     monkeypatch.setattr(module, "_is_packaged", lambda: False)
+    monkeypatch.setattr(module, "_source_uv", lambda: "/developer/bin/uv")
     monkeypatch.setenv("VIRTUAL_ENV", "/developer/venv")
     assert module.prepare_tool_runtime(cancel=threading.Event(), deadline=time.monotonic() + 60).env["VIRTUAL_ENV"] == (
         "/developer/venv"

@@ -2,7 +2,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import { usePluginStore } from '@/stores/plugin'
-import { startPlugin, reloadPlugin } from '@/api/plugins'
+import { startPlugin, reloadPlugin, getPythonDependencies } from '@/api/plugins'
+import { usePluginDependencyInstall } from '@/stores/pluginDependencyInstall'
 import { getPluginConsent, approvePluginConsent } from '@/api/pluginConsent'
 import { usePluginConsentState } from '@/stores/pluginConsentState'
 import { usePluginStartGate } from './usePluginStartGate'
@@ -28,6 +29,7 @@ vi.mock('@/api/plugins', () => ({
   reloadAllPlugins: vi.fn(),
   refreshPluginsRegistry: vi.fn(),
   setPluginAutoStart: vi.fn(),
+  getPythonDependencies: vi.fn(),
 }))
 vi.mock('@/api/pluginConsent', () => ({
   getPluginConsent: vi.fn(),
@@ -101,6 +103,9 @@ beforeEach(() => {
   vi.mocked(startPlugin)
     .mockReset()
     .mockResolvedValue({ success: true, plugin_id: 'demo', message: '' })
+  vi.mocked(getPythonDependencies)
+    .mockReset()
+    .mockResolvedValue({ plugin_id: 'demo', state: null, pending: false })
   vi.mocked(reloadPlugin).mockReset().mockResolvedValue({ success: true, plugin_id: 'demo', message: '' })
   vi.mocked(getPluginConsent).mockImplementation(async (id: string) => ({
     ...consent('confirm'),
@@ -280,5 +285,50 @@ describe('manual start consent gate', () => {
     expect(startPlugin).toHaveBeenCalledOnce()
     expect(reloadPlugin).toHaveBeenCalledOnce()
     expect(getPluginConsent).not.toHaveBeenCalled()
+  })
+})
+
+describe('dependencies locked in uv.lock', () => {
+  beforeEach(() => {
+    vi.mocked(getPluginConsent).mockResolvedValue(consent('clear'))
+    fixture('clear')
+    vi.mocked(getPythonDependencies).mockResolvedValue({ plugin_id: 'demo', state: null, pending: true })
+  })
+
+  it('asks for the install first and starts once the dependencies are installed', async () => {
+    const dependencyInstall = usePluginDependencyInstall()
+    const started = usePluginStartGate().startWithConsent('demo')
+    await vi.waitFor(() => expect(dependencyInstall.active).toEqual({ pluginId: 'demo', name: 'Demo' }))
+    expect(startPlugin).not.toHaveBeenCalled()
+
+    dependencyInstall.finish(true)
+
+    await expect(started).resolves.toBe(true)
+    expect(startPlugin).toHaveBeenCalledWith('demo')
+  })
+
+  it('does not start when the dialog is closed before the install', async () => {
+    const dependencyInstall = usePluginDependencyInstall()
+    const started = usePluginStartGate().startWithConsent('demo')
+    await vi.waitFor(() => expect(dependencyInstall.active).not.toBeNull())
+
+    dependencyInstall.finish(false)
+
+    await expect(started).resolves.toBe(false)
+    expect(startPlugin).not.toHaveBeenCalled()
+  })
+
+  it('a plugin with nothing pending starts without the dialog', async () => {
+    vi.mocked(getPythonDependencies).mockResolvedValue({ plugin_id: 'demo', state: null, pending: false })
+
+    await expect(usePluginStartGate().startWithConsent('demo')).resolves.toBe(true)
+    expect(usePluginDependencyInstall().active).toBeNull()
+  })
+
+  it('a failed status read never blocks the start', async () => {
+    vi.mocked(getPythonDependencies).mockRejectedValue(new Error('offline'))
+
+    await expect(usePluginStartGate().startWithConsent('demo')).resolves.toBe(true)
+    expect(startPlugin).toHaveBeenCalledWith('demo')
   })
 })

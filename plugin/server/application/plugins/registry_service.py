@@ -21,6 +21,7 @@ from plugin.core.registry import (
     _extract_plugin_ui_config,
     _find_missing_python_requirements,
     _parse_single_plugin_config,
+    missing_dependencies_error_type,
     _prepare_plugin_import_roots,
     _resolve_plugin_id_conflict,
     register_plugin,
@@ -837,7 +838,7 @@ def _build_discovery_payload(
                     search_paths=ctx.python_requirement_paths,
                 )
                 if missing_requirements:
-                    error_type = "MissingPythonDependencies"
+                    error_type = missing_dependencies_error_type(ctx.toml_path.parent)
                     error_message = f"Unsatisfied Python dependencies: {missing_requirements}"
                     error_phase = "python_requirements"
                     entries_preview = _extract_entries_preview(

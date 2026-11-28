@@ -12,6 +12,13 @@
     <div v-if="consentState.activeRequest" class="consent-loader-host">
       <PluginConsentDialog :onClose="closeConsentRequest(consentState.activeRequest)" />
     </div>
+    <div v-if="dependencyInstall.active" class="consent-loader-host">
+      <PluginDependencyDialog
+        :key="dependencyInstall.active.pluginId"
+        :request="dependencyInstall.active"
+        @close="dependencyInstall.finish(false)"
+      />
+    </div>
   </el-config-provider>
 </template>
 
@@ -21,8 +28,11 @@ import { elementLocale, localeLoadState } from './i18n'
 import LocaleLoadNotice from './components/common/LocaleLoadNotice.vue'
 import { deferredPanel } from './components/common/deferredPanel'
 import { usePluginConsentState, type ConsentRequest } from './stores/pluginConsentState'
+import { usePluginDependencyInstall } from './stores/pluginDependencyInstall'
 
 const consentState = usePluginConsentState()
+const dependencyInstall = usePluginDependencyInstall()
+const PluginDependencyDialog = deferredPanel(() => import('./components/plugin/PluginDependencyDialog.vue'))
 // Reuse the optional-panel recovery UI. The existing request v-if/nextTick
 // handoff unmounts an old loader before presenting the next queued request.
 const PluginConsentDialog = deferredPanel(() => import('./components/plugin/PluginConsentDialog.vue'))

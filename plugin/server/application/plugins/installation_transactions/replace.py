@@ -360,6 +360,32 @@ def _validate_replacement_targets(
         )
 
 
+def _carry_over_locked_vendor(backup_dir: Path, target_dir: Path) -> None:
+    """Keep the dependencies the host installed from uv.lock when the lock did not change.
+
+    Only when the new package ships no vendor/ but a uv.lock with the same
+    digest as the one recorded in the old vendor/'s marker: a vendor/ the old
+    package shipped or a user copied in has no marker and is never carried
+    over. Copied, not moved, so a rollback still finds the backup complete.
+    A failed copy leaves the new install without vendor/: the plugin then
+    asks for its dependencies again, as after a lock change.
+    """
+    from plugin.neko_plugin_cli.core.uv_lock_install import VENDOR_DIR_NAME, vendor_matches_lock
+
+    if not vendor_matches_lock(backup_dir, target_dir):
+        return
+    destination = target_dir / VENDOR_DIR_NAME
+    try:
+        shutil.copytree(backup_dir / VENDOR_DIR_NAME, destination, symlinks=True)
+    except OSError as exc:
+        shutil.rmtree(destination, ignore_errors=True)
+        logger.warning(
+            "carrying over the lock-installed vendor/ failed plugin_dir={} err_type={}",
+            target_dir.name,
+            type(exc).__name__,
+        )
+
+
 async def replace_plugin(
     *,
     layout: PluginLayout,
@@ -463,6 +489,7 @@ async def replace_plugin(
             if backup is not None:
                 await merge_directory_contents(backup, target)
         await _restore_manifest_adjacent_profiles(backup_dir, target_dir)
+        await asyncio.to_thread(_carry_over_locked_vendor, backup_dir, target_dir)
         stage = "invalidate_cache"
         await asyncio.to_thread(_evict_replaced_plugin_modules, plugin_id)
         if was_running:

@@ -393,10 +393,15 @@ def validate_dependency_layout(archive: zipfile.ZipFile, plugin_folders: list[st
             for name in file_names
         )
         if not vendor_has_files:
+            if f"payload/plugins/{folder}/uv.lock" in file_names:
+                # Locked instead of vendored: the host installs them from
+                # uv.lock into vendor/ before the first start
+                # (plugin/server/application/plugin_lock_dependencies.py).
+                continue
             raise ValueError(
                 f"plugin '{folder}' declares Python runtime dependencies "
                 f"({', '.join(external_requirements)}) but the package does not contain "
-                "vendored dependency files under vendor/."
+                "vendored dependency files under vendor/, nor a uv.lock to install them from."
             )
         vendor_versions = _collect_archive_vendor_distribution_versions(
             archive,

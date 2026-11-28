@@ -102,6 +102,7 @@ from plugin.server.infrastructure.runtime_overrides import (
     set_runtime_override,
 )
 from plugin.server.messaging.lifecycle_events import emit_lifecycle_event
+from plugin.neko_plugin_cli.core.uv_lock_install import lock_install_applies
 from plugin.settings import (
     BUILTIN_PLUGIN_CONFIG_ROOT,
     PLUGIN_AUTOSTART_CONCURRENCY,
@@ -1362,6 +1363,21 @@ class PluginLifecycleService:
                 config_path,
                 current_plugin_id,
             )
+            if unsatisfied_python_requirements and await asyncio.to_thread(
+                lock_install_applies, config_path.parent,
+            ):
+                # The package ships uv.lock instead of vendor/: the plugin
+                # manager offers to install them (plugin_lock_dependencies.py).
+                raise _to_domain_error(
+                    code="PLUGIN_PYTHON_DEPENDENCIES_PENDING",
+                    message=(
+                        f"Plugin '{current_plugin_id}' needs its Python dependencies installed from its uv.lock "
+                        f"first: {unsatisfied_python_requirements}"
+                    ),
+                    status_code=400,
+                    plugin_id=current_plugin_id,
+                    error_type="PythonDependenciesPending",
+                )
             if unsatisfied_python_requirements:
                 raise _to_domain_error(
                     code="PLUGIN_PYTHON_DEPENDENCIES_MISSING",

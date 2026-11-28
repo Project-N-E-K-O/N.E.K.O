@@ -48,6 +48,7 @@ const tagType = computed(() => {
       return 'danger'
     case PluginStatus.LOADING:
     case PluginStatus.PENDING:
+    case PluginStatus.DEPENDENCIES_PENDING:
       return 'warning'
     case PluginStatus.DISABLED:
       return 'info'
