@@ -111,6 +111,11 @@ def test_windows_plugin_flaky_check_does_not_pass_a_run_cut_short_by_a_crash():
     assert f"$junit = {junit}" in rerun["run"]
     assert "'crashed while running'" in rerun["run"]
     assert "if ($verdict -ne 'none')" in rerun["run"]
+    # Hard stop for what --session-timeout cannot bound (e.g. a hang during
+    # collection), before the step limit, like `timeout 450` in the Linux job.
+    assert "WaitForExit(450000)" in rerun["run"]
+    assert "taskkill /T /F /PID" in rerun["run"]
+    assert 450 < rerun["timeout-minutes"] * 60
 
 
 @pytest.mark.parametrize(

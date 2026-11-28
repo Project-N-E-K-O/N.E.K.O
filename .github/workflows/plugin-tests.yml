@@ -97,8 +97,9 @@ jobs:
         # it. `--session-timeout 120` (pytest-timeout, both jobs) starts no new
         # test after 120 s, and the test already running is cut at 300 s by the
         # per-test limit, so the re-run ends by about 420 s with exit 1, i.e.
-        # `failed`. `timeout 450` is a hard stop in case a test hangs where the
-        # signal-based timeout cannot interrupt it (exit 124, also `failed`).
+        # `failed`. `timeout 450` is a hard stop for what neither limit covers,
+        # such as a hang during collection or one the signal-based timeout
+        # cannot interrupt (exit 124, also `failed`).
         if: failure() && steps.full-suite.outcome == 'failure'
         timeout-minutes: 8
         run: |
@@ -183,17 +184,25 @@ jobs:
 
       - name: Re-run failed tests once (flaky check)
         # Same step as the Linux job above and unit-tests.yml; see the comment
-        # there, including `--session-timeout`. One addition: when the full run
-        # stopped at a crashed worker, the tests still queued never ran and are
-        # not in the `--lf` record, so a passing re-run says nothing about them. The step then prints no
+        # there, including `--session-timeout` and the 450 s hard stop (here
+        # WaitForExit plus taskkill of the process tree, exit 124).
+        # One addition: when the full run stopped at a crashed worker, the
+        # tests still queued never ran and are not in the `--lf` record, so a
+        # passing re-run says nothing about them. The step then prints no
         # verdict (the reporter does not call the run flaky) and says why in
         # the summary. A failing re-run is still reported as `failed`.
         if: failure() && steps.full-suite.outcome == 'failure'
         timeout-minutes: 8
         shell: pwsh
         run: |
-          uv run pytest plugin/tests -q -n 0 --lf --lfnf none --session-timeout 120 --basetemp "${{ runner.temp }}/neko-plugin-rerun"
-          $rc = $LASTEXITCODE
+          $pytest = Start-Process -FilePath uv -NoNewWindow -PassThru -ArgumentList 'run pytest plugin/tests -q -n 0 --lf --lfnf none --session-timeout 120 --basetemp "${{ runner.temp }}/neko-plugin-rerun"'
+          $null = $pytest.Handle  # keeps ExitCode readable after the process exits
+          if ($pytest.WaitForExit(450000)) {
+            $rc = $pytest.ExitCode
+          } else {
+            taskkill /T /F /PID $pytest.Id | Out-Null
+            $rc = 124
+          }
           $junit = "${{ runner.temp }}/plugin-junit/full.xml"
           $cutShort = -not (Test-Path -LiteralPath $junit) -or (Select-String -LiteralPath $junit -Pattern 'crashed while running' -SimpleMatch -Quiet)
           $verdict = if ($rc -ne 0) { 'failed' } elseif ($cutShort) { 'none' } else { 'passed' }
@@ -204,6 +213,7 @@ jobs:
             '### Flaky check (`--lf` re-run)',
             '',
             "Re-running only the failed tests exited with ${rc}: **$verdict**.",
+            $(if ($rc -eq 124) { 'The re-run was stopped after 7.5 min.' } else { '' }),
             $(if ($verdict -eq 'passed') { 'The failures did not reproduce; treat them as flaky until proven otherwise.' } elseif ($verdict -eq 'none') { 'The full run stopped at a crashed worker, so the tests queued after it never ran; a passing re-run cannot tell whether this run is flaky.' } else { 'The failures reproduced.' })
           )
           $lines | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
