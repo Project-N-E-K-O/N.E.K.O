@@ -31,6 +31,7 @@ preserving the caller's ``read`` ceiling.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import time
 import weakref
 from typing import Any, TypeVar
@@ -83,6 +84,19 @@ STALE_CONNECTION_ERRORS: tuple[type[BaseException], ...] = (
 # drop while the server is already processing / billing a long LLM request.
 STALE_RETRY_MAX_ELAPSED_SECONDS: float = 2.0
 
+# httpcore trace events emitted whenever a request opens a brand-new TCP/UDS/TLS
+# connection rather than reusing an idle pooled keep-alive socket.
+_FRESH_CONNECTION_TRACE_SUFFIXES: tuple[str, ...] = (
+    ".connect_tcp.started",
+    ".connect_unix_socket.started",
+    ".start_tls.started",
+)
+
+
+def _is_fresh_connection_trace(event_name: str) -> bool:
+    return event_name.endswith(_FRESH_CONNECTION_TRACE_SUFFIXES)
+
+
 _ClientT = TypeVar("_ClientT")
 
 
@@ -131,6 +145,23 @@ def _wrap_async_transport(
         # Decide before sending: reading a streamed body may swap it for a
         # buffered copy, but what went out once cannot be generated again.
         replayable = isinstance(request.stream, httpx.ByteStream)
+        orig_extensions = getattr(request, "extensions", None)
+        track_extensions = isinstance(orig_extensions, dict)
+        prev_trace = orig_extensions.get("trace") if track_extensions else None
+        opened_fresh_connection = False
+
+        if track_extensions:
+            async def _track_trace(event_name: str, info: dict[str, Any]) -> None:
+                nonlocal opened_fresh_connection
+                if _is_fresh_connection_trace(event_name):
+                    opened_fresh_connection = True
+                if prev_trace is not None:
+                    res = prev_trace(event_name, info)
+                    if inspect.isawaitable(res):
+                        await res
+
+            request.extensions = {**orig_extensions, "trace": _track_trace}
+
         started = time.monotonic()
         # Returns once the response headers are in; the body streams later,
         # so nothing below retries after any response data arrived.
@@ -138,8 +169,14 @@ def _wrap_async_transport(
             return await original(request)
         except STALE_CONNECTION_ERRORS as exc:
             elapsed = time.monotonic() - started
-            if not replayable or elapsed > max_elapsed_seconds:
+            if (
+                not replayable
+                or opened_fresh_connection
+                or elapsed > max_elapsed_seconds
+            ):
                 raise
+            if track_extensions:
+                request.extensions = orig_extensions
             logger.info(
                 "%s 请求所用连接已被对端断开（%s，耗时 %.3fs），重试一次: host=%s",
                 label,
@@ -148,6 +185,9 @@ def _wrap_async_transport(
                 request.url.host,
             )
             return await original(request)
+        finally:
+            if track_extensions:
+                request.extensions = orig_extensions
 
     handle_async_request._neko_stale_retry = True  # type: ignore[attr-defined]
     transport.handle_async_request = handle_async_request
@@ -165,13 +205,34 @@ def _wrap_sync_transport(
 
     def handle_request(request: httpx.Request) -> httpx.Response:
         replayable = isinstance(request.stream, httpx.ByteStream)
+        orig_extensions = getattr(request, "extensions", None)
+        track_extensions = isinstance(orig_extensions, dict)
+        prev_trace = orig_extensions.get("trace") if track_extensions else None
+        opened_fresh_connection = False
+
+        if track_extensions:
+            def _track_trace(event_name: str, info: dict[str, Any]) -> None:
+                nonlocal opened_fresh_connection
+                if _is_fresh_connection_trace(event_name):
+                    opened_fresh_connection = True
+                if prev_trace is not None:
+                    prev_trace(event_name, info)
+
+            request.extensions = {**orig_extensions, "trace": _track_trace}
+
         started = time.monotonic()
         try:
             return original(request)
         except STALE_CONNECTION_ERRORS as exc:
             elapsed = time.monotonic() - started
-            if not replayable or elapsed > max_elapsed_seconds:
+            if (
+                not replayable
+                or opened_fresh_connection
+                or elapsed > max_elapsed_seconds
+            ):
                 raise
+            if track_extensions:
+                request.extensions = orig_extensions
             logger.info(
                 "%s 请求所用连接已被对端断开（%s，耗时 %.3fs），重试一次: host=%s",
                 label,
@@ -180,6 +241,9 @@ def _wrap_sync_transport(
                 request.url.host,
             )
             return original(request)
+        finally:
+            if track_extensions:
+                request.extensions = orig_extensions
 
     handle_request._neko_stale_retry = True  # type: ignore[attr-defined]
     transport.handle_request = handle_request
@@ -191,15 +255,16 @@ def install_stale_connection_retry(
     label: str = "HTTP",
     max_elapsed_seconds: float = STALE_RETRY_MAX_ELAPSED_SECONDS,
 ) -> _ClientT:
-    """Retry a replayable request once when its pooled connection is dead.
+    """Retry a replayable request once when a reused pooled connection is dead.
 
     Wraps the client's default transport and any proxy mounts (both async and
     sync handlers when present), below event hooks, auth, and redirects, so a
-    retry resends the exact same request. Only failures occurring within
-    *max_elapsed_seconds* of sending are retried so mid-processing disconnects
-    on long non-streaming LLM requests are never duplicated. Safe to call on
-    test fakes lacking ``_transport`` or ``_mounts`` and idempotent across
-    repeated calls.
+    retry resends the exact same request. Retries are skipped whenever httpcore
+    trace events show that a fresh TCP/UDS/TLS connection was opened for this
+    request or when the failure occurs more than *max_elapsed_seconds* after
+    sending, preventing duplicate retries on fresh connections or mid-generation
+    drops. Safe to call on test fakes lacking ``_transport`` or ``_mounts`` and
+    idempotent across repeated calls.
     """
     transports = [getattr(client, "_transport", None)]
     transports.extend((getattr(client, "_mounts", None) or {}).values())

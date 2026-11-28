@@ -148,6 +148,144 @@ def test_stale_retry_does_not_retry_mid_processing_disconnect_sync(monkeypatch):
     assert fast_transport.calls == 2
 
 
+@pytest.mark.asyncio
+async def test_stale_retry_does_not_retry_fresh_connection_drop_async():
+    posts_received = 0
+    connections = 0
+
+    async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        nonlocal posts_received, connections
+        connections += 1
+        try:
+            await _read_http_request(reader)
+            posts_received += 1
+        except (asyncio.IncompleteReadError, ConnectionError):
+            pass
+        finally:
+            writer.close()
+
+    server = await asyncio.start_server(handle, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    url = f"http://127.0.0.1:{port}/v1/chat/completions"
+
+    caller_events: list[str] = []
+
+    async def caller_trace(name: str, _info: dict) -> None:
+        caller_events.append(name)
+
+    caller_ext = {"trace": caller_trace}
+    try:
+        async with install_stale_connection_retry(httpx.AsyncClient(trust_env=False)) as client:
+            with pytest.raises(httpx.RemoteProtocolError):
+                await client.post(url, json={"hi": 1}, extensions=caller_ext)
+        assert connections == 1
+        assert posts_received == 1
+        assert any(e.endswith(".connect_tcp.started") for e in caller_events)
+        assert caller_ext == {"trace": caller_trace}
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+def test_stale_retry_skips_fresh_drop_and_retries_reused_drop_sync():
+    import socket
+    import threading
+
+    def _read_req_sock(sock: socket.socket) -> bool:
+        buf = b""
+        while b"\r\n\r\n" not in buf:
+            chunk = sock.recv(4096)
+            if not chunk:
+                return False
+            buf += chunk
+        head, rest = buf.split(b"\r\n\r\n", 1)
+        length = 0
+        for line in head.split(b"\r\n"):
+            if line.lower().startswith(b"content-length:"):
+                length = int(line.split(b":", 1)[1])
+        while len(rest) < length:
+            chunk = sock.recv(4096)
+            if not chunk:
+                return False
+            rest += chunk
+        return True
+
+    # 1) Fresh connection dropped immediately after reading POST -> must NOT retry.
+    fresh_state = {"conns": 0, "posts": 0}
+    srv1 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv1.bind(("127.0.0.1", 0))
+    srv1.listen(4)
+    srv1.settimeout(5.0)
+    port1 = srv1.getsockname()[1]
+
+    def _serve_fresh():
+        try:
+            conn, _ = srv1.accept()
+            fresh_state["conns"] += 1
+            with conn:
+                if _read_req_sock(conn):
+                    fresh_state["posts"] += 1
+        except OSError:
+            pass
+
+    t1 = threading.Thread(target=_serve_fresh, daemon=True)
+    t1.start()
+    caller_events: list[str] = []
+
+    def caller_trace(name: str, _info: dict) -> None:
+        caller_events.append(name)
+
+    caller_ext = {"trace": caller_trace}
+    try:
+        with install_stale_connection_retry(httpx.Client(trust_env=False)) as client:
+            with pytest.raises(httpx.RemoteProtocolError):
+                client.post(f"http://127.0.0.1:{port1}/v1/chat/completions", json={"hi": 1}, extensions=caller_ext)
+        t1.join(timeout=2.0)
+        assert fresh_state == {"conns": 1, "posts": 1}
+        assert any(e.endswith(".connect_tcp.started") for e in caller_events)
+        assert caller_ext == {"trace": caller_trace}
+    finally:
+        srv1.close()
+
+    # 2) Reused pooled connection dropped on request 2 -> retried once on connection 2.
+    reuse_state = {"conns": 0}
+    srv2 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv2.bind(("127.0.0.1", 0))
+    srv2.listen(4)
+    srv2.settimeout(5.0)
+    port2 = srv2.getsockname()[1]
+
+    def _serve_reuse():
+        try:
+            conn1, _ = srv2.accept()
+            reuse_state["conns"] += 1
+            with conn1:
+                if _read_req_sock(conn1):
+                    conn1.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+                # Drop immediately as the second request arrives on the pooled socket.
+                _read_req_sock(conn1)
+            conn2, _ = srv2.accept()
+            reuse_state["conns"] += 1
+            with conn2:
+                if _read_req_sock(conn2):
+                    conn2.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+        except OSError:
+            pass
+
+    t2 = threading.Thread(target=_serve_reuse, daemon=True)
+    t2.start()
+    try:
+        with install_stale_connection_retry(httpx.Client(trust_env=False)) as client:
+            r1 = client.post(f"http://127.0.0.1:{port2}/v1/chat/completions", json={"n": 1})
+            r2 = client.post(f"http://127.0.0.1:{port2}/v1/chat/completions", json={"n": 2})
+        t2.join(timeout=2.0)
+        assert (r1.status_code, r1.text) == (200, "ok")
+        assert (r2.status_code, r2.text) == (200, "ok")
+        assert reuse_state["conns"] == 2
+    finally:
+        srv2.close()
+
+
 # ──────────────────── stale-connection retry (async + sync) ────────────────────
 
 
@@ -271,6 +409,9 @@ async def test_chat_clients_share_keepalive_stale_retry_and_split_timeout(client
 
         assert getattr(warm._aclient._client._transport.handle_async_request, "_neko_stale_retry", False)
         assert getattr(warm._client._client._transport.handle_request, "_neko_stale_retry", False)
+        # Cold/one-shot clients without keepalive_expiry do not opt into stale-connection retry.
+        assert not getattr(plain._aclient._client._transport.handle_async_request, "_neko_stale_retry", False)
+        assert not getattr(plain._client._client._transport.handle_request, "_neko_stale_retry", False)
 
         expected_timeout = httpx.Timeout(connect=10.0, read=180.0, write=30.0, pool=10.0)
         assert warm._aclient.timeout == expected_timeout

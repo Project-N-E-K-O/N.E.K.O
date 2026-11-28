@@ -847,14 +847,15 @@ class ChatAnthropic:
                                 max_keepalive_connections=DEFAULT_CONNECTION_LIMITS.max_keepalive_connections,
                                 keepalive_expiry=keepalive_expiry,
                             )
-                sync_kw["http_client"] = install_stale_connection_retry(
-                    DefaultHttpxClient(**http_kw),
-                    label="Anthropic HTTP",
-                )
-                async_kw["http_client"] = install_stale_connection_retry(
-                    DefaultAsyncHttpxClient(**http_kw),
-                    label="Anthropic HTTP",
-                )
+                sync_http = DefaultHttpxClient(**http_kw)
+                async_http = DefaultAsyncHttpxClient(**http_kw)
+                # Only opt pooled/warm clients (explicit keepalive_expiry) into
+                # stale-connection retry; one-shot cold clients keep pre-PR semantics.
+                if keepalive_expiry is not None:
+                    sync_http = install_stale_connection_retry(sync_http, label="Anthropic HTTP")
+                    async_http = install_stale_connection_retry(async_http, label="Anthropic HTTP")
+                sync_kw["http_client"] = sync_http
+                async_kw["http_client"] = async_http
 
         self._client = anthropic_cls(**sync_kw)
         self._aclient = async_anthropic_cls(**async_kw)

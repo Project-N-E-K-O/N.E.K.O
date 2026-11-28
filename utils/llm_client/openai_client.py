@@ -190,15 +190,16 @@ class ChatOpenAI:
                 max_keepalive_connections=DEFAULT_CONNECTION_LIMITS.max_keepalive_connections,
                 keepalive_expiry=keepalive_expiry,
             )
-        client_kw["http_client"] = install_stale_connection_retry(
-            DefaultAsyncHttpxClient(**http_kw),
-            label="LLM HTTP",
-        )
+        async_http = DefaultAsyncHttpxClient(**http_kw)
+        sync_http = DefaultHttpxClient(**http_kw)
+        # Only opt pooled/warm clients (explicit keepalive_expiry) into
+        # stale-connection retry; one-shot cold clients keep pre-PR semantics.
+        if keepalive_expiry is not None:
+            async_http = install_stale_connection_retry(async_http, label="LLM HTTP")
+            sync_http = install_stale_connection_retry(sync_http, label="LLM HTTP")
+        client_kw["http_client"] = async_http
         self._aclient = AsyncOpenAI(**client_kw)
-        client_kw["http_client"] = install_stale_connection_retry(
-            DefaultHttpxClient(**http_kw),
-            label="LLM HTTP",
-        )
+        client_kw["http_client"] = sync_http
         self._client = OpenAI(**client_kw)
         self._client_finalizer = weakref.finalize(
             self,
