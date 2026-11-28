@@ -486,6 +486,16 @@ class TreeWork:
         except (WorktreeError, ValueError, OSError) as exc:
             logger.info("worktree %s on record could not be found again: %s", row.id, exc)
             return None
+        if row.token:
+            if handle.token and handle.token != row.token:
+                logger.warning(
+                    "worktree %s found again at %s does not match its ledger token; leaving on record",
+                    row.id,
+                    row.path,
+                )
+                return None
+            if not handle.token and dataclasses.is_dataclass(handle) and not isinstance(handle, type):
+                handle = dataclasses.replace(handle, token=row.token)
         self._tree_handles[row.id] = handle
         self._trees_mine.add(row.id)
         return handle

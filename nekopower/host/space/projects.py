@@ -429,8 +429,6 @@ class ProjectsMixin:
 
     def _restore(self, project: Project) -> Project:
         """Move an archived project back among the projects."""
-        if project.workdir and self._workdir_clearing is not None and self._workdir_clearing(project.workdir):
-            raise _WorkdirClearing(project.workdir)
         paths = self._paths()
         source = self._directory_of(project)
         target = paths.project_dir(project.name)
@@ -438,6 +436,15 @@ class ProjectsMixin:
             # A project of the name is there already: that one is used, and
             # the archived one stays where it is.
             return self._project_from(target)
+        disk_data, _readable = self._project_data(source)
+        disk_workdir = (
+            str(disk_data["workdir"])
+            if isinstance(disk_data, dict) and isinstance(disk_data.get("workdir"), str) and disk_data["workdir"]
+            else None
+        )
+        for candidate in (project.workdir, disk_workdir):
+            if candidate and self._workdir_clearing is not None and self._workdir_clearing(candidate):
+                raise _WorkdirClearing(candidate)
         target.parent.mkdir(parents=True, exist_ok=True)
         _space_facade._move(source, target)
         try:

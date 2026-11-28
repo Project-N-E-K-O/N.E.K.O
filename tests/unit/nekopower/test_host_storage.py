@@ -3380,21 +3380,34 @@ async def test_round15_review_fixes(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     assert size == 77
     assert whole is False
 
-    # 2. remove_dir_safely() deletes nested directory trees iteratively without RecursionError.
-    from nekopower.host.storage import _fs
+    # 2. remove_dir_safely() deletes deep directory trees iteratively even below a low recursion limit
+    #    where a naive recursive deletion would raise RecursionError.
+    import subprocess
+    import sys
 
     deep_root = tmp_path / "deep_root"
     deep_target = deep_root / "work"
-    cur = deep_target
-    for i in range(60):
-        cur = cur / f"d{i}"
-    os.makedirs(_fs(cur), exist_ok=True)
-    with open(_fs(cur / "leaf.bin"), "wb") as f:
-        f.write(b"y" * 25)
-    removed, freed = remove_dir_safely(deep_target, deep_root)
-    assert removed is True
-    assert freed == 25
-    assert not deep_target.exists()
+    probe_script = (
+        "import os, sys; from pathlib import Path; "
+        "from nekopower.host.storage import _fs, remove_dir_safely; "
+        "root, target = Path(sys.argv[1]), Path(sys.argv[2]); "
+        "cur = target\n"
+        "for _ in range(120):\n"
+        "    cur = cur / 'a'\n"
+        "os.makedirs(_fs(cur), exist_ok=True)\n"
+        "with open(_fs(cur / 'leaf.bin'), 'wb') as f:\n"
+        "    f.write(b'y' * 25)\n"
+        "sys.setrecursionlimit(80)\n"
+        "removed, freed = remove_dir_safely(target, root)\n"
+        "assert removed is True and freed == 25 and not target.exists(), (removed, freed)\n"
+    )
+    proc = await asyncio.to_thread(
+        subprocess.run,
+        [sys.executable, "-c", probe_script, str(deep_root), str(deep_target)],
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, proc.stderr or proc.stdout
 
     # 3. StorageSettingsStore fails closed on RecursionError (deeply nested JSON) without caching or overwriting.
     deep_settings_path = tmp_path / "deep_storage.json"
@@ -3465,11 +3478,28 @@ async def test_round15_review_fixes(tmp_path: Path, monkeypatch: pytest.MonkeyPa
             mp.setattr(host.task_agents.worktrees, "open", open_wrong_tok)
             assert await host.task_agents._handle_for_cleanup(row_tok) is None
 
+        # Regular _handle_of() path also rejects mismatched non-empty ledger tokens and does not cache.
+        async def open_regular_wrong_tok(_pdir: Any, _wt: Any) -> Worktree:
+            return Worktree(
+                id="tokchk01", repo_root=r_root, path=wt_tok, subpath="", start="abc", token="other-token"
+            )
+
+        with monkeypatch.context() as mp:
+            mp.setattr(host.task_agents.worktrees, "open", open_regular_wrong_tok)
+            assert await host.task_agents._handle_of(row_tok) is None
+            assert "tokchk01" not in host.task_agents._tree_handles
+
         await host.ledger.update_tree("tokchk01", token="")
         row_empty_tok = await host.ledger.get_tree("tokchk01")
         assert row_empty_tok is not None
+
+        async def open_empty_tok(pdir: Any, _wt: Any) -> Worktree:
+            if Path(pdir) == r_root:
+                return Worktree(id="tokchk01", repo_root=r_root, path=wt_tok, subpath="", start="abc", token="")
+            raise WorktreeError("subdir missing")
+
         with monkeypatch.context() as mp:
-            mp.setattr(host.task_agents.worktrees, "open", open_wrong_tok)
+            mp.setattr(host.task_agents.worktrees, "open", open_empty_tok)
             assert await host.task_agents._handle_for_cleanup(row_empty_tok) is None
 
         # 6. Concurrent archive revival waits while target workdir is held for cleanup and never races deletion.
@@ -3625,13 +3655,25 @@ async def test_round16_codex_and_greptile_fixes(tmp_path: Path, monkeypatch: pyt
             is False
         )
 
-        # 2. Session work dirs stay visible in work_dirs even when scan budget is already expired.
+        # 2. Session work dirs AND expired transcripts / outputs counts stay visible even when scan budget is expired.
         s1 = await host.ledger.create_session(name="bud-1", lanlan_name="Lan", project="budproj")
         s2 = await host.ledger.create_session(name="bud-2", lanlan_name="Lan", project="budproj")
+        old_transcript_ts = clock.now - 90 * DAY
         for sid in (s1.id, s2.id):
+            sdir = host.paths.session_dir(sid, "budproj")
             wdir = host.paths.work_dir(sid, "budproj")
             wdir.mkdir(parents=True)
             (wdir / "f.bin").write_bytes(b"z" * 16)
+            (sdir / "transcript.jsonl").write_text('{"role":"user","content":"hi"}\n', encoding="utf-8")
+            out_d = sdir / "outputs"
+            out_d.mkdir(parents=True)
+            (out_d / "out.txt").write_bytes(b"o" * 32)
+            await host.ledger.update_session(sid, session_dir=str(sdir), workdir=str(wdir))
+            await host.ledger.run(
+                lambda conn, _sid=sid, _ts=old_transcript_ts: conn.execute(
+                    "UPDATE sessions SET last_active_at = ? WHERE id = ?", (_ts, _sid)
+                )
+            )
 
         with monkeypatch.context() as mp:
             mp.setattr(np_settings, "STORAGE_SCAN_BUDGET_SECONDS", -1.0)
@@ -3644,5 +3686,8 @@ async def test_round16_codex_and_greptile_fixes(tmp_path: Path, monkeypatch: pyt
                 assert item["bytes_whole"] is False
                 assert item["can_clean"] is True
                 assert item["empty"] is False
+        assert ov_over["transcripts"]["expired_count"] >= 2
+        assert ov_over["transcripts"]["outputs_count"] >= 2
+        assert ov_over["transcripts"]["bytes_whole"] is False
     finally:
         await host.shutdown()

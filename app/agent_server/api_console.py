@@ -131,6 +131,7 @@ def _measure(paths: list[Path | None], budget: float) -> list[tuple[int | None, 
                     try:
                         total += os.lstat(os.path.join(directory, name)).st_size
                     except OSError:
+                        whole = False
                         continue
         except OSError:
             whole = False

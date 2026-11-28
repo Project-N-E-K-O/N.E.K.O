@@ -1108,10 +1108,14 @@ class StorageManager:
 
             # 1. Scan worktrees (tracked + orphan dirs in wt/)
             wt_root = self._paths.worktrees_dir()
-            wt_root_exists = wt_root.is_dir() and not _is_reparse_link(wt_root)
             wt_items: list[dict[str, Any]] = []
             wt_total_bytes = 0
             wt_whole = True
+            try:
+                wt_root_exists = wt_root.is_dir() and not _is_reparse_link(wt_root)
+            except OSError:
+                wt_root_exists = False
+                wt_whole = False
             wt_reclaimable = 0
             seen_wt_ids: set[str] = set()
 
@@ -1255,7 +1259,6 @@ class StorageManager:
 
             # 2. Scan task_agents/projects/* for work dirs + transcripts/outputs
             ta_root = root / "task_agents"
-            ta_exists = ta_root.is_dir() and not _is_reparse_link(ta_root)
             projects_root = ta_root / "projects"
             work_dir_items: list[dict[str, Any]] = []
             work_dirs_bytes = 0
@@ -1273,6 +1276,13 @@ class StorageManager:
             transcript_reclaimable = 0
             ta_other_bytes = 0
             ta_other_whole = True
+            try:
+                ta_exists = ta_root.is_dir() and not _is_reparse_link(ta_root)
+            except OSError:
+                ta_exists = False
+                work_dirs_whole = False
+                transcript_whole = False
+                ta_other_whole = False
             seen_session_paths: set[str] = set()
             resolved_session_dirs: dict[str, Path | None] = {}
             session_dir_resolver = getattr(self._space_keeper, "_session_dir_of", None) or getattr(
@@ -1335,7 +1345,13 @@ class StorageManager:
                 except OSError:
                     ta_other_whole = False
 
-            projects_root_is_dir = projects_root.is_dir() and not _is_reparse_link(projects_root)
+            try:
+                projects_root_is_dir = projects_root.is_dir() and not _is_reparse_link(projects_root)
+            except OSError:
+                projects_root_is_dir = False
+                work_dirs_whole = False
+                transcript_whole = False
+                ta_other_whole = False
             if ta_exists:
                 _measure_unclassified(
                     ta_root,
@@ -1568,12 +1584,8 @@ class StorageManager:
                                 }
                             )
 
-                        # Measure transcript.jsonl, system.json, and outputs/ unless scan budget is already spent.
-                        if over_budget or time.monotonic() > deadline:
-                            transcript_whole = False
-                            ta_other_whole = False
-                            seen_session_paths.add(os.path.normcase(os.path.normpath(str(sess_path))))
-                            continue
+                        # Measure transcript.jsonl, system.json, and outputs/; keep counting eligible
+                        # sessions even after the scan budget runs out so cleanup controls stay enabled.
                         sess_record_bytes = 0
                         sess_outputs_bytes = 0
                         has_record = False
@@ -1599,14 +1611,21 @@ class StorageManager:
                             out_is_dir = False
                             transcript_whole = False
                         if out_is_dir:
-                            ostats = measure_dir(out_dir, item_deadline())
-                            transcript_whole = transcript_whole and ostats.whole
-                            sess_outputs_bytes = ostats.bytes
+                            if over_budget or time.monotonic() > deadline:
+                                transcript_whole = False
+                                sess_outputs_bytes = 0
+                            else:
+                                ostats = measure_dir(out_dir, item_deadline())
+                                transcript_whole = transcript_whole and ostats.whole
+                                sess_outputs_bytes = ostats.bytes
                             has_outputs = True
                             sess_skip.add(_OUTPUTS_NAME)
 
                         # Account for other session files (e.g. dsh-session.json) without double-counting.
-                        _measure_unclassified(sess_path, frozenset(sess_skip))
+                        if over_budget or time.monotonic() > deadline:
+                            ta_other_whole = False
+                        else:
+                            _measure_unclassified(sess_path, frozenset(sess_skip))
 
                         seen_session_paths.add(os.path.normcase(os.path.normpath(str(sess_path))))
                         resolved_dir = _resolve_session_dir(sess_id, sess_meta) if in_ledger else None
