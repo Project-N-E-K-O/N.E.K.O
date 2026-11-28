@@ -147,7 +147,11 @@ export function switchRequest(
   return { kind: 'decide', state: 'denied', condition: 'in_use' }
 }
 
-/** Uses judged not allowed; while checks only record, they were let through. */
+/**
+ * Uses judged not allowed. The host only records them for now (no refusal
+ * is carried out, so no ``blocked`` outcome is written): every one reads
+ * "would be blocked", as on the permission tab.
+ */
 export function wouldBlock(use: Pick<PrivacyUse, 'outcome'>): boolean {
   return use.outcome !== 'allowed'
 }

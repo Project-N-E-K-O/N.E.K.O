@@ -325,6 +325,17 @@ describe('PrivacyOverview: switch', () => {
     expect(api.decidePermission).not.toHaveBeenCalled()
   })
 
+  it('keeps what is shown when the reload after a change fails', async () => {
+    serve(overview(), { memory: detail() })
+    api.decidePermission.mockResolvedValue({})
+    const root = await mount()
+    api.getPrivacyOverview.mockRejectedValueOnce(new Error('down'))
+    ;(q(root, `switch-weather-${MEMORY}`) as HTMLInputElement).dispatchEvent(new Event('change'))
+    await flush()
+    expect(q(root, 'overview-failed')).toBeNull()
+    expect(q(root, 'group-memory')).not.toBeNull()
+  })
+
   it('shows the reason a change failed', async () => {
     serve(overview(), { memory: detail() })
     const headers = new AxiosHeaders({ 'X-Error-Code': 'PLUGIN_OPERATION_BUSY' })

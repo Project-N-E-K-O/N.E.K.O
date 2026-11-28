@@ -85,7 +85,7 @@
       </template>
     </section>
 
-    <section v-if="overview && selected" class="privacy-card privacy-detail" :data-tier="selectedTier" data-test="detail">
+    <section v-if="overview && selected" class="privacy-card privacy-detail" :data-tier="selectedTier" aria-live="polite" data-test="detail">
       <header class="privacy-head privacy-head--detail">
         <h2>{{ groupName(selected) }}</h2>
         <span v-if="selectedTier" class="perm-tag perm-tag--tier" data-test="detail-tier">{{ t(`pluginConsent.tab.tiers.${selectedTier}`) }}</span>
@@ -253,18 +253,20 @@ async function optional<T>(request: Promise<T>, valid: (value: unknown) => value
   }
 }
 
+let loadRequest = 0
 async function load() {
+  const request = ++loadRequest
   loading.value = true
-  try {
-    const [next, nextCatalog] = await Promise.all([
-      optional(getPrivacyOverview(), validOverview),
-      catalog.value ? Promise.resolve(catalog.value) : optional(getPermissionCatalog(), validCatalog),
-    ])
-    catalog.value = nextCatalog
-    overview.value = next
-  } finally {
-    loading.value = false
-  }
+  const [next, nextCatalog] = await Promise.all([
+    optional(getPrivacyOverview(), validOverview),
+    catalog.value ? Promise.resolve(catalog.value) : optional(getPermissionCatalog(), validCatalog),
+  ])
+  // A later load wins over an answer that comes back late.
+  if (request !== loadRequest) return
+  loading.value = false
+  catalog.value = nextCatalog
+  // A failed reload keeps what is shown; only a first load shows the retry.
+  if (next || !overview.value) overview.value = next
   if (selected.value) await loadDetail(selected.value)
 }
 
