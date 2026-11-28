@@ -748,8 +748,24 @@ class CacheProviderConfig:
 
 
 CACHE_PROVIDERS: dict[str, CacheProviderConfig] = {
-    # qwen_intl / qwen_us must precede qwen: resolve_cache_provider matches substrings
-    # in dict order, so regional domains must first match their own configuration.
+    # qwen_intl / qwen_us / qwen_coding_intl / qwen_token_plan* must precede qwen:
+    # resolve_cache_provider matches substrings in dict order, so regional and
+    # subscription domains must first match their own configuration.
+    #
+    # DashScope implicit cache hit rate is very low in practice, so all DashScope
+    # OpenAI-compatible entries advertise requires_body_flag=True for explicit
+    # cache_control: {"type": "ephemeral"} breakpoints. create_chat_llm activates
+    # enable_cache_control only for multi-turn opt-in callers (explicit_cache=True)
+    # so one-shot calls do not pay DashScope's 125% cache-creation surcharge.
+    #
+    # Live China Mainland verification (2026-11-28, dashscope.aliyuncs.com):
+    #   - qwen3.8-flash: explicit cache_control hits ~100% of marked prefix (vs
+    #     ~67% implicit); DashScope applies breakpoints at message boundaries, so
+    #     static and dynamic system text must split into separate system messages.
+    #   - qwen3.8-omni-flash: accepts cache_control (HTTP 200) and falls back to
+    #     implicit caching with no creation surcharge.
+    #   - x-dashscope-session-cache: enable is a verified no-op on Chat Completions
+    #     (both implicit and explicit) and is retained here for compatibility.
     "qwen_intl": CacheProviderConfig(
         provider_id="qwen_intl",
         memory_thinking_extra_body=EXTRA_BODY_DASHSCOPE_MEMORY_THINKING,
@@ -758,6 +774,7 @@ CACHE_PROVIDERS: dict[str, CacheProviderConfig] = {
         base_url_pattern="dashscope-intl.aliyuncs.com",
         cache_mode="session",
         requires_header=True,
+        requires_body_flag=True,
         header_name="x-dashscope-session-cache",
         header_value="enable",
         min_cache_tokens=1024,
@@ -774,6 +791,58 @@ CACHE_PROVIDERS: dict[str, CacheProviderConfig] = {
         base_url_pattern="dashscope-us.aliyuncs.com",
         cache_mode="session",
         requires_header=True,
+        requires_body_flag=True,
+        header_name="x-dashscope-session-cache",
+        header_value="enable",
+        min_cache_tokens=1024,
+        auto_cache=True,
+        cache_price=0.10,
+        creation_price=0.125,
+        cached_token_field="prompt_tokens_details.cached_tokens",
+    ),
+    "qwen_coding_intl": CacheProviderConfig(
+        provider_id="qwen_coding_intl",
+        memory_thinking_extra_body=EXTRA_BODY_DASHSCOPE_MEMORY_THINKING,
+        name="阿里云 DashScope Coding Plan (Intl)",
+        base_url="https://coding-intl.dashscope.aliyuncs.com/v1",
+        base_url_pattern="coding-intl.dashscope.aliyuncs.com",
+        cache_mode="session",
+        requires_header=True,
+        requires_body_flag=True,
+        header_name="x-dashscope-session-cache",
+        header_value="enable",
+        min_cache_tokens=1024,
+        auto_cache=True,
+        cache_price=0.10,
+        creation_price=0.125,
+        cached_token_field="prompt_tokens_details.cached_tokens",
+    ),
+    "qwen_token_plan_intl": CacheProviderConfig(
+        provider_id="qwen_token_plan_intl",
+        memory_thinking_extra_body=EXTRA_BODY_DASHSCOPE_MEMORY_THINKING,
+        name="阿里云百炼 Token Plan (Intl)",
+        base_url="https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
+        base_url_pattern="token-plan.ap-southeast-1.maas.aliyuncs.com",
+        cache_mode="session",
+        requires_header=True,
+        requires_body_flag=True,
+        header_name="x-dashscope-session-cache",
+        header_value="enable",
+        min_cache_tokens=1024,
+        auto_cache=True,
+        cache_price=0.10,
+        creation_price=0.125,
+        cached_token_field="prompt_tokens_details.cached_tokens",
+    ),
+    "qwen_token_plan": CacheProviderConfig(
+        provider_id="qwen_token_plan",
+        memory_thinking_extra_body=EXTRA_BODY_DASHSCOPE_MEMORY_THINKING,
+        name="阿里云百炼 Token Plan",
+        base_url="https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+        base_url_pattern="token-plan.cn-beijing.maas.aliyuncs.com",
+        cache_mode="session",
+        requires_header=True,
+        requires_body_flag=True,
         header_name="x-dashscope-session-cache",
         header_value="enable",
         min_cache_tokens=1024,
@@ -790,6 +859,7 @@ CACHE_PROVIDERS: dict[str, CacheProviderConfig] = {
         base_url_pattern="dashscope.aliyuncs.com",
         cache_mode="session",
         requires_header=True,
+        requires_body_flag=True,
         header_name="x-dashscope-session-cache",
         header_value="enable",
         min_cache_tokens=1024,
@@ -948,19 +1018,21 @@ def resolve_cache_provider(base_url: str | None) -> CacheProviderConfig | None:
 
 
 def get_cache_kwargs(base_url: str | None) -> dict[str, Any]:
-    """Return the cache-related kwargs needed when constructing ChatOpenAI.
+    """Return the cache-related kwargs for constructing an LLM client.
 
     Two *orthogonal* cache-engagement mechanisms, keyed off the resolved
     provider — a provider may need neither, either, or both:
 
       - ``requires_header`` → inject the provider's session-cache header
-        (e.g. DashScope ``x-dashscope-session-cache: enable``). Header-only
-        providers (qwen) DO NOT get ``enable_cache_control``; their caching is
-        engaged entirely by the header.
-      - ``requires_body_flag`` → set ``enable_cache_control`` so
-        ``ChatOpenAI._params`` stamps an Anthropic-style
-        ``cache_control: {"type": "ephemeral"}`` marker onto the cache
-        breakpoint message (Anthropic direct / Anthropic-compat gateways).
+        (e.g. DashScope ``x-dashscope-session-cache: enable`` or OpenCode Go
+        ``x-opencode-session``).
+      - ``requires_body_flag`` → advertise explicit body-level
+        ``cache_control: {"type": "ephemeral"}`` support (e.g. DashScope
+        OpenAI-compatible endpoints or Anthropic-compat gateways).
+        ``create_chat_llm`` activates this capability on ``ChatOpenAI`` only
+        when a caller opts in via ``explicit_cache=True`` /
+        ``cache_conversation=True`` so one-shot calls keep platform implicit
+        caching without paying explicit write surcharges.
 
     Returns:
         {"default_headers": dict, "enable_cache_control": bool}

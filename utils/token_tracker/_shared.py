@@ -30,7 +30,8 @@ def _deep_copy_day(day: dict) -> dict:
 def _merge_day_stats(target: dict, source: dict):
     """Accumulate source's statistics into target (modifying target in place)."""
     for k in ("total_prompt_tokens", "total_completion_tokens", "total_tokens",
-              "cached_tokens", "total_prompt_chars", "call_count", "error_count"):
+              "cached_tokens", "cache_creation_tokens", "total_prompt_chars",
+              "call_count", "error_count"):
         target[k] = target.get(k, 0) + source.get(k, 0)
 
     # by_model
@@ -38,9 +39,10 @@ def _merge_day_stats(target: dict, source: dict):
     for model, bucket in source.get("by_model", {}).items():
         if model not in t_bm:
             t_bm[model] = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0,
-                           "cached_tokens": 0, "prompt_chars": 0, "call_count": 0}
+                           "cached_tokens": 0, "cache_creation_tokens": 0,
+                           "prompt_chars": 0, "call_count": 0}
         for k in ("prompt_tokens", "completion_tokens", "total_tokens",
-                  "cached_tokens", "prompt_chars", "call_count"):
+                  "cached_tokens", "cache_creation_tokens", "prompt_chars", "call_count"):
             t_bm[model][k] = t_bm[model].get(k, 0) + bucket.get(k, 0)
 
     # by_call_type
@@ -48,9 +50,10 @@ def _merge_day_stats(target: dict, source: dict):
     for ct, bucket in source.get("by_call_type", {}).items():
         if ct not in t_bt:
             t_bt[ct] = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0,
-                        "cached_tokens": 0, "prompt_chars": 0, "call_count": 0}
+                        "cached_tokens": 0, "cache_creation_tokens": 0,
+                        "prompt_chars": 0, "call_count": 0}
         for k in ("prompt_tokens", "completion_tokens", "total_tokens",
-                  "cached_tokens", "prompt_chars", "call_count"):
+                  "cached_tokens", "cache_creation_tokens", "prompt_chars", "call_count"):
             t_bt[ct][k] = t_bt[ct].get(k, 0) + bucket.get(k, 0)
 
 @contextmanager

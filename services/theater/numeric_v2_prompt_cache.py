@@ -2,7 +2,7 @@
 
 import re
 
-from utils.llm_client import HumanMessage
+from utils.llm_client import CACHE_EPHEMERAL_KEY, HumanMessage
 from .numeric_v2_prompt_mark import theater_system_message
 from .prompt_data import prompt_data_block, prompt_data_block_payload
 
@@ -40,8 +40,12 @@ def cache_ordered_messages(messages):
         continuation = (
             "\n从最新已播状态之后写起，先回应本次玩家输入，再交付仍缺且前因已具备的一项回应；"
             "不复述上轮，不重演已完成事件。任务和作者规划不证明已发生，也不替玩家行动或选择。")
-        result.append(HumanMessage(content=(
-            prompt_data_block("演出补充资料", supplemental) + "\n\n"
-            + prompt_data_block("本轮续写任务", task)
-            + continuation)))
+        result.append(HumanMessage(
+            content=(
+                prompt_data_block("演出补充资料", supplemental) + "\n\n"
+                + prompt_data_block("本轮续写任务", task)
+                + continuation
+            ),
+            metadata={CACHE_EPHEMERAL_KEY: True},
+        ))
     return result

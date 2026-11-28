@@ -157,6 +157,15 @@ class _StreamingMixin:
                 return len(variant)
         return 0
 
+    @staticmethod
+    def _build_initial_system_message(instructions: str) -> SystemMessage:
+        from config.prompts.prompts_memory import find_static_prefix_end
+        from utils.llm_client import CACHE_STATIC_PREFIX_LEN_KEY
+
+        split_pos = find_static_prefix_end(instructions)
+        metadata = {CACHE_STATIC_PREFIX_LEN_KEY: split_pos} if split_pos else {}
+        return SystemMessage(content=instructions, metadata=metadata)
+
     async def connect(self, instructions: str, native_audio=False) -> None:
         """Initialize the client with system instructions."""
         self._instructions = instructions
@@ -165,7 +174,7 @@ class _StreamingMixin:
         self._bus_copies_closed = False
         # Add system message to conversation history using langchain format
         self._conversation_history = [
-            SystemMessage(content=instructions)
+            self._build_initial_system_message(instructions)
         ]
         logger.info("OmniOfflineClient initialized with instructions")
 
@@ -178,7 +187,7 @@ class _StreamingMixin:
             self._instructions = config["instructions"]
             # Update system message using langchain format
             if self._conversation_history and isinstance(self._conversation_history[0], SystemMessage):
-                self._conversation_history[0] = SystemMessage(content=self._instructions)
+                self._conversation_history[0] = self._build_initial_system_message(self._instructions)
 
     async def switch_model(
         self,
@@ -267,6 +276,8 @@ class _StreamingMixin:
                 max_completion_tokens=_derived_max_tokens,
                 timeout=DIALOG_LLM_STREAM_TIMEOUT_SECONDS,  # hang-guard; generous so normal/long replies aren't truncated
                 provider_type=provider_type,
+                explicit_cache=True,
+                cache_conversation=True,
             )
             # Nothing below awaits until the swap, so this answer still holds
             # when the new client goes in.

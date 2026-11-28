@@ -21,7 +21,11 @@ from typing import TYPE_CHECKING, Any, AsyncIterator
 if TYPE_CHECKING:
     pass
 
-from .cache_control import _inject_cache_control
+from .cache_control import (
+    _extract_cache_hints,
+    _inject_cache_control,
+    _split_system_prefix_blocks,
+)
 from .lifecycle import (
     _active_character, _dialog_slop_lang, _close_async_openai_client_from_sync_best_effort,
     _close_chat_openai_clients_best_effort, _get_default_ssl_context,
@@ -131,6 +135,7 @@ class ChatOpenAI:
         request_timeout: float | None = None,
         default_headers: dict | None = None,
         enable_cache_control: bool = False,
+        cache_conversation: bool = False,
         tools: list[dict] | None = None,
         tool_choice: str | dict | None = None,
         keepalive_expiry: float | None = None,
@@ -151,12 +156,13 @@ class ChatOpenAI:
         self.extra_body: dict = extra_body or {}
         self.max_completion_tokens = max_completion_tokens
         self.max_tokens = max_tokens
-        # When True, _params() stamps a body-level Anthropic-style
-        # cache_control marker onto the cache breakpoint message. Set by
-        # create_chat_llm via config.providers.get_cache_kwargs for providers
-        # with requires_body_flag (Anthropic direct / Anthropic-compat). Header
-        # cache providers (DashScope) leave this False — their header does the job.
+        # When True, _params() stamps body-level cache_control markers onto the
+        # leading system prefix (and, when cache_conversation=True, the last
+        # non-ephemeral user message). Activated by create_chat_llm for
+        # providers with requires_body_flag=True when a caller opts in via
+        # explicit_cache / cache_conversation.
         self.enable_cache_control = enable_cache_control
+        self.cache_conversation = cache_conversation
 
         if model_kwargs and "extra_body" in model_kwargs:
             self.extra_body = {**self.extra_body, **model_kwargs["extra_body"]}
@@ -216,11 +222,25 @@ class ChatOpenAI:
         (and any other SDK-accepted kwarg) without mutating the instance —
         critical when a single ChatOpenAI is shared across concurrent code
         paths (e.g. background ping vs. main task in computer_use)."""
+        raw_messages = (
+            messages if isinstance(messages, (list, tuple, str))
+            else list(messages)
+        )
+        prefix_splits: dict[int, int] = {}
+        ephemeral_indices: set[int] = set()
+        if getattr(self, "enable_cache_control", False):
+            prefix_splits, ephemeral_indices = _extract_cache_hints(raw_messages)
+
         p: dict[str, Any] = {
             "model": self.model,
-            "messages": _normalize_messages(messages),
+            "messages": _normalize_messages(raw_messages),
             "stream": stream,
         }
+        split_system_indices: set[int] = set()
+        if prefix_splits:
+            p["messages"], split_system_indices, ephemeral_indices = _split_system_prefix_blocks(
+                p["messages"], prefix_splits, ephemeral_indices
+            )
         # Provider-aware routing of token-limit field:
         #   Anthropic SDK / Anthropic-compat endpoints → max_tokens
         #   OpenAI-compat endpoints → whatever config.providers registers for the
@@ -296,15 +316,19 @@ class ChatOpenAI:
                 # Prompt-only rewriting is best effort and must not break an LLM call.
                 pass
 
-        # Body-level cache flag: stamp an Anthropic-style cache_control marker
-        # onto the cache breakpoint. Gated on the provider opting in via
-        # requires_body_flag (no live provider does today, so this is a no-op
-        # for current traffic) — header-cache providers leave this False. Runs
-        # after character substitution so the marked text is already resolved,
-        # and before the leak check (which transparently scans list-of-parts
-        # content) so a promoted string still gets audited for placeholder leaks.
-        if self.enable_cache_control:
-            p["messages"] = _inject_cache_control(p["messages"])
+        # Body-level cache flag: stamp cache_control breakpoints onto the
+        # leading system prefix (and optionally the latest non-ephemeral user
+        # turn). Runs after placeholder substitution so marked text is already
+        # resolved (while prefix_splits was computed before substitution so raw
+        # string offsets stay exact), and before the leak check (which scans
+        # list-of-parts content).
+        if getattr(self, "enable_cache_control", False):
+            p["messages"] = _inject_cache_control(
+                p["messages"],
+                cache_conversation=bool(getattr(self, "cache_conversation", False)),
+                split_system_indices=split_system_indices,
+                ephemeral_indices=ephemeral_indices,
+            )
 
         # Catch prompt-template leaks: literal {placeholder} that should have
         # been .format()-ed before reaching the wire. See

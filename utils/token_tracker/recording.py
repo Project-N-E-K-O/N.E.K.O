@@ -32,7 +32,8 @@ class RecordingMixin:
         total_tokens: int,
         cached_tokens: int,
         prompt_chars: int,
-    ) -> tuple[int, int, int, int, int, int]:
+        cache_creation_tokens: int = 0,
+    ) -> tuple[int, int, int, int, int, int, int]:
         return (
             bucket["prompt_tokens"] + prompt_tokens,
             bucket["completion_tokens"] + completion_tokens,
@@ -40,10 +41,11 @@ class RecordingMixin:
             bucket["cached_tokens"] + cached_tokens,
             bucket["prompt_chars"] + prompt_chars,
             bucket["call_count"] + 1,
+            bucket.get("cache_creation_tokens", 0) + cache_creation_tokens,
         )
 
     @staticmethod
-    def _write_bucket(bucket: dict, values: tuple[int, int, int, int, int, int]) -> None:
+    def _write_bucket(bucket: dict, values: tuple[int, int, int, int, int, int, int]) -> None:
         (
             bucket["prompt_tokens"],
             bucket["completion_tokens"],
@@ -51,6 +53,7 @@ class RecordingMixin:
             bucket["cached_tokens"],
             bucket["prompt_chars"],
             bucket["call_count"],
+            bucket["cache_creation_tokens"],
         ) = values
 
     def _apply_record_locked(
@@ -65,6 +68,7 @@ class RecordingMixin:
         success: bool,
         rec: dict,
         prompt_chars: int = 0,
+        cache_creation_tokens: int = 0,
     ) -> None:
         # Precompute all lookups and arithmetic before mutating shared state so
         # a malformed entry never leaves partial increments in delta stats.
@@ -75,6 +79,7 @@ class RecordingMixin:
         new_day_completion = day["total_completion_tokens"] + completion_tokens
         new_day_total = day["total_tokens"] + total_tokens
         new_day_cached = day["cached_tokens"] + cached_tokens
+        new_day_cache_creation = day.get("cache_creation_tokens", 0) + cache_creation_tokens
         new_day_chars = day["total_prompt_chars"] + prompt_chars
         new_day_calls = day["call_count"] + 1
         new_day_errors = day["error_count"] + (0 if success else 1)
@@ -83,14 +88,16 @@ class RecordingMixin:
         existing_b = bm.get(model)
         b = existing_b if existing_b is not None else self._empty_bucket()
         b_values = self._compute_bucket_update(
-            b, prompt_tokens, completion_tokens, total_tokens, cached_tokens, prompt_chars
+            b, prompt_tokens, completion_tokens, total_tokens, cached_tokens, prompt_chars,
+            cache_creation_tokens,
         )
 
         bt = day["by_call_type"]
         existing_c = bt.get(call_type)
         c = existing_c if existing_c is not None else self._empty_bucket()
         c_values = self._compute_bucket_update(
-            c, prompt_tokens, completion_tokens, total_tokens, cached_tokens, prompt_chars
+            c, prompt_tokens, completion_tokens, total_tokens, cached_tokens, prompt_chars,
+            cache_creation_tokens,
         )
 
         if existing_day is None:
@@ -99,6 +106,7 @@ class RecordingMixin:
         day["total_completion_tokens"] = new_day_completion
         day["total_tokens"] = new_day_total
         day["cached_tokens"] = new_day_cached
+        day["cache_creation_tokens"] = new_day_cache_creation
         day["total_prompt_chars"] = new_day_chars
         day["call_count"] = new_day_calls
         day["error_count"] = new_day_errors
@@ -142,12 +150,14 @@ class RecordingMixin:
         prompt_chars: int = 0,
         *,
         defer_if_locked: bool = False,
+        cache_creation_tokens: int = 0,
     ) -> None:
         model = model or "unknown"
         prompt_tokens = prompt_tokens or 0
         completion_tokens = completion_tokens or 0
         total_tokens = total_tokens or 0
         cached_tokens = cached_tokens or 0
+        cache_creation_tokens = cache_creation_tokens or 0
         prompt_chars = prompt_chars or 0
 
         today = date.today().isoformat()
@@ -159,6 +169,7 @@ class RecordingMixin:
             "ct": completion_tokens,
             "tt": total_tokens,
             "cch": cached_tokens,
+            "ccr": cache_creation_tokens,
             "pch": prompt_chars,
             "type": call_type,
             "src": source,
@@ -176,6 +187,7 @@ class RecordingMixin:
             success,
             rec,
             prompt_chars,
+            cache_creation_tokens,
         )
 
         if defer_if_locked:
@@ -209,6 +221,8 @@ class RecordingMixin:
         source: str = "",
         success: bool = True,
         prompt_chars: int = 0,
+        *,
+        cache_creation_tokens: int = 0,
     ) -> None:
         """Record usage without blocking if ``self._lock`` is already held."""
         self._record_impl(
@@ -222,6 +236,7 @@ class RecordingMixin:
             success=success,
             prompt_chars=prompt_chars,
             defer_if_locked=True,
+            cache_creation_tokens=cache_creation_tokens,
         )
 
     def record(
@@ -235,6 +250,8 @@ class RecordingMixin:
         source: str = "",
         success: bool = True,
         prompt_chars: int = 0,
+        *,
+        cache_creation_tokens: int = 0,
     ):
         """Record token usage of one LLM call. Thread-safe.
 
@@ -248,6 +265,8 @@ class RecordingMixin:
             prompt_chars: input characters for char-billed SKUs. Use this for TTS / ASR /
                 embedding-by-char endpoints whose pricing unit is characters,
                 not tokens — keeps the token aggregates clean.
+            cache_creation_tokens: tokens written into explicit prompt cache
+                (``cache_creation_input_tokens``).
         """
         self._record_impl(
             model=model,
@@ -260,6 +279,7 @@ class RecordingMixin:
             success=success,
             prompt_chars=prompt_chars,
             defer_if_locked=False,
+            cache_creation_tokens=cache_creation_tokens,
         )
 
     def get_stats(self, days: int = 7) -> dict:

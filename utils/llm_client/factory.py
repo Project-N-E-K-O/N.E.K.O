@@ -41,6 +41,8 @@ def create_chat_llm(
     tools: list[dict] | None = None,
     tool_choice: str | dict | None = None,
     provider_type: str | None = None,
+    explicit_cache: bool = False,
+    cache_conversation: bool = False,
     **kw: Any,
 ) -> "ChatOpenAI | ChatAnthropic":
     """Create a chat client with automatic provider-specific configuration.
@@ -61,6 +63,12 @@ def create_chat_llm(
             Anthropic Messages API path).
         extra_body: Override auto-resolved extra_body.  ``_SENTINEL`` (default)
             means "auto-resolve from model name"; ``None`` means "no extra_body".
+        explicit_cache: Opt in to body-level explicit ``cache_control`` markers
+            when the resolved provider supports them (``requires_body_flag``).
+            Default False keeps one-shot calls on implicit caching.
+        cache_conversation: Also stamp a rolling breakpoint on the latest
+            non-ephemeral user message in multi-turn conversations (implies
+            ``explicit_cache`` when the provider supports body-level flags).
         **kw: Forwarded to the selected client class.
     """
     from config.providers import get_cache_kwargs, get_extra_body
@@ -85,6 +93,16 @@ def create_chat_llm(
     is_anthropic = _is_anthropic_endpoint(base_url, provider_type)
 
     cache_kw = get_cache_kwargs(base_url)
+    provider_body_flag = bool(cache_kw.pop("enable_cache_control", False))
+    if "enable_cache_control" in kw:
+        resolved_enable_cache_control = bool(kw.pop("enable_cache_control"))
+    else:
+        resolved_enable_cache_control = bool(
+            (explicit_cache or cache_conversation) and provider_body_flag
+        )
+    resolved_cache_conversation = bool(
+        cache_conversation and resolved_enable_cache_control
+    )
 
     if extra_body is _SENTINEL:
         resolved = get_extra_body(model, base_url)
@@ -111,6 +129,7 @@ def create_chat_llm(
             tools=tools,
             tool_choice=tool_choice,
             default_headers=default_headers or None,
+            enable_cache_control=resolved_enable_cache_control,
             **cache_kw,
             **kw,
         )
@@ -145,6 +164,8 @@ def create_chat_llm(
         model_kwargs=model_kwargs,
         tools=tools,
         tool_choice=tool_choice,
+        enable_cache_control=resolved_enable_cache_control,
+        cache_conversation=resolved_cache_conversation,
         **cache_kw,
         **kw,
     )

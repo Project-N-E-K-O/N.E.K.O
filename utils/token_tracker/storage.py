@@ -210,6 +210,7 @@ class StorageMixin:
             "total_completion_tokens": 0,
             "total_tokens": 0,
             "cached_tokens": 0,
+            "cache_creation_tokens": 0,
             "total_prompt_chars": 0,
             "call_count": 0,
             "error_count": 0,
@@ -220,7 +221,8 @@ class StorageMixin:
     @staticmethod
     def _empty_bucket() -> dict:
         return {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0,
-                "cached_tokens": 0, "prompt_chars": 0, "call_count": 0}
+                "cached_tokens": 0, "cache_creation_tokens": 0,
+                "prompt_chars": 0, "call_count": 0}
 
     @staticmethod
     def _empty_file_data() -> dict:

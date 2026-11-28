@@ -117,12 +117,37 @@ _CACHED_TOKEN_FIELDS = (
     'cache_tokens',                 # Other variants.
 )
 
+_CACHE_CREATION_TOKEN_FIELDS = (
+    'cache_creation_input_tokens',  # DashScope prompt_tokens_details & Anthropic Messages API.
+)
+
 _NESTED_DETAIL_FIELDS = (
     'prompt_tokens_details',        # Official OpenAI.
     'details',                      # Generic.
     'token_details',                # Generic.
     'prompt_details',               # Generic.
 )
+
+
+def _extract_cache_creation_tokens(usage_dict: dict) -> int:
+    """Extract cache-creation tokens from an OpenAI or Anthropic usage dict."""
+    for nested_key in _NESTED_DETAIL_FIELDS:
+        nested = usage_dict.get(nested_key)
+        if not nested:
+            continue
+        if not isinstance(nested, dict):
+            nested = _usage_to_dict(nested)
+        for field in _CACHE_CREATION_TOKEN_FIELDS:
+            val = nested.get(field)
+            if isinstance(val, (int, float)) and not isinstance(val, bool) and val > 0:
+                return int(val)
+
+    for field in _CACHE_CREATION_TOKEN_FIELDS:
+        val = usage_dict.get(field)
+        if isinstance(val, (int, float)) and not isinstance(val, bool) and val > 0:
+            return int(val)
+
+    return 0
 
 def _extract_cached_tokens(usage_dict: dict) -> int:
     """Extract cached_tokens from the usage dict, compatible with multiple provider formats.
@@ -212,6 +237,12 @@ def _record_usage_from_response(
             logger.debug(f"Token tracker: usage for model={model}: {usage_dict}")
 
         cached_tokens = _extract_cached_tokens(usage_dict)
+        cache_creation_tokens = _extract_cache_creation_tokens(usage_dict)
+        extra_kwargs = (
+            {"cache_creation_tokens": cache_creation_tokens}
+            if cache_creation_tokens > 0
+            else {}
+        )
 
         _dispatch_tracker_record(
             TokenTracker.get_instance(),
@@ -223,6 +254,7 @@ def _record_usage_from_response(
             cached_tokens=cached_tokens,
             call_type=call_type,
             success=success,
+            **extra_kwargs,
         )
     except Exception:
         # Token accounting is best-effort and must not affect SDK responses.
@@ -253,6 +285,12 @@ def record_anthropic_usage(model: str, usage, call_type: str | None = None):
         completion_tokens = int(usage_dict.get('output_tokens') or usage_dict.get('completion_tokens') or 0)
         total_tokens = int(usage_dict.get('total_tokens') or (prompt_tokens + completion_tokens))
         cached_tokens = _extract_cached_tokens(usage_dict)
+        cache_creation_tokens = _extract_cache_creation_tokens(usage_dict)
+        extra_kwargs = (
+            {"cache_creation_tokens": cache_creation_tokens}
+            if cache_creation_tokens > 0
+            else {}
+        )
         TokenTracker.get_instance().record(
             model=model or "unknown",
             prompt_tokens=prompt_tokens,
@@ -260,6 +298,7 @@ def record_anthropic_usage(model: str, usage, call_type: str | None = None):
             total_tokens=total_tokens,
             cached_tokens=cached_tokens,
             call_type=call_type or _current_call_type.get('unknown'),
+            **extra_kwargs,
         )
     except Exception:
         # Anthropic usage accounting is intentionally non-fatal.
