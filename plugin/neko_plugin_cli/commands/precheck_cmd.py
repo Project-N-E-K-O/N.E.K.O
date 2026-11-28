@@ -82,7 +82,8 @@ def _stage_argv(stage: str, plugin_dir_arg: str, args: argparse.Namespace) -> li
     if stage == STAGE_LINT:
         return [*base, "lint", plugin_dir_arg]
     if stage == STAGE_SYNC:
-        return [*base, "sync", plugin_dir_arg, "--clean"]
+        # A check must not empty a hand-maintained vendor/ (as publish).
+        return [*base, "sync", plugin_dir_arg, "--clean", "--keep-empty-vendor"]
     return [
         *base,
         "check",

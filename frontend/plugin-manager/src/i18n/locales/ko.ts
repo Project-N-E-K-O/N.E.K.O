@@ -4,11 +4,13 @@ import modelBindingsMessages from '../model-bindings/ko'
 import marketFeedbackMessages from '../market-feedback/ko'
 import authoringMessages from '../authoring/ko'
 import powerMessages from '../power/ko'
+import pythonPackageMessages from '../python-packages/ko'
 
 /**
  * 한국어 언어 팩
  */
 export default {
+  pythonPackages: pythonPackageMessages,
   pluginConsent: pluginConsentMessages,
   authoring: authoringMessages,
   marketFeedback: marketFeedbackMessages,

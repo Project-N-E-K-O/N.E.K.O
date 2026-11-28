@@ -1,6 +1,10 @@
 import type { AuthoringMessages } from './en-US'
 
 const messages: AuthoringMessages = {
+  dependenciesRunning:
+    'Detén el plugin antes de sincronizar. Las declaraciones guardadas se aplican tras sincronizar y reiniciar el plugin.',
+  dependenciesTaskMissing:
+    'Esta tarea ya no está disponible. Actualiza el estado del proyecto.',
   title: 'Taller de plugins',
   newProject: 'Nuevo plugin',
   search: 'Buscar proyectos…',

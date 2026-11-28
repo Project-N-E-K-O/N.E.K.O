@@ -1,6 +1,10 @@
 import type { AuthoringMessages } from './en-US'
 
 const messages: AuthoringMessages = {
+  dependenciesRunning:
+    'Pare o plugin antes de sincronizar. As declarações salvas são aplicadas após sincronizar e reiniciar o plugin.',
+  dependenciesTaskMissing:
+    'Esta tarefa não está mais disponível. Atualize o estado do projeto.',
   title: 'Oficina de plugins',
   newProject: 'Novo plugin',
   search: 'Pesquisar projetos…',

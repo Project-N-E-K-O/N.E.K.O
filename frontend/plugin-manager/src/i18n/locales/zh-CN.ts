@@ -4,11 +4,13 @@ import modelBindingsMessages from '../model-bindings/zh-CN'
 import marketFeedbackMessages from '../market-feedback/zh-CN'
 import authoringMessages from '../authoring/zh-CN'
 import powerMessages from '../power/zh-CN'
+import pythonPackageMessages from '../python-packages/zh-CN'
 
 /**
  * 中文语言包
  */
 export default {
+  pythonPackages: pythonPackageMessages,
   pluginConsent: pluginConsentMessages,
   authoring: authoringMessages,
   marketFeedback: marketFeedbackMessages,

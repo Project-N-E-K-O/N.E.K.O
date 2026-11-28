@@ -4,11 +4,13 @@ import modelBindingsMessages from '../model-bindings/ru'
 import marketFeedbackMessages from '../market-feedback/ru'
 import authoringMessages from '../authoring/ru'
 import powerMessages from '../power/ru'
+import pythonPackageMessages from '../python-packages/ru'
 
 /**
  * Русский языковой пакет
  */
 export default {
+  pythonPackages: pythonPackageMessages,
   pluginConsent: pluginConsentMessages,
   authoring: authoringMessages,
   marketFeedback: marketFeedbackMessages,

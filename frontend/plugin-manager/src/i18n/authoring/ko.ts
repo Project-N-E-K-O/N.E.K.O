@@ -1,6 +1,10 @@
 import type { AuthoringMessages } from './en-US'
 
 const messages: AuthoringMessages = {
+  dependenciesRunning:
+    '동기화 전에 플러그인을 중지하세요. 저장된 선언은 동기화하고 다시 시작한 후 적용됩니다.',
+  dependenciesTaskMissing:
+    '이 작업은 더 이상 사용할 수 없습니다. 새로 고쳐 현재 상태를 확인하세요.',
   title: '플러그인 공방',
   newProject: '새 플러그인',
   search: '프로젝트 검색…',

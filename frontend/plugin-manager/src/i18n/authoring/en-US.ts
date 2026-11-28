@@ -5,6 +5,10 @@
  */
 
 const messages = {
+  dependenciesRunning:
+    'Stop the plugin before syncing dependencies. Saved declarations apply after the next sync and plugin start.',
+  dependenciesTaskMissing:
+    'This dependency task is no longer available. Refresh to read the current project state.',
   title: 'Plugin forge',
   newProject: 'New plugin',
   search: 'Search projects…',

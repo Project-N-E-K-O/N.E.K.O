@@ -1,6 +1,10 @@
 import type { AuthoringMessages } from './en-US'
 
 const messages: AuthoringMessages = {
+  dependenciesRunning:
+    '同步依赖前请先停止插件。已保存的声明将在同步并重新启动插件后应用。',
+  dependenciesTaskMissing:
+    '此依赖任务已不可用，请刷新查看项目当前状态。',
   title: '插件工坊',
   newProject: '新建插件',
   search: '搜索名称、ID 或简介…',

@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from plugin.neko_plugin_cli.core.project import PLUGIN_ID_PATTERN
 from plugin.server.application import plugin_projects as service
+from plugin.server.application import plugin_project_python_packages as python_packages
 from plugin.server.application import plugin_publish_status as publish_status
 from plugin.server.application import plugin_publish_tasks as publish_tasks
 from plugin.server.application import plugin_repo_tasks as repo_tasks
@@ -22,7 +23,7 @@ from plugin.server.application.plugin_projects import (
     ProjectPreview,
 )
 from plugin.server.application.plugins._env_budgets import env_seconds
-from plugin.server.application.plugins.operation_lock import bounded_operation_wait
+from plugin.server.application.plugins.operation_lock import PluginOperationBusy, bounded_operation_wait
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure.auth import require_admin
 from plugin.server.infrastructure.mutation_auth import PluginMutationGuardedRoute
@@ -97,6 +98,18 @@ class CreateRepoRequest(BaseModel):
     private: bool = False
 
 
+class PythonRequirementsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    requirements: list[str] = Field(max_length=512)
+    revision: str = Field(min_length=1, max_length=128)
+
+
+class PythonPackageTaskRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    operation: Literal["sync", "check"]
+    revision: str = Field(min_length=1, max_length=128)
+
+
 async def _call(awaitable):
     # The UI localizes by ``code``; ``message`` is an English diagnostic.
     try:
@@ -108,6 +121,8 @@ async def _call(awaitable):
         raise HTTPException(
             exc.status_code, {"code": exc.code, "message": exc.message}
         ) from exc
+    except PluginOperationBusy as exc:
+        raise HTTPException(409, {"code": "PLUGIN_OPERATION_BUSY", "message": str(exc)}) from exc
 
 
 @router.get("", response_model=list[AuthoringProject])
@@ -207,6 +222,33 @@ async def cancel_plugin_project_publish_task(project_id: str, task_id: str):
 async def remove_plugin_project(project_id: str):
     await _call(service.remove_project(project_id))
     return OkResponse()
+
+
+@router.get("/{project_id}/python-packages")
+async def read_project_python_packages(project_id: str):
+    return await _call(asyncio.to_thread(python_packages.read_packages, project_id))
+
+
+@mutation_router.put("/{project_id}/python-packages/requirements")
+async def save_project_python_requirements(project_id: str, body: PythonRequirementsRequest):
+    return await _call(python_packages.save_project_requirements(
+        project_id, body.requirements, body.revision
+    ))
+
+
+@mutation_router.post("/{project_id}/python-packages/tasks", status_code=202)
+async def start_project_python_package_task(project_id: str, body: PythonPackageTaskRequest):
+    return await _call(python_packages.start_task(project_id, body.operation, body.revision))
+
+
+@router.get("/{project_id}/python-packages/tasks/{task_id}")
+async def read_project_python_package_task(project_id: str, task_id: str):
+    return await _call(asyncio.to_thread(python_packages.read_task, project_id, task_id))
+
+
+@mutation_router.post("/{project_id}/python-packages/tasks/{task_id}/cancel")
+async def cancel_project_python_package_task(project_id: str, task_id: str):
+    return await _call(python_packages.cancel_task(project_id, task_id))
 
 
 router.include_router(mutation_router)

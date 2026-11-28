@@ -23,7 +23,8 @@ Safety differences from manual reload are confined to triggering:
 - Preflight before reload reuses manifest/entry/dependency validation and .py compilation.
   Broken syntax skips this attempt, preserving old instances until the next change.
 - When user operations contend, wait at most one debounce window for locks;
-  PluginOperationBusy defers another window rather than jumping the queue.
+  PluginOperationBusy defers another window rather than jumping the queue, as does
+  a project lease held by a build or dependency task (PLUGIN_OPERATION_BUSY).
 - Watching assumes plugins do not write *.py/plugin.toml into their own config directories
   during execution. The 2026-09 plugin/plugins audit found runtime writes only to
   JSON/media/model files, with all plugin.toml writes confined to tests, outside watched
@@ -68,6 +69,7 @@ from plugin.server.application.plugins.operation_lock import (
     bounded_operation_wait,
 )
 from plugin.server.domain.errors import ServerDomainError
+from plugin.server.domain.plugin_project_errors import ProjectErrorCode
 from plugin.server.messaging.lifecycle_events import emit_lifecycle_event
 from plugin.settings import (
     PLUGIN_CONFIG_ROOTS,
@@ -169,6 +171,18 @@ def _preflight_compile_sync(root: Path) -> str | None:
         # must not escape and leave the plugin pending for an immediate retry.
         return f"{type(exc).__name__}: {exc}"
     return None
+
+
+def _project_lease_busy_sync(plugin_id: str) -> bool:
+    """Whether a workbench task holds this plugin's project lease. Any other
+    failure is left to reload_plugin, which runs the same check and reports it."""
+    from plugin.server.application.plugin_project_commands import require_plugin_project_available
+
+    try:
+        require_plugin_project_available(plugin_id)
+    except ServerDomainError as exc:
+        return exc.code == ProjectErrorCode.PLUGIN_OPERATION_BUSY
+    return False
 
 
 class PluginHotReloadService:
@@ -478,6 +492,12 @@ class PluginHotReloadService:
             )
             return
 
+        if await asyncio.to_thread(_project_lease_busy_sync, plugin_id):
+            # A build or dependency task holds the project: reload_plugin would
+            # refuse it, so skip the preflight, log and event until it ends.
+            self._defer_busy(plugin_id)
+            return
+
         # Broken edits must not kill a healthy process.
         error = await asyncio.to_thread(_preflight_compile_sync, target.root)
         if error is not None:
@@ -513,14 +533,14 @@ class PluginHotReloadService:
             logger.info("hot-reload completed: plugin_id={}", plugin_id)
         except PluginOperationBusy:
             # User operation holds the lock: defer one debounce window without errors.
-            self._pending[plugin_id] = (
-                time_module.monotonic()
-                + max(PLUGIN_HOT_RELOAD_DEBOUNCE, _BUSY_RETRY_SECONDS)
-            )
-            logger.debug(
-                "hot-reload deferred (operation busy): plugin_id={}", plugin_id
-            )
+            self._defer_busy(plugin_id)
         except ServerDomainError as exc:
+            if exc.code == ProjectErrorCode.PLUGIN_OPERATION_BUSY:
+                # A project task (build, dependency sync) holds the project's
+                # lease. The watcher's signature has already moved on, so
+                # dropping this attempt would lose the reload: defer it too.
+                self._defer_busy(plugin_id)
+                return
             # reload_plugin preflight/startup failures abandon this attempt until
             # another file change; synchronized signatures prevent automatic retriggering.
             logger.warning(
@@ -548,6 +568,13 @@ class PluginHotReloadService:
             self._pending.pop(plugin_id, None)
         finally:
             self._inflight_target = None
+
+    def _defer_busy(self, plugin_id: str) -> None:
+        self._pending[plugin_id] = (
+            time_module.monotonic()
+            + max(PLUGIN_HOT_RELOAD_DEBOUNCE, _BUSY_RETRY_SECONDS)
+        )
+        logger.debug("hot-reload deferred (operation busy): plugin_id={}", plugin_id)
 
     @staticmethod
     def _emit_event(event_type: str, plugin_id: str, reason: str | None = None) -> None:

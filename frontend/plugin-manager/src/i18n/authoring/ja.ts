@@ -1,6 +1,10 @@
 import type { AuthoringMessages } from './en-US'
 
 const messages: AuthoringMessages = {
+  dependenciesRunning:
+    '同期する前にプラグインを停止してください。保存した宣言は同期と次回起動後に反映されます。',
+  dependenciesTaskMissing:
+    'このタスクは利用できません。再読み込みして現在の状態を確認してください。',
   title: 'プラグイン工房',
   newProject: '新規プラグイン',
   search: 'プロジェクトを検索…',

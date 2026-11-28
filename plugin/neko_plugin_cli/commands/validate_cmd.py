@@ -51,10 +51,10 @@ from plugin.sdk.shared.storage.state import PluginStatePersistence
 
 from plugin.utils.source_paths import iter_plugin_python_files
 from ..core.build_rules import BuildRuleSet, load_build_rules, reraise_walk_error, should_skip_path
+from ..core.fs_links import is_link
 from ..core.plugin_source import load_plugin_source
 from ..core.toml_utils import load_toml
 from . import _permission_messages as permission_messages
-from .deps_cmd import _is_link
 
 _PLUGIN_RUNTIME_TIMEOUT_MAX = 300.0
 _PLUGIN_ENTRIES_MAX = 1024
@@ -1958,10 +1958,10 @@ def _check_symlink_tree(
                     and should_skip_path((base / name).relative_to(plugin_dir), is_dir=True, rules=tree_rules)
                 )
             ]
-            # _is_link also catches a Windows junction, which is_symlink()
+            # is_link also catches a Windows junction, which is_symlink()
             # misses on Python 3.11 (and which os.walk would descend into).
             # Junctions are always directories, so files need only is_symlink().
-            linked = {name for name in directories if _is_link(base / name)}
+            linked = {name for name in directories if is_link(base / name)}
             linked.update(name for name in files if (base / name).is_symlink())
             for name in (*directories, *files):
                 if name in linked:

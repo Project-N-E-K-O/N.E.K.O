@@ -1,6 +1,10 @@
 import type { AuthoringMessages } from './en-US'
 
 const messages: AuthoringMessages = {
+  dependenciesRunning:
+    'Перед синхронизацией остановите плагин. Сохранённые декларации применятся после синхронизации и перезапуска.',
+  dependenciesTaskMissing:
+    'Эта задача больше недоступна. Обновите состояние проекта.',
   title: 'Мастерская плагинов',
   newProject: 'Новый плагин',
   search: 'Поиск проектов…',

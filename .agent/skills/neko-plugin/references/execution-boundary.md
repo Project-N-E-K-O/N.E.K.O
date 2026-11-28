@@ -124,9 +124,11 @@ through an async library or `await asyncio.to_thread(...)`. See
 ### 8. Do not use `requirements.txt`
 
 Declare dependencies in `pyproject.toml` `[project].dependencies`. The host
-loads them only from the plugin's own `vendor/` directory and never installs
-anything itself; `neko-plugin sync <plugin> --clean` fills `vendor/` from
-`pyproject.toml`. `requirements.txt` is only read as a legacy fallback.
+loads them only from the plugin's own `vendor/` directory, and starting a
+plugin installs nothing. An explicit sync fills `vendor/` from
+`pyproject.toml`: `neko-plugin sync <plugin> --clean`, or the plugin studio's
+**Dependencies** tab, which runs the same code. `requirements.txt` is only
+read as a legacy fallback.
 
 ### 9. Do not commit `vendor/`, binaries, or files over 2 MiB
 

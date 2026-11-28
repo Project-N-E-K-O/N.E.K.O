@@ -3,7 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 import inspect
 import json
+import os
 import shutil
+import stat
 import zipfile
 
 import pytest
@@ -25,6 +27,133 @@ from plugin.neko_plugin_cli.public.pack_rules import (
 )
 
 pytestmark = pytest.mark.plugin_unit
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX output permission semantics")
+@pytest.mark.parametrize("existing_package", [False, True])
+def test_archive_export_uses_normal_creation_mode_and_preserves_existing_mode(tmp_path, existing_package):
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    (staging / "payload.txt").write_text("new payload")
+    ordinary = tmp_path / "ordinary-file"
+    ordinary.write_bytes(b"ordinary creation uses the current umask")
+    package = tmp_path / "dist" / "demo.neko-plugin"
+    expected = stat.S_IMODE(ordinary.stat().st_mode)
+    if existing_package:
+        package.parent.mkdir()
+        package.write_bytes(b"previous package")
+        package.chmod(0o640)
+        expected = 0o640
+    PluginBuilder().export_package(staging, package)
+    assert stat.S_IMODE(package.stat().st_mode) == expected
+    assert zipfile.is_zipfile(package)
+    assert list(package.parent.iterdir()) == [package]
+
+
+@pytest.mark.parametrize("existing_package", [False, True])
+@pytest.mark.parametrize("cancel_on_close", [False, True])
+def test_canceled_archive_export_does_not_publish_or_overwrite_existing_package(
+    tmp_path, monkeypatch, existing_package, cancel_on_close,
+):
+    import threading
+    from concurrent.futures import CancelledError
+
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    (staging / "one.txt").write_text("new payload")
+    (staging / "two.txt").write_text("second payload")
+    destination = tmp_path / "dist"
+    destination.mkdir()
+    package = destination / "demo.neko-plugin"
+    if existing_package:
+        package.write_bytes(b"previous package")
+    cancelled = threading.Event()
+    original_write = zipfile.ZipFile.write
+    original_close = zipfile.ZipFile.close
+
+    def write(archive, *args, **kwargs):
+        result = original_write(archive, *args, **kwargs)
+        if not cancel_on_close:
+            cancelled.set()
+        return result
+
+    def close(archive):
+        original_close(archive)
+        if cancel_on_close:
+            cancelled.set()
+
+    monkeypatch.setattr(zipfile.ZipFile, "write", write)
+    monkeypatch.setattr(zipfile.ZipFile, "close", close)
+    with pytest.raises(CancelledError):
+        PluginBuilder(cancelled=cancelled.is_set).export_package(staging, package)
+    if existing_package:
+        assert package.read_bytes() == b"previous package"
+    else:
+        assert not package.exists()
+    assert list(destination.iterdir()) == ([package] if existing_package else [])
+
+
+def test_archive_replace_failure_preserves_existing_package_and_removes_temporary_output(tmp_path, monkeypatch):
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    (staging / "payload.txt").write_text("new payload")
+    destination = tmp_path / "dist"
+    destination.mkdir()
+    package = destination / "demo.neko-plugin"
+    package.write_bytes(b"previous package")
+
+    def replace(temporary, target):
+        assert temporary.parent.parent == destination
+        assert target == package
+        raise PermissionError("destination is in use")
+
+    monkeypatch.setattr(Path, "replace", replace)
+    with pytest.raises(PermissionError, match="destination is in use"):
+        PluginBuilder().export_package(staging, package)
+    assert package.read_bytes() == b"previous package"
+    assert list(destination.iterdir()) == [package]
+
+
+def test_cancellation_after_archive_commit_does_not_reclassify_successful_build(tmp_path, monkeypatch):
+    import threading
+    from plugin.neko_plugin_cli.core import build
+
+    source = _make_plugin_dir(tmp_path)
+    package = tmp_path / "dist" / "committed.neko-plugin"
+    cancelled = threading.Event()
+    replace = Path.replace
+
+    def commit(temporary, target):
+        result = replace(temporary, target)
+        if target == package:
+            cancelled.set()
+        return result
+
+    monkeypatch.setattr(Path, "replace", commit)
+    monkeypatch.setattr(build, "write_packaged_metadata", lambda **kwargs: None)
+    result = PluginBuilder(cancelled=cancelled.is_set).build_plugin(source, package)
+    assert cancelled.is_set()
+    assert result.package_path == package
+    assert zipfile.is_zipfile(package)
+    assert list(package.parent.iterdir()) == [package]
+
+
+def test_archive_export_accepts_a_long_valid_output_filename(tmp_path):
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    (staging / "payload.txt").write_text("new payload")
+    destination = tmp_path / "dist"
+    destination.mkdir()
+    package = destination / ("a" * 238 + ".neko-plugin")
+    try:
+        package.write_bytes(b"previous package")
+    except OSError as exc:
+        pytest.skip(f"Filesystem cannot create this long output filename: {exc}")
+
+    PluginBuilder().export_package(staging, package)
+    with zipfile.ZipFile(package) as archive:
+        assert archive.read("payload.txt") == b"new payload"
+    assert list(destination.iterdir()) == [package]
 
 
 def _make_plugin_dir(tmp_path: Path, plugin_id: str = "demo_plugin") -> Path:

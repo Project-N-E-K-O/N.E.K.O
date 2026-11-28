@@ -247,6 +247,9 @@ async def plugin_server_lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        from plugin.server.application.plugin_project_python_packages import shutdown_tasks
+
+        await shutdown_tasks()
         from plugin.core.model_gateway_access import model_gateway_access
 
         await capability_analysis_service.analysis_service.close()

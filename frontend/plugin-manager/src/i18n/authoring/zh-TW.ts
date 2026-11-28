@@ -1,6 +1,10 @@
 import type { AuthoringMessages } from './en-US'
 
 const messages: AuthoringMessages = {
+  dependenciesRunning:
+    '同步依賴前請先停止外掛。儲存的宣告會在同步並重新啟動外掛後套用。',
+  dependenciesTaskMissing:
+    '此依賴任務已無法使用，請重新整理專案狀態。',
   title: '外掛工坊',
   newProject: '新增外掛',
   search: '搜尋名稱、ID 或簡介…',

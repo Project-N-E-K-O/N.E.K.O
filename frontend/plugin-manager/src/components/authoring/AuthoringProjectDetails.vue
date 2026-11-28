@@ -16,6 +16,7 @@
       <header class="authoring-details-header">
         <h3>{{ t('authoring.projectInfo') }}</h3>
         <div v-if="!editing">
+          <el-button text @click="emit('dependencies')">{{ t('pythonPackages.openDependencies') }}</el-button>
           <el-button
             :icon="Download"
             text
@@ -143,7 +144,7 @@ const PROBLEM_HINTS = {
 } as const
 
 const props = defineProps<{ project: AuthoringProject }>()
-const emit = defineEmits<{ updated: [project: AuthoringProject] }>()
+const emit = defineEmits<{ updated: [project: AuthoringProject]; dependencies: [] }>()
 const { t } = useI18n()
 const describeError = useProjectErrorMessage()
 const editing = ref(false)

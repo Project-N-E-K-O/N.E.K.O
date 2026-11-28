@@ -3,8 +3,11 @@ from __future__ import annotations
 import hashlib
 import re
 import shutil
+import stat
 import tempfile
 import zipfile
+from collections.abc import Callable
+from concurrent.futures import CancelledError
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -130,9 +133,17 @@ class BuildPaths:
 class PluginBuilder:
     """Service object that owns plugin and bundle packaging pipelines."""
 
-    def __init__(self, *, source_only: bool = False, source_only_roots: tuple[Path, ...] = ()) -> None:
+    def __init__(
+        self, *, source_only: bool = False, source_only_roots: tuple[Path, ...] = (),
+        cancelled: Callable[[], bool] | None = None,
+    ) -> None:
         self.source_only = source_only
         self.source_only_roots = frozenset(path.resolve() for path in source_only_roots)
+        self.cancelled = cancelled
+
+    def _check_cancelled(self) -> None:
+        if self.cancelled is not None and self.cancelled():
+            raise CancelledError("Plugin build canceled")
 
     def _source_import_options(self, source: PluginSource) -> dict[str, bool]:
         return {"source_only": True} if self.source_only or source.plugin_dir.resolve() in self.source_only_roots else {}
@@ -144,10 +155,12 @@ class PluginBuilder:
         *,
         keep_staging: bool = False,
     ) -> BuildResult:
+        self._check_cancelled()
         source = load_plugin_source(plugin_dir)
         paths = BuildPaths.create(package_id=source.plugin_id)
         try:
             payload = self.build_single_payload(source, paths)
+            self._check_cancelled()
             self.write_manifest(
                 package_type="plugin",
                 package_id=source.plugin_id,
@@ -195,7 +208,10 @@ class PluginBuilder:
         version: str = "0.1.0",
         keep_staging: bool = False,
     ) -> BuildResult:
-        sources = [load_plugin_source(item) for item in plugin_dirs]
+        sources = []
+        for item in plugin_dirs:
+            self._check_cancelled()
+            sources.append(load_plugin_source(item))
         if len(sources) < 2:
             raise ValueError(
                 f"bundle build requires at least two plugins, but only "
@@ -226,6 +242,7 @@ class PluginBuilder:
         paths = BuildPaths.create(package_id=resolved_bundle_id)
         try:
             payload = self.build_bundle_payload(sources, paths)
+            self._check_cancelled()
             self.write_manifest(
                 package_type="bundle",
                 package_id=resolved_bundle_id,
@@ -267,6 +284,7 @@ class PluginBuilder:
         source: PluginSource,
         paths: BuildPaths,
     ) -> PayloadBuildResult:
+        self._check_cancelled()
         validate_source_dependency_layout(source)
         build_rules = load_build_rules(source.pyproject_toml)
         plugin_payload_dir = paths.plugins_dir / source.plugin_id
@@ -276,6 +294,7 @@ class PluginBuilder:
             plugin_payload_dir,
             rules=build_rules,
         )
+        self._check_cancelled()
         # Write before calculating payload_hash: plugin.meta.json is package content and must participate in
         # integrity checks. Plugins that cannot be imported yield None; packaging continues without metadata.
         staged_metadata = write_packaged_metadata(
@@ -283,6 +302,7 @@ class PluginBuilder:
             target_dir=plugin_payload_dir,
             **self._source_import_options(source),
         )
+        self._check_cancelled()
         _discard_probe_bytecode(plugin_payload_dir)
         # Repository plugin directories already contain plugin.meta.json, copied and added to staged_files by copy_plugin_runtime_files.
         # This overwrites the same path; appending it again would
@@ -310,9 +330,11 @@ class PluginBuilder:
         paths: BuildPaths,
     ) -> PayloadBuildResult:
         for source in sources:
+            self._check_cancelled()
             validate_source_dependency_layout(source)
         staged_files: list[Path] = []
         for source in sources:
+            self._check_cancelled()
             plugin_payload_dir = paths.plugins_dir / source.plugin_id
             plugin_payload_dir.mkdir(parents=True, exist_ok=True)
             build_rules = load_build_rules(source.pyproject_toml)
@@ -323,11 +345,13 @@ class PluginBuilder:
                     rules=build_rules,
                 )
             )
+            self._check_cancelled()
             staged_metadata = write_packaged_metadata(
                 source_dir=source.plugin_dir,
                 target_dir=plugin_payload_dir,
                 **self._source_import_options(source),
             )
+            self._check_cancelled()
             _discard_probe_bytecode(plugin_payload_dir)
             _settle_staged_metadata(staged_files, plugin_payload_dir, staged_metadata)
 
@@ -358,6 +382,7 @@ class PluginBuilder:
     ) -> list[Path]:
         copied: list[Path] = []
         for path in walk_plugin_tree(source_dir):
+            self._check_cancelled()
             relative = path.relative_to(source_dir)
             if self.should_skip(relative, is_dir=path.is_dir(), rules=rules):
                 continue
@@ -438,15 +463,31 @@ class PluginBuilder:
         Files are sorted by their NFC-normalized posix-relative path so that
         the archive entry order is identical on every platform.
         """
+        self._check_cancelled()
         package_path.parent.mkdir(parents=True, exist_ok=True)
         file_entries = [
             (normalize_relative_posix(path, staging_root), path)
             for path in staging_root.rglob("*")
             if not path.is_dir()
         ]
-        with zipfile.ZipFile(package_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-            for arcname, path in sorted(file_entries, key=lambda item: item[0]):
-                archive.write(path, arcname=arcname)
+        with tempfile.TemporaryDirectory(prefix=".neko-export-", dir=package_path.parent) as output:
+            # Let ordinary archive creation apply the current umask, without
+            # changing process-wide state or inheriting mkstemp's fixed 0600.
+            temporary = Path(output) / "archive.tmp"
+            with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                for arcname, path in sorted(file_entries, key=lambda item: item[0]):
+                    self._check_cancelled()
+                    archive.write(path, arcname=arcname)
+            try:
+                mode = stat.S_IMODE(package_path.stat().st_mode)
+            except FileNotFoundError:
+                pass
+            else:
+                temporary.chmod(mode)
+            # This is the commit point. Observe cancellation before replacing
+            # the old package; no further cancellation check follows commit.
+            self._check_cancelled()
+            temporary.replace(package_path)
 
     def compute_payload_hash(self, payload_dir: Path) -> str:
         """Compute SHA-256 over all files under *payload_dir*.
@@ -462,6 +503,7 @@ class PluginBuilder:
             if not path.is_dir()
         ]
         for relative, path in sorted(file_entries, key=lambda item: item[0]):
+            self._check_cancelled()
             digest.update(relative.encode("utf-8"))
             digest.update(b"\0")
             digest.update(path.read_bytes())

@@ -390,6 +390,7 @@ function pluginsSidebar(lang: 'en' | 'zh-CN' | 'ja') {
         { text: t.tool, link: `${p}/plugins/tool-calling` },
         ...(lang === 'ja' ? [] : [{ text: t.hosted, link: `${p}/plugins/hosted-ui` }]),
         ...(lang === 'ja' ? [] : [{ text: lang === 'zh-CN' ? 'HTML 聊天卡片' : 'HTML Chat Cards', link: `${p}/plugins/chat-cards` }]),
+        ...(lang === 'en' ? [{ text: 'Workbench Python dependencies', link: '/plugins/project-python-packages' }] : []),
         { text: t.ex, link: `${p}/plugins/examples` },
         { text: t.adv, link: `${p}/plugins/advanced` },
         { text: t.best, link: `${p}/plugins/best-practices` },

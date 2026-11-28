@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 /**
- * The authoring, model API, model binding, Market feedback and binding-error
- * words are split into one module per language. These tests pin that a
+ * The authoring, model API, model binding, Market feedback, binding-error and
+ * dependency (Python package) words are split into one module per language. These tests pin that a
  * language pack imports its own language only, that every language keeps the
  * same keys, and that switching language loads the right words.
  */
@@ -17,13 +17,14 @@ const SPLIT_MODULES = {
   modelApi: 'model-api',
   modelBindings: 'model-bindings',
   marketFeedback: 'market-feedback',
+  pythonPackages: 'python-packages',
 } as const
 type Section = keyof typeof SPLIT_MODULES
 type Messages = Record<string, unknown>
 
 const packs = import.meta.glob<{ default: Messages }>('./locales/*.ts', { eager: true })
 const pieces = import.meta.glob<{ default: Messages }>(
-  ['./{authoring,model-api,model-bindings,market-feedback,model-binding-errors}/*.ts', '!./**/index.ts'],
+  ['./{authoring,model-api,model-bindings,market-feedback,model-binding-errors,python-packages}/*.ts', '!./**/index.ts'],
   { eager: true },
 )
 
@@ -78,6 +79,7 @@ describe('switching language', () => {
     modelApi: 'subtitle',
     modelBindings: 'title',
     marketFeedback: 'issuesTab',
+    pythonPackages: 'tab',
   }
 
   it('keeps the current words until the new language has loaded', async () => {

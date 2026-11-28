@@ -4,11 +4,13 @@ import modelBindingsMessages from '../model-bindings/ja'
 import marketFeedbackMessages from '../market-feedback/ja'
 import authoringMessages from '../authoring/ja'
 import powerMessages from '../power/ja'
+import pythonPackageMessages from '../python-packages/ja'
 
 /**
  * 日本語言語パック
  */
 export default {
+  pythonPackages: pythonPackageMessages,
   pluginConsent: pluginConsentMessages,
   authoring: authoringMessages,
   marketFeedback: marketFeedbackMessages,
