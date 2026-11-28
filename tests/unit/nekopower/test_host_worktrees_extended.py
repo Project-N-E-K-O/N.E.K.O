@@ -1729,12 +1729,37 @@ async def test_coderabbit_and_greptile_copy_followup_fixes(tmp_path: Path, monke
     assert len(bak_dirs) == 1
     assert (bak_dirs[0] / "old_base_manifest.json").is_file()
     assert (bak_dirs[0] / "old_meta.json").is_file()
-    assert (bak_dirs[0] / "rollback_incomplete.json").is_file()
+    marker_payload = json.loads((bak_dirs[0] / "rollback_incomplete.json").read_text(encoding="utf-8"))
+    assert isinstance(marker_payload.get("entries"), list) and any(e["rel"] == "a.txt" for e in marker_payload["entries"])
     blocked_land = await manager.merge_back(cp_rb)
     assert blocked_land.status == "failed" and "incomplete rollback" in blocked_land.detail
     with pytest.raises(WorktreeError, match="incomplete rollback"):
         await manager.prepare_conflicts(cp_rb, clash_rb)
     await manager.remove(cp_rb)
+
+    # A failed backup-dir removal after a clean prepare_conflicts still unlinks the marker first,
+    # so the healthy copy is not falsely blocked on subsequent merge_back.
+    proj_clean = tmp_path / "clean_bak_proj"
+    _write(proj_clean / "a.txt", "base\n")
+    cp_clean = await manager.create(proj_clean, tmp_path / "copies" / "cb1")
+    _write(cp_clean.path / "a.txt", "wt-line\n")
+    _write(proj_clean / "a.txt", "proj-line\n")
+    clash_clean = await manager.merge_back(cp_clean)
+    assert clash_clean.status == "conflict"
+    orig_rm = _copy_trees.remove_tree_safe
+
+    def fail_prep_bak_rm(path: Path | str) -> None:
+        if "prep-bak-" in Path(path).name:
+            raise OSError("simulated locked backup file")
+        orig_rm(path)
+
+    with monkeypatch.context() as mp:
+        mp.setattr(_copy_trees, "remove_tree_safe", fail_prep_bak_rm)
+        await manager.prepare_conflicts(cp_clean, clash_clean)
+    _write(cp_clean.path / "a.txt", "resolved\n")
+    after_locked_rm = await manager.merge_back(cp_clean)
+    assert after_locked_rm.status == "landed", after_locked_rm.detail
+    await manager.remove(cp_clean)
 
     # 5. xattr read OSError returns "unknown" (preserving copy + metadata), while ENODATA returns "theirs".
     proj_xa = tmp_path / "xa_proj"
@@ -1857,9 +1882,59 @@ async def test_coderabbit_and_greptile_git_followup_fixes(tmp_path: Path, monkey
         mp.setattr(os, "replace", fail_first_final_note)
         with pytest.raises(OSError, match="simulated first final note write failure"):
             await manager.merge_back(wt_first, BranchCommit(branch="feat/first-intent", message="initial"))
-    # Direct retry with no further edits succeeds (ownership proven via pending_branch/pending_commit).
+    # Direct retry with no further edits promotes pending intent to finalized delivery note,
+    # so later edits still land even if the branch advances externally.
     direct_retry = await manager.merge_back(wt_first, BranchCommit(branch="feat/first-intent", message="initial-retry"))
     assert direct_retry.status in ("unchanged", "landed"), direct_retry.detail
+    common_nd = Path(_git(local_nd, "rev-parse", "--path-format=absolute", "--git-common-dir").strip())
+    assert worktrees._noted_delivery(common_nd, wt_first.path, strict=True).get("branch") == "feat/first-intent"
+    # Verify strict registration lookup propagates gitdir read OSError (fail-closed in has_pending_delivery).
+    orig_read_text = Path.read_text
+
+    def fail_gitdir_read(self_path: Path, *args: Any, **kwargs: Any) -> str:
+        if self_path.name == "gitdir":
+            raise PermissionError("simulated unreadable gitdir")
+        return orig_read_text(self_path, *args, **kwargs)
+
+    with monkeypatch.context() as mp:
+        mp.setattr(Path, "read_text", fail_gitdir_read)
+        with pytest.raises(PermissionError, match="unreadable gitdir"):
+            await manager.has_pending_delivery(wt_first)
+
+    # Externally advance feat/first-intent and land a follow-up edit cleanly using finalized ownership.
+    ext_adv = tmp_path / "ext_adv"
+    _git(local_nd, "worktree", "add", "-q", str(ext_adv), "feat/first-intent")
+    _write(ext_adv / "extra.txt", "branch-side\n")
+    _git(ext_adv, "add", "extra.txt")
+    _git(ext_adv, "commit", "-q", "--no-gpg-sign", "-m", "external advance")
+    _git(local_nd, "worktree", "remove", "--force", str(ext_adv))
+    _write(wt_first.path / "a.txt", "after-finalized-retry\nline2\nline3\nline4\nline5\n")
+    follow_land = await manager.merge_back(wt_first, BranchCommit(branch="feat/first-intent", message="follow-up"))
+    assert follow_land.status == "landed", follow_land.detail
+
+    # If persisting pending_pr_delivery fails before calling create_pr on an already-pushed branch,
+    # _land_as_pr must fail without invoking create_pr.
+    pushed_first = await manager.merge_back(wt_first, BranchCommit(branch="feat/first-intent", remote="origin", message="push"))
+    assert pushed_first.status == "landed", pushed_first.detail
+    pr_called = {"flag": False}
+
+    async def should_not_run(_req: PRRequest) -> PRInfo:
+        pr_called["flag"] = True
+        return PRInfo(url="https://github.com/org/repo/pull/99", number=99)
+
+    def fail_pending_pr_replace(src: Any, dst: Any) -> None:
+        if str(dst).endswith("nekopower-delivery.json"):
+            raise OSError("simulated pending PR note failure")
+        orig_replace(src, dst)
+
+    with monkeypatch.context() as mp:
+        mp.setattr(os, "replace", fail_pending_pr_replace)
+        pr_fail_note = await manager.merge_back(
+            wt_first,
+            PullRequest(title="Fail pending write", branch="feat/first-intent", remote="origin", base_branch="main", create_pr=should_not_run),
+        )
+    assert pr_fail_note.status == "failed" and "recording pending pull request state failed" in pr_fail_note.detail
+    assert pr_called["flag"] is False
     await manager.remove(wt_first)
 
     # If branch OID changed externally after a failed first final note write, ownership is refused.
@@ -1901,6 +1976,9 @@ async def test_coderabbit_and_greptile_git_followup_fixes(tmp_path: Path, monkey
         fail_on_call["target"] = 3
         with pytest.raises(OSError, match="simulated delivery note write failure"):
             await manager.merge_back(wt_nd, BranchCommit(branch="feat/owned-atomic", message="second"))
+    # Direct retry advances start_ref and finalizes the delivery note cleanly.
+    retry2 = await manager.merge_back(wt_nd, BranchCommit(branch="feat/owned-atomic", message="second-retry"))
+    assert retry2.status in ("unchanged", "landed"), retry2.detail
     _write(wt_nd.path / "a.txt", "third-edit\nline2\nline3\nline4\nline5\n")
     land3 = await manager.merge_back(wt_nd, BranchCommit(branch="feat/owned-atomic", message="third-retry"))
     assert land3.status == "landed", land3.detail

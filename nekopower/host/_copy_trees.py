@@ -1661,7 +1661,12 @@ def prepare_copy_conflicts_sync(
                 saved_entries.append((rel, "file", bak_name))
         _atomic_write_json(
             prep_backup_dir / _ROLLBACK_INCOMPLETE_FILE,
-            {"status": "in_progress", "merge_id": merge_id, "copy_path": str(copy_path)},
+            {
+                "status": "in_progress",
+                "merge_id": merge_id,
+                "copy_path": str(copy_path),
+                "entries": [{"rel": rel, "kind": kind, "payload": payload} for rel, kind, payload in saved_entries],
+            },
         )
         mutated_copy = True
 
@@ -1802,11 +1807,22 @@ def prepare_copy_conflicts_sync(
             with contextlib.suppress(OSError):
                 _atomic_write_json(
                     prep_backup_dir / _ROLLBACK_INCOMPLETE_FILE,
-                    {"merge_id": merge_id, "copy_path": str(copy_path)},
+                    {
+                        "status": "rollback_failed",
+                        "merge_id": merge_id,
+                        "copy_path": str(copy_path),
+                        "entries": [
+                            {"rel": rel, "kind": kind, "payload": payload} for rel, kind, payload in saved_entries
+                        ],
+                    },
                 )
         raise
     finally:
         if not rollback_failed:
+            marker = prep_backup_dir / _ROLLBACK_INCOMPLETE_FILE
+            with contextlib.suppress(OSError):
+                if os.path.lexists(fs_path(marker)):
+                    os.unlink(fs_path(marker))
             with contextlib.suppress(OSError):
                 if prep_backup_dir.exists():
                     remove_tree_safe(prep_backup_dir)

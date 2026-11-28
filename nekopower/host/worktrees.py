@@ -2050,8 +2050,6 @@ class WorktreeManager:
                         commit=existing_tip,
                         remote=remote_name,
                     )
-                if advance_start_to_result:
-                    await self._git(root, "update-ref", _start_ref(worktree.id), result.commit)
                 updated_delivery: dict[str, Any] = {
                     "branch": target_branch,
                     "commit": existing_tip,
@@ -2065,6 +2063,8 @@ class WorktreeManager:
                     "prs": dict(delivery.get("prs") or {}) if isinstance(delivery.get("prs"), dict) else {},
                 }
                 await _to_the_end(asyncio.to_thread(_note_delivery, common, worktree.path, updated_delivery))
+                if advance_start_to_result:
+                    await self._git(root, "update-ref", _start_ref(worktree.id), result.commit)
                 return MergeResult(
                     "landed",
                     skipped=result.skipped,
@@ -2077,6 +2077,20 @@ class WorktreeManager:
                     commit=existing_tip,
                     remote=remote_name,
                 )
+            if same_owned and existing_tip is not None and delivery.get("branch") != target_branch:
+                finalized_delivery: dict[str, Any] = {
+                    "branch": target_branch,
+                    "commit": existing_tip,
+                    "remote": str(delivery.get("remote") or remote_name),
+                    "pushed": bool(delivery.get("pushed")),
+                    "pushed_commit": str(delivery.get("pushed_commit") or ""),
+                    "base_branch": str(base_branch or delivery.get("base_branch") or ""),
+                    "pr_pending": True if mark_pr_pending else bool(delivery.get("pr_pending")),
+                    "pr_url": str(delivery.get("pr_url") or ""),
+                    "pr_number": delivery.get("pr_number"),
+                    "prs": dict(delivery.get("prs") or {}) if isinstance(delivery.get("prs"), dict) else {},
+                }
+                await _to_the_end(asyncio.to_thread(_note_delivery, common, worktree.path, finalized_delivery))
             if advance_start_to_result:
                 await self._git(root, "update-ref", _start_ref(worktree.id), result.commit)
             return MergeResult(
@@ -2270,11 +2284,8 @@ class WorktreeManager:
                     **counted,
                 )
 
-        # After a 3-way merge onto a branch that held extra changes not present in this
-        # worktree, keep the worktree's baseline at result.commit (matching its files) so a
-        # later delivery does not treat those branch-side additions as deletions.
-        next_start = result.commit if did_three_way else new_commit
-        await self._git(root, "update-ref", _start_ref(worktree.id), next_start)
+        # Persist delivery state (including pr_pending when opening a PR) BEFORE advancing the
+        # worktree's start ref so crashing between the two still keeps the worktree recoverable.
         same_branch = delivery.get("branch") == target_branch
         updated_delivery: dict[str, Any] = {
             "branch": target_branch,
@@ -2289,6 +2300,11 @@ class WorktreeManager:
             "prs": dict(delivery.get("prs") or {}) if same_branch and isinstance(delivery.get("prs"), dict) else {},
         }
         await _to_the_end(asyncio.to_thread(_note_delivery, common, worktree.path, updated_delivery))
+        # After a 3-way merge onto a branch that held extra changes not present in this
+        # worktree, keep the worktree's baseline at result.commit (matching its files) so a
+        # later delivery does not treat those branch-side additions as deletions.
+        next_start = result.commit if did_three_way else new_commit
+        await self._git(root, "update-ref", _start_ref(worktree.id), next_start)
         return MergeResult("landed", commit=new_commit, **counted)
 
     async def _land_as_pr(self, worktree: Worktree, result: Snapshot, pr: PullRequest) -> MergeResult:
@@ -2419,8 +2435,15 @@ class WorktreeManager:
             "pr_pending": True,
             "prs": saved_prs,
         }
-        with contextlib.suppress(OSError):
+        try:
             await _to_the_end(asyncio.to_thread(_note_delivery, common, worktree.path, pending_pr_delivery))
+        except OSError as exc:
+            return replace(
+                branch_result,
+                status="failed",
+                commit=commit_sha,
+                detail=f"recording pending pull request state failed: {exc}",
+            )
 
         request = PRRequest(
             repo_root=root,
@@ -3811,7 +3834,7 @@ def _note_delivery(common_dir: Path, path: Path, payload: Mapping[str, Any]) -> 
 
 
 def _noted_delivery(common_dir: Path, path: Path, *, strict: bool = False) -> dict[str, Any]:
-    entry = _registration_of(common_dir, path)
+    entry = _registration_of(common_dir, path, strict=strict)
     if entry is None:
         return {}
     note = entry / _DELIVERY_NOTE
@@ -3888,15 +3911,27 @@ def _noted_directory(path: Path, common_dir: Path) -> Literal["ours", "theirs", 
     return "ours" if all(noted[key] == now[key] for key in keys) else "theirs"
 
 
-def _registration_of(common_dir: Path, path: Path) -> Path | None:
+def _registration_of(common_dir: Path, path: Path, *, strict: bool = False) -> Path | None:
     """Return the registration directory of the worktree at ``path``, matched by where it was, or None."""
     admin = common_dir / "worktrees"
     if not admin.is_dir():
         return None
-    for entry in admin.iterdir():
+    try:
+        entries = list(admin.iterdir())
+    except FileNotFoundError:
+        return None
+    except OSError:
+        if strict:
+            raise
+        return None
+    for entry in entries:
         try:
             pointed = (entry / "gitdir").read_text(encoding="utf-8", errors="surrogateescape").strip()
+        except (FileNotFoundError, NotADirectoryError):
+            continue
         except OSError:
+            if strict:
+                raise
             continue
         where = Path(pointed)
         if not where.is_absolute():  # relative to the registration
