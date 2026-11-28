@@ -1771,3 +1771,49 @@ async def test_first_new_page_for_owner_does_not_leave_extra_blank_tab(
     assert opened.success and 'heading "Terms of sale"' in opened.text
     # Only team-a's tab and team-b's target tab exist (no stray about:blank tab created for team-b).
     assert len(world.browser.pages) == 2
+
+
+async def test_named_release_clears_unowned_snapshots_without_touching_other_active_owners(
+    tools: BrowserTools, world: BrowserWorld
+) -> None:
+    # Unowned call takes a snapshot on page 1 (page.owner is None).
+    unowned = await call(tools, "navigate_page", url=ORDER)
+    assert unowned.success
+    gift_uid = re.search(r'uid=(\S+) checkbox "Gift wrap"', unowned.text).group(1)
+    # Named owner team-b opens its own tab and holds its own snapshot.
+    nav_b = await tools.call(TOOL_PREFIX + "new_page", {"url": ORDER}, owner="team-b")
+    assert nav_b.success
+    gift_uid_b = re.search(r'uid=(\S+) checkbox "Gift wrap"', nav_b.text).group(1)
+
+    # Releasing another owner clears stale unowned snapshots while leaving team-b intact.
+    await tools.released(owner="commission-1")
+    stale = await call(tools, "click", uid=gift_uid)
+    assert not stale.success and "No snapshot found" in stale.text
+    still_b = await tools.call(TOOL_PREFIX + "click", {"uid": gift_uid_b}, owner="team-b")
+    assert still_b.success, still_b.text
+
+    # Global release (owner=None) clears named owners and their snapshots too.
+    await tools.released(owner=None)
+    assert all(page.owner is None for page in tools.session.pages())
+    stale_b = await tools.call(TOOL_PREFIX + "click", {"uid": gift_uid_b}, owner="team-b")
+    assert not stale_b.success and "No snapshot found" in stale_b.text
+
+
+async def test_named_release_preserves_unowned_snapshot_while_unowned_call_is_in_flight(
+    tools: BrowserTools, world: BrowserWorld
+) -> None:
+    assert (await call(tools, "navigate_page", url=ORDER)).success
+    assert (await tools.call(TOOL_PREFIX + "new_page", {"url": TERMS}, owner="team-a")).success
+
+    gate = world.browser.hold("Input.dispatchMouseEvent", type="mouseReleased")
+    clicking = asyncio.ensure_future(call(tools, "click", uid=uid_of("Gift wrap")))
+    try:
+        await asyncio.wait_for(gate.reached.wait(), 5.0)
+        await tools.released(owner="team-a")
+        assert tools.session.current(None) is not None
+        assert tools.session.current(None).snapshot is not None
+    finally:
+        gate.release()
+        world.browser.gates.remove(gate)
+    done = await asyncio.wait_for(clicking, 5.0)
+    assert done.success, done.text

@@ -1618,16 +1618,34 @@ class BrowserSession:
                 page.snapshot = None
                 page.known_uids.clear()
 
-    def release_owner(self, owner: str | None = None) -> None:
+    def release_owner(self, owner: str | None = None, *, clear_unowned: bool = True) -> None:
         """Let go of ``owner``'s tabs and invalidate their uids without affecting other active owners."""
         if owner is None:
             self.forget_snapshots()
+            for page in self._pages.values():
+                page.owner = None
+            self._tab_owners.clear()
+            for key in list(self._selected_by_owner):
+                if key is not None:
+                    del self._selected_by_owner[key]
+            for tid in list(self._handles):
+                page = self._pages.get(tid)
+                if page is None or page.dialog is None:
+                    self._handles.discard(tid)
+            self._handles_by_owner.clear()
+            if self._handles:
+                self._handles_by_owner[None] = set(self._handles)
             return
         for page in self._pages.values():
             if page.owner == owner:
                 page.snapshot = None
                 page.known_uids.clear()
                 page.owner = None
+            elif clear_unowned and page.owner is None:
+                # Unowned tabs (from legacy owner=None calls or fallback paths) cannot belong
+                # to another active named owner; clear stale uids when no unowned call is active.
+                page.snapshot = None
+                page.known_uids.clear()
         for tid, recorded_owner in list(self._tab_owners.items()):
             if recorded_owner == owner:
                 del self._tab_owners[tid]

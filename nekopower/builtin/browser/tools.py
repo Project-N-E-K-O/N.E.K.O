@@ -275,7 +275,7 @@ class BrowserTools:
                 self._session.release_owner(None)
             return
         async with self._hold_owner_lock(owner):
-            self._session.release_owner(owner)
+            self._session.release_owner(owner, clear_unowned=self._owner_refs.get(None, 0) == 0)
 
     def window(self) -> dict[str, Any] | None:
         return self._session.window()

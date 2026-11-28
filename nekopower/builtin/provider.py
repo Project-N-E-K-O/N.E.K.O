@@ -341,7 +341,7 @@ class BuiltinToolProvider:
             self._last_window = None
             if self._browser is not None:
                 if getattr(self._browser, "supports_owner", False):
-                    await self._browser.released(owner=commission_id)
+                    await self._browser.released(owner=commission_id or None)
                 else:
                     await self._browser.released()
 
