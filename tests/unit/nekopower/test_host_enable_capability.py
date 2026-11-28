@@ -590,9 +590,13 @@ async def test_text_another_session_adds_while_the_switch_is_turned_on_ends_what
     covered_after_enabling = world.permissions.run_grants(grant.commission_id)
     used = await _call(world, grant, CALL_TOOL, {"name": "browser_navigate_page", "arguments": {"url": "https://a.example"}})
 
-    # The switch is on (the user said yes to that); the old yes covers nothing after the new text.
-    assert enabled["isError"] is False and world.enabler.enable_calls == [("browser", "Lan")]
+    # The switch is on (written meanwhile, and left as it is), but the old yes is no ground for telling the task
+    # agent it was turned on for it: no event of that, no free call, and the call that follows asks again.
+    assert enabled["isError"] is True and _text(enabled) == _APPROVAL_STALE
+    assert world.enabler.enable_calls == [("browser", "Lan")]
+    assert world.provider.switched_off.isdisjoint(BROWSER_TOOLS)
     assert not covered_after_enabling and used["isError"] is False
+    assert "capability_enabled" not in await _event_types(world, grant.commission_id)
     assert [ask.category for _cid, ask in asker.asked] == ["enable_browser", "browser"]
 
 
@@ -635,14 +639,53 @@ async def test_a_setting_tightened_and_put_back_while_the_switch_is_turned_on_co
     world.enabler.during_enable = tightened_then_restored
 
     enabled = await _call(world, grant, CALL_TOOL, _enable("browser"))
+    covered_after_enabling = world.permissions.run_grants(grant.commission_id)
+    used = await _call(world, grant, CALL_TOOL, {"name": "browser_navigate_page", "arguments": {"url": "https://a.example"}})
+
+    assert enabled["isError"] is True and _text(enabled) == _APPROVAL_STALE and used["isError"] is False
+    assert world.provider.switched_off.isdisjoint(BROWSER_TOOLS)
+    assert not covered_after_enabling
+    assert "capability_enabled" not in await _event_types(world, grant.commission_id)
+    assert [ask.category for _cid, ask in asker.asked] == ["enable_browser", "browser"]
+
+
+async def test_a_setting_turned_to_deny_while_the_switch_is_turned_on_is_told_as_the_settings_forbidding_it(world):
+    world.permissions.set_asker(Asker("once"))
+    await world.permission_store.set_mode("browser", "first_ask")
+    grant = await _grant_for(world)
+
+    async def forbidden_meanwhile() -> None:
+        await world.permission_store.set_mode("browser", "deny")
+
+    world.enabler.during_enable = forbidden_meanwhile
+
+    enabled = await _call(world, grant, CALL_TOOL, _enable("browser"))
+
+    assert enabled["isError"] is True and _text(enabled) == DENIED_BY_SETTINGS
+    assert world.provider.switched_off.isdisjoint(BROWSER_TOOLS)
+    assert not world.permissions.run_grants(grant.commission_id)
+    assert "capability_enabled" not in await _event_types(world, grant.commission_id)
+
+
+async def test_an_answer_that_falls_after_the_switch_was_turned_on_still_lends_no_free_call(world):
+    world.permissions.set_asker(asker := Asker("once"))
+    await world.permission_store.set_mode("browser", "first_ask")
+    grant = await _grant_for(world)
+    append = world.ledger.append_event
+
+    async def text_arrives_as_it_is_told(commission_id: str, kind: str, payload: Any) -> Any:
+        result = await append(commission_id, kind, payload)
+        if kind == "capability_enabled":
+            world.permissions.received_external_input(grant.commission_id)
+        return result
+
+    world.ledger.append_event = text_arrives_as_it_is_told
+
+    enabled = await _call(world, grant, CALL_TOOL, _enable("browser"))
     used = await _call(world, grant, CALL_TOOL, {"name": "browser_navigate_page", "arguments": {"url": "https://a.example"}})
 
     assert enabled["isError"] is False and used["isError"] is False
     assert [ask.category for _cid, ask in asker.asked] == ["enable_browser", "browser"]
-
-
-async def test_a_setting_tightened_and_put_back_while_the_lineage_is_read_grants_no_loan(world):
-    await world.permission_store.set_mode("browser", "first_ask")
     grant = await _grant_for(world)
     scope = GrantScope(KIND_BUILTIN, "browser")
     asked: list[str] = []

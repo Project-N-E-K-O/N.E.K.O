@@ -417,6 +417,28 @@ async def test_a_chain_of_starts_each_ended_by_a_newer_one_is_followed_to_the_la
     assert world.refreshed == [1]
 
 
+async def test_a_start_that_came_up_is_followed_to_the_newer_one_that_took_over_as_it_finished(wiring, monkeypatch):
+    # The start comes up, and while it tells the pages (an await of its own) the user switches the plugins
+    # off and on: the newer start is the one that decides, within the same time.
+    world = _EnablerWorld(wiring, monkeypatch)
+    flags = wiring.shared.Modules.agent_flags
+
+    async def newer() -> tuple[bool, str]:
+        await asyncio.sleep(0.02)
+        flags["user_plugin_enabled"] = False
+        return False, "no plugins are installed or enabled"
+
+    async def came_up() -> tuple[bool, str]:
+        await asyncio.sleep(0.01)
+        monkeypatch.setattr(wiring.shared.Modules, "user_plugin_enable_task", asyncio.ensure_future(newer()))
+        return True, ""
+
+    world.start_plugins = lambda: asyncio.ensure_future(came_up())
+
+    assert await world.enabler.enable("plugins") == (False, "no plugins are installed or enabled")
+    assert world.refreshed == []
+
+
 async def test_the_enabler_turns_the_plugins_on_and_tells_the_host_once_they_are_up(wiring, monkeypatch):
     world = _EnablerWorld(wiring, monkeypatch)
 
