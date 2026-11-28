@@ -25,6 +25,7 @@ _ASSIST_API_KEY_FIELDS = (
 _MODEL_TYPES = (
     'conversation', 'memory', 'gameMain', 'gameSummary', 'recognition',
     'decision', 'vision', 'agent', 'agentAdvanced', 'agentSmall', 'gameRecognition', 'omni', 'tts', 'image',
+    'asr',
 )
 
 _MODEL_API_KEY_FIELDS = tuple(
@@ -895,3 +896,160 @@ def test_chatgpt_save_rejects_missing_model_and_unsupported_slots(config_manager
     })))
     assert result['success'] is False
     assert config_manager.load_json_config('core_config.json', {}) == original
+
+
+_ASR_SAVED = {
+    "coreApi": "free", "assistApi": "free", "coreApiKey": "free-access",
+    "enableCustomApi": True,
+    "asrModelProvider": "custom", "asrModelUrl": "http://lan-box:8081/v1",
+    "asrModelId": "gigaam-v3", "asrModelApiKey": "private-asr-key",
+}
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("key_fields", [
+    {},  # key omitted
+    {"asrModelApiKey": "__NEKO_SECRET_MASKED__"},
+])
+def test_asr_endpoint_change_requires_new_key(config_manager, core_config_router, key_fields):
+    _write_core_config(config_manager, dict(_ASR_SAVED))
+    result = asyncio.run(core_config_router.update_core_config(_FakeRequest({
+        "asrModelUrl": "http://elsewhere:9000/v1", **key_fields,
+    })))
+    assert result["success"] is False
+    saved = config_manager.load_json_config("core_config.json", {})
+    assert saved["asrModelUrl"] == "http://lan-box:8081/v1"
+    assert saved["asrModelApiKey"] == "private-asr-key"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("url", [
+    "http://lan-box:8081/v1",
+    "http://lan-box:8081/v1/",
+    "http://lan-box:8081/v1/audio/transcriptions",
+])
+def test_asr_same_endpoint_round_trip_keeps_the_key(config_manager, core_config_router, url):
+    _write_core_config(config_manager, dict(_ASR_SAVED))
+    result = asyncio.run(core_config_router.update_core_config(_FakeRequest({
+        "asrModelProvider": "custom", "asrModelUrl": url,
+        "asrModelApiKey": core_config_router.CORE_CONFIG_SECRET_SENTINEL,
+    })))
+    assert result["success"] is True
+    assert config_manager.load_json_config("core_config.json", {})["asrModelApiKey"] == "private-asr-key"
+
+
+@pytest.mark.unit
+def test_asr_endpoint_change_with_a_new_key_is_saved(config_manager, core_config_router):
+    _write_core_config(config_manager, dict(_ASR_SAVED))
+    result = asyncio.run(core_config_router.update_core_config(_FakeRequest({
+        "asrModelUrl": "http://elsewhere:9000/v1", "asrModelApiKey": "",
+    })))
+    assert result["success"] is True
+    saved = config_manager.load_json_config("core_config.json", {})
+    assert saved["asrModelUrl"] == "http://elsewhere:9000/v1"
+    assert saved["asrModelApiKey"] == ""
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("fields", [
+    {"asrModelProvider": "deepseek"},
+    {"asrModelProvider": "custom", "asrModelUrl": "192.168.1.5:8081"},
+    {"asrModelProvider": "custom", "asrModelUrl": ""},
+    {"asrModelProvider": "qwen", "asrModelTransport": "stream"},
+    {"asrModelProvider": 1},
+])
+def test_asr_slot_that_could_not_run_is_rejected(config_manager, core_config_router, fields):
+    _write_core_config(config_manager, {
+        "coreApi": "free", "assistApi": "free", "coreApiKey": "free-access",
+    })
+    result = asyncio.run(core_config_router.update_core_config(_FakeRequest(fields)))
+    assert result["success"] is False
+    assert "asrModelProvider" not in config_manager.load_json_config("core_config.json", {})
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("fields", [
+    {"asrModelProvider": "follow_core"},
+    {"asrModelProvider": "qwen", "asrModelTransport": "request"},
+    {"asrModelProvider": "custom", "asrModelUrl": "http://lan-box:8081"},
+])
+def test_valid_asr_slot_is_saved(config_manager, core_config_router, fields):
+    _write_core_config(config_manager, {
+        "coreApi": "free", "assistApi": "free", "coreApiKey": "free-access",
+    })
+    result = asyncio.run(core_config_router.update_core_config(_FakeRequest(fields)))
+    assert result["success"] is True
+    assert config_manager.load_json_config("core_config.json", {})["asrModelProvider"] == fields["asrModelProvider"]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("url,availability", [
+    ("http://lan-box:8081", "implemented"),
+    ("lan-box:8081", "misconfigured"),  # saved by an older build
+])
+def test_get_reports_the_asr_slot_and_its_availability(
+    config_manager, core_config_router, url, availability
+):
+    _write_core_config(config_manager, {
+        "coreApi": "free", "assistApi": "free", "coreApiKey": "free-access",
+        "enableCustomApi": True, "asrModelProvider": "custom", "asrModelUrl": url,
+    })
+    response = asyncio.run(core_config_router.get_core_config_api())
+    assert response["asrSlotActive"] is True
+    assert response["asrSlotProvider"] == "custom"
+    assert response["asrSlotAvailability"] == availability
+
+
+def _model_slot_types():
+    from main_routers.config_router.core_config import CORE_CONFIG_MODEL_TYPES
+
+    return list(CORE_CONFIG_MODEL_TYPES)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("model_type", _model_slot_types())
+def test_core_switch_keeps_a_key_book_entry_an_active_slot_reads(
+    config_manager, core_config_router, model_type
+):
+    # Core qwen -> gemini while assist is openai. Without the slot, the qwen
+    # entry would be treated as stale and overwritten with the Core key; any
+    # active per-feature slot on qwen (ASR, image, conversation...) still
+    # reads it, so it must survive. Covers slot types added later too.
+    _write_core_config(config_manager, {
+        "coreApi": "qwen", "assistApi": "openai", "coreApiKey": "sk-core-qwen",
+        "assistApiKeyQwen": "sk-slot-qwen", "assistApiKeyGemini": "sk-gemini",
+        "assistApiKeyOpenai": "sk-openai",
+        "enableCustomApi": True, f"{model_type}ModelProvider": "qwen",
+    })
+    result = asyncio.run(core_config_router.update_core_config(_FakeRequest({
+        "coreApi": "gemini", "assistApi": "openai",
+        "coreApiKey": core_config_router.CORE_CONFIG_SECRET_SENTINEL,
+        "enableCustomApi": True,
+    })))
+    assert result["success"] is True, result
+    saved = config_manager.load_json_config("core_config.json", {})
+    assert saved["coreApi"] == "gemini"
+    assert saved["assistApiKeyQwen"] == "sk-slot-qwen"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("enable_custom_api", [False, True])
+def test_core_switch_still_replaces_an_entry_nothing_else_reads(
+    config_manager, core_config_router, enable_custom_api
+):
+    # Existing rule: with no other reader the old Core's entry is stale. A
+    # slot only counts while per-feature models are on.
+    _write_core_config(config_manager, {
+        "coreApi": "qwen", "assistApi": "openai", "coreApiKey": "sk-core-qwen",
+        "assistApiKeyQwen": "sk-stale-qwen", "assistApiKeyGemini": "sk-gemini",
+        "assistApiKeyOpenai": "sk-openai",
+        "enableCustomApi": enable_custom_api,
+        "asrModelProvider": "qwen" if not enable_custom_api else "openai",
+    })
+    result = asyncio.run(core_config_router.update_core_config(_FakeRequest({
+        "coreApi": "gemini", "assistApi": "openai",
+        "coreApiKey": core_config_router.CORE_CONFIG_SECRET_SENTINEL,
+        "enableCustomApi": enable_custom_api,
+    })))
+    assert result["success"] is True, result
+    assert config_manager.load_json_config("core_config.json", {})["assistApiKeyQwen"] == "sk-core-qwen"

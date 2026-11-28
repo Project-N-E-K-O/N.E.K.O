@@ -150,6 +150,20 @@ def _resolve_custom_target(req: ModelListRequest, core_cfg: dict) -> dict[str, A
     if not _is_http_url(url):
         return _failure("unsupported", "只有 HTTP(S) 端点支持拉取模型列表")
 
+    is_asr = (req.model_type or "").strip() == "asr"
+    if is_asr:
+        from main_logic.asr_client.slot import (
+            custom_asr_models_base_url,
+            normalize_custom_asr_url,
+        )
+
+        # The slot accepts a base URL or the full transcription URL; compare
+        # credentials on the normalized request URL so equivalent spellings
+        # share the saved key and different endpoints still never do.
+        url = normalize_custom_asr_url(url)
+        if not url:
+            return _failure("unsupported", "只有 HTTP(S) 端点支持拉取模型列表")
+
     submitted_key = req.api_key if isinstance(req.api_key, str) else ""
     if is_core_config_secret_placeholder(submitted_key):
         from utils.config_manager.tier_renames import canonical_model_type, migrate_renamed_tier_fields
@@ -162,12 +176,20 @@ def _resolve_custom_target(req: ModelListRequest, core_cfg: dict) -> dict[str, A
         if model_type in CORE_CONFIG_MODEL_TYPES:
             stored_url = str(saved.get(f"{model_type}ModelUrl") or "").strip()
             stored_key = str(saved.get(f"{model_type}ModelApiKey") or "").strip()
+        if is_asr:
+            stored_url = normalize_custom_asr_url(stored_url)
         # Saved keys belong only to their saved endpoints: reusing one after editing the URL would send credentials elsewhere.
         if not (stored_url and stored_key and same_endpoint(url, stored_url)):
             return _failure("key_required", "已保存的 Key 只能用于保存时的地址，请重新填写 API Key")
         api_key = stored_key
     else:
         api_key = submitted_key.strip()
+
+    if is_asr:
+        # /models hangs off the OpenAI-compatible base (.../v1).
+        url = custom_asr_models_base_url(url)
+        if not url:
+            return _failure("unsupported", "只有 HTTP(S) 端点支持拉取模型列表")
 
     provider_type = _normalize_provider_type({"provider_type": req.provider_type}, url)
     return {
@@ -277,6 +299,36 @@ def _with_openrouter_decision_models(
     return _tag_decision_models({"success": True, "models": merged, "resolved_url": resolved_url}, resolved_url)
 
 
+def _tag_asr_models(result: dict[str, Any], vendor: str) -> dict[str, Any]:
+    """Mark the models the vendor's speech-recognition request can use.
+
+    Vendors' /models lists every model (chat, embedding, TTS, and ASR models
+    that need another API) without a capability flag. For a named vendor the
+    slot's own model families are tagged ``asr: true`` and listed first, and
+    the vendor's default model is added when the listing omits it (DashScope
+    does not list ``qwen3-asr-flash``). ``asr_filtered`` tells the picker
+    whether the tags mean anything: a custom server names its models freely,
+    so its list is returned untagged and the picker shows all of it.
+    """
+    from main_logic.asr_client.slot import ASR_SLOT_VENDORS, is_asr_model_candidate
+
+    if not result.get("success"):
+        return result
+    spec = ASR_SLOT_VENDORS.get(str(vendor or "").strip().lower())
+    models = [dict(entry) for entry in result.get("models") or []]
+    if spec is None or not spec.filters_models:
+        return {**result, "models": models, "asr_filtered": False}
+    for entry in models:
+        if is_asr_model_candidate(spec.vendor, entry["id"]):
+            entry["asr"] = True
+    if spec.default_model and not any(
+        entry["id"].lower() == spec.default_model.lower() for entry in models
+    ):
+        models.append({"id": spec.default_model, "asr": True})
+    models.sort(key=lambda entry: (not entry.get("asr"), entry["id"].lower()))
+    return {**result, "models": models, "asr_filtered": True}
+
+
 def _tag_decision_models(result: dict[str, Any], url: str) -> dict[str, Any]:
     """Mark models that use a native decision API on *url* with ``decision: true`` and list them first.
 
@@ -340,6 +392,8 @@ async def list_models(req: ModelListRequest) -> dict:
             result = _with_openrouter_decision_models(result, target["urls"][0], await decision_task)
         elif (req.model_type or "").strip() == "decision":
             result = _tag_decision_models(result, result.get("resolved_url") or target["urls"][0])
+        elif (req.model_type or "").strip() == "asr" and result.get("success"):
+            result = _tag_asr_models(result, (req.provider_key or "").strip() or "custom")
     finally:
         if decision_task is not None and not decision_task.done():
             decision_task.cancel()

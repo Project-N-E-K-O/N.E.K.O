@@ -41,6 +41,7 @@ from ._registry_meta import (
 )
 from .endpointing.detector_runtime import _create_voice_turn_adapter
 from .provider_policy import resolve_provider_policy
+from .slot import AsrSlotEndpoint, resolve_asr_slot as _resolve_asr_slot
 from .workers.dummy import dummy_asr_worker as _dummy_asr_worker
 from .workers.faster_whisper import (
     _whisper_language_code,
@@ -60,6 +61,7 @@ from .workers.qwen import (
     _qwen_language_code,
     qwen_asr_worker as _qwen_asr_worker,
 )
+from .workers.slot_request import slot_request_asr_worker as _slot_request_asr_worker
 from .workers.soniox import soniox_asr_worker as _soniox_asr_worker
 from .workers.step import (
     _step_language_code,
@@ -74,6 +76,7 @@ __all__ = [
     "VoiceIdentityActivationResult",
     "create_asr_session",
     "get_asr_core_capabilities",
+    "get_asr_slot_override",
     "is_local_asr_available",
 ]
 
@@ -113,6 +116,10 @@ _PROVIDER_LANGUAGE_VALIDATORS: dict[str, Callable[[str], str | None]] = {
     "step": _step_language_code,
     "grok": _normalize_grok_language,
     "faster_whisper": _whisper_language_code,
+    # Speech-recognition slot keys: the same language matrix as the vendor's
+    # own realtime worker; custom/openai/glm/gemini accept any hint.
+    "qwen_request": _qwen_language_code,
+    "grok_request": _normalize_grok_language,
 }
 
 
@@ -155,6 +162,13 @@ _IMPLEMENTED_WORKERS: dict[str, _AsrWorkerFn] = {
     "gemini": _gemini_asr_worker,
     "soniox": _soniox_asr_worker,
     "faster_whisper": _faster_whisper_asr_worker,
+    # Slot keys share one non-streaming worker; a selection binds its endpoint.
+    "openai_request": _slot_request_asr_worker,
+    "grok_request": _slot_request_asr_worker,
+    "glm_request": _slot_request_asr_worker,
+    "gemini_request": _slot_request_asr_worker,
+    "qwen_request": _slot_request_asr_worker,
+    "custom": _slot_request_asr_worker,
 }
 
 
@@ -170,15 +184,67 @@ class _AsrSelection:
         compare=False,
     )
     _api_key: str = field(default="", repr=False, compare=False)
+    # Set only for the speech-recognition slot: where its requests go.
+    _slot_endpoint: AsrSlotEndpoint | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
 
 
-def _load_core_config() -> dict:
+class AsrConfigUnreadable(RuntimeError):
+    """The core config could not be read, so the ASR route cannot be decided."""
+
+
+def _read_core_config() -> dict:
+    """The core config snapshot behind every ASR route decision.
+
+    The only way this package reads the core config, and strict: a missing
+    file means defaults, but a damaged, unreadable or non-object file raises
+    :class:`AsrConfigUnreadable`. ``get_core_config()`` cannot tell on its
+    own -- it logs those errors and returns the defaults, in which the
+    speech-recognition slot is off, so a configured slot would be bypassed.
+    The file is checked through the locked snapshot read, so an in-process
+    writer's ``os.replace`` cannot make the check fail spuriously.
+    """
+
     from utils.config_manager import get_config_manager
+    from utils.config_manager.json_update import load_json_config_snapshot
 
+    manager = get_config_manager()
     try:
-        return get_config_manager().get_core_config() or {}
-    except Exception:
-        return {}
+        load_json_config_snapshot(manager, "core_config.json")
+        return manager.get_core_config() or {}
+    except Exception as exc:
+        raise AsrConfigUnreadable("ASR_INVALID_CONFIG: core config unreadable") from exc
+
+
+def _runs_locally(provider_key: str) -> bool:
+    meta = _ASR_PROVIDER_REGISTRY.get(provider_key)
+    return bool(meta is not None and meta.runs_locally)
+
+
+def _local_selection_or_raise(
+    route: _AsrCoreRoute,
+    provider_preference: str | None,
+    *,
+    ignore_route_capability: bool = False,
+) -> _AsrSelection:
+    """The route to use when the core config cannot be read.
+
+    The slot is unknown then, so only a route that keeps the audio on this
+    machine may run: the user's explicit local preference. Anything else
+    raises :class:`AsrConfigUnreadable` and the caller fails closed.
+    """
+
+    selection = _resolve_user_selected_provider(
+        route,
+        provider_preference,
+        ignore_route_capability=ignore_route_capability,
+    )
+    if selection is not None and _runs_locally(selection.provider_key):
+        return selection
+    raise AsrConfigUnreadable("ASR_INVALID_CONFIG: core config unreadable")
 
 
 def _is_explicit_intl_region(user_region: str) -> bool:
@@ -207,6 +273,44 @@ def _mapped_soniox_region(user_region: str) -> Literal["us", "eu", "jp"]:
     if normalized in {"jp", "japan", "au", "nz", "kr", "sg"}:
         return "jp"
     return "us"
+
+
+def _resolve_slot_selection(core_config: dict) -> _AsrSelection | None:
+    """The speech-recognition slot's selection, or ``None`` when it is unset.
+
+    An active slot overrides every Core route (the free Core included), the
+    local faster-whisper preference and the regional Soniox preference.
+    """
+
+    endpoint = _resolve_asr_slot(core_config)
+    if endpoint is None:
+        return None
+    if endpoint.availability is not _AsrProviderAvailability.IMPLEMENTED:
+        return _AsrSelection(
+            provider_key=endpoint.provider_key,
+            endpointing_mode="manual",
+            availability=endpoint.availability,
+            _slot_endpoint=endpoint,
+        )
+    return _AsrSelection(
+        provider_key=endpoint.provider_key,
+        endpointing_mode="manual",
+        _worker_fn=partial(_slot_request_asr_worker, endpoint=endpoint),
+        _api_key=endpoint.api_key,
+        _slot_endpoint=endpoint,
+    )
+
+
+def get_asr_slot_override() -> AsrSlotEndpoint | None:
+    """The active speech-recognition slot, if it overrides the Core's ASR.
+
+    Reads the core config from disk: call via ``asyncio.to_thread`` from async
+    code. Raises :class:`AsrConfigUnreadable` when the config cannot be read:
+    "could not read the slot" must not look like "no slot", or a configured
+    slot would be bypassed silently.
+    """
+
+    return _resolve_asr_slot(_read_core_config())
 
 
 def _optional_dependency_available(module_name: str | None) -> bool:
@@ -299,9 +403,12 @@ def _resolve_asr_selection(
 ) -> _AsrSelection:
     """Resolve one pre-audio provider choice without opening a session.
 
-    ``provider_preference`` is the persisted independent-ASR provider choice.
-    Only providers marked ``user_selectable`` in the registry are honored, and
-    only on Core routes whose capabilities allow independent ASR.
+    Precedence: the development override, then the speech-recognition slot
+    (API settings; it overrides every Core route, the free Core included),
+    then ``provider_preference`` (the persisted independent-ASR provider
+    choice, honored only for ``user_selectable`` providers on Core routes that
+    allow independent ASR), then the regional Soniox preference, then the
+    Core's own route.
     """
 
     core_key = str(core_type or "").strip().lower()
@@ -334,11 +441,18 @@ def _resolve_asr_selection(
             _api_key=api_key or "",
         )
 
+    try:
+        core_config = _read_core_config()
+    except AsrConfigUnreadable:
+        return _local_selection_or_raise(route, provider_preference)
+    slot_selection = _resolve_slot_selection(core_config)
+    if slot_selection is not None:
+        return slot_selection
+
     user_selection = _resolve_user_selected_provider(route, provider_preference)
     if user_selection is not None:
         return user_selection
 
-    core_config = _load_core_config()
     resolved_region = str(
         user_region
         or os.getenv("ASR_USER_REGION", "")
@@ -455,7 +569,7 @@ def _get_asr_worker(
     # ConfigManager owns the only permitted provider-specific credential
     # fallback: a matching Core may supply CORE_API_KEY through its matching
     # ASSIST_API_KEY_* slot. No audio/TTS/other-provider key is consulted here.
-    resolved_core_config = _load_core_config() if core_config is None else core_config
+    resolved_core_config = _read_core_config() if core_config is None else core_config
     credential_field = (
         "SONIOX_API_KEY" if provider_key == "soniox" else route.credential_field
     )
@@ -546,6 +660,8 @@ def _create_asr_session_from_selection(
         raise RuntimeError(f"ASR_CREDENTIALS_MISSING: {provider_key}")
     if selection.availability is _AsrProviderAvailability.MISSING_DEPENDENCY:
         raise RuntimeError(f"ASR_DEPENDENCY_MISSING: {provider_key}")
+    if selection.availability is _AsrProviderAvailability.MISCONFIGURED:
+        raise RuntimeError(f"ASR_INVALID_CONFIG: {provider_key}")
     if session_config.endpointing_mode not in provider_meta.supported_endpointing_modes:
         raise RuntimeError(
             "ASR_ENDPOINTING_NOT_SUPPORTED: "
@@ -594,7 +710,7 @@ def _resolve_core_follow_selection(core_type: str) -> _AsrSelection:
     if route is None:
         raise RuntimeError(f"ASR_UNKNOWN_CORE: {core_key or '<empty>'}")
     endpointing_mode = route.default_endpointing_mode
-    core_config = _load_core_config()
+    core_config = _read_core_config()
     worker_fn, api_key_override, provider_key = _get_asr_worker(
         core_key,
         endpointing_mode,

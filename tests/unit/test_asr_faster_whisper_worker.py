@@ -599,7 +599,7 @@ def test_selection_reports_missing_dependency_without_importing(monkeypatch) -> 
 
     monkeypatch.delenv("ASR_PROVIDER", raising=False)
     monkeypatch.setattr(asr_client.importlib.util, "find_spec", fake_find_spec)
-    monkeypatch.setattr(asr_client, "_load_core_config", lambda: {})
+    monkeypatch.setattr(asr_client, "_read_core_config", lambda: {})
 
     selection = asr_client._resolve_asr_selection(
         "qwen", provider_preference="faster_whisper"
@@ -630,7 +630,7 @@ def test_selection_honors_preference_without_credentials(monkeypatch) -> None:
     # Even with a Soniox key and an intl region, the explicit choice wins.
     monkeypatch.setattr(
         asr_client,
-        "_load_core_config",
+        "_read_core_config",
         lambda: {"SONIOX_API_KEY": "k", "ASR_USER_REGION": "intl"},
     )
 
@@ -670,7 +670,7 @@ def test_free_core_ignores_local_preference(monkeypatch) -> None:
     monkeypatch.setattr(
         asr_client.importlib.util, "find_spec", lambda _name: object()
     )
-    monkeypatch.setattr(asr_client, "_load_core_config", lambda: {})
+    monkeypatch.setattr(asr_client, "_read_core_config", lambda: {})
 
     selection = asr_client._resolve_asr_selection(
         "free", provider_preference="faster_whisper"
@@ -685,7 +685,7 @@ def test_non_selectable_preferences_follow_the_core_route(monkeypatch, preferenc
     monkeypatch.delenv("ASR_PROVIDER", raising=False)
     monkeypatch.delenv("SONIOX_API_KEY", raising=False)
     monkeypatch.setattr(
-        asr_client, "_load_core_config", lambda: {"ASSIST_API_KEY_GLM": "k"}
+        asr_client, "_read_core_config", lambda: {"ASSIST_API_KEY_GLM": "k"}
     )
 
     selection = asr_client._resolve_asr_selection(
@@ -707,9 +707,13 @@ def test_registry_meta_and_policy_for_local_provider() -> None:
     assert {
         key for key, value in ASR_PROVIDER_REGISTRY.items() if value.user_selectable
     } == {"faster_whisper"}
+    # The speech-recognition slot's self-hosted endpoint may run without a
+    # key; it is chosen in the API settings slot, never as a user preference.
     for key, value in ASR_PROVIDER_REGISTRY.items():
-        if key not in {"faster_whisper"}:
+        if key not in {"faster_whisper", "custom"}:
             assert value.requires_credential is True, key
+    assert ASR_PROVIDER_REGISTRY["custom"].requires_credential is False
+    assert ASR_PROVIDER_REGISTRY["custom"].user_selectable is False
 
     policy = resolve_provider_policy("faster_whisper", "manual")
     assert policy.transport == "segmented"

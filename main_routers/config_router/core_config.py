@@ -46,6 +46,9 @@ CORE_CONFIG_SECRET_SENTINEL = "__NEKO_SECRET_MASKED__"
 CORE_CONFIG_MODEL_TYPES = (
     'conversation', 'memory', 'gameMain', 'gameSummary', 'recognition',
     'decision', 'vision', 'agent', 'agentAdvanced', 'agentSmall', 'gameRecognition', 'omni', 'tts', 'image',
+    # Speech-recognition slot (main_logic/asr_client/slot.py). Its transport
+    # is stored separately in asrModelTransport.
+    'asr',
 )
 
 # Model types merged away; their saved fields are dropped on the next save.
@@ -263,9 +266,15 @@ async def get_core_config_api():
             get_asr_core_capabilities,
             is_local_asr_available,
         )
+        from main_logic.asr_client.slot import resolve_asr_slot
         _core_asr_capabilities = get_asr_core_capabilities(
             _effective_core_api_provider
         )
+        try:
+            _asr_slot = resolve_asr_slot(runtime_core_config)
+        except Exception:
+            logger.warning('Unable to resolve the speech-recognition slot', exc_info=True)
+            _asr_slot = None
         try:
             # find_spec walks sys.path finders; keep it off the event loop.
             _local_asr_available = await asyncio.to_thread(is_local_asr_available)
@@ -300,6 +309,14 @@ async def get_core_config_api():
             # Whether the optional local ASR dependency is installed. Packaged
             # builds do not ship it, so the settings UI hides the option.
             "localAsrAvailable": _local_asr_available,
+            # The speech-recognition slot, when it overrides the Core's ASR
+            # (on every Core, the free Core included). The microphone panel
+            # shows it instead of the Core route and the local-ASR choice.
+            "asrSlotActive": _asr_slot is not None,
+            "asrSlotProvider": _asr_slot.vendor if _asr_slot is not None else None,
+            # "implemented", or why the active slot cannot run yet
+            # ("missing_credentials", "misconfigured"); sessions fail closed.
+            "asrSlotAvailability": _asr_slot.availability.value if _asr_slot is not None else None,
             "assistApi": _assist_api_provider,
             "assistApiKeyQwen": core_cfg.get('assistApiKeyQwen', '') or _fb('qwen'),
             "assistApiKeyQwenIntl": core_cfg.get('assistApiKeyQwenIntl', '') or _fb('qwen_intl'),
@@ -353,6 +370,7 @@ async def get_core_config_api():
                 for mt in CORE_CONFIG_MODEL_TYPES
                 for suffix in ('Provider', 'Url', 'Id', 'ApiKey')
             },
+            "asrModelTransport": core_cfg.get('asrModelTransport', ''),
             "gptsovitsEnabled": core_cfg.get('gptsovitsEnabled'),
             "ttsProvider": core_cfg.get('ttsProvider', ''),
             "ttsVoiceId": core_cfg.get('ttsVoiceId', ''),
@@ -560,10 +578,35 @@ async def update_core_config(request: Request):
                 else {}
             )
 
+            def _key_book_field_used_by_a_model_slot(field):
+                """Whether an active per-feature slot reads ``field``.
+
+                Every slot type in CORE_CONFIG_MODEL_TYPES counts (the ASR
+                slot, image, conversation...), with this save's values over
+                the stored ones, so a slot type added later is covered too.
+                """
+                custom_api_on = (
+                    data['enableCustomApi'] if 'enableCustomApi' in data
+                    else core_cfg.get('enableCustomApi', False)
+                )
+                if str(custom_api_on).strip().lower() not in {'1', 'true', 'yes', 'on'}:
+                    return False
+                for model_type in CORE_CONFIG_MODEL_TYPES:
+                    provider_field = f'{model_type}ModelProvider'
+                    provider = data.get(provider_field, core_cfg.get(provider_field))
+                    if not isinstance(provider, str) or not provider.strip():
+                        continue
+                    if get_core_config_provider_api_key_field(
+                        provider.strip(), api_key_registry,
+                    ) == field:
+                        return True
+                return False
+
             # Preserve the old core provider's authoritative key in its Key
             # Book slot before coreApiKey is repointed.  A distinct non-empty
-            # key remains authoritative only when that provider stays selected
-            # as assist; otherwise the old slot is stale and must be replaced.
+            # key remains authoritative while another feature still reads it
+            # (the assist provider, or an active per-feature model slot);
+            # otherwise the old slot is stale and must be replaced.
             if provider_changed and stored_core_api != 'free' and stored_core_api_key:
                 old_provider_field = get_core_config_provider_api_key_field(
                     stored_core_api,
@@ -574,10 +617,14 @@ async def update_core_config(request: Request):
                     if old_provider_field
                     else ''
                 )
+                old_key_still_read_elsewhere = (
+                    effective_assist_api == stored_core_api
+                    or _key_book_field_used_by_a_model_slot(old_provider_field)
+                )
                 if (
                     old_provider_field
                     and (
-                        effective_assist_api != stored_core_api
+                        not old_key_still_read_elsewhere
                         or not old_provider_key
                     )
                 ):
@@ -807,6 +854,50 @@ async def update_core_config(request: Request):
                     resolve_image_config(candidate)
                 except ValueError as exc:
                     return {"success": False, "error": str(exc)}
+
+        # Speech-recognition slot: reject a selection that could not run (it
+        # would only fail closed at session start), and like the image slot,
+        # never let a retained key follow an endpoint change.
+        _asr_fields = (
+            "asrModelProvider", "asrModelTransport", "asrModelUrl", "asrModelId", "asrModelApiKey"
+        )
+        if any(field in data for field in _asr_fields):
+            from main_logic.asr_client.slot import (
+                normalize_custom_asr_url,
+                validate_asr_slot_fields,
+            )
+            from utils.http.url import same_endpoint
+            if any(not isinstance(data[field], str) for field in _asr_fields if field in data):
+                return {"success": False, "error": "Speech-recognition settings must be strings"}
+            asr_candidate = {**core_cfg, **{
+                field: data[field] for field in _asr_fields[:-1] if field in data
+            }}
+            asr_error = validate_asr_slot_fields(
+                asr_candidate.get("asrModelProvider"),
+                asr_candidate.get("asrModelTransport"),
+                asr_candidate.get("asrModelUrl"),
+            )
+            if asr_error:
+                return {"success": False, "error": asr_error}
+            if core_cfg.get("asrModelApiKey"):
+                def _asr_endpoint(raw_url: object) -> str:
+                    raw = str(raw_url or "").strip()
+                    return normalize_custom_asr_url(raw) or raw
+                old_asr_url = _asr_endpoint(core_cfg.get("asrModelUrl"))
+                new_asr_url = _asr_endpoint(asr_candidate.get("asrModelUrl"))
+                asr_key_retained = (
+                    "asrModelApiKey" not in data
+                    or is_core_config_secret_placeholder(data["asrModelApiKey"])
+                )
+                if asr_key_retained and not (
+                    old_asr_url and new_asr_url and same_endpoint(old_asr_url, new_asr_url)
+                ):
+                    return {
+                        "success": False,
+                        "error": "Changing speech-recognition endpoint requires replacing or clearing its API key",
+                    }
+            if "asrModelTransport" in data:
+                core_cfg["asrModelTransport"] = data["asrModelTransport"].strip().lower()
 
         # Custom API configuration: Provider / Url / Id / ApiKey per model type
         for mt in CORE_CONFIG_MODEL_TYPES:
@@ -1069,9 +1160,12 @@ async def get_api_providers_config():
             tts_providers = []
 
         from utils.image_generation.config import PROVIDERS as image_providers
+        from main_logic.asr_client.slot import asr_slot_ui_metadata
 
         return {
             "image_providers": image_providers,
+            # Speech-recognition slot vendors; the dropdown is built from these.
+            "asr_slot_vendors": asr_slot_ui_metadata(),
             "success": True,
             "core_api_providers": core_providers,
             "assist_api_providers": assist_providers,

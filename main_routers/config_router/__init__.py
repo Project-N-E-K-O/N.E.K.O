@@ -107,6 +107,10 @@ from .model_catalog import (  # noqa: F401
     ModelListRequest,
     list_models,
 )
+from .asr_connectivity import (  # noqa: F401
+    AsrConnectivityTestRequest,
+    test_asr_connectivity,
+)
 
 from . import chatgpt  # noqa: F401  # Register local OAuth routes.
 from . import subscriptions  # noqa: F401  # Register subscriptions & plans routes.

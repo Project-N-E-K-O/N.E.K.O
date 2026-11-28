@@ -41,6 +41,9 @@ class AsrProviderAvailability(str, Enum):
     BLOCKED_BACKEND = "blocked_backend"
     MISSING_CREDENTIALS = "missing_credentials"
     MISSING_DEPENDENCY = "missing_dependency"
+    # The user selected a route that cannot be built from what is saved (for
+    # example a custom ASR slot whose URL is not an http(s) URL).
+    MISCONFIGURED = "misconfigured"
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,6 +143,12 @@ class AsrProviderMeta:
     # ``independentAsrProviderPreference`` conversation setting. Everything
     # else is reached through ``CORE_ASR_ROUTES``.
     user_selectable: bool = False
+    # Audio never leaves this machine. The one property that lets a route run
+    # while the core config cannot be read: the speech-recognition slot is
+    # then unknown, and only a local route cannot send audio somewhere the
+    # user did not choose. Declared explicitly, never inferred from
+    # ``requires_credential`` or ``user_selectable``.
+    runs_locally: bool = False
     # Import name of an optional package the worker needs. Selection probes it
     # with ``importlib.util.find_spec`` (no import) and reports
     # ``MISSING_DEPENDENCY`` instead of starting a worker that cannot run.
@@ -162,6 +171,8 @@ class AsrProviderMeta:
         return AsrProviderAvailability.BLOCKED_BACKEND
 
     def __post_init__(self) -> None:
+        if self.runs_locally and self.requires_credential:
+            raise ValueError("a local provider cannot require a cloud credential")
         if self.category == "segmented_request" and self.max_segment_ms is None:
             raise ValueError("segmented providers require max_segment_ms")
         if self.max_segment_ms is not None and self.max_segment_ms <= 0:
@@ -434,6 +445,7 @@ ASR_PROVIDER_REGISTRY: dict[str, AsrProviderMeta] = {
         provider_warmup_timeout_ms=900_000,
         requires_credential=False,
         user_selectable=True,
+        runs_locally=True,
         optional_dependency="faster_whisper",
         # Model loading is bounded by provider_warmup_timeout_ms; the timeout
         # here covers queueing on the shared decoder plus decoding.
@@ -443,6 +455,44 @@ ASR_PROVIDER_REGISTRY: dict[str, AsrProviderMeta] = {
             request_timeout_ms=120_000,
         ),
     ),
+    # Speech-recognition slot keys (see ``slot.py``). They are never Core
+    # routes: the API settings slot selects them, and they override the Core
+    # route when active. Every one is non-streaming (one request per sealed
+    # utterance), kept apart from the streaming keys above on purpose.
+    **{
+        provider_key: AsrProviderMeta(
+            provider_key=provider_key,
+            category="segmented_request",
+            worker_input_sample_rate_hz=16_000,
+            wire_sample_rate_hz=16_000,
+            supported_endpointing_modes=frozenset({"manual"}),
+            implementation_status="implemented",
+            supports_interception_delivery=True,
+            requires_smart_turn=True,
+            max_segment_ms=27_000,
+            warm_transport_ms=0,
+            replay_policy="none",
+            # The request starts at the turn seal; the watchdog must outlast
+            # the worker's own request timeout (35 s vendors, 55 s custom).
+            provider_final_timeout_ms=final_timeout_ms,
+            # A self-hosted server may run without a key.
+            requires_credential=provider_key != "custom",
+            # The model and URL come from the slot, not from this spec.
+            offline=AsrOfflineSpec(
+                mode="request",
+                max_segment_ms=27_000,
+                request_timeout_ms=final_timeout_ms - 5_000,
+            ),
+        )
+        for provider_key, final_timeout_ms in (
+            ("openai_request", 40_000),
+            ("grok_request", 40_000),
+            ("glm_request", 40_000),
+            ("gemini_request", 40_000),
+            ("qwen_request", 40_000),
+            ("custom", 60_000),
+        )
+    },
     "free": AsrProviderMeta(
         provider_key="free",
         category="segmented_request",
