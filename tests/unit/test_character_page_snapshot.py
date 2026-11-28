@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from main_routers.characters_router import crud
+from utils.character_memory import _CharacterConfigMutationLock
 
 
 async def _wait_for_test_start(started: asyncio.Event, task: asyncio.Task, timeout: float = 1.0):
@@ -29,7 +30,7 @@ async def _wait_for_test_start(started: asyncio.Event, task: asyncio.Task, timeo
 
 @pytest.mark.asyncio
 async def test_revision_zero_snapshot_crossing_mutation_never_publishes_provisional_name(monkeypatch):
-    lock = type(crud.character_config_mutation_lock)()
+    lock = _CharacterConfigMutationLock()
     monkeypatch.setattr(crud, 'character_config_mutation_lock', lock)
     monkeypatch.setattr(crud, '_catgirl_switch_revision', 0)
     monkeypatch.setattr(crud, '_catgirl_switch_revision_target', '')
@@ -51,7 +52,7 @@ async def test_revision_zero_snapshot_crossing_mutation_never_publishes_provisio
 
 @pytest.mark.asyncio
 async def test_snapshot_reports_generation_of_writer_that_caused_final_inconsistent_read(monkeypatch):
-    lock = type(crud.character_config_mutation_lock)()
+    lock = _CharacterConfigMutationLock()
     monkeypatch.setattr(crud, 'character_config_mutation_lock', lock)
     monkeypatch.setattr(crud, '_catgirl_switch_revision', 71)
     monkeypatch.setattr(crud, '_catgirl_switch_revision_target', 'A')
@@ -194,9 +195,7 @@ async def test_page_snapshot_rereads_config_after_revision_changes_during_read(m
 
 @pytest.mark.asyncio
 async def test_snapshot_settlement_does_not_wait_for_a_later_unrelated_writer(monkeypatch):
-    from utils.character_memory import character_config_mutation_lock
-
-    lock = type(character_config_mutation_lock)()
+    lock = _CharacterConfigMutationLock()
     monkeypatch.setattr(crud, 'character_config_mutation_lock', lock)
 
     await lock.acquire()
