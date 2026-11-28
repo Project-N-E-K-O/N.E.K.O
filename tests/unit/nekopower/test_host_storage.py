@@ -1605,7 +1605,9 @@ async def test_round5_mid_batch_policy_and_recheck_guards(tmp_path: Path, monkey
             if path == wt_budget:
                 wt_calls.append((budget, skip_git))
                 # Flip cached policy off during scan to verify pre-delete policy guard blocks removal.
-                host.storage.settings._kept = {**(host.storage.settings._kept or {}), "auto_clean_worktrees": False}
+                cur_wt = host.storage.settings._kept
+                if cur_wt is not None:
+                    host.storage.settings._kept = (cur_wt[0], {**cur_wt[1], "auto_clean_worktrees": False})
             return real_newest(path, budget, skip_git=skip_git)
 
         wt_state = {
@@ -1639,7 +1641,9 @@ async def test_round5_mid_batch_policy_and_recheck_guards(tmp_path: Path, monkey
             if path == pol_work:
                 recheck_n["n"] += 1
                 if recheck_n["n"] == 2:
-                    host.storage.settings._kept = {**(host.storage.settings._kept or {}), "auto_clean_work_dirs": False}
+                    cur_snap = host.storage.settings._kept
+                    if cur_snap is not None:
+                        host.storage.settings._kept = (cur_snap[0], {**cur_snap[1], "auto_clean_work_dirs": False})
             return res
 
         with monkeypatch.context() as mp:
@@ -3772,7 +3776,6 @@ async def test_round19_review_fixes(tmp_path: Path, monkeypatch: pytest.MonkeyPa
         (nested_sub / "keep.txt").write_text("alive", encoding="utf-8")
         await host.ledger.update_session(outer_s.id, status="idle", workdir=str(outer_work))
         blocked_s = await host.ledger.create_session(name="inner", lanlan_name="Lan", project="nest")
-        await host.ledger.update_session(blocked_s.id, status="idle", workdir=str(nested_sub))
         blocked_c, _ = await host.ledger.create(
             dispatch_text="waiting",
             title="waiting",
@@ -3783,7 +3786,11 @@ async def test_round19_review_fixes(tmp_path: Path, monkeypatch: pytest.MonkeyPa
             session_id=blocked_s.id,
             workdir=None,
         )
+        await host.ledger.transition(blocked_c.id, "working")
         await host.ledger.transition(blocked_c.id, "blocked")
+        await host.ledger.update_session(blocked_s.id, status="idle", workdir=str(nested_sub))
+        assert (await host.ledger.get(blocked_c.id)).status == "blocked"
+        assert (await host.ledger.get_session(blocked_s.id)).status == "idle"
         clean_res = await host.clean_work_dirs([f"session:nest/{outer_s.id}"])
         assert clean_res["cleaned"] == []
         assert clean_res["failed"] == [{"id": f"session:nest/{outer_s.id}", "code": "in_use"}]
@@ -3823,6 +3830,8 @@ async def test_round19_review_fixes(tmp_path: Path, monkeypatch: pytest.MonkeyPa
         assert hold_b is not None
         orig_move = space_facade._move
         mutated = [False]
+        loop = asyncio.get_running_loop()
+        rolled_back = asyncio.Event()
 
         def mutate_then_move(src: Path, dst: Path) -> None:
             if not mutated[0] and dst.name == "raceproj":
@@ -3831,18 +3840,28 @@ async def test_round19_review_fixes(tmp_path: Path, monkeypatch: pytest.MonkeyPa
                 data = json.loads(pfile.read_text(encoding="utf-8"))
                 data["workdir"] = str(dir_b)
                 pfile.write_text(json.dumps(data), encoding="utf-8")
+                orig_move(src, dst)
+                return
             orig_move(src, dst)
+            if mutated[0] and src.name == "raceproj":
+                loop.call_soon_threadsafe(rolled_back.set)
 
-        with monkeypatch.context() as mp:
-            mp.setattr(space_facade, "_move", mutate_then_move)
-            revive_task = asyncio.create_task(host.space.open_project("raceproj"))
-            await asyncio.sleep(0.08)
-            # Rolled back to archive while dir_b is clearing; active dir must not exist yet.
-            assert mutated[0] is True
-            assert not revive_task.done()
-            assert not host.paths.space().project_dir("raceproj").exists()
+        revive_task: asyncio.Task[Any] | None = None
+        try:
+            with monkeypatch.context() as mp:
+                mp.setattr(space_facade, "_move", mutate_then_move)
+                revive_task = asyncio.create_task(host.space.open_project("raceproj"))
+                await asyncio.wait_for(rolled_back.wait(), timeout=2.0)
+                # Rolled back to archive while dir_b is clearing; active dir must not exist yet.
+                assert mutated[0] is True
+                assert not revive_task.done()
+                assert not host.paths.space().project_dir("raceproj").exists()
+                host.task_agents.release_workdir(hold_b)
+                revived = await asyncio.wait_for(revive_task, timeout=2.0)
+        finally:
             host.task_agents.release_workdir(hold_b)
-            revived = await asyncio.wait_for(revive_task, timeout=2.0)
+            if revive_task is not None and not revive_task.done():
+                await asyncio.wait_for(revive_task, timeout=2.0)
         assert revived is not None
         assert revived.workdir == str(dir_b)
         assert host.paths.space().project_dir("raceproj").is_dir()
@@ -3905,7 +3924,8 @@ async def test_round19_review_fixes(tmp_path: Path, monkeypatch: pytest.MonkeyPa
             res = real_measure(path, deadline, **kwargs)
             if not swapped[0] and path == orph_swap:
                 swapped[0] = True
-                shutil.rmtree(orph_swap)
+                # Rename (do not delete) old dir so both directories coexist with distinct inodes.
+                orph_swap.rename(tmp_path / "orph_swap_old")
                 orph_swap.mkdir()
                 (orph_swap / "fresh.txt").write_text("fresh", encoding="utf-8")
             return res
@@ -3989,5 +4009,110 @@ async def test_round19_review_fixes(tmp_path: Path, monkeypatch: pytest.MonkeyPa
             await asyncio.wait_for(sched_task2, timeout=2.0)
             host.task_agents.release_files(ic_s.id)
             assert ic_s.id not in host.task_agents._idle_timers
+
+        # 10. Round 20 fixes: huge-int cutoff OverflowError, _workdir_referenced_actively joining
+        #     sessions.workdir, _says_it_is bounded gitfile check, malformed pending_expired_trees
+        #     entries skipped without TypeError, and instance-scoped pending markers preventing
+        #     stale record_only markers from dropping a reused worktree ID.
+        huge = 10**400
+        assert _confirmed_cutoff({"u": huge, "s": 100.0}, 10000.0, 5000.0, until_key="u", seen_key="s") == (None, True)
+        assert _confirmed_cutoff({"u": 500.0, "s": huge}, 10000.0, 5000.0, until_key="u", seen_key="s") == (None, True)
+
+        from nekopower.host.tree_work import _says_it_is
+
+        bad_git_wt = tmp_path / "bad_git_says"
+        bad_git_wt.mkdir()
+        (bad_git_wt / ".git").write_bytes(b"gitdir: " + b"y" * 70000)
+        assert _says_it_is(bad_git_wt, "bad_git_says", str(tmp_path)) is False
+
+        # Unrelated blocked commission with commissions.workdir=None protects its idle session's workdir inside a worktree.
+        wt_ref = host.paths.worktree_dir("wtref01")
+        wt_ref_sub = wt_ref / "nested"
+        wt_ref_sub.mkdir(parents=True)
+        idle_ref_s = await host.ledger.create_session(
+            name="idle-ref", lanlan_name="Lan", project="nest", workdir=str(wt_ref_sub)
+        )
+        ref_comm, _ = await host.ledger.create(
+            dispatch_text="blocked-on-wt",
+            title="blocked-on-wt",
+            lanlan_name="Lan",
+            source="dispatch",
+            route="task_agent",
+            project="nest",
+            session_id=idle_ref_s.id,
+            workdir=None,
+        )
+        await host.ledger.transition(ref_comm.id, "working")
+        await host.ledger.transition(ref_comm.id, "blocked")
+        await host.ledger.update_session(idle_ref_s.id, status="idle")
+        assert (await host.ledger.get(ref_comm.id)).status == "blocked"
+        assert (await host.ledger.get_session(idle_ref_s.id)).status == "idle"
+        assert await host.task_agents._workdir_referenced_actively(wt_ref, ignore_blocked_commission_id="other-c") is True
+        assert await host.task_agents._workdir_referenced_actively(wt_ref, ignore_blocked_commission_id=ref_comm.id) is False
+
+        # Malformed list value in pending_expired_trees is skipped without raising TypeError.
+        await host.space.write_state(
+            pending_expired_trees={"bad_arr": ["removed"], "good_def": "deferred", "bad_int": 123}
+        )
+        parsed_pending = await host.task_agents._read_pending_expired_trees(raise_on_error=True)
+        assert parsed_pending == {"good_def": "deferred"}
+
+        # Stale record_only marker from an older worktree instance must NOT drop or cancel a reused ID/path.
+        reused_wt = host.paths.worktree_dir("reused01")
+        reused_wt.mkdir(parents=True)
+        new_comm, _ = await host.ledger.create(
+            dispatch_text="retry-work",
+            title="retry-work",
+            lanlan_name="Lan",
+            source="dispatch",
+            route="task_agent",
+            project="nest",
+            session_id=res_s.id,
+            workdir=str(reused_wt),
+        )
+        await host.ledger.transition(new_comm.id, "working")
+        await host.ledger.transition(new_comm.id, "blocked")
+        assert (await host.ledger.get(new_comm.id)).status == "blocked"
+        new_row = await host.ledger.add_tree(
+            id="reused01",
+            session_id=res_s.id,
+            commission_id=new_comm.id,
+            lanlan_name="Lan",
+            project="nest",
+            project_dir=str(tmp_path),
+            repo_root=str(tmp_path),
+            path=str(reused_wt),
+            workdir=str(reused_wt),
+            token="tok-new-instance",
+            state="held",
+        )
+        await host.space.write_state(
+            pending_expired_trees={
+                "reused01": {
+                    "outcome": "record_only",
+                    "token": "tok-old-instance",
+                    "created_at": new_row.created_at - 100.0,
+                }
+            }
+        )
+        await host.task_agents._reconcile_trees_now()
+        assert await host.ledger.get_tree("reused01") is not None
+        assert (await host.ledger.get(new_comm.id)).status == "blocked"
+        assert "reused01" not in await host.task_agents._read_pending_expired_trees()
+
+        # Matching instance marker DOES still settle record_only recovery properly.
+        await host.space.write_state(
+            pending_expired_trees={
+                "reused01": {
+                    "outcome": "record_only",
+                    "token": new_row.token,
+                    "created_at": float(new_row.created_at),
+                }
+            }
+        )
+        await host.task_agents._reconcile_trees_now()
+        assert await host.ledger.get_tree("reused01") is None
+        assert (await host.ledger.get(new_comm.id)).status == "cancelled"
+        assert "reused01" not in await host.task_agents._read_pending_expired_trees()
     finally:
         await host.shutdown()

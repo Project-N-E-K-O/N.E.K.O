@@ -392,6 +392,17 @@ def _disk_usage_of(path: Path) -> dict[str, int] | None:
     return {"total": int(usage.total), "used": int(usage.used), "free": int(usage.free)}
 
 
+def _finite_number(value: Any) -> float | None:
+    """Convert ``value`` to a finite float, returning None for bools, non-numbers, NaN/inf, or huge ints."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        num = float(value)
+    except (OverflowError, ValueError):
+        return None
+    return num if math.isfinite(num) else None
+
+
 def _confirmed_cutoff(
     state: dict[str, Any],
     now: float,
@@ -403,17 +414,15 @@ def _confirmed_cutoff(
     """Two-reading clock-jump confirmation matching ``SpaceKeeper._confirmed_line``."""
     from config.nekopower_settings import SPACE_UPKEEP_INTERVAL_SECONDS
 
-    noted, seen_at = state.get(until_key), state.get(seen_key)
-    if any(
-        isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value)
-        for value in (noted, seen_at)
-    ):
+    noted = _finite_number(state.get(until_key))
+    seen_at = _finite_number(state.get(seen_key))
+    if noted is None or seen_at is None:
         return None, True
     if seen_at > now:
         return None, True
     if seen_at > now - SPACE_UPKEEP_INTERVAL_SECONDS:
         return None, False
-    return min(float(noted), due), True
+    return min(noted, due), True
 
 
 # -- retention settings store -------------------------------------------------
@@ -460,8 +469,8 @@ class StorageSettingsStore:
     def __init__(self, path: Path | Callable[[], Path]) -> None:
         self._path_source = path
         self._lock = asyncio.Lock()
-        self._kept: dict[str, Any] | None = None
-        self._kept_path: str | None = None
+        # Atomic snapshot pairing the normalized storage.json path with its loaded values.
+        self._kept: tuple[str, dict[str, Any]] | None = None
 
     def _path(self) -> Path:
         source = self._path_source
@@ -511,22 +520,22 @@ class StorageSettingsStore:
         settings with automatic cleanup disabled and does not cache them so
         subsequent calls re-read once the file recovers.
         """
+        snapshot = self._kept
         current_path = self._path()
         norm_path = self._norm_path(current_path)
-        if self._kept is not None and self._kept_path == norm_path:
-            return dict(self._kept)
+        if snapshot is not None and snapshot[0] == norm_path:
+            return dict(snapshot[1])
         async with self._lock:
             current_path = self._path()
             norm_path = self._norm_path(current_path)
-            if self._kept is not None and self._kept_path == norm_path:
-                return dict(self._kept)
+            snapshot = self._kept
+            if snapshot is not None and snapshot[0] == norm_path:
+                return dict(snapshot[1])
             values, readable = await asyncio.to_thread(self._read_disk, current_path)
             if readable:
-                self._kept = values
-                self._kept_path = norm_path
-            elif self._kept_path != norm_path:
+                self._kept = (norm_path, dict(values))
+            elif snapshot is not None and snapshot[0] != norm_path:
                 self._kept = None
-                self._kept_path = None
             return dict(values)
 
     async def describe(self) -> dict[str, Any]:
@@ -590,16 +599,15 @@ class StorageSettingsStore:
             if worktree_kept_days is not None:
                 values["worktree_kept_days"] = int(worktree_kept_days)
             await asyncio.to_thread(self._write, values, current_path)
-            self._kept = values
-            self._kept_path = norm_path
+            self._kept = (norm_path, dict(values))
             return dict(values)
 
     def allows_auto_clean(self, target: str, kept_days: int) -> bool:
         """Synchronously check whether the cached settings still allow auto-clean at ``kept_days``."""
-        kept = self._kept
-        kept_path = self._kept_path
-        if kept is None or kept_path is None:
+        snapshot = self._kept
+        if snapshot is None:
             return False
+        kept_path, kept = snapshot
         if self._norm_path(self._path()) != kept_path:
             return False
         if target == "work_dirs":
