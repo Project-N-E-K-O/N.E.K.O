@@ -16,7 +16,7 @@ import httpx
 import pytest
 
 from plugin.server.routes import knowledge_publish as publish
-from tests.unit.test_knowledge_archive_v2 import make_archive
+from tests.knowledge_archive_fixtures import make_archive
 
 
 @pytest.fixture

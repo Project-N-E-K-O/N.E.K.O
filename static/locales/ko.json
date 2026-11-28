@@ -4734,7 +4734,6 @@
             "connecting": "냥파워 서버에 연결하는 중...",
             "ready": "냥파워 서버 준비됨",
             "enabled": "냥파워 활성화됨",
-            "noCapability": "아래에서 하나 이상 켜야 냥파워가 일을 할 수 있어요",
             "disabled": "냥파워 비활성화됨",
             "disabledError": "냥파워 비활성화됨(부분 정리 실패)",
             "enableFailed": "활성화 실패",

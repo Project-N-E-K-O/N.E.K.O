@@ -4734,7 +4734,6 @@
             "connecting": "喵能力服務器連接中...",
             "ready": "喵能力服務器就緒",
             "enabled": "喵能力已開啓",
-            "noCapability": "再打開下面至少一項，喵能力才會替你辦事",
             "disabled": "喵能力已關閉",
             "disabledError": "喵能力已關閉（部分清理失敗）",
             "enableFailed": "開啓失敗",

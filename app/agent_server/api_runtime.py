@@ -431,8 +431,9 @@ def forget_turns_for_task_agents() -> None:
 def forget_turns_if_nekopower_is_off() -> None:
     """Drop what was kept for task agents if NekoPower is off now: called the moment a capability switch goes off.
 
-    NekoPower is off with the master switch off, and as much so with
-    the last capability switch off (``nekopower_on``). A capability
+    NekoPower is on with the master switch alone (``nekopower_on``), so a
+    capability switch going off drops nothing while the master switch is
+    on; with the master switch off, what was kept goes. A capability
     switch goes off by the user's hand and by itself (a model that
     cannot be reached, a tool that is not there any more); every
     such place puts it off by ``_shared._put_switch_off``, which

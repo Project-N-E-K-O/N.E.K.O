@@ -57,7 +57,10 @@ _real_gh_auth_token = github_auth.gh_auth_token
 @pytest.fixture(autouse=True)
 def offline_github(monkeypatch: pytest.MonkeyPatch) -> None:
     # Never read the developer's real gh login or reach GitHub in tests; a
-    # test that expects HTTP traffic installs its own client.
+    # test that expects HTTP traffic installs its own client. Token env vars
+    # are cleared too: github_headers() reads them before the gh login.
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
     monkeypatch.setattr(github_auth, "gh_auth_token", lambda: None)
     monkeypatch.setattr(publish_cmd.httpx, "Client", lambda **_: _RecordingClient())
 

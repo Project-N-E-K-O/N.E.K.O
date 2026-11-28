@@ -30,7 +30,7 @@
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
     // 合并模型工坊与主分支的语言包后刷新缓存。
-    const LOCALE_VERSION = '2026-11-27-workshop-knowledge-merge';
+    const LOCALE_VERSION = '2026-11-28-workshop-nekopower-locales-merge';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

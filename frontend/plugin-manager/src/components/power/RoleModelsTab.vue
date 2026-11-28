@@ -88,7 +88,8 @@ function slotName(slot: RoleModelSlot): string {
   return slot.model ? `${slot.name} (${slot.model})` : `${slot.name} · ${t('power.roles.slotEmpty')}`
 }
 function defaultName(row: RoleModelPreset): string {
-  return t(row.default === 'inherit' ? 'power.roles.inherit' : 'power.roles.agentModel')
+  if (row.default === 'inherit') return t('power.roles.inherit')
+  return t(row.default === 'advanced' ? 'power.roles.advancedModel' : 'power.roles.agentModel')
 }
 /** Why a setting or the slots could not be used, in words; the code itself where the page has none for it. */
 function reason(code: string): string {

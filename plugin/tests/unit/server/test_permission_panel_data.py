@@ -701,7 +701,8 @@ async def test_put_rejects_unknown_input(env, path, body, status):
 async def test_read_routes_respond(env):
     _weather(env)
     for path in ("/plugin-permissions/catalog", "/plugin-permissions/pending", "/plugin-permissions/privacy",
-                 "/plugin-permissions/privacy/memory", "/plugin-permissions/plugins/weather/panel"):
+                 "/plugin-permissions/privacy/memory", "/plugin-permissions/plugins/weather/panel",
+                 "/plugin-permissions/plugins/weather/audit"):
         response = await _call("GET", path)
         assert response.status_code == 200, (path, response.text)
 
@@ -1716,7 +1717,8 @@ def test_refusals_all_merged_across_the_answer_are_still_listed(tmp_path, monkey
     for minutes in (30, 20, 10):  # all in one batch
         index.observe(_decision("a", MEMORY, verdict="would_deny", reason="undecided", ts=_ts(timedelta(minutes=minutes))))
     answered = NOW - timedelta(minutes=25)
-    assert index.refused_uses(after=lambda _p, _q: answered) == {("a", MEMORY): (NOW - timedelta(minutes=10), 0, True)}
+    # The batch's last refusal is after the answer: at least 1, never "at least 0".
+    assert index.refused_uses(after=lambda _p, _q: answered) == {("a", MEMORY): (NOW - timedelta(minutes=10), 1, True)}
     # A batch ending at the answer itself is all from before it: nothing listed.
     assert index.refused_uses(after=lambda _p, _q: NOW - timedelta(minutes=10)) == {}
 
@@ -1757,3 +1759,938 @@ def test_first_use_says_when_its_count_is_a_lower_bound(env, monkeypatch):
     rows = permission_panel.pending(index=env.index)["first_use"]
     assert [(row["permission"], row["count_is_lower_bound"]) for row in rows] == [(SPAWN, True)]
     assert rows[0]["count"] < 5
+
+
+# ---------------------------------------------------------------------------
+# Usage summary file: last uses past audit rotation, lost entries
+# ---------------------------------------------------------------------------
+
+
+def _summary_path(tmp_path) -> Path:
+    from plugin.server.application.plugins.permission_usage import SUMMARY_FILE
+
+    return tmp_path / "audit" / SUMMARY_FILE
+
+
+def _granted_long_ago(env, plugin_id, *permissions):
+    for permission in permissions:
+        env.store.decide(plugin_id, permission, "granted", source=MARKET)
+    record = env.store.read(plugin_id)
+    old = (datetime.now(timezone.utc) - timedelta(days=40)).isoformat()
+    for entry in record["permissions"].values():
+        entry["decided_at"] = old
+    env.store.restore(plugin_id, record)
+
+
+def _rebuilt(env):
+    """A new index over the same directory, as after a restart."""
+    index = _index(env.tmp_path, created=datetime.now(timezone.utc))
+    env.index = index
+    # Env's monkeypatch restores the original at teardown.
+    permission_panel.usage_index = index
+    return index
+
+
+def test_the_summary_keeps_last_uses_the_audit_files_no_longer_hold(env):
+    _weather(env)
+    env.sources["weather"] = MARKET
+    _granted_long_ago(env, "weather", CONNECT, FS_READ)
+    now = datetime.now(timezone.utc)
+    env.index.observe({"ts": (now - timedelta(days=45)).isoformat(), "kind": "usage_coverage_start"})
+    env.index.observe(_system_use("weather", CONNECT, ts=(now - timedelta(days=3)).isoformat()))
+    env.index.observe(_system_use("weather", CONNECT, verdict="would_deny", enforcing=True, reason="denied",
+                                  ts=(now - timedelta(days=1)).isoformat()))
+    assert env.index.save_summary() is True
+    assert env.index.save_summary() is False  # nothing new
+
+    # No audit file at all now (rotated away): the summary alone answers.
+    index = _rebuilt(env)
+    assert index.last_use_since() == now - timedelta(days=45)
+    # Counts and lists only come from the audit files: none are left.
+    assert index.history_since() is None
+    assert index.summary_loaded is True
+    assert index.last_use("weather", CONNECT).outcome == "blocked"
+    assert index.last_effective_use("weather", CONNECT).at == now - timedelta(days=3)
+    assert index.first_use("weather", CONNECT) == now - timedelta(days=3)
+    rows = {row["permission"]: row for row in permission_panel.plugin_panel("weather", index=index)["rows"]}
+    assert rows[CONNECT]["unused_30d"] is False
+    assert rows[FS_READ]["unused_30d"] is True
+    assert rows[CONNECT]["last_used"]["outcome"] == "blocked"
+    history = permission_panel.privacy_overview(index=index)["history"]
+    assert history == {"since": None, "covers_30d": False,
+                       "last_use_since": (now - timedelta(days=45)).isoformat(), "last_use_covers_30d": True}
+
+
+def test_without_the_summary_the_audit_files_answer_as_before(env):
+    _weather(env)
+    env.sources["weather"] = MARKET
+    _granted_long_ago(env, "weather", CONNECT)
+    now = datetime.now(timezone.utc)
+    env.index.observe({"ts": (now - timedelta(days=45)).isoformat(), "kind": "usage_coverage_start"})
+    env.index.observe(_system_use("weather", CONNECT, ts=(now - timedelta(days=3)).isoformat()))
+    env.index.save_summary()
+    _summary_path(env.tmp_path).unlink()
+    index = _rebuilt(env)
+    # Nothing in the audit files either: as on main, unknown.
+    rows = {row["permission"]: row for row in permission_panel.plugin_panel("weather", index=index)["rows"]}
+    assert index.summary_loaded is False
+    assert rows[CONNECT]["unused_30d"] is None and rows[CONNECT]["last_used"] is None
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        b"{not json",
+        b"\xff\xfe\x00",
+        b"[]",
+        b'{"schema_version": 0, "plugins": {}}',
+        b'{"schema_version": "1", "plugins": {}}',
+        b'{"schema_version": true, "plugins": {}}',
+        b'{"schema_version": 1, "plugins": []}',
+    ],
+)
+def test_an_unreadable_summary_falls_back_to_the_audit_files(env, content):
+    _weather(env)
+    env.sources["weather"] = MARKET
+    _granted_long_ago(env, "weather", CONNECT)
+    now = datetime.now(timezone.utc)
+    audit = env.tmp_path / "audit" / "call_audit.jsonl"
+    lines = [
+        {"ts": (now - timedelta(days=45)).isoformat(), "kind": "usage_coverage_start"},
+        _system_use("weather", CONNECT, ts=(now - timedelta(days=3)).isoformat()),
+    ]
+    audit.write_text("".join(json.dumps(line) + "\n" for line in lines), encoding="utf-8")
+    _summary_path(env.tmp_path).write_bytes(content)
+    index = _rebuilt(env)
+    rows = {row["permission"]: row for row in permission_panel.plugin_panel("weather", index=index)["rows"]}
+    assert index.summary_loaded is False
+    assert rows[CONNECT]["unused_30d"] is False
+    assert rows[CONNECT]["last_used"]["at"] == (now - timedelta(days=3)).isoformat()
+    # The next save replaces it with what the index holds.
+    assert index.save_summary() is True
+    assert json.loads(_summary_path(env.tmp_path).read_text(encoding="utf-8"))["schema_version"] == 1
+
+
+def test_malformed_summary_items_are_skipped_one_by_one(tmp_path):
+    index = _index(tmp_path)
+    good = {"last": {"at": _ts(timedelta(days=2)), "outcome": "allowed", "origin_kind": None},
+            "last_effective": {"at": _ts(timedelta(days=2)), "outcome": "allowed"}, "first_at": _ts(timedelta(days=9))}
+    _summary_path(tmp_path).write_text(json.dumps({
+        "schema_version": 1, "covered_since": "garbage",
+        "plugins": {
+            "a": {"lost_at": 5, "permissions": {
+                MEMORY: good,
+                CONNECT: {"last": {"at": "yesterday", "outcome": "allowed"}},
+                SPAWN: {"last": {"at": _ts(), "outcome": "maybe"}},
+                "no.such:permission": good,
+                FS_READ: "x",
+            }},
+            "": {"permissions": {MEMORY: good}},
+            "b": [],
+        },
+    }), encoding="utf-8")
+    assert index.last_use("a", MEMORY).at == NOW - timedelta(days=2)
+    assert index.first_use("a", MEMORY) == NOW - timedelta(days=9)
+    assert index.last_use("a", CONNECT) is None and index.last_use("a", SPAWN) is None
+    assert index.lost_at("a") is None and index.history_since() is None
+    assert index.summary_loaded is True
+
+
+def test_a_save_before_any_query_keeps_the_old_summary(tmp_path):
+    first = _index(tmp_path)
+    first.observe(_decision("a", MEMORY, ts=_ts(timedelta(days=5))))
+    first.save_summary()
+    # Next run: a new use, saved before anything read the summary back.
+    second = _index(tmp_path)
+    second.observe(_decision("b", MEMORY, ts=_ts(timedelta(days=1))))
+    assert second._seeded is False
+    assert second.save_summary() is True
+    plugins = json.loads(_summary_path(tmp_path).read_text(encoding="utf-8"))["plugins"]
+    assert set(plugins) == {"a", "b"}
+
+
+def test_the_summary_holds_identifiers_times_and_outcomes_only(tmp_path):
+    index = _index(tmp_path)
+    index.observe(_system_use("a", FS_READ, target="~/Documents/*.txt"))
+    index.observe(_system_use("a", CONNECT, target="api.example.com(1.2.3.4):443"))
+    index.save_summary()
+    text = _summary_path(tmp_path).read_text(encoding="utf-8")
+    assert "Documents" not in text and "api.example.com" not in text and "1.2.3.4" not in text
+
+
+def test_the_saver_saves_in_the_background_and_at_stop(monkeypatch, tmp_path):
+    from plugin.server.application.plugins import permission_usage
+
+    index = _index(tmp_path)
+    monkeypatch.setattr(permission_usage, "usage_index", index)
+    monkeypatch.setattr(permission_usage, "_saver", None)
+    index.observe(_decision("a", MEMORY))
+    permission_usage.start_summary_saver(interval=0.01)
+    try:
+        for _ in range(500):
+            if _summary_path(tmp_path).exists():
+                break
+            threading.Event().wait(0.01)
+        assert _summary_path(tmp_path).exists()
+    finally:
+        index.observe(_decision("b", MEMORY))
+        permission_usage.stop_summary_saver()
+    assert permission_usage._saver is None
+    assert "b" in json.loads(_summary_path(tmp_path).read_text(encoding="utf-8"))["plugins"]
+
+
+def test_an_unwritable_summary_is_tried_again(tmp_path, monkeypatch):
+    import utils.file_utils
+
+    index = _index(tmp_path)
+    index.observe(_decision("a", MEMORY))
+
+    def broken(*_args, **_kwargs):
+        raise OSError("disk")
+
+    monkeypatch.setattr(utils.file_utils, "atomic_write_json", broken)
+    assert index.save_summary() is False
+    monkeypatch.undo()
+    assert index.save_summary() is True
+
+
+# Lost entries
+
+
+def _lost(plugin, ts=None, count=3):
+    return {"ts": ts or _ts(), "kind": "system_use_lost", "plugin": plugin, "count": count}
+
+
+def test_a_recent_loss_makes_unused_unknown_for_system_rows_only(env):
+    _weather(env)
+    env.sources["weather"] = MARKET
+    _granted_long_ago(env, "weather", CONNECT, FS_READ, MEMORY)
+    now = datetime.now(timezone.utc)
+    env.index.observe({"ts": (now - timedelta(days=45)).isoformat(), "kind": "usage_coverage_start"})
+    env.index.observe(_system_use("weather", CONNECT, ts=(now - timedelta(days=2)).isoformat()))
+    env.index.observe(_lost("weather", ts=(now - timedelta(days=10)).isoformat()))
+    rows = {row["permission"]: row for row in permission_panel.plugin_panel("weather", index=env.index)["rows"]}
+    assert rows[FS_READ]["unused_30d"] is None  # would have been True
+    assert rows[CONNECT]["unused_30d"] is False  # a use seen is still a use
+    assert rows[MEMORY]["unused_30d"] is True  # not a system.* row
+    # The loss is kept across a restart.
+    env.index.save_summary()
+    index = _rebuilt(env)
+    rows = {row["permission"]: row for row in permission_panel.plugin_panel("weather", index=index)["rows"]}
+    assert rows[FS_READ]["unused_30d"] is None
+
+
+def test_a_loss_outside_the_window_or_of_another_plugin_does_not_count(env):
+    _weather(env)
+    env.sources["weather"] = MARKET
+    _granted_long_ago(env, "weather", FS_READ)
+    now = datetime.now(timezone.utc)
+    env.index.observe({"ts": (now - timedelta(days=45)).isoformat(), "kind": "usage_coverage_start"})
+    env.index.observe(_lost("weather", ts=(now - timedelta(days=31)).isoformat()))
+    env.index.observe(_lost("other"))
+    rows = {row["permission"]: row for row in permission_panel.plugin_panel("weather", index=env.index)["rows"]}
+    assert rows[FS_READ]["unused_30d"] is True
+
+
+@pytest.fixture
+def fresh_rings(monkeypatch):
+    """Entries recorded here stay out of the shared rings other tests read."""
+    monkeypatch.setattr(call_audit, "_ring", call_audit.deque(maxlen=1000))
+    monkeypatch.setattr(call_audit, "_decision_ring", call_audit.deque(maxlen=500))
+    monkeypatch.setattr(call_audit, "_system_use_ring", call_audit.deque(maxlen=500))
+
+
+def _feeding(index):
+    """Feed ``index`` from call_audit as the host does, file writes off."""
+    call_audit.add_observer(index.observe)
+    return index
+
+
+def _unfeed(index):
+    call_audit.remove_observer(index.observe)
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        {"items": [], "dropped": 4},  # the process's queue was full or a send failed
+        {"items": [{"permission": FS_READ, "event": "open", "target": "~/*.txt", "verdict": "allow", "flags": []}] * 101},
+    ],
+)
+def test_losses_the_gate_counts_reach_the_index(tmp_path, monkeypatch, fresh_rings, message):
+    from plugin.server.application.plugins import capability_gate
+
+    monkeypatch.setattr(capability_gate, "_system_use_budget", {})
+    monkeypatch.setattr(call_audit, "_audit_logger_locked", lambda: object.__new__(_NullLog))
+    index = _feeding(_index(tmp_path, created=datetime.now(timezone.utc)))
+    try:
+        capability_gate.record_system_uses("p", message)
+    finally:
+        _unfeed(index)
+    assert index.lost_at("p") is not None
+
+
+class _NullLog:
+    def info(self, *_args, **_kwargs):
+        pass
+
+
+@pytest.mark.parametrize("closed", [False, True])
+def test_entries_the_audit_file_does_not_take_are_indexed_not_lost(tmp_path, monkeypatch, fresh_rings, closed):
+    """Observers see an entry before it is queued: a full queue, a write
+    failure or a closed audit leave it in the index (and the next summary)."""
+    def no_writer():
+        raise RuntimeError("the writer thread could not start")
+
+    index = _feeding(_index(tmp_path, created=datetime.now(timezone.utc)))
+    monkeypatch.setattr(call_audit, "_audit_logger_locked", (lambda: None) if closed else no_writer)
+    before = call_audit.dropped
+    try:
+        call_audit.record(_system_use("p", FS_READ))
+    finally:
+        _unfeed(index)
+    assert call_audit.dropped == before + 1
+    assert index.lost_at("p") is None and index.last_use("p", FS_READ) is not None
+
+
+def test_a_summary_not_readable_now_is_not_overwritten(tmp_path, monkeypatch):
+    first = _index(tmp_path)
+    first.observe(_decision("old", MEMORY, ts=_ts(timedelta(days=40))))
+    first.observe({"ts": _ts(timedelta(days=45)), "kind": "usage_coverage_start"})
+    first.save_summary()
+    saved = _summary_path(tmp_path).read_bytes()
+
+    index = _index(tmp_path)
+    index.observe(_decision("new", MEMORY))
+    real_open = open
+    fail = {"on": True}
+
+    def locked(path, *args, **kwargs):
+        if fail["on"] and str(path).endswith("usage_summary.json"):
+            raise PermissionError("locked by another program")
+        return real_open(path, *args, **kwargs)
+
+    import builtins
+
+    monkeypatch.setattr(builtins, "open", locked)
+    assert index.save_summary() is False
+    assert _summary_path(tmp_path).read_bytes() == saved
+    # Readable again: merged, then saved with both.
+    fail["on"] = False
+    assert index.save_summary() is True
+    plugins = json.loads(_summary_path(tmp_path).read_text(encoding="utf-8"))["plugins"]
+    assert set(plugins) == {"old", "new"}
+    assert index.last_use_since() == NOW - timedelta(days=45)
+
+
+def test_a_summary_from_a_newer_version_is_kept(tmp_path):
+    newer = json.dumps({"schema_version": 2, "plugins": {}, "more": "fields"})
+    index = _index(tmp_path)
+    _summary_path(tmp_path).write_text(newer, encoding="utf-8")
+    index.observe(_decision("a", MEMORY))
+    assert index.save_summary() is False
+    assert _summary_path(tmp_path).read_text(encoding="utf-8") == newer
+    assert index.last_use("a", MEMORY) is not None  # the audit side still works
+
+
+def test_a_corrupt_summary_is_moved_aside_before_it_is_replaced(tmp_path):
+    index = _index(tmp_path)
+    _summary_path(tmp_path).write_bytes(b"{not json")
+    index.observe(_decision("a", MEMORY))
+    assert index.save_summary() is True
+    assert (tmp_path / "audit" / "usage_summary.json.bad").read_bytes() == b"{not json"
+    assert json.loads(_summary_path(tmp_path).read_text(encoding="utf-8"))["schema_version"] == 1
+    # The next save does not move the good file aside.
+    index.observe(_decision("b", MEMORY))
+    assert index.save_summary() is True
+    assert (tmp_path / "audit" / "usage_summary.json.bad").read_bytes() == b"{not json"
+
+
+def test_a_save_does_not_wait_for_the_audit_files_being_read(tmp_path, monkeypatch):
+    """Shutdown right after start: the final save must not wait for the seed."""
+    index = _index(tmp_path)
+    index.observe(_decision("a", MEMORY))
+    started, release = threading.Event(), threading.Event()
+
+    def slow_seed(_path):
+        started.set()
+        release.wait(5)
+        return True  # read in full: no gap to save
+
+    monkeypatch.setattr(index, "_seed_file", slow_seed)
+    seeding = threading.Thread(target=index.ensure_seeded)
+    seeding.start()
+    try:
+        assert started.wait(5)
+        done = []
+        saver = threading.Thread(target=lambda: done.append(index.save_summary()))
+        saver.start()
+        saver.join(2)
+        assert done == [True]
+    finally:
+        release.set()
+        seeding.join(5)
+
+
+def test_lost_at_is_within_the_kept_days(tmp_path):
+    index = _index(tmp_path)
+    index.observe(_lost("p", ts=_ts(timedelta(days=40))))
+    assert index.lost_at("p") is None
+    index.observe(_lost("p", ts=_ts(timedelta(days=2))))
+    assert index.lost_at("p") == NOW - timedelta(days=2)
+
+
+def test_a_use_its_call_also_counts_is_listed_once(tmp_path):
+    index = _index(tmp_path)
+    entry = _decision("a", MEMORY, call_id="c1", flags=[])
+    entry["operation"] = "MEMORY_QUERY"
+    index.observe(entry)
+    index.observe({"ts": _ts(), "kind": "allow_summary", "target": "a", "call_id": "c1", "counts": {MEMORY: 1}})
+    items = permission_panel.plugin_audit("a", index=index)["items"]
+    assert [(item["operation"], item["count"]) for item in items] == [("call", 1)]
+
+
+def test_a_flagged_use_inside_a_call_keeps_its_own_row(tmp_path):
+    """The flag shows on that row only; the call's row is listed too."""
+    index = _index(tmp_path)
+    entry = _decision("a", MEMORY, call_id="c1", flags=["consent_unavailable"])
+    entry["operation"] = "MEMORY_QUERY"
+    index.observe(entry)
+    index.observe({"ts": _ts(), "kind": "allow_summary", "target": "a", "call_id": "c1", "counts": {MEMORY: 1}})
+    items = permission_panel.plugin_audit("a", index=index)["items"]
+    assert sorted((item["operation"], tuple(item["flags"])) for item in items) == [
+        ("MEMORY_QUERY", ("consent_unavailable",)), ("call", ()),
+    ]
+    assert index.count("a", MEMORY, 1) == 1  # counted once still
+
+
+def test_a_flagged_use_after_its_call_ended_is_listed(tmp_path):
+    """No summary counts a use made after the call ended."""
+    index = _index(tmp_path)
+    entry = _decision("a", MEMORY, call_id="c1", flags=["consent_unavailable"])
+    entry["operation"] = "MEMORY_QUERY"
+    index.observe(entry)
+    items = permission_panel.plugin_audit("a", index=index)["items"]
+    assert [(item["operation"], item["flags"]) for item in items] == [("MEMORY_QUERY", ["consent_unavailable"])]
+
+
+# ---------------------------------------------------------------------------
+# Per-plugin audit list
+# ---------------------------------------------------------------------------
+
+
+def _thread_use(plugin, capability, *, target, handler=None, ts=None):
+    entry = _system_use(plugin, capability, target=target, ts=ts)
+    entry["flags"] = ["plugin_thread", "plugin_reported"]
+    entry["operation"] = "open"
+    if handler:
+        entry["handler"] = handler
+    return entry
+
+
+def test_audit_list_items_hold_the_operation_target_summary_and_outcome(tmp_path):
+    index = _index(tmp_path)
+    index.observe(_system_use("a", CONNECT, target="api.example.com(1.2.3.4):443", ts=_ts(timedelta(minutes=4))))
+    index.observe(_thread_use("a", FS_READ, target="~/Documents/*.txt", handler="plugin_entry.sync",
+                              ts=_ts(timedelta(minutes=3))))
+    entry = _decision("a", MEMORY, verdict="would_deny", reason="undecided", ts=_ts(timedelta(minutes=2)),
+                      flags=["unattributed", "secret_flag"])
+    entry["operation"] = "MEMORY_QUERY"
+    index.observe(entry)
+    index.observe({"ts": _ts(timedelta(minutes=1)), "kind": "allow_summary", "target": "a", "counts": {MEMORY: 2}})
+    index.observe(_system_use("b", CONNECT))
+
+    result = permission_panel.plugin_audit("a", index=index)
+    assert result["total"] == 4 and result["next_offset"] is None
+    summed, refused, read, connect = result["items"]
+    assert connect == {
+        "at": _ts(timedelta(minutes=4)), "permission": CONNECT, "operation": None, "target": "api.example.com",
+        "outcome": "allowed", "origin_kind": None, "count": 1, "flags": [], "handler": None,
+    }
+    assert read["target"] == "~/Documents/*.txt" and read["operation"] == "open"
+    assert read["flags"] == ["plugin_thread"] and read["handler"] == "plugin_entry.sync"
+    assert refused["outcome"] == "would_block" and refused["target"] is None
+    assert refused["operation"] == "MEMORY_QUERY" and refused["flags"] == ["unattributed"]
+    assert summed["operation"] == "call" and summed["count"] == 2
+
+
+def test_audit_list_filters_and_pages(tmp_path):
+    index = _index(tmp_path)
+    for minute in range(7):
+        index.observe(_system_use("a", CONNECT, target=f"h{minute}.example", ts=_ts(timedelta(minutes=minute))))
+    index.observe(_system_use("a", SPAWN, target="git", verdict="would_deny", reason="undecided"))
+    index.observe(_system_use("a", SPAWN, target="curl", verdict="would_deny", enforcing=True, reason="denied"))
+
+    assert [item["target"] for item in permission_panel.plugin_audit(
+        "a", permission=SPAWN, outcome="blocked", index=index)["items"]] == ["curl"]
+    first = permission_panel.plugin_audit("a", permission=CONNECT, limit=3, index=index)
+    assert [item["target"] for item in first["items"]] == ["h0.example", "h1.example", "h2.example"]
+    assert (first["total"], first["next_offset"]) == (7, 3)
+    last = permission_panel.plugin_audit("a", permission=CONNECT, offset=6, limit=3, index=index)
+    assert [item["target"] for item in last["items"]] == ["h6.example"] and last["next_offset"] is None
+    # Limits are clamped.
+    assert permission_panel.plugin_audit("a", limit=10_000, index=index)["limit"] == permission_panel.AUDIT_PAGE_MAX
+    assert permission_panel.plugin_audit("nobody", index=index)["items"] == []
+
+
+def test_audit_list_keeps_the_newest_per_permission(tmp_path, monkeypatch):
+    from plugin.server.application.plugins import permission_usage
+
+    monkeypatch.setattr(permission_usage, "AUDIT_KEPT", 5)
+    index = _index(tmp_path)
+    for minute in range(30):
+        index.observe(_decision("a", MEMORY, ts=_ts(timedelta(minutes=minute))))
+    index.observe(_decision("a", PUSH, ts=_ts(timedelta(days=1))))
+    result = permission_panel.plugin_audit("a", index=index)
+    memory = [item for item in result["items"] if item["permission"] == MEMORY]
+    assert len(memory) == 5 and memory[0]["at"] == _ts()
+    assert [item["permission"] for item in result["items"]][-1] == PUSH  # not crowded out
+    assert len(index._audit[("a", MEMORY)]) <= 10
+
+
+def test_audit_list_reads_the_audit_files_and_reports_losses(env):
+    now = datetime.now(timezone.utc)
+    audit = env.tmp_path / "audit" / "call_audit.jsonl"
+    lines = [_system_use("p", FS_WRITE, target="~/x/*.log", ts=(now - timedelta(days=2)).isoformat()),
+             _lost("p", ts=(now - timedelta(days=1)).isoformat())]
+    audit.write_text("".join(json.dumps(line) + "\n" for line in lines), encoding="utf-8")
+    index = _rebuilt(env)
+    result = permission_panel.plugin_audit("p", index=index)
+    assert [item["target"] for item in result["items"]] == ["~/x/*.log"]
+    assert result["lost_at"] == (now - timedelta(days=1)).isoformat()
+
+
+@pytest.mark.parametrize(
+    ("target", "shown"),
+    [("<invalid>", None), ("~/*.txt", "~/*.txt"), ("x" * 201, None), ("a\x1bb", None)],
+)
+def test_audit_list_target_is_the_audit_target_or_nothing(tmp_path, target, shown):
+    index = _index(tmp_path)
+    index.observe(_system_use("a", FS_READ, target=target))
+    assert permission_panel.plugin_audit("a", index=index)["items"][0]["target"] == shown
+
+
+@pytest.mark.asyncio
+async def test_audit_route(env):
+    _weather(env)
+    env.index.observe(_system_use("weather", CONNECT))
+    env.index.observe(_system_use("weather", SPAWN, target="git", verdict="would_deny", reason="undecided"))
+    ok = await _call("GET", f"/plugin-permissions/plugins/weather/audit?permission={SPAWN}&outcome=would_block&limit=5")
+    assert ok.status_code == 200, ok.text
+    assert [item["target"] for item in ok.json()["items"]] == ["git"]
+    # A plugin no longer installed is listed too (as on the privacy page).
+    assert (await _call("GET", "/plugin-permissions/plugins/gone/audit")).json()["items"] == []
+    assert (await _call("GET", "/plugin-permissions/plugins/weather/audit?permission=bogus")).status_code == 404
+    for query in ("outcome=nope", "limit=0", "limit=101", "offset=-1"):
+        response = await _call("GET", f"/plugin-permissions/plugins/weather/audit?{query}")
+        assert response.status_code == 422, query
+
+
+def test_audit_route_has_no_write_access_dependency_like_the_other_reads():
+    from plugin.server.infrastructure.mutation_auth import require_plugin_mutation_access
+    from plugin.server.routes import plugin_permissions as routes
+
+    reads = {route.path: route for route in routes.router.routes if route.methods == {"GET"}}
+    audit = reads["/plugin-permissions/plugins/{plugin_id}/audit"]
+    panel = reads["/plugin-permissions/plugins/{plugin_id}/panel"]
+    deps = lambda route: [dep.call for dep in route.dependant.dependencies]  # noqa: E731
+    assert require_plugin_mutation_access not in deps(audit)
+    assert [d for d in deps(audit) if d is not None and getattr(d, "__module__", "").startswith("plugin.server")] == [
+        d for d in deps(panel) if d is not None and getattr(d, "__module__", "").startswith("plugin.server")
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Clearing an item listed as first use; "any time" in the rows
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_clearing_an_undecided_item_with_refusals_stores_the_answer(env):
+    env.plugin("p", report=_report())
+    before = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+    env.index.observe(_system_use("p", SPAWN, verdict="would_deny", reason="undecided", ts=before))
+    assert env.store.read("p") == {}  # no record at all yet
+    assert permission_panel.pending(index=env.index)["first_use"]
+
+    response = await _call("DELETE", f"/plugin-permissions/plugins/p/permissions/{SPAWN}")
+    assert response.status_code == 200, response.text
+    entry = env.store.read("p")["permissions"][SPAWN]
+    assert entry["state"] == "undecided" and entry["decided_at"] > before
+    # Rebuilt from the files after a restart: the refusal stays answered.
+    index = _rebuilt(env)
+    index.observe(_system_use("p", SPAWN, verdict="would_deny", reason="undecided", ts=before))
+    assert permission_panel.pending(index=index)["first_use"] == []
+
+    # Answered again later: the time moves on.
+    later = (datetime.now(timezone.utc) + timedelta(seconds=1)).isoformat()
+    index.observe(_system_use("p", SPAWN, verdict="would_deny", reason="undecided", ts=later))
+    first = entry["decided_at"]
+    await _call("DELETE", f"/plugin-permissions/plugins/p/permissions/{SPAWN}")
+    assert env.store.read("p")["permissions"][SPAWN]["decided_at"] > first
+
+
+@pytest.mark.asyncio
+async def test_clearing_again_after_a_restart_does_not_rewrite_the_answer(env):
+    env.plugin("p", report=_report())
+    before = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+    env.index.observe(_system_use("p", SPAWN, verdict="would_deny", reason="undecided", ts=before))
+    await _call("DELETE", f"/plugin-permissions/plugins/p/permissions/{SPAWN}")
+    answered = env.store.read("p")
+    # Rebuilt from the files: the answered refusal is held again, but it is
+    # older than the answer, so a second clear changes nothing.
+    index = _rebuilt(env)
+    index.observe(_system_use("p", SPAWN, verdict="would_deny", reason="undecided", ts=before))
+    await _call("DELETE", f"/plugin-permissions/plugins/p/permissions/{SPAWN}")
+    assert env.store.read("p") == answered
+
+
+@pytest.mark.asyncio
+async def test_clearing_an_undecided_item_without_refusals_writes_nothing(env):
+    env.plugin("p", report=_report())
+    await _call("DELETE", f"/plugin-permissions/plugins/p/permissions/{SPAWN}")
+    assert env.store.read("p") == {}
+    env.store.decide("p", MEMORY, "granted")
+    before = env.store.read("p")
+    await _call("DELETE", f"/plugin-permissions/plugins/p/permissions/{SPAWN}")
+    assert env.store.read("p") == before
+
+
+def test_rows_say_whether_any_time_may_be_chosen(env, monkeypatch, short_wait):
+    _weather(env)
+    rows = {row["permission"]: row for row in permission_panel.plugin_panel("weather", index=env.index)["rows"]}
+    assert rows[CONNECT]["anytime_allowed"] is True  # required: covers background use
+    assert rows[CONNECT]["declared"]["background"] is False  # the manifest's own key, as written
+    assert rows[MEMORY]["anytime_allowed"] is True  # asked with background = true
+    assert rows[PUSH]["anytime_allowed"] is False  # asked without it
+    assert rows[ENV]["anytime_allowed"] is False  # found, not declared by a declaring plugin
+
+    env.plugin("legacy", manifest=None, report=_report(
+        system_process__spawn={"declared": None, "findings": [_finding("a.py", 1)], "basis": "resolved_call"},
+    ))
+    rows = {row["permission"]: row for row in permission_panel.plugin_panel("legacy", index=env.index)["rows"]}
+    assert rows[SPAWN]["anytime_allowed"] is True  # no declaration: inferred
+
+    env.plugin("broken", manifest="[plugin\nid=", report=_report(
+        system_process__spawn={"declared": None, "findings": [_finding("a.py", 1)], "basis": "resolved_call"},
+    ))
+    rows = {row["permission"]: row for row in permission_panel.plugin_panel("broken", index=env.index)["rows"]}
+    assert rows[SPAWN]["anytime_allowed"] is False  # unusable manifest: "while in use" only
+
+    env.plugin("fresh", report=_report(
+        system_process__spawn={"declared": None, "findings": [_finding("a.py", 1)], "basis": "resolved_call"},
+    ))
+    with _operation_running_elsewhere():
+        rows = {row["permission"]: row for row in permission_panel.plugin_panel("fresh", index=env.index)["rows"]}
+    assert rows[SPAWN]["anytime_allowed"] is None  # not readable now
+
+
+@pytest.mark.asyncio
+async def test_any_time_in_the_rows_matches_what_the_route_accepts(env):
+    _weather(env)
+    env.plugin("legacy", manifest=None, report=_report())
+    env.plugin("broken", manifest="[plugin\nid=", report=_report())
+    for plugin_id in ("weather", "legacy", "broken"):
+        rows = permission_panel.plugin_panel(plugin_id, index=env.index)["rows"]
+        for row in rows:
+            if row["permission"] == PUSH and not row["anytime_allowed"]:
+                continue  # a disclosure-only permission; also refused for "anytime" below
+            response = await _call(
+                "PUT", f"/plugin-permissions/plugins/{plugin_id}/permissions/{row['permission']}",
+                {"state": "granted", "condition": "anytime"},
+            )
+            assert (response.status_code == 200) is row["anytime_allowed"], (plugin_id, row["permission"], response.text)
+
+
+def test_a_summary_item_of_the_wrong_type_hides_nothing_else(tmp_path):
+    index = _index(tmp_path)
+    good = {"last": {"at": _ts(timedelta(days=2)), "outcome": "allowed"}}
+    _summary_path(tmp_path).write_text(json.dumps({
+        "schema_version": 1, "covered_since": _ts(timedelta(days=40)),
+        "plugins": {
+            "a": {"permissions": {MEMORY: {"last": {"at": _ts(), "outcome": []}},
+                                  CONNECT: {"last": {"at": _ts(), "outcome": {}}}}},
+            "b": {"permissions": {MEMORY: good}},
+        },
+    }), encoding="utf-8")
+    assert index.last_use("a", MEMORY) is None and index.last_use("a", CONNECT) is None
+    assert index.last_use("b", MEMORY).at == NOW - timedelta(days=2)
+
+
+def test_a_new_last_effective_use_alone_is_saved(tmp_path):
+    index = _index(tmp_path)
+    index.observe(_decision("a", MEMORY, ts=_ts(timedelta(days=9))))
+    index.observe(_decision("a", MEMORY, verdict="would_deny", enforcing=True, reason="denied", ts=_ts()))
+    assert index.save_summary() is True
+    # Read back from the audit files later: a use between the first and the
+    # last changes only the last one not refused.
+    index.observe(_decision("a", MEMORY, ts=_ts(timedelta(days=3))))
+    assert index.save_summary() is True
+    saved = json.loads(_summary_path(tmp_path).read_text(encoding="utf-8"))
+    assert saved["plugins"]["a"]["permissions"][MEMORY]["last_effective"]["at"] == _ts(timedelta(days=3))
+
+
+def test_the_saver_reads_the_audit_files_first(monkeypatch, tmp_path):
+    """After a crash the audit files can hold uses newer than the summary:
+    they are read at start, before the files can rotate, with no query."""
+    from plugin.server.application.plugins import permission_usage
+
+    old = _index(tmp_path)
+    old.observe(_decision("a", MEMORY, ts=_ts(timedelta(days=20))))
+    old.save_summary()
+    audit = tmp_path / "audit" / "call_audit.jsonl"
+    audit.write_text(json.dumps(_decision("a", MEMORY, ts=_ts(timedelta(days=1)))) + "\n", encoding="utf-8")
+    index = _index(tmp_path)
+    monkeypatch.setattr(permission_usage, "usage_index", index)
+    monkeypatch.setattr(permission_usage, "_saver", None)
+    permission_usage.start_summary_saver(interval=3600)
+    try:
+        for _ in range(500):
+            saved = json.loads(_summary_path(tmp_path).read_text(encoding="utf-8"))
+            if saved["plugins"]["a"]["permissions"][MEMORY]["last"]["at"] == _ts(timedelta(days=1)):
+                break
+            threading.Event().wait(0.01)
+    finally:
+        permission_usage.stop_summary_saver()
+    assert index._seeded is True
+    saved = json.loads(_summary_path(tmp_path).read_text(encoding="utf-8"))
+    assert saved["plugins"]["a"]["permissions"][MEMORY]["last"]["at"] == _ts(timedelta(days=1))
+
+
+def test_a_rotation_waits_for_the_older_files_to_be_read(tmp_path):
+    """The audit can rotate before the saver has read the files (a file
+    near its size limit at start): the oldest backup is read first."""
+    import logging
+
+    directory = tmp_path / "audit"
+    directory.mkdir()
+    base = directory / "call_audit.jsonl"
+    oldest = _decision("a", MEMORY, ts=_ts(timedelta(days=3)))
+    (directory / "call_audit.jsonl.1").write_text(json.dumps(oldest) + "\n", encoding="utf-8")
+    base.write_text("x" * 200 + "\n", encoding="utf-8")
+    index = UsageIndex(now=lambda: NOW, directory=str(directory))
+    call_audit.add_rollover_observer(index.ensure_seeded)
+    handler = call_audit._AuditFileHandler(str(base), maxBytes=100, backupCount=1, encoding="utf-8", delay=True)
+    try:
+        handler.emit(logging.LogRecord("x", logging.INFO, "", 0, json.dumps(_decision("b", MEMORY)), None, None))
+    finally:
+        handler.close()
+        call_audit.remove_rollover_observer(index.ensure_seeded)
+    assert index._seeded is True
+    assert index.last_use("a", MEMORY).at == NOW - timedelta(days=3)
+    # The backup it was read from is gone now.
+    assert "\"a\"" not in (directory / "call_audit.jsonl.1").read_text(encoding="utf-8")
+
+
+def test_a_failing_rollover_reader_does_not_stop_the_rotation(tmp_path):
+    import logging
+
+    def broken():
+        raise RuntimeError("boom")
+
+    base = tmp_path / "call_audit.jsonl"
+    base.write_text("x" * 200 + "\n", encoding="utf-8")
+    call_audit.add_rollover_observer(broken)
+    handler = call_audit._AuditFileHandler(str(base), maxBytes=100, backupCount=1, encoding="utf-8", delay=True)
+    try:
+        handler.emit(logging.LogRecord("x", logging.INFO, "", 0, "{}", None, None))
+    finally:
+        handler.close()
+        call_audit.remove_rollover_observer(broken)
+    assert (tmp_path / "call_audit.jsonl.1").exists()
+
+
+def test_the_index_reads_the_files_before_a_rotation():
+    from plugin.server.application.plugins import permission_usage
+
+    assert permission_usage.usage_index.ensure_seeded in call_audit._rollover_observers
+
+
+def test_two_saves_move_a_corrupt_summary_aside_once(tmp_path):
+    index = _index(tmp_path)
+    _summary_path(tmp_path).write_bytes(b"{not json")
+    index.observe(_decision("a", MEMORY))
+    assert index._ensure_summary() == "corrupt"
+    # A second save that read the state before the first one moved the file.
+    original = index._ensure_summary
+    index._ensure_summary = lambda: "corrupt"
+    try:
+        assert index.save_summary() is True
+        index.observe(_decision("b", MEMORY))
+        assert index.save_summary() is True
+    finally:
+        index._ensure_summary = original
+    assert (tmp_path / "audit" / "usage_summary.json.bad").read_bytes() == b"{not json"
+    assert set(json.loads(_summary_path(tmp_path).read_text(encoding="utf-8"))["plugins"]) == {"a", "b"}
+
+
+class _FailingStream:
+    """An audit file that yields ``lines`` and then fails to read."""
+
+    def __init__(self, lines):
+        self.lines = lines
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def __iter__(self):
+        yield from self.lines
+        raise OSError("read failed")
+
+
+def _unreadable(monkeypatch, path, where, lines=()):
+    import builtins
+
+    real_open = builtins.open
+
+    def flaky(name, *args, **kwargs):
+        if str(name) == str(path):
+            if where == "open":
+                raise PermissionError("locked")
+            return _FailingStream(list(lines))
+        return real_open(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", flaky)
+    return lambda: monkeypatch.setattr(builtins, "open", real_open)
+
+
+def _summary_with_an_old_use(env, now):
+    _weather(env)
+    env.sources["weather"] = MARKET
+    _granted_long_ago(env, "weather", CONNECT)
+    env.index.observe({"ts": (now - timedelta(days=45)).isoformat(), "kind": "usage_coverage_start"})
+    env.index.observe(_system_use("weather", CONNECT, ts=(now - timedelta(days=40)).isoformat()))
+    env.index.save_summary()
+
+
+@pytest.mark.parametrize("where", ["open", "read", "read_after_one"])
+def test_an_audit_file_that_cannot_be_read_makes_coverage_unknown(env, monkeypatch, where):
+    """The summary covers 45 days and holds a use 40 days ago; a use 3 days
+    ago sits in an audit file that cannot be read now: not "unused"."""
+    now = datetime.now(timezone.utc)
+    _summary_with_an_old_use(env, now)
+    audit = env.tmp_path / "audit" / "call_audit.jsonl"
+    recent = json.dumps(_system_use("weather", CONNECT, ts=(now - timedelta(days=3)).isoformat())) + "\n"
+    other = json.dumps(_decision("other", MEMORY, ts=(now - timedelta(days=4)).isoformat())) + "\n"
+    audit.write_text(other + recent, encoding="utf-8")
+    # "read_after_one": one entry (another plugin's) is read, then the read fails.
+    restore = _unreadable(monkeypatch, audit, "open" if where == "open" else "read",
+                          [other] if where == "read_after_one" else [])
+    index = _rebuilt(env)
+    rows = {row["permission"]: row for row in permission_panel.plugin_panel("weather", index=index)["rows"]}
+    assert rows[CONNECT]["unused_30d"] is None
+    # Covered only since this run started: everything since was seen live.
+    assert index.last_use_since() == index._created and index.history_since() is None
+    if where == "read_after_one":
+        assert index.last_use("other", MEMORY) is not None
+    restore()
+    index.save_summary(force=True)
+    saved = json.loads(_summary_path(env.tmp_path).read_text(encoding="utf-8"))
+    assert saved["covered_since"] == (now - timedelta(days=45)).isoformat()
+    assert saved["gap_at"] == index._created.isoformat()
+
+
+def test_a_gap_outlives_the_unread_file_rotating_away(env, monkeypatch):
+    """Read fails, the file rotates away before a restart: the next start
+    still does not vouch for the time before the gap."""
+    now = datetime.now(timezone.utc)
+    _summary_with_an_old_use(env, now)
+    audit = env.tmp_path / "audit" / "call_audit.jsonl"
+    audit.write_text(json.dumps(_system_use("weather", CONNECT, ts=(now - timedelta(days=3)).isoformat())) + "\n",
+                     encoding="utf-8")
+    # An older backup that can be read holds an old coverage start.
+    (env.tmp_path / "audit" / "call_audit.jsonl.1").write_text(
+        json.dumps({"ts": (now - timedelta(days=45)).isoformat(), "kind": "usage_coverage_start"}) + "\n",
+        encoding="utf-8")
+    restore = _unreadable(monkeypatch, audit, "open")
+    first = _rebuilt(env)
+    first.ensure_seeded()
+    assert first.history_since() == first._created  # counts: not complete before the gap either
+    restore()
+    first.save_summary()
+    audit.unlink()  # rotated away, never read
+    index = _rebuilt(env)
+    rows = {row["permission"]: row for row in permission_panel.plugin_panel("weather", index=index)["rows"]}
+    assert rows[CONNECT]["unused_30d"] is None
+    assert index.last_use_since() == first._created
+
+
+def test_a_gap_stops_mattering_after_thirty_days(tmp_path):
+    index = _index(tmp_path)
+    _summary_path(tmp_path).write_text(json.dumps({
+        "schema_version": 1, "covered_since": _ts(timedelta(days=90)), "gap_at": _ts(timedelta(days=31)),
+        "plugins": {},
+    }), encoding="utf-8")
+    assert index.last_use_since() == NOW - timedelta(days=31)
+    assert index.last_use_covers_days(30) is True
+
+
+def test_summary_times_after_now_are_taken_as_now(tmp_path):
+    """Saved while the clock was ahead: the coverage and the loss start
+    now and age out, instead of staying in the future."""
+    index = _index(tmp_path)
+    _summary_path(tmp_path).write_text(json.dumps({
+        "schema_version": 1, "covered_since": _ts(-timedelta(days=5)), "gap_at": _ts(-timedelta(days=10)),
+        "plugins": {"p": {"lost_at": _ts(-timedelta(days=3)), "permissions": {}}},
+    }), encoding="utf-8")
+    assert index.last_use_since() == NOW
+    assert index.last_use_covers_days(30) is False
+    assert index.lost_at("p") == NOW
+    assert index.save_summary() is True
+    later = UsageIndex(now=lambda: NOW + timedelta(days=31), directory=str(tmp_path / "audit"))
+    assert later.last_use_since() == NOW
+    assert later.last_use_covers_days(30) is True
+
+
+def test_summary_uses_after_now_are_taken_as_now(tmp_path):
+    """A last use saved while the clock was ahead does not outrank the real
+    uses that come after it."""
+    index = _index(tmp_path)
+    future = _ts(-timedelta(days=10))
+    _summary_path(tmp_path).write_text(json.dumps({
+        "schema_version": 1, "covered_since": _ts(timedelta(days=40)), "gap_at": None,
+        "plugins": {"a": {"lost_at": None, "permissions": {MEMORY: {
+            "last": {"at": future, "outcome": "allowed", "origin_kind": "chat_tool"},
+            "last_effective": {"at": future, "outcome": "allowed", "origin_kind": "chat_tool"},
+            "first_at": future,
+        }}}},
+    }), encoding="utf-8")
+    assert index.last_use("a", MEMORY).at == NOW
+    assert index.last_effective_use("a", MEMORY).at == NOW
+    assert index.first_use("a", MEMORY) == NOW
+    index.observe(_decision("a", MEMORY, verdict="would_deny", enforcing=True))
+    assert index.last_use("a", MEMORY).outcome == "blocked"
+
+
+def test_a_gap_is_saved_before_the_rotation_goes_on(env, monkeypatch):
+    """Read fails at the first rotation, the unread backup is deleted by it,
+    and the process dies before any other save: the gap is on disk already."""
+    import logging
+
+    now = datetime.now(timezone.utc)
+    _summary_with_an_old_use(env, now)
+    directory = env.tmp_path / "audit"
+    backup = directory / "call_audit.jsonl.1"
+    backup.write_text(json.dumps(_system_use("weather", CONNECT, ts=(now - timedelta(days=3)).isoformat())) + "\n",
+                      encoding="utf-8")
+    base = directory / "call_audit.jsonl"
+    base.write_text("x" * 200 + "\n", encoding="utf-8")
+    restore = _unreadable(monkeypatch, backup, "open")
+    first = _rebuilt(env)
+    call_audit.add_rollover_observer(first.ensure_seeded)
+    handler = call_audit._AuditFileHandler(str(base), maxBytes=100, backupCount=1, encoding="utf-8", delay=True)
+    try:
+        handler.emit(logging.LogRecord("x", logging.INFO, "", 0, "{}", None, None))
+    finally:
+        handler.close()
+        call_audit.remove_rollover_observer(first.ensure_seeded)
+        restore()
+    assert "weather" not in backup.read_text(encoding="utf-8")  # the unread backup is gone
+    # No other save: as after a crash here.
+    index = _rebuilt(env)
+    rows = {row["permission"]: row for row in permission_panel.plugin_panel("weather", index=index)["rows"]}
+    assert rows[CONNECT]["unused_30d"] is None
+    assert index.last_use_since() == first._created
