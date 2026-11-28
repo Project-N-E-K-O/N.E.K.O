@@ -1411,8 +1411,10 @@ def _sdk_kwargs(fake_client):
     # A request on a connection the server already dropped is retried once.
     assert getattr(http_client, "stale_retry_installed", False)
     # Explicit bounded timeout and zero SDK retries (stale-retry handles dead sockets).
-    assert kwargs.pop("timeout") == openai_worker_module.OPENAI_TTS_HTTP_TIMEOUT
-    assert kwargs.pop("max_retries") == 0
+    timeout = kwargs.pop("timeout")
+    max_retries = kwargs.pop("max_retries")
+    assert timeout == openai_worker_module.OPENAI_TTS_HTTP_TIMEOUT
+    assert max_retries == 0
     return kwargs
 
 

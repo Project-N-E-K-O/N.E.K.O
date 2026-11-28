@@ -824,37 +824,37 @@ class ChatAnthropic:
         sync_kw = dict(client_kw)
         async_kw = dict(client_kw)
         try:
-            from anthropic import (
-                DEFAULT_CONNECTION_LIMITS,
-                DefaultAsyncHttpxClient,
-                DefaultHttpxClient,
-            )
+            from anthropic import DefaultAsyncHttpxClient, DefaultHttpxClient
         except ImportError:
-            DEFAULT_CONNECTION_LIMITS = None
-            DefaultAsyncHttpxClient = None
-            DefaultHttpxClient = None
+            pass
+        else:
+            if DefaultAsyncHttpxClient is not None and DefaultHttpxClient is not None:
+                from .lifecycle import _get_default_ssl_context
 
-        if DefaultAsyncHttpxClient is not None and DefaultHttpxClient is not None:
-            from .lifecycle import _get_default_ssl_context
+                ssl_context = _get_default_ssl_context()
+                http_kw: dict[str, Any] = {"verify": ssl_context}
+                if keepalive_expiry is not None:
+                    try:
+                        from anthropic import DEFAULT_CONNECTION_LIMITS
+                    except ImportError:
+                        pass
+                    else:
+                        if DEFAULT_CONNECTION_LIMITS is not None:
+                            import httpx
 
-            ssl_context = _get_default_ssl_context()
-            http_kw: dict[str, Any] = {"verify": ssl_context}
-            if keepalive_expiry is not None and DEFAULT_CONNECTION_LIMITS is not None:
-                import httpx
-
-                http_kw["limits"] = httpx.Limits(
-                    max_connections=DEFAULT_CONNECTION_LIMITS.max_connections,
-                    max_keepalive_connections=DEFAULT_CONNECTION_LIMITS.max_keepalive_connections,
-                    keepalive_expiry=keepalive_expiry,
+                            http_kw["limits"] = httpx.Limits(
+                                max_connections=DEFAULT_CONNECTION_LIMITS.max_connections,
+                                max_keepalive_connections=DEFAULT_CONNECTION_LIMITS.max_keepalive_connections,
+                                keepalive_expiry=keepalive_expiry,
+                            )
+                sync_kw["http_client"] = install_stale_connection_retry(
+                    DefaultHttpxClient(**http_kw),
+                    label="Anthropic HTTP",
                 )
-            sync_kw["http_client"] = install_stale_connection_retry(
-                DefaultHttpxClient(**http_kw),
-                label="Anthropic HTTP",
-            )
-            async_kw["http_client"] = install_stale_connection_retry(
-                DefaultAsyncHttpxClient(**http_kw),
-                label="Anthropic HTTP",
-            )
+                async_kw["http_client"] = install_stale_connection_retry(
+                    DefaultAsyncHttpxClient(**http_kw),
+                    label="Anthropic HTTP",
+                )
 
         self._client = anthropic_cls(**sync_kw)
         self._aclient = async_anthropic_cls(**async_kw)

@@ -36,7 +36,6 @@ import httpx
 
 from utils.http.pool_utils import (
     DEFAULT_HTTP_KEEPALIVE_EXPIRY_SECONDS,
-    STALE_CONNECTION_ERRORS as _STALE_CONNECTION_ERRORS,
     install_stale_connection_retry as _install_shared_stale_connection_retry,
 )
 
