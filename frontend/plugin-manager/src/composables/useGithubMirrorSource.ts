@@ -24,9 +24,22 @@ export const GITHUB_PROXY_SOURCES = [
 
 export type GithubProxySourceId = (typeof GITHUB_PROXY_SOURCES)[number]['id']
 
+/** PyPI index mirrors the backend can hand to uv; same ids as the mirrors in
+ *  ``PYPI_INDEX_SOURCES`` in ``plugin/server/infrastructure/package_sources.py``. */
+export const PYPI_INDEX_SOURCES = [
+  { id: 'pypi-tuna', label: 'https://pypi.tuna.tsinghua.edu.cn/simple' },
+  { id: 'pypi-aliyun', label: 'https://mirrors.aliyun.com/pypi/simple' },
+  { id: 'pypi-ustc', label: 'https://mirrors.ustc.edu.cn/pypi/simple' },
+  { id: 'pypi-tencent', label: 'https://mirrors.cloud.tencent.com/pypi/simple' },
+] as const
+
+export type PypiIndexSourceId = (typeof PYPI_INDEX_SOURCES)[number]['id']
+
+/** One mode for every source family, one specified mirror per family. */
 interface DownloadPreferences {
   mode: GithubMirrorMode
   specified_source_id: GithubProxySourceId
+  specified_pypi_source_id: PypiIndexSourceId
 }
 
 interface ServerDownloadPreferences extends DownloadPreferences {
@@ -37,6 +50,7 @@ interface ServerDownloadPreferences extends DownloadPreferences {
 const DEFAULT_PREFERENCES: DownloadPreferences = {
   mode: 'auto',
   specified_source_id: 'gh-proxy-com',
+  specified_pypi_source_id: 'pypi-tuna',
 }
 
 function isMode(value: unknown): value is GithubMirrorMode {
@@ -45,6 +59,15 @@ function isMode(value: unknown): value is GithubMirrorMode {
 
 function isProxySourceId(value: unknown): value is GithubProxySourceId {
   return GITHUB_PROXY_SOURCES.some((source) => source.id === value)
+}
+
+function isPypiSourceId(value: unknown): value is PypiIndexSourceId {
+  return PYPI_INDEX_SOURCES.some((source) => source.id === value)
+}
+
+/** A missing or unknown PyPI mirror (a setting from before it existed) is the default. */
+function pypiSourceIdOr(value: unknown): PypiIndexSourceId {
+  return isPypiSourceId(value) ? value : DEFAULT_PREFERENCES.specified_pypi_source_id
 }
 
 /**
@@ -60,12 +83,17 @@ function loadCachedPreferences(): DownloadPreferences {
         ? { ...DEFAULT_PREFERENCES, mode: 'specified' }
         : DEFAULT_PREFERENCES
     }
-    const parsed = JSON.parse(raw) as { mode?: unknown; specifiedSourceId?: unknown }
+    const parsed = JSON.parse(raw) as {
+      mode?: unknown
+      specifiedSourceId?: unknown
+      specifiedPypiSourceId?: unknown
+    }
     return {
       mode: isMode(parsed.mode) ? parsed.mode : DEFAULT_PREFERENCES.mode,
       specified_source_id: isProxySourceId(parsed.specifiedSourceId)
         ? parsed.specifiedSourceId
         : DEFAULT_PREFERENCES.specified_source_id,
+      specified_pypi_source_id: pypiSourceIdOr(parsed.specifiedPypiSourceId),
     }
   } catch {
     // Unavailable or malformed storage: the server setting still applies.
@@ -78,6 +106,7 @@ function cachePreferences(preferences: DownloadPreferences) {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({
       mode: preferences.mode,
       specifiedSourceId: preferences.specified_source_id,
+      specifiedPypiSourceId: preferences.specified_pypi_source_id,
     }))
   } catch {
     // Storage is optional; the server keeps the setting.
@@ -87,16 +116,36 @@ function cachePreferences(preferences: DownloadPreferences) {
 const cached = loadCachedPreferences()
 const mode = ref<GithubMirrorMode>(cached.mode)
 const specifiedSourceId = ref<GithubProxySourceId>(cached.specified_source_id)
+const specifiedPypiSourceId = ref<PypiIndexSourceId>(cached.specified_pypi_source_id)
 const saveFailed = ref(false)
 /** Set on the first edit, so a late server answer cannot revert the form. */
 let edited = false
 let initialization: Promise<void> | null = null
 /** Saves run one at a time, in the order they were made. */
 let writes: Promise<void> = Promise.resolve()
+/** Fields the user has changed in this page; the others follow the server. */
+const editedFields = new Set<keyof DownloadPreferences>()
+/** The server setting as first loaded, once it has been. */
+let loaded: DownloadPreferences | null = null
+
+/** ``next`` for the edited ``fields``, the loaded server value for the rest,
+ *  so an edit made before the first load cannot reset a field the browser
+ *  cache did not know (such as a PyPI mirror chosen in another window). */
+function overServer(next: DownloadPreferences, fields: ReadonlySet<keyof DownloadPreferences>): DownloadPreferences {
+  const base = loaded ?? next
+  return {
+    mode: fields.has('mode') ? next.mode : base.mode,
+    specified_source_id: fields.has('specified_source_id') ? next.specified_source_id : base.specified_source_id,
+    specified_pypi_source_id: fields.has('specified_pypi_source_id')
+      ? next.specified_pypi_source_id
+      : base.specified_pypi_source_id,
+  }
+}
 
 function apply(preferences: DownloadPreferences) {
   mode.value = preferences.mode
   specifiedSourceId.value = preferences.specified_source_id
+  specifiedPypiSourceId.value = preferences.specified_pypi_source_id
   cachePreferences(preferences)
 }
 
@@ -112,6 +161,7 @@ async function requestPreferences(init?: RequestInit): Promise<ServerDownloadPre
   return {
     mode: value.mode,
     specified_source_id: value.specified_source_id,
+    specified_pypi_source_id: pypiSourceIdOr(value.specified_pypi_source_id),
     configured: value.configured === true,
   }
 }
@@ -130,7 +180,12 @@ async function loadServerPreferences() {
     // `initialize_only` keeps whatever another window stored in the meantime.
     preferences = await putPreferences({ ...cached, initialize_only: true })
   }
-  if (!edited) apply(preferences)
+  loaded = {
+    mode: preferences.mode,
+    specified_source_id: preferences.specified_source_id,
+    specified_pypi_source_id: preferences.specified_pypi_source_id,
+  }
+  apply(edited ? overServer(current(), editedFields) : loaded)
 }
 
 function initialize(): Promise<void> {
@@ -144,13 +199,16 @@ function initialize(): Promise<void> {
   return initialization
 }
 
-function save(next: DownloadPreferences): Promise<void> {
+function save(patch: Partial<DownloadPreferences>): Promise<void> {
   edited = true
+  for (const field of Object.keys(patch) as (keyof DownloadPreferences)[]) editedFields.add(field)
+  const fields = new Set(editedFields)
+  const next = { ...current(), ...patch }
   apply(next)
   writes = writes.then(async () => {
     try {
       await initialize()
-      await putPreferences(next)
+      await putPreferences(overServer(next, fields))
       saveFailed.value = false
     } catch (error) {
       log.warn('saving download preferences failed', error)
@@ -160,12 +218,24 @@ function save(next: DownloadPreferences): Promise<void> {
   return writes
 }
 
+function current(): DownloadPreferences {
+  return {
+    mode: mode.value,
+    specified_source_id: specifiedSourceId.value,
+    specified_pypi_source_id: specifiedPypiSourceId.value,
+  }
+}
+
 function setMode(next: GithubMirrorMode) {
-  void save({ mode: next, specified_source_id: specifiedSourceId.value })
+  void save({ mode: next })
 }
 
 function setSpecifiedSourceId(next: GithubProxySourceId) {
-  void save({ mode: mode.value, specified_source_id: next })
+  void save({ specified_source_id: next })
+}
+
+function setSpecifiedPypiSourceId(next: PypiIndexSourceId) {
+  void save({ specified_pypi_source_id: next })
 }
 
 /** Resolve once the server holds the setting shown in the form, since every
@@ -173,8 +243,14 @@ function setSpecifiedSourceId(next: GithubProxySourceId) {
 async function ensureDownloadPreferences(): Promise<void> {
   await settleWrites()
   if (saveFailed.value) {
-    // Retry the latest edit; the form still shows it.
-    void save({ mode: mode.value, specified_source_id: specifiedSourceId.value })
+    // Retry the latest edit; the form still shows it. Only the edited fields
+    // are resent, so the others still follow the server once it answers.
+    const form = current()
+    const retry: Partial<DownloadPreferences> = {}
+    if (editedFields.has('mode')) retry.mode = form.mode
+    if (editedFields.has('specified_source_id')) retry.specified_source_id = form.specified_source_id
+    if (editedFields.has('specified_pypi_source_id')) retry.specified_pypi_source_id = form.specified_pypi_source_id
+    void save(retry)
     await settleWrites()
   }
   if (saveFailed.value) throw new Error('download_preferences_save_failed')
@@ -202,10 +278,13 @@ export function useGithubMirrorSource() {
   return {
     mode,
     specifiedSourceId,
+    specifiedPypiSourceId,
     saveFailed,
     sources: GITHUB_PROXY_SOURCES,
+    pypiSources: PYPI_INDEX_SOURCES,
     setMode,
     setSpecifiedSourceId,
+    setSpecifiedPypiSourceId,
     ensureDownloadPreferences,
     resetDownloadHistory,
   }

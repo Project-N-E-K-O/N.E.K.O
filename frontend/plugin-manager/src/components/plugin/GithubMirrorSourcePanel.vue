@@ -15,33 +15,41 @@
 
     <div class="mirror-source-panel__content">
       <el-form label-position="top">
-        <el-form-item :label="t('mirrorSource.proxyOptional')">
+        <el-form-item :label="t('mirrorSource.sourceMode')">
           <el-select :model-value="mode" @update:model-value="setModeFromSelect">
-            <el-option :label="t('mirrorSource.direct')" value="direct" />
+            <el-option :label="t('mirrorSource.modeDirect')" value="direct" />
             <el-option :label="t('mirrorSource.auto')" value="auto" />
             <el-option :label="t('mirrorSource.specified')" value="specified" />
           </el-select>
         </el-form-item>
 
-        <el-form-item v-if="mode !== 'direct'" :label="t('mirrorSource.source')">
-          <el-input
-            v-if="mode === 'auto'"
-            :model-value="t('mirrorSource.autoPending')"
-            readonly
-          />
-          <el-select
-            v-else
-            :model-value="specifiedSourceId"
-            @update:model-value="setSpecifiedSourceFromSelect"
-          >
-            <el-option
-              v-for="item in sources"
-              :key="item.id"
-              :label="item.label"
-              :value="item.id"
-            />
-          </el-select>
+        <el-form-item v-if="mode === 'auto'" :label="t('mirrorSource.source')">
+          <el-input :model-value="t('mirrorSource.autoPending')" readonly />
         </el-form-item>
+
+        <template v-if="mode === 'specified'">
+          <el-form-item :label="t('mirrorSource.githubSource')">
+            <el-select :model-value="specifiedSourceId" @update:model-value="setSpecifiedSourceFromSelect">
+              <el-option
+                v-for="item in sources"
+                :key="item.id"
+                :label="item.label"
+                :value="item.id"
+              />
+            </el-select>
+          </el-form-item>
+
+          <el-form-item :label="t('mirrorSource.pypiSource')">
+            <el-select :model-value="specifiedPypiSourceId" @update:model-value="setSpecifiedPypiSourceFromSelect">
+              <el-option
+                v-for="item in pypiSources"
+                :key="item.id"
+                :label="item.label"
+                :value="item.id"
+              />
+            </el-select>
+          </el-form-item>
+        </template>
 
         <el-button
           v-if="mode === 'auto'"
@@ -78,10 +86,13 @@ const { t } = useI18n()
 const {
   mode,
   specifiedSourceId,
+  specifiedPypiSourceId,
   sources,
+  pypiSources,
   saveFailed,
   setMode,
   setSpecifiedSourceId,
+  setSpecifiedPypiSourceId,
   ensureDownloadPreferences,
   resetDownloadHistory,
 } = useGithubMirrorSource()
@@ -96,6 +107,11 @@ function setModeFromSelect(value: string | number | boolean | undefined) {
 function setSpecifiedSourceFromSelect(value: string | number | boolean | undefined) {
   const source = sources.find((item) => item.id === value)
   if (source) setSpecifiedSourceId(source.id)
+}
+
+function setSpecifiedPypiSourceFromSelect(value: string | number | boolean | undefined) {
+  const source = pypiSources.find((item) => item.id === value)
+  if (source) setSpecifiedPypiSourceId(source.id)
 }
 
 async function resetHistory() {

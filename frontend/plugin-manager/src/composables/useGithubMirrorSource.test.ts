@@ -59,7 +59,7 @@ describe('server download preferences', () => {
     await Promise.all([mirror.ensureDownloadPreferences(), mirror.ensureDownloadPreferences()])
 
     expect(putBodies()).toEqual([
-      { mode: 'specified', specified_source_id: 'cdn-gh-proxy-org', initialize_only: true },
+      { mode: 'specified', specified_source_id: 'cdn-gh-proxy-org', specified_pypi_source_id: 'pypi-tuna', initialize_only: true },
     ])
     expect(mirror.specifiedSourceId.value).toBe('cdn-gh-proxy-org')
     expect(fetchBridge).toHaveBeenCalledTimes(2)
@@ -73,8 +73,8 @@ describe('server download preferences', () => {
     await mirror.ensureDownloadPreferences()
 
     expect(putBodies()).toEqual([
-      { mode: 'specified', specified_source_id: 'gh-proxy-com' },
-      { mode: 'specified', specified_source_id: 'cdn-gh-proxy-org' },
+      { mode: 'specified', specified_source_id: 'gh-proxy-com', specified_pypi_source_id: 'pypi-tuna' },
+      { mode: 'specified', specified_source_id: 'cdn-gh-proxy-org', specified_pypi_source_id: 'pypi-tuna' },
     ])
     expect(mirror.mode.value).toBe('specified')
     expect(mirror.specifiedSourceId.value).toBe('cdn-gh-proxy-org')
@@ -90,7 +90,7 @@ describe('server download preferences', () => {
     await mirror.ensureDownloadPreferences()
 
     expect(putBodies()).toEqual([
-      { mode: 'specified', specified_source_id: 'gh-proxy-com', initialize_only: true },
+      { mode: 'specified', specified_source_id: 'gh-proxy-com', specified_pypi_source_id: 'pypi-tuna', initialize_only: true },
     ])
   })
 
@@ -109,7 +109,7 @@ describe('server download preferences', () => {
     await mirror.ensureDownloadPreferences()
 
     expect(putBodies()).toEqual([
-      { mode: 'specified', specified_source_id: 'gh-proxy-com', initialize_only: true },
+      { mode: 'specified', specified_source_id: 'gh-proxy-com', specified_pypi_source_id: 'pypi-tuna', initialize_only: true },
     ])
   })
 
@@ -132,8 +132,8 @@ describe('server download preferences', () => {
 
     expect(installed).toBe(true)
     expect(putBodies()).toEqual([
-      { mode: 'direct', specified_source_id: 'gh-proxy-com' },
-      { mode: 'specified', specified_source_id: 'gh-proxy-com' },
+      { mode: 'direct', specified_source_id: 'gh-proxy-com', specified_pypi_source_id: 'pypi-tuna' },
+      { mode: 'specified', specified_source_id: 'gh-proxy-com', specified_pypi_source_id: 'pypi-tuna' },
     ])
   })
 
@@ -160,10 +160,78 @@ describe('server download preferences', () => {
     await expect(mirror.ensureDownloadPreferences()).resolves.toBeUndefined()
 
     expect(putBodies()).toEqual([
-      { mode: 'direct', specified_source_id: 'gh-proxy-com' },
-      { mode: 'direct', specified_source_id: 'gh-proxy-com' },
+      { mode: 'direct', specified_source_id: 'gh-proxy-com', specified_pypi_source_id: 'pypi-tuna' },
+      { mode: 'direct', specified_source_id: 'gh-proxy-com', specified_pypi_source_id: 'pypi-tuna' },
     ])
     expect(mirror.saveFailed.value).toBe(false)
+  })
+
+  it('saves the PyPI mirror next to the GitHub one and keeps it across mode changes', async () => {
+    const mirror = await loadComposable()
+
+    mirror.setSpecifiedPypiSourceId('pypi-aliyun')
+    mirror.setMode('specified')
+    await mirror.ensureDownloadPreferences()
+
+    expect(putBodies()).toEqual([
+      { mode: 'auto', specified_source_id: 'gh-proxy-com', specified_pypi_source_id: 'pypi-aliyun' },
+      { mode: 'specified', specified_source_id: 'gh-proxy-com', specified_pypi_source_id: 'pypi-aliyun' },
+    ])
+    expect(JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '{}').specifiedPypiSourceId).toBe('pypi-aliyun')
+  })
+
+  it('shows the server PyPI mirror and defaults one the server or cache does not name', async () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      mode: 'specified',
+      specifiedSourceId: 'cdn-gh-proxy-org',
+      specifiedPypiSourceId: 'pypi-retired',
+    }))
+    vi.mocked(fetchBridge).mockResolvedValueOnce(reply({ ...preferences, specified_pypi_source_id: 'pypi-ustc' }))
+    const mirror = await loadComposable()
+
+    expect(mirror.specifiedPypiSourceId.value).toBe('pypi-tuna')
+    await mirror.ensureDownloadPreferences()
+    expect(mirror.specifiedPypiSourceId.value).toBe('pypi-ustc')
+    expect(mirror.pypiSources.map((source) => source.id)).not.toContain('pypi-direct')
+  })
+
+  it('keeps a server PyPI mirror the browser cache did not know when edited before loading', async () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ mode: 'auto', specifiedSourceId: 'gh-proxy-com' }))
+    let answer!: () => void
+    vi.mocked(fetchBridge)
+      .mockImplementationOnce(() => new Promise((resolve) => {
+        answer = () => resolve(reply({ ...preferences, specified_pypi_source_id: 'pypi-ustc' }))
+      }))
+      .mockImplementation(async (_path, init) => reply({ ...JSON.parse(String(init?.body)), configured: true }))
+    const mirror = await loadComposable()
+
+    mirror.setMode('direct')
+    const ready = mirror.ensureDownloadPreferences()
+    await vi.waitFor(() => expect(answer).toBeTypeOf('function'))
+    answer()
+    await ready
+
+    expect(putBodies()).toEqual([
+      { mode: 'direct', specified_source_id: 'gh-proxy-com', specified_pypi_source_id: 'pypi-ustc' },
+    ])
+    expect(mirror.mode.value).toBe('direct')
+    expect(mirror.specifiedPypiSourceId.value).toBe('pypi-ustc')
+  })
+
+  it('retries a save made while the server was unreachable without resetting unedited fields', async () => {
+    vi.mocked(fetchBridge)
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValueOnce(reply({ ...preferences, specified_pypi_source_id: 'pypi-ustc' }))
+      .mockImplementation(async (_path, init) => reply({ ...JSON.parse(String(init?.body)), configured: true }))
+    const mirror = await loadComposable()
+
+    mirror.setMode('direct')
+    await expect(mirror.ensureDownloadPreferences()).resolves.toBeUndefined()
+
+    expect(putBodies()).toEqual([
+      { mode: 'direct', specified_source_id: 'gh-proxy-com', specified_pypi_source_id: 'pypi-ustc' },
+    ])
+    expect(mirror.specifiedPypiSourceId.value).toBe('pypi-ustc')
   })
 
   it('retries initialization after the server was unreachable', async () => {
