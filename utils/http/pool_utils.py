@@ -91,6 +91,7 @@ _FRESH_CONNECTION_TRACE_SUFFIXES: tuple[str, ...] = (
     ".connect_unix_socket.started",
     ".start_tls.started",
 )
+_SEND_REQUEST_HEADERS_TRACE_SUFFIX: str = ".send_request_headers.started"
 
 
 def _is_fresh_connection_trace(event_name: str) -> bool:
@@ -109,14 +110,16 @@ def build_split_http_timeout(
 ) -> httpx.Timeout | Any | None:
     """Convert a bare numeric timeout into a split ``httpx.Timeout``.
 
-    ``None``, non-positive numbers, and existing ``httpx.Timeout`` instances
-    are handled safely: ``None`` and numeric values ``<= 0`` return ``None``
-    (allowing fallback to ``request_timeout`` or the SDK default), existing
-    ``httpx.Timeout`` and non-numeric SDK sentinels pass through unchanged, and
-    positive numbers cap ``connect``, ``write``, and ``pool`` while keeping
-    ``read`` at the caller's configured upper bound.
+    ``None``, ``False``, non-positive numbers, and existing ``httpx.Timeout``
+    instances are handled safely: ``None``, ``False``, and numeric values
+    ``<= 0`` return ``None`` (allowing fallback to ``request_timeout`` or the
+    SDK default), existing ``httpx.Timeout`` and non-numeric SDK sentinels pass
+    through unchanged, and positive numbers cap ``connect``, ``write``, and
+    ``pool`` while keeping ``read`` at the caller's configured upper bound.
     """
-    if timeout is None or isinstance(timeout, httpx.Timeout):
+    if timeout is None or timeout is False:
+        return None
+    if isinstance(timeout, httpx.Timeout):
         return timeout
     if not isinstance(timeout, (int, float)) or isinstance(timeout, bool):
         return timeout
@@ -149,12 +152,15 @@ def _wrap_async_transport(
         track_extensions = isinstance(orig_extensions, dict)
         prev_trace = orig_extensions.get("trace") if track_extensions else None
         opened_fresh_connection = False
+        send_started: float | None = None
 
         if track_extensions:
             async def _track_trace(event_name: str, info: dict[str, Any]) -> None:
-                nonlocal opened_fresh_connection
+                nonlocal opened_fresh_connection, send_started
                 if _is_fresh_connection_trace(event_name):
                     opened_fresh_connection = True
+                elif send_started is None and event_name.endswith(_SEND_REQUEST_HEADERS_TRACE_SUFFIX):
+                    send_started = time.monotonic()
                 if prev_trace is not None:
                     res = prev_trace(event_name, info)
                     if inspect.isawaitable(res):
@@ -168,7 +174,7 @@ def _wrap_async_transport(
         try:
             return await original(request)
         except STALE_CONNECTION_ERRORS as exc:
-            elapsed = time.monotonic() - started
+            elapsed = time.monotonic() - (send_started if send_started is not None else started)
             if (
                 not replayable
                 or opened_fresh_connection
@@ -209,12 +215,15 @@ def _wrap_sync_transport(
         track_extensions = isinstance(orig_extensions, dict)
         prev_trace = orig_extensions.get("trace") if track_extensions else None
         opened_fresh_connection = False
+        send_started: float | None = None
 
         if track_extensions:
             def _track_trace(event_name: str, info: dict[str, Any]) -> None:
-                nonlocal opened_fresh_connection
+                nonlocal opened_fresh_connection, send_started
                 if _is_fresh_connection_trace(event_name):
                     opened_fresh_connection = True
+                elif send_started is None and event_name.endswith(_SEND_REQUEST_HEADERS_TRACE_SUFFIX):
+                    send_started = time.monotonic()
                 if prev_trace is not None:
                     prev_trace(event_name, info)
 
@@ -224,7 +233,7 @@ def _wrap_sync_transport(
         try:
             return original(request)
         except STALE_CONNECTION_ERRORS as exc:
-            elapsed = time.monotonic() - started
+            elapsed = time.monotonic() - (send_started if send_started is not None else started)
             if (
                 not replayable
                 or opened_fresh_connection

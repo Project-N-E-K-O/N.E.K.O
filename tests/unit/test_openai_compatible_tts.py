@@ -1413,7 +1413,7 @@ def _sdk_kwargs(fake_client):
     # Explicit bounded timeout and zero SDK retries (stale-retry handles dead sockets).
     timeout = kwargs.pop("timeout")
     max_retries = kwargs.pop("max_retries")
-    assert timeout == openai_worker_module.OPENAI_TTS_HTTP_TIMEOUT
+    assert timeout == httpx.Timeout(connect=10.0, read=60.0, write=10.0, pool=10.0)
     assert max_retries == 0
     return kwargs
 

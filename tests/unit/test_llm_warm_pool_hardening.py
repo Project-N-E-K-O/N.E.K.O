@@ -27,6 +27,7 @@ pytestmark = pytest.mark.unit
 
 def test_build_split_http_timeout_splits_bare_numbers_and_preserves_caps():
     assert build_split_http_timeout(None) is None
+    assert build_split_http_timeout(False) is None
     assert build_split_http_timeout(0) is None
     assert build_split_http_timeout(-5.0) is None
 
@@ -62,7 +63,8 @@ def test_build_split_http_timeout_splits_bare_numbers_and_preserves_caps():
 
 
 @pytest.mark.parametrize("client_name", ["ChatOpenAI", "ChatAnthropic"])
-def test_chat_clients_treat_non_positive_timeout_as_fallback(client_name):
+@pytest.mark.parametrize("fallback_timeout", [0, -5.0, False])
+def test_chat_clients_treat_non_positive_timeout_as_fallback(client_name, fallback_timeout):
     from utils import llm_client
 
     client_cls = getattr(llm_client, client_name)
@@ -70,7 +72,7 @@ def test_chat_clients_treat_non_positive_timeout_as_fallback(client_name):
         model="m",
         base_url="https://api.example.test/v1",
         api_key="k",
-        timeout=0,
+        timeout=fallback_timeout,
         request_timeout=45.0,
     )
     try:
@@ -176,15 +178,52 @@ async def test_stale_retry_does_not_retry_fresh_connection_drop_async():
     caller_ext = {"trace": caller_trace}
     try:
         async with install_stale_connection_retry(httpx.AsyncClient(trust_env=False)) as client:
+            req = client.build_request("POST", url, json={"hi": 1}, extensions=caller_ext)
+            orig_req_extensions = req.extensions
             with pytest.raises(httpx.RemoteProtocolError):
-                await client.post(url, json={"hi": 1}, extensions=caller_ext)
+                await client.send(req)
         assert connections == 1
         assert posts_received == 1
         assert any(e.endswith(".connect_tcp.started") for e in caller_events)
+        assert req.extensions is orig_req_extensions
+        assert req.extensions["trace"] is caller_trace
         assert caller_ext == {"trace": caller_trace}
     finally:
         server.close()
         await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_stale_retry_excludes_pool_wait_time_before_send_starts(monkeypatch):
+    from tests.fake_clock import patch_module_clock
+    from utils.http import pool_utils
+
+    now = [300.0]
+    patch_module_clock(monkeypatch, pool_utils, monotonic=lambda: now[0])
+
+    class _PoolWaitAsyncTransport(httpx.AsyncBaseTransport):
+        def __init__(self):
+            self.calls = 0
+
+        async def handle_async_request(self, request):
+            self.calls += 1
+            await request.aread()
+            # Simulate waiting >2s in the connection pool before a pooled socket starts sending.
+            now[0] += pool_utils.STALE_RETRY_MAX_ELAPSED_SECONDS + 1.0
+            trace = request.extensions.get("trace")
+            if trace is not None:
+                await trace("http11.send_request_headers.started", {})
+            # Immediate stale disconnect 0.05s after headers began sending.
+            now[0] += 0.05
+            if self.calls == 1:
+                raise httpx.RemoteProtocolError("Server disconnected without sending a response.")
+            return httpx.Response(200, text="ok")
+
+    transport = _PoolWaitAsyncTransport()
+    async with install_stale_connection_retry(httpx.AsyncClient(transport=transport)) as client:
+        resp = await client.post("https://llm.test/v1/chat/completions", json={"hi": 1})
+    assert resp.status_code == 200
+    assert transport.calls == 2
 
 
 def test_stale_retry_skips_fresh_drop_and_retries_reused_drop_sync():
@@ -238,11 +277,20 @@ def test_stale_retry_skips_fresh_drop_and_retries_reused_drop_sync():
     caller_ext = {"trace": caller_trace}
     try:
         with install_stale_connection_retry(httpx.Client(trust_env=False)) as client:
+            req = client.build_request(
+                "POST",
+                f"http://127.0.0.1:{port1}/v1/chat/completions",
+                json={"hi": 1},
+                extensions=caller_ext,
+            )
+            orig_req_extensions = req.extensions
             with pytest.raises(httpx.RemoteProtocolError):
-                client.post(f"http://127.0.0.1:{port1}/v1/chat/completions", json={"hi": 1}, extensions=caller_ext)
+                client.send(req)
         t1.join(timeout=2.0)
         assert fresh_state == {"conns": 1, "posts": 1}
         assert any(e.endswith(".connect_tcp.started") for e in caller_events)
+        assert req.extensions is orig_req_extensions
+        assert req.extensions["trace"] is caller_trace
         assert caller_ext == {"trace": caller_trace}
     finally:
         srv1.close()
@@ -743,6 +791,8 @@ async def test_long_lived_clients_configure_55s_keepalive_and_bounded_defaults(m
 
 
 def test_server_shutdown_hooks_wire_warm_pool_and_decision_cleanup():
+    import ast
+
     root = Path(__file__).resolve().parents[2]
     for rel in (
         "app/main_server/__init__.py",
@@ -753,9 +803,48 @@ def test_server_shutdown_hooks_wire_warm_pool_and_decision_cleanup():
         src = (root / rel).read_text(encoding="utf-8")
         assert "close_warm_chat_llms" in src, f"{rel} missing close_warm_chat_llms"
         assert "aclose_decision_http_clients" in src, f"{rel} missing aclose_decision_http_clients"
+
+    # Verify Agent shutdown invokes both pool cleanups AFTER submit_save and
+    # binds an explicit deadline_monotonic to each step() call.
     agent_src = (root / "app/agent_server/api_runtime.py").read_text(encoding="utf-8")
-    assert "deadline_monotonic=time.monotonic() + 2.0" in agent_src
-    assert agent_src.index("submit_save") < agent_src.index("close_warm_chat_llms")
+    tree = ast.parse(agent_src)
+    shutdown_fn = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "shutdown"
+    )
+    submit_save_lines = [
+        node.lineno
+        for node in ast.walk(shutdown_fn)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "submit_save"
+    ]
+    assert submit_save_lines, "Agent shutdown must call TokenTracker.submit_save"
+    submit_save_line = max(submit_save_lines)
+
+    pool_step_calls: dict[str, ast.Call] = {}
+    for node in ast.walk(shutdown_fn):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "step"
+            and node.args
+            and isinstance(node.args[0], ast.Name)
+            and node.args[0].id in {"close_warm_chat_llms", "aclose_decision_http_clients"}
+        ):
+            pool_step_calls[node.args[0].id] = node
+
+    assert set(pool_step_calls) == {"close_warm_chat_llms", "aclose_decision_http_clients"}
+    for fn_name, call_node in pool_step_calls.items():
+        assert call_node.lineno > submit_save_line, f"{fn_name} must run after submit_save"
+        kw_names = {kw.arg for kw in call_node.keywords}
+        assert "deadline_monotonic" in kw_names, f"{fn_name} step() must pass explicit deadline_monotonic"
+
+    # Merged-mode teardown warnings must use _teardown_print so BrokenPipeError cannot abort cleanup.
+    launcher_src = (root / "launcher_core/runtime.py").read_text(encoding="utf-8")
+    assert '_teardown_print(f"[Merged] Warning: failed to close llm_warm_pool:' in launcher_src
+    assert '_teardown_print(f"[Merged] Warning: failed to close decision_http_client:' in launcher_src
 
 
 @pytest.mark.asyncio

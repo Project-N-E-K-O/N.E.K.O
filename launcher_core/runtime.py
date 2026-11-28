@@ -1450,14 +1450,14 @@ def run_merged_servers() -> int:
                 async with asyncio.timeout(2.0):
                     await close_warm_chat_llms()
             except Exception as exc:
-                print(f"[Merged] Warning: failed to close llm_warm_pool: {exc}", flush=True)
+                _teardown_print(f"[Merged] Warning: failed to close llm_warm_pool: {exc}")
             try:
                 from utils.decision_client.adapters import aclose_decision_http_clients
 
                 async with asyncio.timeout(2.0):
                     await aclose_decision_http_clients()
             except Exception as exc:
-                print(f"[Merged] Warning: failed to close decision_http_client: {exc}", flush=True)
+                _teardown_print(f"[Merged] Warning: failed to close decision_http_client: {exc}")
 
     try:
         asyncio.run(_serve_all())
