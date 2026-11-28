@@ -147,6 +147,7 @@ const messages: PluginConsentMessages = {
       grantsResetPending: "プラグインの入手元が変わりました。新しい入手元から起動したときに以前の決定は消去されます。",
     },
     blindSpots: {
+      none: "スキャンで見通せないファイルはありません",
       title: "スキャンで見通せないファイル {n} 件",
       subtitle: "ファイルごとの集計。ここで何の権限を使うかはスキャンでは判断できません",
       types: {

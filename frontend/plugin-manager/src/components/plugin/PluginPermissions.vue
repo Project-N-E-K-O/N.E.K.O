@@ -204,6 +204,7 @@
           <div v-if="spotFiles.length || panel.blind_spots.not_analyzed_files" class="perm-spots" data-test="blind-spots">
             <div class="perm-spots__title">
               <strong v-if="spotFiles.length">⚠ {{ t('pluginConsent.tab.blindSpots.title', { n: spotFiles.length }) }}</strong>
+              <strong v-else data-test="blind-spots-none">{{ t('pluginConsent.tab.blindSpots.none') }}</strong>
               <span v-if="spotFiles.length" class="perm-muted">{{ t('pluginConsent.tab.blindSpots.subtitle') }}</span>
             </div>
             <ul class="perm-spots__list">
@@ -605,6 +606,8 @@ const RowFacts = defineComponent({
   --perm-low-bg: #f8fbfe;
   --perm-low-tag: #e6effa;
   --perm-line: var(--el-border-color-lighter);
+  --perm-summary-bg: #fff8ef;
+  --perm-summary-border: #f3c58f;
 }
 .perm-tab__state {
   display: flex;
@@ -617,13 +620,13 @@ const RowFacts = defineComponent({
   gap: 10px;
   align-items: center;
   padding: 12px 16px;
-  border: 1px solid var(--perm-line);
+  border: 1px solid var(--perm-summary-border);
   border-radius: 8px;
-  background: var(--el-bg-color);
+  background: var(--perm-summary-bg);
 }
 .perm-summary__count {
   margin-left: 4px;
-  color: var(--perm-high);
+  color: #c2410c;
 }
 .perm-summary__stop {
   margin-left: auto;

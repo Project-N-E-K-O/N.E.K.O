@@ -149,6 +149,7 @@ const messages = {
       grantsResetPending: "The plugin's source changed. Earlier decisions will be cleared when it starts from the new source.",
     },
     blindSpots: {
+      none: "No files the scan cannot see into",
       title: "{n} file(s) the scan cannot see into",
       subtitle: "Per file: which permissions these places use cannot be told by the scan",
       types: {

@@ -147,6 +147,7 @@ const messages: PluginConsentMessages = {
       grantsResetPending: "플러그인 출처가 바뀌었습니다. 새 출처에서 시작하면 이전 결정이 초기화됩니다.",
     },
     blindSpots: {
+      none: "스캔으로 들여다볼 수 없는 파일이 없습니다",
       title: "스캔으로 들여다볼 수 없는 파일 {n}개",
       subtitle: "파일별 요약: 이곳에서 어떤 권한을 쓰는지 스캔으로 판단할 수 없습니다",
       types: {

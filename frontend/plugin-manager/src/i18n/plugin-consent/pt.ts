@@ -147,6 +147,7 @@ const messages: PluginConsentMessages = {
       grantsResetPending: "A origem do plugin mudou. As decisões anteriores serão apagadas quando ele iniciar a partir da nova origem.",
     },
     blindSpots: {
+      none: "Não há arquivos que a análise não consiga enxergar",
       title: "{n} arquivo(s) que a análise não consegue enxergar",
       subtitle: "Por arquivo: a análise não consegue dizer quais permissões esses locais usam",
       types: {

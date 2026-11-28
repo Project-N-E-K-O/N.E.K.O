@@ -146,6 +146,7 @@ const messages: PluginConsentMessages = {
       grantsResetPending: "插件的来源变了，之前的决定会在它从新来源启动后清空。",
     },
     blindSpots: {
+      none: "没有扫描看不透的文件",
       title: "{n} 个文件扫描看不透",
       subtitle: "按文件汇总，这些地方用了什么权限扫描判断不了",
       types: {

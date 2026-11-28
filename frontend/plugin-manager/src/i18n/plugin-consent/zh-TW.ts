@@ -146,6 +146,7 @@ const messages: PluginConsentMessages = {
       grantsResetPending: "外掛的來源變了，之前的決定會在它從新來源啟動後清空。",
     },
     blindSpots: {
+      none: "沒有掃描看不透的檔案",
       title: "{n} 個檔案掃描看不透",
       subtitle: "依檔案彙總，這些地方用了什麼權限掃描判斷不了",
       types: {

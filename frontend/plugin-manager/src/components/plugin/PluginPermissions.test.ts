@@ -354,6 +354,17 @@ describe('PluginPermissions tab', () => {
     expect(spots).toContain('pluginConsent.tab.blindSpots.notAnalyzed {"n":6}')
   })
 
+  it('says there are no blind spot files when only unscanned files are counted', async () => {
+    serve(panel({ blind_spots: { files: [], counted: 0, not_analyzed_files: 2 } }))
+    const root = await mount()
+    expect(q(root, 'blind-spots-none')!.textContent).toBe('pluginConsent.tab.blindSpots.none')
+    expect(q(root, 'blind-spots')!.textContent).toContain('pluginConsent.tab.blindSpots.notAnalyzed {"n":2}')
+    serve(panel({
+      blind_spots: { files: [{ file: 'a.py', count: 1, types: { code_exec: 1 }, high_risk: false }], counted: 1, not_analyzed_files: 0 },
+    }))
+    expect(q(await mount(), 'blind-spots-none')).toBeNull()
+  })
+
   it('folds a tier the server marks collapsed until clicked', async () => {
     serve(panel({
       rows: [row({ permission: 'plugin_sdk.models:invoke', tier: 'low' })],
