@@ -1266,11 +1266,20 @@ class BrowserSession:
             created = await self._open_blank_page(owner=owner)
             if created is not None:
                 return created
-            if not self._can_create_tabs and any(p.owner not in (None, owner) for p in self._pages.values()):
-                raise BrowserError(
-                    "This browser cannot open additional tabs, and its single page is currently in use by another task. "
-                    "Try again once that task finishes."
-                )
+            if not self._can_create_tabs:
+                for page in self._pages.values():
+                    if page.target_id in self._closing_targets:
+                        continue
+                    if page.owner is None:
+                        page.owner = owner
+                        self._tab_owners[page.target_id] = owner
+                        self._selected_by_owner[owner] = page.target_id
+                        return page
+                if any(p.owner not in (None, owner) for p in self._pages.values()):
+                    raise BrowserError(
+                        "This browser cannot open additional tabs, and its single page is currently in use by another task. "
+                        "Try again once that task finishes."
+                    )
             return self.current(owner)
 
     async def _drop_connection(self) -> None:
@@ -2154,6 +2163,8 @@ class BrowserSession:
         """Take a snapshot of a page and make it the one its uids are read from."""
         self.require_no_dialog(page)
         await self._refresh_frames(page)
+        pre_main_frame = page.main_frame_id
+        pre_main_loader = page.frame_loaders.get(pre_main_frame, "")
         try:
             answer = await self._send(page, "Accessibility.getFullAXTree", timeout=SNAPSHOT_TIMEOUT_SECONDS)
         except CdpError as exc:
@@ -2165,12 +2176,14 @@ class BrowserSession:
             raise BrowserError("The page has no content to take a snapshot of yet. Wait a moment and try again.")
         budget, unlisted = [MAX_IFRAMES], [0]
         await self._attach_frames(page, root, verbose, depth=0, budget=budget, unlisted=unlisted)
+        if page.main_frame_id != pre_main_frame or page.frame_loaders.get(pre_main_frame, "") != pre_main_loader:
+            raise BrowserError("The page navigated while taking a snapshot. Call browser_take_snapshot again.")
         tree = await asyncio.to_thread(
             serialize_tree,
             root,
             verbose=verbose,
-            loader_id=page.frame_loaders.get(page.main_frame_id, ""),
-            frame_id=page.main_frame_id,
+            loader_id=pre_main_loader,
+            frame_id=pre_main_frame,
         )
         if tree is None:
             raise BrowserError("The page has nothing to list. Wait a moment and try again.")
@@ -2686,15 +2699,18 @@ class BrowserSession:
         if node.session_id is not None:
             intercept_sessions.append(None)
         enabled_sessions: list[str | None] = []
+        attempted_sessions: list[str | None] = []
         page.file_chooser_event.clear()
         page.file_chooser_backend_id = None
         page.file_chooser_session_id = None
         try:
             for sid in intercept_sessions:
+                attempted_sessions.append(sid)
                 try:
                     await self._send_session(page, sid, "Page.setInterceptFileChooserDialog", {"enabled": True})
                     enabled_sessions.append(sid)
                 except CdpError:
+                    attempted_sessions.remove(sid)
                     logger.debug("Page.setInterceptFileChooserDialog not supported", exc_info=True)
             if not enabled_sessions:
                 raise BrowserError(
@@ -2710,11 +2726,15 @@ class BrowserSession:
                 chooser_wait.cancel()
                 dialog_wait.cancel()
         finally:
-            for sid in enabled_sessions:
-                try:
-                    await self._send_session(page, sid, "Page.setInterceptFileChooserDialog", {"enabled": False}, timeout=5.0)
-                except (BrowserError, CdpError):
-                    pass
+            async def _disable_interception() -> None:
+                for sid in attempted_sessions:
+                    try:
+                        await self._send_session(page, sid, "Page.setInterceptFileChooserDialog", {"enabled": False}, timeout=2.0)
+                    except (BrowserError, CdpError):
+                        pass
+
+            if attempted_sessions:
+                await asyncio.shield(_disable_interception())
         if page.dialog is not None:
             raise BrowserError(
                 f"A dialog opened when clicking element with uid {uid} before any file chooser appeared; no file was uploaded. "
@@ -3020,11 +3040,16 @@ class BrowserSession:
                                 page, anc_sid, "DOM.getContentQuads", {"backendNodeId": anc_backend_id}, timeout=5.0
                             )
                         ).get("quads") or []
-                    except CdpError:
-                        continue
-                    if anc_quads:
-                        offset_x += min(float(v) for q in anc_quads for v in q[0::2])
-                        offset_y += min(float(v) for q in anc_quads for v in q[1::2])
+                    except CdpError as exc:
+                        raise BrowserError(
+                            f"The frame containing element with uid {uid} is not visible, so it cannot be screenshotted."
+                        ) from exc
+                    if not anc_quads:
+                        raise BrowserError(
+                            f"The frame containing element with uid {uid} is not visible, so it cannot be screenshotted."
+                        )
+                    offset_x += min(float(v) for q in anc_quads for v in q[0::2])
+                    offset_y += min(float(v) for q in anc_quads for v in q[1::2])
             xs = [value + offset_x for quad in quads for value in quad[0::2]]
             ys = [value + offset_y for quad in quads for value in quad[1::2]]
             metrics = await self._send(page, "Page.getLayoutMetrics")

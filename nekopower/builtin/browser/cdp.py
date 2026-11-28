@@ -101,6 +101,7 @@ class PipeTransport:
         self._closed = False
         self._write_lock = threading.Lock()
         self._close_lock = threading.Lock()
+        self._send_lock: asyncio.Lock | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._queue: asyncio.Queue[str | None] | None = None
         self._reader_thread: threading.Thread | None = None
@@ -273,7 +274,12 @@ class PipeTransport:
 
     async def send(self, text: str) -> None:
         payload = text.encode("utf-8") + b"\x00"
-        await asyncio.to_thread(self.write_sync, payload)
+        if self._send_lock is None:
+            self._send_lock = asyncio.Lock()
+        async with self._send_lock:
+            if self._closed:
+                raise BrokenPipeError("the browser pipe is closed")
+            await asyncio.to_thread(self.write_sync, payload)
 
     def __aiter__(self) -> "PipeTransport":
         return self
@@ -357,6 +363,8 @@ class PipeTransport:
         self._enqueue(None)
 
     async def close(self) -> None:
+        self._closed = True
+        self._cancel_pending_io()
         await asyncio.to_thread(self.close_sync)
 
 

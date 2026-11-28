@@ -395,7 +395,7 @@ class ScaledInput:
         py = int(round(float(y) * max_y / COORDINATE_MAX))
         return self._clamp_px(px, py)
 
-    def _glide_to(self, px: int, py: int, duration: float = 0.3) -> None:
+    def _glide_to(self, px: int, py: int, duration: float = 0.3, *, strict: bool = False) -> None:
         """Move the pointer there along an eased path, so the user can follow it."""
         try:
             tween = getattr(self._backend, "easeOutQuad", None)
@@ -403,7 +403,11 @@ class ScaledInput:
         except Exception:  # noqa: BLE001 - the plain move is tried next
             try:
                 self._backend.moveTo(px, py, _pause=False)
-            except Exception:  # noqa: BLE001 - the click itself still names the point
+            except Exception as exc:  # noqa: BLE001 - strict callers refuse acting on wrong target
+                if strict:
+                    raise DesktopActionError(
+                        "Could not move the pointer to the target control before performing the action."
+                    ) from exc
                 logger.debug("moving the pointer failed", exc_info=True)
 
     def click_px(self, px: int, py: int, *, button: str = "left", clicks: int = 1) -> tuple[int, int]:
@@ -458,11 +462,13 @@ class ScaledInput:
         ex, ey = self.to_pixels(to_x, to_y)
         return self.drag_px(sx, sy, ex, ey, button=button)
 
-    def scroll_px(self, direction: str, notches: int, px: int | None = None, py: int | None = None) -> None:
+    def scroll_px(
+        self, direction: str, notches: int, px: int | None = None, py: int | None = None, *, strict: bool = False
+    ) -> None:
         self.ensure_not_stopped()
         if px is not None and py is not None:
             cx, cy = self._clamp_px(px, py)
-            self._glide_to(cx, cy, duration=0.15)
+            self._glide_to(cx, cy, duration=0.15, strict=strict)
         # pyautogui hands the number to Windows as it is, and there one notch
         # of the wheel is 120; elsewhere the number is the notches.
         windows = platform.system().lower() == "windows"
@@ -1000,7 +1006,7 @@ class Desktop:
             uid = _uid_arg(arguments, "uid")
             if uid is not None:
                 ctrl, cx, cy = self._resolve_uid_px(uid, gui)
-                gui.scroll_px(direction, notches, cx, cy)
+                gui.scroll_px(direction, notches, cx, cy, strict=True)
                 return f"Scrolled {direction} {notches} notch(es) on {_describe_control(ctrl)}.", True
             x, y = _coordinate(arguments, "x", required=False), _coordinate(arguments, "y", required=False)
             if (x is None) != (y is None):

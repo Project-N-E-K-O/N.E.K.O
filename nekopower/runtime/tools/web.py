@@ -76,7 +76,7 @@ _FAKE_IP_V6 = ipaddress.IPv6Network("fc00::/18")
 # Independent IANA-reserved domains probed only when a target hostname resolves
 # into 198.18.0.0/15: a transparent proxy's Fake-IP DNS synthesizes 198.18.x.x
 # for these too, whereas an attacker's DNS record on a non-Fake-IP network cannot.
-_FAKE_IP_PROBE_HOSTS = ("example.com", "example.org")
+_FAKE_IP_PROBE_HOSTS = ("example.com.", "example.org.")
 _FAKE_IP_PROBE_TIMEOUT_SECONDS = 2.0
 
 
@@ -176,7 +176,7 @@ async def _is_fake_ip_dns_active(target_host: str) -> bool:
     lowered = target_host.lower().rstrip(".")
     loop = asyncio.get_running_loop()
     for probe in _FAKE_IP_PROBE_HOSTS:
-        if probe == lowered:
+        if probe.rstrip(".") == lowered:
             continue
         try:
             infos = await asyncio.wait_for(

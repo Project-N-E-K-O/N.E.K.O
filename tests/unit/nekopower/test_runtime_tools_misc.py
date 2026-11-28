@@ -525,9 +525,12 @@ async def test_a_public_name_resolving_to_proxy_fake_ip_is_allowed_while_literal
         await web.resolve_public("example.com", 443)
 
     # Without an active Fake-IP resolver (reference domains resolve to real public IPs),
-    # an attacker-controlled domain returning 198.18.x.x is blocked.
+    # an attacker-controlled domain returning 198.18.x.x is blocked, and probes use absolute FQDNs.
+    probed_hosts: list[str] = []
+
     async def attacker_only_fake_ip(host, port, **kwargs):  # noqa: ANN001, ANN003, ANN202
         del kwargs
+        probed_hosts.append(host)
         if host == "evil.attacker.test":
             return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("198.18.1.50", port))]
         return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port))]
@@ -536,6 +539,7 @@ async def test_a_public_name_resolving_to_proxy_fake_ip_is_allowed_while_literal
     monkeypatch.setattr(asyncio.get_running_loop(), "getaddrinfo", attacker_only_fake_ip)
     with pytest.raises(ToolError, match="resolves to 198.18.1.50, which is not a public address"):
         await web.resolve_public("evil.attacker.test", 8080)
+    assert any(h.endswith(".") for h in probed_hosts if h != "evil.attacker.test")
 
     # Explicit opt-out env var forces refusal even when Fake-IP DNS is active.
     monkeypatch.setenv("NEKO_WEB_FETCH_ALLOW_FAKE_IP", "0")

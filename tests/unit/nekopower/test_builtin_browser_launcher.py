@@ -1902,3 +1902,8 @@ async def test_attach_endpoints_returns_all_open_profiles(monkeypatch: Any, tmp_
         "ws://127.0.0.1:9401/devtools/browser/x",
         "ws://127.0.0.1:9402/devtools/browser/x",
     ]
+    # A profile with invalid UTF-8 in DevToolsActivePort returns None instead of crashing attach discovery.
+    bad_dir = tmp_path / "corrupt-profile"
+    bad_dir.mkdir()
+    (bad_dir / launcher.ACTIVE_PORT_FILE).write_bytes(b"\xff\xfe\x00\x80")
+    assert launcher.read_active_port(bad_dir) is None

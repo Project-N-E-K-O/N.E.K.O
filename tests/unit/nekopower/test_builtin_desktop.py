@@ -957,6 +957,13 @@ def test_uid_rejects_occluded_edge_clamped_and_unfocused_controls(monkeypatch: A
         rig.act("type", {"uid": "1_1", "text": "secret"})
     assert all(name != "write" for name, _, _ in rig.inputs())
 
+    # Scrolling by uid refuses if moving the pointer to the target control fails.
+    rig.backend.calls.clear()
+    monkeypatch.setattr(rig.backend, "moveTo", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("move blocked")))
+    with pytest.raises(DesktopActionError, match="Could not move the pointer to the target control"):
+        rig.act("scroll", {"uid": "1_1", "direction": "down", "amount": 2})
+    assert all(name != "scroll" for name, _, _ in rig.inputs())
+
 
 def test_uia_read_patterns_uses_get_current_pattern_and_query_interface() -> None:
     from types import SimpleNamespace

@@ -244,7 +244,7 @@ def read_active_port(user_data_dir: str | os.PathLike[str]) -> tuple[int, str] |
     """Return ``(port, browser path)`` from a profile's ``DevToolsActivePort``, or None."""
     try:
         lines = Path(user_data_dir, ACTIVE_PORT_FILE).read_text(encoding="utf-8").splitlines()
-    except OSError:
+    except (OSError, UnicodeError):
         return None
     if len(lines) < 2 or not lines[0].strip().isdigit():
         return None
