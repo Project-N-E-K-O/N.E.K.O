@@ -18,6 +18,7 @@ virtualenv on top, under the layer's reserved ``envs/`` directory.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import hashlib
 import json
 import os
@@ -424,5 +425,9 @@ async def start_tool_environment_preparation() -> ToolEnvironmentStatus:
         with _state_lock:
             idle = _preparation_task is None or _preparation_task.done()
             if idle:
-                _preparation_task = asyncio.create_task(_preparation_runner(threading.Event()))
+                # A fresh context: the task outlives the request and must not
+                # inherit its per-request wait budget or other context vars.
+                _preparation_task = asyncio.create_task(
+                    _preparation_runner(threading.Event()), context=contextvars.Context()
+                )
     return await asyncio.to_thread(tool_environment_status)

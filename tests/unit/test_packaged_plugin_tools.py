@@ -4,6 +4,8 @@ from io import BytesIO
 from zipfile import ZipFile
 
 import pytest
+from packaging.requirements import Requirement
+from packaging.utils import canonicalize_name
 
 from launcher_core import bootstrap
 from plugin.neko_plugin_cli.tool_resources import plugin_tool_resources_dir
@@ -144,7 +146,7 @@ def test_plugin_tools_group_carries_what_the_sdk_imports_in_plugin_tests():
 
     root = Path(__file__).resolve().parents[2]
     group = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))["dependency-groups"]["plugin-tools"]
-    names = {entry.split("[")[0].split(">")[0].split("=")[0].strip().lower() for entry in group}
+    names = {canonicalize_name(Requirement(entry).name) for entry in group}
     assert {"pillow", "pytest", "portalocker", "httpx"} <= names
     locked = tomllib.loads((root / "uv.lock").read_text(encoding="utf-8"))
     (project,) = [package for package in locked["package"] if package.get("source", {}).get("editable") == "."]
@@ -173,7 +175,7 @@ def test_plugin_tools_group_carries_the_pytest_plugins_pytest_ini_configures():
     assert needed == {"pytest-timeout", "pytest-asyncio", "pytest-randomly"}
 
     group = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))["dependency-groups"]["plugin-tools"]
-    names = {entry.split("[")[0].split(">")[0].split("=")[0].strip().lower() for entry in group}
+    names = {canonicalize_name(Requirement(entry).name) for entry in group}
     assert needed <= names
     locked = tomllib.loads((root / "uv.lock").read_text(encoding="utf-8"))
     (project,) = [package for package in locked["package"] if package.get("source", {}).get("editable") == "."]

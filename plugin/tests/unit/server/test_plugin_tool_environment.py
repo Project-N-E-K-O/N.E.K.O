@@ -209,8 +209,9 @@ class _FakeLayer:
     def prepare(self, *, cancel, deadline, progress):
         self.runtime_calls.append({"cancel": cancel, "deadline": deadline})
         progress(ProgressEvent("downloading_uv", 10, 100))
-        if self.before_return is not None:
-            assert self.before_return.wait(10)
+        event = self.before_return  # read once: _held() may clear it meanwhile
+        if event is not None:
+            assert event.wait(10)
         if self.runtime_error is not None:
             raise self.runtime_error
         _runtime_status(self._monkeypatch, "ready")
@@ -269,6 +270,27 @@ async def test_preparation_builds_the_venv_on_the_shared_runtime(monkeypatch, tm
     status = tools.tool_environment_status()
     assert status.state == "ready"
     assert status.tool_progress is None
+
+
+async def test_preparation_does_not_inherit_the_request_wait_budget(monkeypatch, tmp_path):
+    # The route runs inside bounded_operation_wait(20 s); the task outlives it.
+    from plugin.server.application.plugins import operation_lock
+
+    _packaged(monkeypatch, "missing")
+    _resources(monkeypatch, tmp_path / "resources")
+    layer = _FakeLayer(monkeypatch, tmp_path)
+    seen = []
+    prepare = layer.prepare
+
+    def recording_prepare(**kwargs):
+        seen.append(operation_lock._OPERATION_WAIT_BUDGET.get())
+        return prepare(**kwargs)
+
+    monkeypatch.setattr(tools, "prepare_tool_runtime", recording_prepare)
+    with operation_lock.bounded_operation_wait(20):
+        await tools.start_tool_environment_preparation()
+    await tools._preparation_task
+    assert seen == [None]
 
 
 async def test_preparation_reports_the_shared_layer_progress(monkeypatch, tmp_path):
