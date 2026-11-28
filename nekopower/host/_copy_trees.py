@@ -1673,7 +1673,7 @@ def prepare_copy_conflicts_sync(
     mutated_base = False
     mutated_meta = False
     rollback_failed = False
-    # (rel, kind: 'absent' | 'file' | 'symlink', payload: backup filename or link target)
+    # (rel, kind: 'absent' | 'dir' | 'file' | 'symlink', payload: backup filename or link target)
     try:
         _atomic_write_bytes(prep_backup_dir / "old_base_manifest.json", old_base_bytes)
         _atomic_write_bytes(prep_backup_dir / "old_meta.json", old_meta_bytes)
@@ -1688,6 +1688,8 @@ def prepare_copy_conflicts_sync(
                 bak_name = f"b{idx}"
                 shutil.copy2(src, fs_path(prep_backup_dir / bak_name), follow_symlinks=False)
                 saved_entries.append((rel, "file", bak_name))
+            elif os.path.isdir(src) and not is_dir_link(src_path):
+                saved_entries.append((rel, "dir", None))
         _atomic_write_json(
             prep_backup_dir / _ROLLBACK_INCOMPLETE_FILE,
             {
@@ -1699,14 +1701,25 @@ def prepare_copy_conflicts_sync(
         )
         mutated_copy = True
 
-        # Remove files deleted by the merge.
+        # Remove files deleted by the merge and prune newly emptied parent directories
+        # (using only os.rmdir so unmerged contents are preserved).
         for rel in to_delete:
             _check_cancelled(cancel_event)
             if has_link_ancestor(copy_path, rel):
                 raise ValueError(f"refusing to delete through directory link in the working copy: {rel}")
-            target = fs_path(copy_path / rel)
+            target_path = copy_path / rel
+            target = fs_path(target_path)
             if os.path.islink(target) or os.path.isfile(target):
                 os.remove(target)
+            parent = target_path.parent
+            while parent != copy_path and relative_posix(parent, copy_path):
+                if is_dir_link(parent):
+                    break
+                try:
+                    os.rmdir(fs_path(parent))
+                except OSError:
+                    break
+                parent = parent.parent
 
         # Write merged / conflict-marked files into the copy.
         for rel, entry in to_write:
@@ -1783,15 +1796,22 @@ def prepare_copy_conflicts_sync(
         _atomic_write_json(meta_dir / _META_FILE, meta)
     except BaseException as exc:
         # Roll back partial copy mutations AND baseline metadata so copy files and baseline stay in sync.
-        # Two-phase order: first undo newly added paths deepest-first (removing child files and empty
-        # replacement directories), then restore original files/symlinks that may share those paths.
+        # Three-phase order:
+        # 1) undo newly added ('absent') paths deepest-first (removing child files and empty replacement dirs),
+        # 2) restore original directories ('dir') shallowest-first (removing only a replacement file/link
+        #    written in their place, never recursively deleting an existing directory),
+        # 3) restore original files and symlinks that may live under those directories.
         rollback_order = (
             sorted(
                 (item for item in saved_entries if item[1] == "absent"),
                 key=lambda item: item[0].count("/"),
                 reverse=True,
             )
-            + [item for item in saved_entries if item[1] != "absent"]
+            + sorted(
+                (item for item in saved_entries if item[1] == "dir"),
+                key=lambda item: item[0].count("/"),
+            )
+            + [item for item in saved_entries if item[1] not in ("absent", "dir")]
             if mutated_copy
             else []
         )
@@ -1804,11 +1824,20 @@ def prepare_copy_conflicts_sync(
                         os.remove(dst)
                     parent = dst_path.parent
                     while parent != copy_path and relative_posix(parent, copy_path):
+                        if is_dir_link(parent):
+                            break
                         try:
                             os.rmdir(fs_path(parent))
                         except OSError:
                             break
                         parent = parent.parent
+                elif orig_kind == "dir":
+                    if os.path.lexists(dst):
+                        if is_dir_link(dst_path):
+                            remove_dir_link(dst_path)
+                        elif os.path.islink(dst) or os.path.isfile(dst):
+                            os.remove(dst)
+                    os.makedirs(dst, exist_ok=True)
                 elif orig_kind == "symlink" and payload is not None:
                     os.makedirs(fs_path(dst_path.parent), exist_ok=True)
                     if os.path.lexists(dst):

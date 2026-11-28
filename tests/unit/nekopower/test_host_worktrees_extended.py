@@ -876,11 +876,20 @@ async def test_copy_blocks_project_junction_skipped_files_and_drifted_saves(tmp_
     (copy.path / "big.bin").unlink()
 
     # 2. Agent trying to write through project's non-dependency junction/symlink must be blocked.
-    _write(copy.path / "escape" / "pwn.txt", "boom\n")
+    # On POSIX, populate_copy replicates the directory symlink into the copy; replace only the link
+    # with a real directory so the write stays in the copy and exercises project-side link protection.
+    escape_in_copy = copy.path / "escape"
+    escape_symlink_target = os.readlink(escape_in_copy) if escape_in_copy.is_symlink() else None
+    if _copy_trees.is_dir_link(escape_in_copy):
+        _copy_trees.remove_dir_link(escape_in_copy)
+    escape_in_copy.mkdir(exist_ok=True)
+    _write(escape_in_copy / "pwn.txt", "boom\n")
     clash_link = await manager.merge_back(copy)
     assert clash_link.status == "conflict" and "escape/pwn.txt" in clash_link.conflicts
     assert not (outside / "pwn.txt").exists()
-    shutil.rmtree(copy.path / "escape")
+    shutil.rmtree(escape_in_copy)
+    if escape_symlink_target is not None:
+        os.symlink(escape_symlink_target, escape_in_copy)
 
     # Direct defense-in-depth check in apply_copy_changes as well.
     with pytest.raises(OSError, match="directory link"):
@@ -1852,13 +1861,75 @@ async def test_coderabbit_and_greptile_copy_followup_fixes(tmp_path: Path, monke
             raise OSError("simulated meta write failure for file-to-dir rollback")
         orig_awb(path, data)
 
+    def make_fail_meta_once(msg: str) -> Any:
+        failed = {"done": False}
+
+        def _hook(path: Path, data: bytes) -> None:
+            if path.name == "meta.json" and not failed["done"]:
+                failed["done"] = True
+                raise OSError(msg)
+            orig_awb(path, data)
+
+        return _hook
+
     with monkeypatch.context() as mp:
-        mp.setattr(_copy_trees, "_atomic_write_bytes", fail_meta_only)
+        mp.setattr(_copy_trees, "_atomic_write_bytes", make_fail_meta_once("simulated meta write failure for file-to-dir rollback"))
         with pytest.raises(OSError, match="simulated meta write failure for file-to-dir rollback"):
             await manager.prepare_conflicts(cp_fd, clash_fd)
     assert (cp_fd.path / "docs").is_file() and (cp_fd.path / "docs").read_text(encoding="utf-8") == "orig-docs\n"
     assert (cp_fd.path / "clash.txt").read_text(encoding="utf-8") == "wt-clash\n"
+    assert not _copy_trees._has_incomplete_rollback(_copy_trees.copy_meta_dir(cp_fd.path))
     await manager.remove(cp_fd)
+
+    # 7b. Reverse replacement: nested dir `docs/sub/a.txt` replaced by regular file `docs` prunes
+    # emptied subdirs so prepare_conflicts succeeds, rolls back cleanly if meta.json fails, and
+    # never deletes unmerged contents if a subdirectory is non-empty.
+    proj_df = tmp_path / "dir_to_file_rb"
+    _write(proj_df / "docs" / "sub" / "a.txt", "nested-orig\n")
+    _write(proj_df / "clash.txt", "base\n")
+    cp_df = await manager.create(proj_df, tmp_path / "copies" / "df_rb1")
+    _write(cp_df.path / "clash.txt", "wt-clash\n")
+    shutil.rmtree(proj_df / "docs")
+    _write(proj_df / "docs", "project-file-docs\n")
+    _write(proj_df / "clash.txt", "proj-clash\n")
+    clash_df = await manager.merge_back(cp_df)
+    assert clash_df.status == "conflict"
+
+    with monkeypatch.context() as mp:
+        mp.setattr(_copy_trees, "_atomic_write_bytes", make_fail_meta_once("simulated meta write failure for dir-to-file rollback"))
+        with pytest.raises(OSError, match="simulated meta write failure for dir-to-file rollback"):
+            await manager.prepare_conflicts(cp_df, clash_df)
+    assert (cp_df.path / "docs").is_dir()
+    assert (cp_df.path / "docs" / "sub" / "a.txt").read_text(encoding="utf-8") == "nested-orig\n"
+    assert (cp_df.path / "clash.txt").read_text(encoding="utf-8") == "wt-clash\n"
+    assert not _copy_trees._has_incomplete_rollback(_copy_trees.copy_meta_dir(cp_df.path))
+
+    # Without fault injection, empty `docs/sub` is pruned so `docs` can become a regular file cleanly.
+    await manager.prepare_conflicts(cp_df, clash_df)
+    assert (cp_df.path / "docs").is_file()
+    assert (cp_df.path / "docs").read_text(encoding="utf-8") == "project-file-docs\n"
+    await manager.remove(cp_df)
+
+    # Unmerged (skipped oversized) content inside `docs/sub/` blocks replacing `docs` with a file
+    # and survives rollback untouched alongside restored `docs/sub/a.txt`.
+    proj_df_keep = tmp_path / "dir_to_file_keep"
+    _write(proj_df_keep / "docs" / "sub" / "a.txt", "nested-keep\n")
+    _write(proj_df_keep / "clash.txt", "base\n")
+    with monkeypatch.context() as mp:
+        mp.setattr(settings, "WORKTREE_UNTRACKED_MAX_BYTES", 64)
+        cp_df_keep = await manager.create(proj_df_keep, tmp_path / "copies" / "df_keep1")
+        _write(cp_df_keep.path / "docs" / "sub" / "unmerged.bin", "Z" * 200)
+        _write(cp_df_keep.path / "clash.txt", "wt-clash\n")
+        shutil.rmtree(proj_df_keep / "docs")
+        _write(proj_df_keep / "docs", "project-file-docs\n")
+        _write(proj_df_keep / "clash.txt", "proj-clash\n")
+        clash_df_keep = await manager.merge_back(cp_df_keep)
+        assert clash_df_keep.status == "conflict"
+        with pytest.raises(OSError):
+            await manager.prepare_conflicts(cp_df_keep, clash_df_keep)
+    assert (cp_df_keep.path / "docs" / "sub" / "unmerged.bin").read_text(encoding="utf-8") == "Z" * 200
+    assert (cp_df_keep.path / "docs" / "sub" / "a.txt").read_text(encoding="utf-8") == "nested-keep\n"
+    await manager.remove(cp_df_keep)
 
     # 8. If advance_copy_baseline fails writing meta.json after project files landed, keeping
     # base_manifest.json (source="landed") lets compute_copy_merge self-heal meta.start without
