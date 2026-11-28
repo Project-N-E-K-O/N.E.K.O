@@ -386,6 +386,37 @@ async def test_the_enabler_hands_it_to_the_plugins_route_and_starts_nothing_for_
     ]
 
 
+async def test_a_chain_of_starts_each_ended_by_a_newer_one_is_followed_to_the_last(wiring, monkeypatch):
+    # Each start but the last is let go of once it is followed past: the tasks seen are kept, not their
+    # ``id`` (an address a task let go of may be given to a new one).
+    world = _EnablerWorld(wiring, monkeypatch)
+    superseded = wiring.routes.PLUGIN_ENABLE_SUPERSEDED
+
+    async def ended_by_a_newer_one() -> tuple[bool, str]:
+        await asyncio.sleep(0.01)
+        return False, superseded
+
+    async def second() -> tuple[bool, str]:
+        await asyncio.sleep(0.01)
+        # Ended by a still newer start, which takes the global's place as this one ends.
+        monkeypatch.setattr(wiring.shared.Modules, "user_plugin_enable_task", asyncio.ensure_future(last()))
+        return False, superseded
+
+    async def last() -> tuple[bool, str]:
+        await asyncio.sleep(0.03)
+        return True, ""
+
+    world.start_plugins = lambda: asyncio.ensure_future(ended_by_a_newer_one())
+
+    async def newer_starts_take_over() -> None:
+        monkeypatch.setattr(wiring.shared.Modules, "user_plugin_enable_task", asyncio.ensure_future(second()))
+
+    world.after_start = newer_starts_take_over
+
+    assert await world.enabler.enable("plugins") == (True, "")
+    assert world.refreshed == [1]
+
+
 async def test_the_enabler_turns_the_plugins_on_and_tells_the_host_once_they_are_up(wiring, monkeypatch):
     world = _EnablerWorld(wiring, monkeypatch)
 

@@ -26,7 +26,7 @@ from typing import Any
 import pytest
 
 from nekopower.host.capabilities import KIND_BUILTIN
-from nekopower.host.gateway import CALL_TOOL, ENABLE_TOOL, SEARCH_TOOL
+from nekopower.host.gateway import _APPROVAL_STALE, CALL_TOOL, ENABLE_TOOL, SEARCH_TOOL
 from nekopower.host.permissions import DENIED_BY_SETTINGS, GrantScope
 from tests.unit.nekopower.host_fakes import FakeDecisionLLM, make_host
 from tests.unit.nekopower.plugin_server_fake import FakePluginServer
@@ -605,7 +605,7 @@ async def test_text_added_between_the_answer_ahead_of_the_call_and_the_call_turn
     world.permissions.received_external_input(grant.commission_id)
     answer = await _call(world, grant, CALL_TOOL, _enable("browser"))
 
-    assert answer["isError"] is True and _text(answer) == DENIED_BY_SETTINGS
+    assert answer["isError"] is True and _text(answer) == _APPROVAL_STALE
     assert world.enabler.enable_calls == [] and len(asker.asked) == 1
     assert not world.permissions.run_grants(grant.commission_id)
     assert len(_denied_events(await world.ledger.events(grant.commission_id), "host:enable:browser")) == 1
@@ -618,7 +618,7 @@ async def test_a_setting_tightened_and_put_back_while_the_user_was_asked_turns_n
 
     answer = await _call(world, grant, CALL_TOOL, _enable("browser"))
 
-    assert answer["isError"] is True and _text(answer) == DENIED_BY_SETTINGS
+    assert answer["isError"] is True and _text(answer) == _APPROVAL_STALE
     assert world.enabler.enable_calls == [] and len(asker.asked) == 1
     assert not world.permissions.run_grants(grant.commission_id)
 
@@ -718,6 +718,10 @@ class _DeniesWhileAsked:
         (["desktop"], "点击桌面", True),
         (["plugins"], "用个插件", True),
         ([], "screenshot", False),
+        (["browser"], "browser_navigate_page", True),
+        (["desktop"], "computer_screenshot", True),
+        (["desktop"], "typing into a form", True),
+        (["desktop"], "use the computer", True),
     ],
 )
 async def test_a_query_is_about_what_is_off_by_a_few_words_not_by_common_ones(world, off, query, expected):
@@ -813,7 +817,7 @@ async def test_text_added_while_the_registry_is_read_after_the_answer_turns_noth
 
     answer = await _call(world, grant, CALL_TOOL, _enable("browser"))
 
-    assert answer["isError"] is True and _text(answer) == DENIED_BY_SETTINGS
+    assert answer["isError"] is True and _text(answer) == _APPROVAL_STALE
     assert world.enabler.enable_calls == [] and not world.permissions.run_grants(grant.commission_id)
 
 
@@ -831,7 +835,7 @@ async def test_text_added_while_the_computer_is_checked_turns_nothing_on(world):
 
     answer = await _call(world, grant, CALL_TOOL, _enable("browser"))
 
-    assert answer["isError"] is True and _text(answer) == DENIED_BY_SETTINGS
+    assert answer["isError"] is True and _text(answer) == _APPROVAL_STALE
     assert world.provider.switched_off == set(BUILTIN_NAMES) and len(asker.asked) == 1
     assert not world.permissions.run_grants(grant.commission_id)
     events = await world.ledger.events(grant.commission_id)
@@ -852,7 +856,7 @@ async def test_a_setting_tightened_and_put_back_while_the_computer_is_checked_tu
 
     answer = await _call(world, grant, CALL_TOOL, _enable("browser"))
 
-    assert answer["isError"] is True and _text(answer) == DENIED_BY_SETTINGS
+    assert answer["isError"] is True and _text(answer) == _APPROVAL_STALE
     assert world.provider.switched_off == set(BUILTIN_NAMES)
     assert not world.permissions.run_grants(grant.commission_id)
     events = await world.ledger.events(grant.commission_id)
@@ -873,3 +877,53 @@ async def test_nothing_changing_while_the_computer_is_checked_turns_it_on_as_bef
 
     assert answer["isError"] is False and seen == [True]
     assert world.provider.switched_off.isdisjoint(BROWSER_TOOLS)
+
+
+async def test_a_setting_turned_to_deny_while_the_computer_is_checked_is_told_as_the_settings_forbidding_it(world):
+    world.permissions.set_asker(Asker("once"))
+    await world.permission_store.set_mode("browser", "first_ask")
+    grant = await _grant_for(world)
+
+    async def forbidden_meanwhile() -> None:
+        await world.permission_store.set_mode("browser", "deny")
+
+    world.enabler.before_commit = forbidden_meanwhile
+
+    answer = await _call(world, grant, CALL_TOOL, _enable("browser"))
+
+    assert answer["isError"] is True and _text(answer) == DENIED_BY_SETTINGS
+    assert world.provider.switched_off == set(BUILTIN_NAMES)
+    assert not world.permissions.run_grants(grant.commission_id)
+
+
+async def test_plugins_that_failed_for_good_with_the_switch_on_are_told_as_not_turned_on(world):
+    world.permissions.set_asker(Asker("once"))
+    world.enabler.result["plugins"] = (False, "starting the plugin server was cancelled")
+
+    async def switch_stays_on() -> None:
+        world.state["plugins"] = True
+
+    world.enabler.during_enable = switch_stays_on
+    grant = await _grant_for(world)
+
+    text = _text(await _call(world, grant, CALL_TOOL, _enable("plugins")))
+
+    assert "could not be turned on: starting the plugin server was cancelled" in text
+    assert "not ready yet" not in text
+
+
+async def test_a_refusal_by_the_user_does_not_keep_a_later_refusal_by_the_settings_off_the_record(world):
+    world.permissions.set_asker(Asker("deny"))
+    grant = await _grant_for(world)
+
+    await world.gateway.clear_call(grant.commission_id, ENABLE_TOOL, {"capability": "browser"})
+    await world.permission_store.set_mode("browser", "deny")
+    answer = await _call(world, grant, ENABLE_TOOL, {"capability": "browser"})
+
+    assert answer["isError"] is True
+    reasons = [
+        event.payload.get("reason")
+        for event in await world.ledger.events(grant.commission_id)
+        if event.type == "capability_denied" and event.payload.get("capability") == "host:enable:browser"
+    ]
+    assert DENIED_BY_SETTINGS in reasons and len(reasons) == 2

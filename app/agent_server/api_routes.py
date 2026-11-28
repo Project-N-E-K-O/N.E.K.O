@@ -270,15 +270,25 @@ async def set_agent_flags(payload: Dict[str, Any]):
     old_flags = dict(Modules.agent_flags)
     old_analyzer_enabled = bool(Modules.analyzer_enabled)
     browser_use_close_reason: Optional[str] = None
+    # A request that turns something on for a task agent (``_still_valid`` given) does not
+    # take a place in the order of the switch's settings until it writes the switch: one
+    # that fell meanwhile must not overtake a toggle the user made while it waited. A later
+    # setting still overtakes it, as ever.
+    conditional = callable(still_valid)
+    conditional_bf = conditional and bf is True
+    conditional_cf = conditional and cf is True
+    conditional_uf = conditional and uf is True
     browser_use_lifecycle_seq = Modules.browser_use_lifecycle_seq
-    if isinstance(bf, bool):
+    bumped_bf = isinstance(bf, bool) and not conditional_bf
+    if bumped_bf:
         Modules.browser_use_lifecycle_seq += 1
         browser_use_lifecycle_seq = Modules.browser_use_lifecycle_seq
     user_plugin_lifecycle_seq = Modules.user_plugin_lifecycle_seq
-    if isinstance(cf, bool):
+    bumped_cf = isinstance(cf, bool) and not conditional_cf
+    if bumped_cf:
         Modules.computer_use_switch_seq += 1
     computer_use_switch_seq = Modules.computer_use_switch_seq
-    if isinstance(uf, bool):
+    if isinstance(uf, bool) and not conditional_uf:
         Modules.user_plugin_lifecycle_seq += 1
         user_plugin_lifecycle_seq = Modules.user_plugin_lifecycle_seq
     # Agent LLM gate fail (endpoint/key not configured) blocks **only** the
@@ -291,10 +301,10 @@ async def set_agent_flags(payload: Dict[str, Any]):
     # nullifying them, then fall through to the per-flag handling so uf still
     # processes normally.
     if gate.get("ready") is not True and any(x is True for x in (cf, bf)):
-        if not isinstance(bf, bool) and old_flags.get("browser_use_enabled", False):
+        if not bumped_bf and old_flags.get("browser_use_enabled", False):
             Modules.browser_use_lifecycle_seq += 1
             browser_use_lifecycle_seq = Modules.browser_use_lifecycle_seq
-        if not isinstance(cf, bool):
+        if not bumped_cf:
             Modules.computer_use_switch_seq += 1
             computer_use_switch_seq = Modules.computer_use_switch_seq
         _put_switch_off("computer_use_enabled")
@@ -329,6 +339,9 @@ async def set_agent_flags(payload: Dict[str, Any]):
             elif not _approval_stands():
                 # Looked at with nothing awaited between it and the write below.
                 logger.info("[Agent] Computer Use enable skipped: the approval no longer stands")
+            elif conditional_cf and Modules.agent_flags.get("computer_use_enabled", False):
+                # Turned on meanwhile by someone else (the user at the panel): left as it is.
+                logger.info("[Agent] Computer Use already on while a conditional request waited; left as it is")
             elif failed is not None:
                 _put_switch_off("computer_use_enabled")
                 Modules.notification = json.dumps({"code": "AGENT_CU_ENABLE_FAILED", "details": {"error": str(failed)}})
@@ -343,6 +356,9 @@ async def set_agent_flags(payload: Dict[str, Any]):
                     current = _capability_latest_answer("computer_use")
                     ready, reason = bool(current.get("ready")), current.get("reason") or "unknown"
                 if ready:
+                    if conditional_cf:
+                        # Takes its place in the order now, as the write is made.
+                        Modules.computer_use_switch_seq += 1
                     Modules.agent_flags["computer_use_enabled"] = True
                 else:
                     _put_switch_off("computer_use_enabled")
@@ -365,6 +381,9 @@ async def set_agent_flags(payload: Dict[str, Any]):
             elif not _approval_stands():
                 # Looked at with nothing awaited between it and the write below.
                 logger.info("[Agent] Browser Use enable skipped: the approval no longer stands")
+            elif conditional_bf and Modules.agent_flags.get("browser_use_enabled", False):
+                # Turned on meanwhile by someone else (the user at the panel): left as it is.
+                logger.info("[Agent] Browser Use already on while a conditional request waited; left as it is")
             else:
                 ready, reason = dependency_ready, dependency_error
                 if not _set_capability("browser_use", ready, reason, started=started):
@@ -373,6 +392,11 @@ async def set_agent_flags(payload: Dict[str, Any]):
                     current = _capability_latest_answer("browser_use")
                     ready, reason = bool(current.get("ready")), current.get("reason") or "unknown"
                 if ready:
+                    if conditional_bf:
+                        # Takes its place in the order now, as the write is made (a close that
+                        # was meant for an earlier setting then finds it is not its own).
+                        Modules.browser_use_lifecycle_seq += 1
+                        browser_use_lifecycle_seq = Modules.browser_use_lifecycle_seq
                     Modules.agent_flags["browser_use_enabled"] = True
                 else:
                     _put_switch_off("browser_use_enabled")
@@ -400,6 +424,9 @@ async def set_agent_flags(payload: Dict[str, Any]):
         if uf and not _approval_stands():
             logger.info("[Agent] UserPlugin enable skipped: the approval no longer stands")
         elif uf:  # Attempting to enable UserPlugin — non-blocking (like CUA)
+            if conditional_uf:
+                Modules.user_plugin_lifecycle_seq += 1
+                user_plugin_lifecycle_seq = Modules.user_plugin_lifecycle_seq
             Modules.agent_flags["user_plugin_enabled"] = True
             Modules.notification = json.dumps({"code": "AGENT_UP_ENABLED_CHECKING"})
 

@@ -206,9 +206,14 @@ class CapabilityEnabler(Protocol):
     and must look at it again at the moment it writes a switch, after
     whatever it waited on (a check of the computer): a switch is not
     written for an answer that no longer stands.
+    ``may_request`` (optional; the gateway takes a missing one as "yes")
+    says whether a capability may be offered to a task agent at all on this
+    computer; nothing that takes time is looked at in it.
     """
 
     async def can_enable(self, capability: str) -> tuple[bool, str]: ...
+
+    def may_request(self, capability: str) -> bool: ...
 
     async def enable(
         self, capability: str, *, lanlan_name: str | None = None, still_valid: Callable[[], bool] | None = None
@@ -243,6 +248,13 @@ _ENABLE_TARGETS: tuple[_EnableTarget, ...] = (
     _EnableTarget("plugins", ("plugins", "plugin", "user_plugin", "user_plugins"), "plugins", "plugin_entry", ENABLE_PLUGINS, None),
 )
 _ENABLE_NAMES = ", ".join(target.display for target in _ENABLE_TARGETS)
+# What a task agent is told when the answer it was given no longer stands (not a refusal of the settings).
+_APPROVAL_STALE = (
+    "The earlier approval no longer stands because the run or the settings changed. "
+    "Ask again if the task still needs it."
+)
+# What a failed start of the plugins says when it may still come up by itself.
+_PLUGINS_PENDING_HINTS = ("still starting", "did not respond in time")
 # What a search query says when it is about one of the things that may be asked for: whole words,
 # and phrases (the Chinese words are looked for as they stand: they have no spaces to split on).
 _OFF_QUERY_WORDS: dict[str, tuple[frozenset[str], tuple[str, ...]]] = {
@@ -251,7 +263,7 @@ _OFF_QUERY_WORDS: dict[str, tuple[frozenset[str], tuple[str, ...]]] = {
         ("浏览器", "网页", "网站", "网址"),
     ),
     BUILTIN_GROUP_KEYBOARD_MOUSE: (
-        frozenset({"desktop", "screen", "screenshot", "mouse", "keyboard", "click", "hotkey", "shortcut", "cursor", "window", "gui"}),
+        frozenset({"desktop", "computer", "screen", "screenshot", "mouse", "keyboard", "click", "hotkey", "shortcut", "cursor", "window", "gui", "type", "typing"}),
         ("桌面", "屏幕", "截图", "鼠标", "键盘", "点击"),
     ),
     "plugins": (
@@ -1330,6 +1342,8 @@ class CapabilityGateway:
 
         lowered = query.lower()
         words = set(re.findall(r"[a-z0-9_]+", lowered))
+        # A tool name is one word to the pattern above (``browser_navigate_page``): its parts count too.
+        words |= {part for word in tuple(words) for part in word.split("_") if part}
         for display in off:
             target = next((item for item in _ENABLE_TARGETS if item.display == display), None)
             if target is None:
@@ -1536,8 +1550,8 @@ class CapabilityGateway:
         if gate.target is None or gate.commission is None or self._enabler is None:
             return gate.answer or _text("this commission is no longer under way", error=True)
         target, commission = gate.target, gate.commission
-        if gate.denied is not None and (cleared is None or cleared.refusal is None):
-            # (Not twice: what was ruled on ahead has put a refusal on record already.)
+        if gate.denied is not None and (cleared is None or cleared.reason != "settings"):
+            # (Not twice: what was ruled on ahead has put a settings refusal on record already.)
             await self._ledger.append_event(
                 commission.id, "capability_denied", {"capability": f"host:enable:{target.canonical}", "reason": gate.denied}
             )
@@ -1567,14 +1581,15 @@ class CapabilityGateway:
                     return _text(DENIED_BY_SETTINGS, error=True)
                 if cleared.still_valid is not None and not cleared.still_valid():
                     # Approved before text another session added, or before a setting was tightened
-                    # (and put back): that answer is no ground for this. Nothing is turned on.
+                    # (and put back): that answer is no ground for this. Nothing is turned on, and
+                    # the settings do not forbid it now (looked at just above): it may be asked again.
                     await self._ledger.append_event(
                         commission.id,
                         "capability_denied",
-                        {"capability": f"host:enable:{target.canonical}", "reason": DENIED_BY_SETTINGS},
+                        {"capability": f"host:enable:{target.canonical}", "reason": "approval_stale"},
                     )
-                    record.status, record.reason = "denied", "settings"
-                    return _text(DENIED_BY_SETTINGS, error=True)
+                    record.status, record.reason = "denied", "stale_approval"
+                    return _text(_APPROVAL_STALE, error=True)
                 if turned_on_meanwhile:
                     # Turned on meanwhile by someone else (the user at the panel): not turned on again.
                     done, why = True, ""
@@ -1592,15 +1607,21 @@ class CapabilityGateway:
                     if cleared.still_valid is not None and not cleared.still_valid():
                         # The switch was not written because the answer stopped standing while it waited
                         # on the checks of this computer (``CapabilityEnabler.enable``): not a failure of the computer.
+                        forbidden_now = await self._permissions.forbidden(target.permission)
+                        reason = DENIED_BY_SETTINGS if forbidden_now else "approval_stale"
                         await self._ledger.append_event(
                             commission.id,
                             "capability_denied",
-                            {"capability": f"host:enable:{target.canonical}", "reason": DENIED_BY_SETTINGS},
+                            {"capability": f"host:enable:{target.canonical}", "reason": reason},
                         )
-                        record.status, record.reason = "denied", "settings"
-                        return _text(DENIED_BY_SETTINGS, error=True)
+                        record.status, record.reason = "denied", "settings" if forbidden_now else "stale_approval"
+                        return _text(DENIED_BY_SETTINGS if forbidden_now else _APPROVAL_STALE, error=True)
                     record.status = "failed"
-                    if target.builtin_group is None and self._registry.plugins_enabled():
+                    if (
+                        target.builtin_group is None
+                        and self._registry.plugins_enabled()
+                        and (not why or any(hint in why for hint in _PLUGINS_PENDING_HINTS))
+                    ):
                         # The switch stays on for the plugin server to recover: not "could not be turned on".
                         return _text(
                             f"The plugins switch is on, but they are not ready yet: {why or 'still starting'}. "

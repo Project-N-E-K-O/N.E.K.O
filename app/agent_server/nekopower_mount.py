@@ -555,9 +555,11 @@ class _HostCapabilityEnabler:
                 # The route did not start the plugins: the answer stopped standing.
                 return False, "switched off"
             starting = made[-1] if made else modules.user_plugin_enable_task
-        seen: set[int] = set()
+        # The tasks themselves, not their ``id``: a task let go of gives its address to a new one.
+        seen: list[Any] = []
         while True:
-            seen.add(id(starting))
+            if starting is not None:
+                seen.append(starting)
             if starting is not None and not starting.done():
                 remaining = deadline - loop.time()
                 if remaining > 0:
@@ -565,7 +567,9 @@ class _HostCapabilityEnabler:
                 if not starting.done():
                     return False, "the plugins are still starting; try again in a moment"
             replacement = modules.user_plugin_enable_task
-            can_follow = switch_on() and replacement is not None and id(replacement) not in seen
+            can_follow = (
+                switch_on() and replacement is not None and not any(replacement is task for task in seen)
+            )
             if starting is not None and starting.cancelled():
                 # Ended by a newer toggle's own cleanup, or by shutdown: followed if a newer start is there.
                 if can_follow:

@@ -1456,3 +1456,113 @@ async def test_a_request_whose_approval_has_stopped_standing_touches_nothing(sta
         False,
         False,
     ]
+
+
+# ---------------------------------------------------------------------------
+# A request for a task agent that fell does not swallow a toggle the user made while it waited (#4182 review)
+# ---------------------------------------------------------------------------
+
+_KINDS = {
+    "browser": ("browser_use_enabled", "_browser_availability", (True, "")),
+    "keyboard_mouse": ("computer_use_enabled", "_keyboard_mouse_availability", {"enabled": True, "ready": True, "reasons": []}),
+}
+
+
+class _TwoChecks:
+    """Holds the availability checks of two requests on threads until the test lets each of them go."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch, symbol: str, answer: Any) -> None:
+        import threading
+
+        self.lock = threading.Lock()
+        self.order: list[str] = []
+        self.entered = {"first": threading.Event(), "second": threading.Event()}
+        self.gates = {"first": threading.Event(), "second": threading.Event()}
+
+        def availability() -> Any:
+            with self.lock:
+                who = "first" if not self.order else "second"
+                self.order.append(who)
+            self.entered[who].set()
+            assert self.gates[who].wait(5.0)
+            return answer
+
+        monkeypatch.setattr(api_routes, symbol, availability)
+
+    async def entered_check(self, who: str) -> None:
+        assert await asyncio.to_thread(self.entered[who].wait, 5.0)
+
+    def release(self, who: str) -> None:
+        self.gates[who].set()
+
+
+@pytest.mark.parametrize("kind", sorted(_KINDS))
+@pytest.mark.parametrize("task_agent_finishes", ["first", "last"])
+async def test_a_request_for_a_task_agent_that_fell_does_not_swallow_the_users_toggle(
+    stage: Any, monkeypatch: pytest.MonkeyPatch, kind: str, task_agent_finishes: str
+) -> None:
+    flag, symbol, answer = _KINDS[kind]
+    stage.state.agent_flags[flag] = False
+    checks = _TwoChecks(monkeypatch, symbol, answer)
+    approval = _approval(stage)
+    users = asyncio.ensure_future(api_routes.set_agent_flags({flag: True, "_persist_intent": False}))
+    await checks.entered_check("first")
+    agents = asyncio.ensure_future(
+        api_routes.set_agent_flags({flag: True, "_persist_intent": False, "_still_valid": approval})
+    )
+    await checks.entered_check("second")
+    # The answer the task agent's request stands on falls while both wait for their checks.
+    approval.standing[0] = False
+
+    if task_agent_finishes == "first":
+        checks.release("second")
+        await agents
+        checks.release("first")
+        await users
+    else:
+        checks.release("first")
+        await users
+        checks.release("second")
+        await agents
+    await stage.settled()
+
+    assert stage.state.agent_flags[flag] is True
+
+
+@pytest.mark.parametrize("kind", sorted(_KINDS))
+async def test_a_later_toggle_of_the_user_still_overtakes_a_request_for_a_task_agent_that_waits(
+    stage: Any, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    flag, symbol, answer = _KINDS[kind]
+    stage.state.agent_flags[flag] = False
+    checks = _TwoChecks(monkeypatch, symbol, answer)
+    approval = _approval(stage)
+    agents = asyncio.ensure_future(
+        api_routes.set_agent_flags({flag: True, "_persist_intent": False, "_still_valid": approval})
+    )
+    await checks.entered_check("first")
+
+    # The user switches it off at the panel while the request waits; the answer still stands.
+    await api_routes.set_agent_flags({flag: False, "_persist_intent": False})
+    checks.release("first")
+    await agents
+    await stage.settled()
+
+    assert stage.state.agent_flags[flag] is False
+
+
+async def test_the_switch_a_request_for_a_task_agent_wrote_takes_its_place_in_the_order_of_the_browser_lifecycle(
+    stage: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stage.state.agent_flags["browser_use_enabled"] = False
+    monkeypatch.setattr(api_routes, "_browser_availability", lambda: (True, ""))
+    before = stage.state.browser_use_lifecycle_seq
+
+    await api_routes.set_agent_flags(
+        {"browser_use_enabled": True, "_persist_intent": False, "_still_valid": lambda: True}
+    )
+    await stage.settled()
+
+    # A close meant for an earlier setting (``expected_lifecycle_seq=before``) finds it is not its own.
+    assert stage.state.agent_flags["browser_use_enabled"] is True
+    assert stage.state.browser_use_lifecycle_seq > before
