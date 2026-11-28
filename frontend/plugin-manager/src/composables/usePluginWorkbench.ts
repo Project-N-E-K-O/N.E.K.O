@@ -76,6 +76,7 @@ const pluginQualifiers: Record<string, QualifierMatcher<PluginWorkbenchItem>> = 
       case 'crashed':
       case 'pending':
       case 'load_failed':
+      case 'dependencies_pending':
         return (plugin.status || '').toLowerCase() === value
       case 'enabled':
         return plugin.enabled !== false

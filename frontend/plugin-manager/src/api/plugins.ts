@@ -468,8 +468,11 @@ export interface PythonDependencyStatus {
 }
 
 /** Whether a plugin needs its uv.lock dependencies, and the install task if any. */
-export function getPythonDependencies(pluginId: string): Promise<PythonDependencyStatus> {
-  return get(`/plugin/${encodeURIComponent(pluginId)}/python-dependencies`)
+export function getPythonDependencies(
+  pluginId: string,
+  config?: ErrorDisplayRequestConfig,
+): Promise<PythonDependencyStatus> {
+  return get(`/plugin/${encodeURIComponent(pluginId)}/python-dependencies`, config)
 }
 
 /**

@@ -61,6 +61,9 @@ def _resolve_plugin_status(
 
     runtime_load_state_obj = plugin_meta.get("runtime_load_state")
     if isinstance(runtime_load_state_obj, str) and runtime_load_state_obj == "failed":
+        if plugin_meta.get("runtime_load_error_type") == "PythonDependenciesPending":
+            # Same as query_service: starting it offers to install them from its uv.lock.
+            return "dependencies_pending"
         return "load_failed"
     return status_by_plugin.get(plugin_id, "unknown")
 

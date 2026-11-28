@@ -41,6 +41,8 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import sys
+import sysconfig
 
 try:
     import tomllib  # type: ignore[attr-defined]
@@ -229,21 +231,41 @@ def read_lock(plugin_dir: Path) -> dict[str, object]:
 # vendor/ marker
 
 
-def write_lock_marker(vendor_dir: Path, lock_digest: str, *, uv_version: str | None = None) -> None:
-    payload = {"schema": _MARKER_SCHEMA, "lock_sha256": lock_digest, "uv_version": uv_version}
+def runtime_python_tag() -> str:
+    """What compiled wheels in vendor/ depend on: Python minor version and platform.
+
+    The interpreter a plugin runs on matches the host process (version and
+    architecture), so the host's own values describe it.
+    """
+    return f"cp{sys.version_info.major}{sys.version_info.minor}-{sysconfig.get_platform()}"
+
+
+def write_lock_marker(vendor_dir: Path, lock_digest: str, *, python: str | None = None) -> None:
+    payload = {
+        "schema": _MARKER_SCHEMA,
+        "lock_sha256": lock_digest,
+        "python": runtime_python_tag() if python is None else python,
+    }
     (vendor_dir / LOCK_MARKER_NAME).write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
 
 
-def read_lock_marker(vendor_dir: Path) -> str | None:
-    """The lock digest vendor/ was installed from; None when it has no valid marker."""
+def _read_marker(vendor_dir: Path) -> dict[str, object] | None:
     try:
         payload = json.loads((vendor_dir / LOCK_MARKER_NAME).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
-    digest = payload.get("lock_sha256") if isinstance(payload, dict) else None
-    if isinstance(digest, str) and re.fullmatch(r"[0-9a-f]{64}", digest):
-        return digest
-    return None
+    if not isinstance(payload, dict):
+        return None
+    digest = payload.get("lock_sha256")
+    if not (isinstance(digest, str) and re.fullmatch(r"[0-9a-f]{64}", digest)):
+        return None
+    return payload
+
+
+def read_lock_marker(vendor_dir: Path) -> str | None:
+    """The lock digest vendor/ was installed from; None when it has no valid marker."""
+    payload = _read_marker(vendor_dir)
+    return None if payload is None else payload["lock_sha256"]  # type: ignore[return-value]
 
 
 def vendor_installed_from_lock(plugin_dir: Path) -> bool:
@@ -272,17 +294,22 @@ def vendor_matches_lock(old_plugin_dir: Path, new_plugin_dir: Path) -> bool:
 
     True only when the new tree ships no vendor/ but a uv.lock, and the old
     vendor/ carries a marker (it was installed from a lock by the host) for a
-    lock with the same digest. A shipped or hand-copied vendor/ never counts.
+    lock with the same digest and for this Python and platform. A shipped or
+    hand-copied vendor/ never counts.
     """
     if (new_plugin_dir / VENDOR_DIR_NAME).exists() or not has_lock(new_plugin_dir):
         return False
     old_vendor = old_plugin_dir / VENDOR_DIR_NAME
     if not old_vendor.is_dir():
         return False
-    recorded = read_lock_marker(old_vendor)
-    if recorded is None:
+    marker = _read_marker(old_vendor)
+    if marker is None:
+        return False
+    if marker.get("python") != runtime_python_tag():
+        # Installed for another Python or platform (the host was updated):
+        # its compiled wheels may not load, so install again.
         return False
     try:
-        return recorded == lock_sha256(new_plugin_dir)
+        return marker["lock_sha256"] == lock_sha256(new_plugin_dir)
     except OSError:
         return False

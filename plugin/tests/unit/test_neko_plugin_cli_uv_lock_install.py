@@ -197,3 +197,14 @@ def test_new_package_without_lock_does_not_inherit_vendor(tmp_path):
     new = _plugin(tmp_path / "new", lock=None)
 
     assert lock_install.vendor_matches_lock(old, new) is False
+
+
+def test_vendor_installed_for_another_python_is_not_carried_over(tmp_path):
+    # The host's Python or platform changed: compiled wheels in the old vendor/ may not load.
+    old = _plugin(tmp_path / "old")
+    (old / "vendor").mkdir()
+    lock_install.write_lock_marker(old / "vendor", lock_install.lock_sha256(old), python="cp310-win-amd64")
+    new = _plugin(tmp_path / "new")
+
+    assert lock_install.read_lock_marker(old / "vendor") is not None
+    assert lock_install.vendor_matches_lock(old, new) is (lock_install.runtime_python_tag() == "cp310-win-amd64")

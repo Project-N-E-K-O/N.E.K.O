@@ -278,3 +278,33 @@ def test_swap_restores_the_old_vendor_when_the_rename_fails(plugin_dir, monkeypa
 )
 def test_uv_errors_map_to_user_messages(output, code):
     assert deps._classify(output) == code
+
+
+def test_builtin_plugin_reads_as_not_pending_without_an_error(monkeypatch):
+    monkeypatch.setattr(deps, "_plugin_dir", lambda _plugin_id: None)
+
+    assert asyncio.run(deps.get_dependency_status("builtin")) == {
+        "plugin_id": "builtin", "state": None, "pending": False,
+    }
+    with pytest.raises(deps.ServerDomainError) as caught:
+        asyncio.run(deps.request_dependency_install("builtin"))
+    assert caught.value.code == "PLUGIN_DEPENDENCIES_NOT_APPLICABLE"
+
+
+def test_uninstall_during_install_leaves_no_recreated_plugin_dir(tmp_path):
+    plugin_dir = tmp_path / "plugins" / "gone"
+    staging = plugin_dir / ".vendor.staging-0123abcd"
+    staging.mkdir(parents=True)  # what uv --target does after the plugin was removed
+
+    deps._discard_staging(plugin_dir, staging)
+
+    assert not plugin_dir.exists()
+
+
+def test_discarding_staging_never_removes_an_installed_plugin(plugin_dir):
+    staging = plugin_dir / ".vendor.staging-0123abcd"
+    staging.mkdir()
+
+    deps._discard_staging(plugin_dir, staging)
+
+    assert (plugin_dir / "plugin.toml").is_file() and not staging.exists()

@@ -50,6 +50,7 @@ from plugin.neko_plugin_cli.core.uv_lock_install import (
     locked_wheel_sizes,
     parse_install_plan,
     read_lock,
+    runtime_python_tag,
     uv_export_command,
     uv_install_command,
     write_lock_marker,
@@ -140,7 +141,8 @@ _tasks_lock = threading.Lock()
 # Plugin lookup and the dependency check
 
 
-def _plugin_dir(plugin_id: str) -> Path:
+def _plugin_dir(plugin_id: str) -> Path | None:
+    """The installed plugin's directory; None for a built-in plugin, which never installs here."""
     from plugin.server.application.plugins.lifecycle_service import (
         _get_plugin_meta_sync,
         _resolve_plugin_config_path_sync,
@@ -158,13 +160,7 @@ def _plugin_dir(plugin_id: str) -> Path:
         builtin = plugin_dir.resolve().is_relative_to(Path(BUILTIN_PLUGIN_CONFIG_ROOT).resolve())
     except OSError:
         builtin = False
-    if builtin:
-        raise ServerDomainError(
-            code="PLUGIN_DEPENDENCIES_NOT_APPLICABLE",
-            message=f"Plugin '{plugin_id}' is built in; its dependencies are not installed here",
-            status_code=400, details={"plugin_id": plugin_id},
-        )
-    return plugin_dir
+    return None if builtin else plugin_dir
 
 
 def missing_requirements(plugin_dir: Path) -> list[str]:
@@ -309,11 +305,26 @@ def _install_sync(task: _Task, deadline: float) -> Path:
             raise _Failure(_classify((result.stderr or "") + "\n" + (result.stdout or "")), _detail(result))
         staging.mkdir(exist_ok=True)
         assert task.lock_sha256 is not None
-        write_lock_marker(staging, task.lock_sha256)
+        write_lock_marker(staging, task.lock_sha256, python=runtime_python_tag())
         return staging
     except BaseException:
-        shutil.rmtree(staging, ignore_errors=True)
+        _discard_staging(task.plugin_dir, staging)
         raise
+
+
+def _discard_staging(plugin_dir: Path, staging: Path) -> None:
+    """Remove the staging directory, and a plugin directory uv recreated just for it.
+
+    When the plugin is uninstalled while uv runs, ``--target`` may create the
+    staging path (and so the plugin directory) again; an empty leftover would
+    later read as an installed plugin.
+    """
+    shutil.rmtree(staging, ignore_errors=True)
+    try:
+        if not (plugin_dir / "plugin.toml").exists() and not any(plugin_dir.iterdir()):
+            plugin_dir.rmdir()
+    except OSError:
+        pass  # Gone already, or not empty: not ours to remove.
 
 
 async def _commit(task: _Task, staging: Path) -> None:
@@ -333,8 +344,11 @@ async def _commit(task: _Task, staging: Path) -> None:
 
     try:
         await commit()
+    except OSError as exc:
+        # The swap itself failed (the staging directory moved with an upgrade, a locked file...).
+        raise _Failure("lock_changed", f"vendor/ could not be replaced: {exc}") from exc
     finally:
-        await asyncio.to_thread(shutil.rmtree, staging, True)
+        await asyncio.to_thread(_discard_staging, task.plugin_dir, staging)
 
 
 async def _refresh_registry(plugin_id: str) -> None:
@@ -406,6 +420,8 @@ def _status_for(plugin_id: str, plugin_dir: Path) -> dict[str, object]:
 async def get_dependency_status(plugin_id: str) -> dict[str, object]:
     """Whether the plugin needs its locked dependencies, and the current task if any. Disk only."""
     plugin_dir = await asyncio.to_thread(_plugin_dir, plugin_id)
+    if plugin_dir is None:
+        return {"plugin_id": plugin_id, "state": None, "pending": False}
     return await asyncio.to_thread(_status_for, plugin_id, plugin_dir)
 
 
@@ -418,6 +434,12 @@ async def request_dependency_install(plugin_id: str, *, confirm_lock_sha256: str
     after a failure retries. A running task is returned as it is.
     """
     plugin_dir = await asyncio.to_thread(_plugin_dir, plugin_id)
+    if plugin_dir is None:
+        raise ServerDomainError(
+            code="PLUGIN_DEPENDENCIES_NOT_APPLICABLE",
+            message=f"Plugin '{plugin_id}' is built in; its dependencies are not installed here",
+            status_code=400, details={"plugin_id": plugin_id},
+        )
     with _tasks_lock:
         task = _tasks.get(plugin_id)
         if task is not None and task.runner is not None and not task.runner.done():
