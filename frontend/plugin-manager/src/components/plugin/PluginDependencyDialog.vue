@@ -199,7 +199,8 @@ onMounted(async () => {
     finish(false)
     return
   }
-  await submit(null)
+  // Closed while the status was read: never create a plan the user already dismissed.
+  if (!closed) await submit(null)
 })
 
 onBeforeUnmount(() => {

@@ -218,4 +218,19 @@ describe('PluginDependencyDialog', () => {
 
     expect([...root.querySelectorAll('[data-testid="row"]')]).toHaveLength(2)
   })
+
+  it('closing before the first status read returns never starts a plan', async () => {
+    let resolveStatus!: (value: PythonDependencyStatus) => void
+    api.getPythonDependencies.mockImplementationOnce(() => new Promise((resolve) => { resolveStatus = resolve }))
+    const { root, store } = mount()
+    const result = store.request('demo', 'Demo Plugin')
+    await flush()
+
+    buttons(root)[0]!.click()  // Close while the status is still loading
+    await expect(result).resolves.toBe(false)
+    resolveStatus({ plugin_id: 'demo', state: null, pending: true })
+    await flush()
+
+    expect(api.requestPythonDependencyInstall).not.toHaveBeenCalled()
+  })
 })
