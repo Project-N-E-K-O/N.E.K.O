@@ -1907,6 +1907,20 @@
                 if (emotionResult && emotionResult.emotion) {
                     if (typeof window.applyMessageReactionFromEmotion === 'function') {
                         try { window.applyMessageReactionFromEmotion(reactionTarget, emotionResult); } catch (_) { }
+                        // The emoji may come after the avatar emotion; collect it without holding the avatar.
+                        if (reactionTarget && emotionResult.reaction_pending
+                                && typeof window.fetchEmotionReaction === 'function') {
+                            window.fetchEmotionReaction(emotionResult.reaction_pending).then(function (reaction) {
+                                if (!reaction) return;
+                                try {
+                                    window.applyMessageReactionFromEmotion(reactionTarget, {
+                                        emotion: emotionResult.emotion,
+                                        confidence: emotionResult.confidence,
+                                        reaction: reaction
+                                    });
+                                } catch (_) { }
+                            });
+                        }
                     }
                     console.log(window.t('console.emotionAnalysisComplete'), emotionResult);
                     if (typeof window.applyEmotion === 'function') window.applyEmotion(emotionResult.emotion);

@@ -309,7 +309,7 @@ class NekoPowerHost:
             self.task_agents.set_beside_judge(beside)
         # Where a new commission belongs, when its words neither name nor
         # clearly match what is there: one request of the small model.
-        belongs = getattr(decision, "belongs", None)
+        belongs = getattr(decision, "belongs_counted", None) or getattr(decision, "belongs", None)
         if belongs is not None:
             self.task_agents.set_orchestrator_judge(belongs)
         self.brain = TaskBrain(

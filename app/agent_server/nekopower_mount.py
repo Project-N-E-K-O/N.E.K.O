@@ -482,7 +482,12 @@ class _HostCapabilityEnabler:
         return capability in ("browser", "plugins")
 
     async def enable(
-        self, capability: str, *, lanlan_name: Optional[str] = None, still_valid: Optional[Callable[[], bool]] = None
+        self,
+        capability: str,
+        *,
+        lanlan_name: Optional[str] = None,
+        still_valid: Optional[Callable[[], bool]] = None,
+        on_written: Optional[Callable[[], None]] = None,
     ) -> tuple[bool, str]:
         if not _shared.Modules.analyzer_enabled:
             return False, "NekoPower is switched off"
@@ -497,15 +502,22 @@ class _HostCapabilityEnabler:
             request: Dict[str, Any] = {flag: True, "lanlan_name": lanlan_name, "_persist_intent": False}
             if still_valid is not None:
                 request["_still_valid"] = still_valid
+                if on_written is not None:
+                    # Called by the route as it writes the switch itself (``CapabilityEnabler``).
+                    request["_on_written"] = on_written
             await set_agent_flags(request)
             ready, reason = _state(capability)
             return (True, "") if ready else (False, reason or "not ready")
         if capability == "plugins":
-            return await self._enable_plugins(lanlan_name, still_valid=still_valid)
+            return await self._enable_plugins(lanlan_name, still_valid=still_valid, on_written=on_written)
         return False, f"unknown capability {capability}"
 
     async def _enable_plugins(
-        self, lanlan_name: Optional[str], *, still_valid: Optional[Callable[[], bool]] = None
+        self,
+        lanlan_name: Optional[str],
+        *,
+        still_valid: Optional[Callable[[], bool]] = None,
+        on_written: Optional[Callable[[], None]] = None,
     ) -> tuple[bool, str]:
         """Turn the plugins on, or wait for the start that is under way, and say whether they came up.
 
@@ -513,7 +525,9 @@ class _HostCapabilityEnabler:
         (``PLUGIN_ENABLE_SUPERSEDED``) and the first to ask would be told it failed. The task waited
         for is the one the switch's own call made (``_on_plugin_task``), not whatever the global
         holds after that call awaited; and one that was ended by a newer start, with the switch
-        still on, is followed to that one, within the same time.
+        still on, is followed to that one, within the same time. One that came up is followed to a
+        newer start only if the switch went off in between: a newer request to turn on what was on
+        already (the user's switch sent again) does not undo what came up.
         """
         from nekopower.host import mount
 
@@ -531,6 +545,8 @@ class _HostCapabilityEnabler:
 
         loop = asyncio.get_running_loop()
         deadline = loop.time() + _PLUGIN_ENABLE_WAIT_SECONDS
+        # Counted before the start waited for is taken: a put-off after it is seen (``user_plugin_switch_offs``).
+        offs = modules.user_plugin_switch_offs
         existing = modules.user_plugin_enable_task
         if switch_on() and existing is not None and not existing.done():
             starting = existing
@@ -550,6 +566,8 @@ class _HostCapabilityEnabler:
             }
             if still_valid is not None:
                 request["_still_valid"] = still_valid
+                if on_written is not None:
+                    request["_on_written"] = on_written
             await set_agent_flags(request)
             if not made and still_valid is not None and not still_valid():
                 # The route did not start the plugins: the answer stopped standing.
@@ -557,6 +575,7 @@ class _HostCapabilityEnabler:
             starting = made[-1] if made else modules.user_plugin_enable_task
         # The tasks themselves, not their ``id``: a task let go of gives its address to a new one.
         seen: list[Any] = []
+        came_up = False
         while True:
             if starting is not None:
                 seen.append(starting)
@@ -573,24 +592,29 @@ class _HostCapabilityEnabler:
             if starting is not None and starting.cancelled():
                 # Ended by a newer toggle's own cleanup, or by shutdown: followed if a newer start is there.
                 if can_follow:
-                    starting = replacement
+                    starting, offs = replacement, modules.user_plugin_switch_offs
                     continue
                 return False, "starting the plugin server was cancelled"
             if starting is not None and starting.exception() is not None:
                 return False, "starting the plugin server failed"
             outcome = finished(starting)
-            if outcome == (True, "") and can_follow:
-                # A newer start took over while this one finished (its status update was awaited): follow it too.
-                starting = replacement
+            came_up = outcome == (True, "")
+            if came_up and can_follow and modules.user_plugin_switch_offs != offs:
+                # Switched off and on while this one finished (its status update was awaited): the newer
+                # start decides, within the same time.
+                starting, offs = replacement, modules.user_plugin_switch_offs
                 continue
             if isinstance(outcome, tuple) and len(outcome) == 2 and not outcome[0]:
                 reason = str(outcome[1] or "the plugin server did not come up")
                 if reason == PLUGIN_ENABLE_SUPERSEDED and can_follow:
-                    starting = replacement
+                    starting, offs = replacement, modules.user_plugin_switch_offs
                     continue
                 return False, reason
             break
         if not switch_on():
+            if came_up:
+                # Up, and then switched off (the user at the panel, or NekoPower as a whole).
+                return False, "the plugins were switched off meanwhile"
             return False, "no plugin could be started (none installed, or the plugin server did not come up)"
         # The host's plugin list is fetched again at once.
         mount.notify_plugins_changed()

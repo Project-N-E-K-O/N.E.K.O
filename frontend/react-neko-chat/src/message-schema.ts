@@ -295,8 +295,29 @@ const turnIdSchema = z.preprocess((value) => {
   return value;
 }, z.string().min(1).optional());
 
+// Any one emoji (owner decision D20): one grapheme matched whole as an emoji
+// sequence (keycap, flag, tag flag, or pictographs with emoji presentation or
+// the variation selector, skin tones and joiners). Plain text, letters, digits,
+// text-style symbols and emoji carrying other marks are refused.
+const REACTION_EMOJI_SEQUENCE = /^(?:[0-9#*]\u{FE0F}?\u{20E3}|\p{Regional_Indicator}\p{Regional_Indicator}|\u{1F3F4}[\u{E0020}-\u{E007E}]+\u{E007F}|(?:(?:\p{Emoji_Presentation}\u{FE0F}?|\p{Extended_Pictographic}\u{FE0F})\p{Emoji_Modifier}?|\p{Extended_Pictographic}\p{Emoji_Modifier})(?:\u{200D}\p{Extended_Pictographic}\u{FE0F}?\p{Emoji_Modifier}?)*)$/u;
+type GraphemeSegmenter = { segment(input: string): Iterable<unknown> };
+type GraphemeSegmenterCtor = new (locale: undefined, options: { granularity: 'grapheme' }) => GraphemeSegmenter;
+// Intl.Segmenter is in every runtime the chat window ships to, but not in this project's TS lib.
+const SegmenterCtor = typeof Intl !== 'undefined'
+  ? (Intl as unknown as { Segmenter?: GraphemeSegmenterCtor }).Segmenter
+  : undefined;
+const reactionGraphemes: GraphemeSegmenter | null = typeof SegmenterCtor === 'function'
+  ? new SegmenterCtor(undefined, { granularity: 'grapheme' })
+  : null;
+
+export function isSingleReactionEmoji(value: string): boolean {
+  if (!value || value !== value.trim() || !REACTION_EMOJI_SEQUENCE.test(value)) return false;
+  if (reactionGraphemes) return Array.from(reactionGraphemes.segment(value)).length === 1;
+  return Array.from(value).length <= 8;
+}
+
 export const messageReactionSchema = z.object({
-  emoji: z.enum(['😊', '😄', '😃', '🙂', '😌', '🤔', '🧐', '💭', '❓', '👍', '✅', '🙌', '💪', '🎉', '🙏', '🤝', '😮', '👀', '⚠️', '💡', '😔', '😢', '😅', '🙇', '🥳', '✨', '🌟', '💻', '🤖', '📚', '🔧', '❤️', '⭐', '🔥', '🚀', '📌', '😂', '🤗', '🥰', '🥺', '💧', '😲', '❗', '😤', '😠', '💢', '😾']),
+  emoji: z.string().refine(isSingleReactionEmoji, { message: 'reaction must be one emoji' }),
   author: z.string().trim().min(1),
 });
 

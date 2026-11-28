@@ -225,7 +225,8 @@ def test_orcarouter_default_models_resolve():
     from config.api_profiles import DEFAULT_ASSIST_API_PROFILES
 
     profile = DEFAULT_ASSIST_API_PROFILES['orcarouter']
-    models = {v for k, v in profile.items() if k.endswith('_MODEL')}
+    # The decision model answers on /systemone, never as a chat model.
+    models = {v for k, v in profile.items() if k.endswith('_MODEL') and k != 'DECISION_MODEL'}
     assert models
     for model in models:
         assert P.resolve_router_model(model, profile['OPENROUTER_URL']) in P.MODELS_EXTRA_BODY_MAP
