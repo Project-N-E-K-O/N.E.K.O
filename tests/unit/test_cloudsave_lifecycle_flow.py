@@ -812,11 +812,15 @@ async def test_main_server_startup_stays_limited_when_storage_barrier_is_blockin
 
     sentinel_templates = object()
 
+    # The limited mode the startup turns on is put back afterwards: left on, it
+    # blocks every later request through the real app in the same process.
     with patch.dict(shared_state._state, {"templates": shared_state._UNSET}), \
          patch.object(main_server, "_IS_MAIN_PROCESS", True), \
          patch.object(main_server, "templates", sentinel_templates), \
          patch.object(main_server, "role_state", {}), \
          patch.object(main_server, "_config_manager", SimpleNamespace()), \
+         patch.object(main_server, "_main_runtime_limited_mode_enabled", main_server._main_runtime_limited_mode_enabled), \
+         patch.object(main_server, "_main_runtime_limited_mode_reason", main_server._main_runtime_limited_mode_reason), \
          patch.object(main_server, "get_storage_startup_blocking_reason", Mock(return_value="selection_required")), \
          patch.object(main_server, "_start_neko_servers_integration_workers", Mock()) as mock_start_workers, \
          patch.object(main_server, "_ensure_main_server_runtime_initialized", AsyncMock()) as mock_ensure_runtime:
