@@ -690,7 +690,18 @@ class TreeWork:
         freshness is re-checked before deletion so files modified since
         automatic expiry are spared.
         """
+        from nekopower.host.storage import _classify_path_safety
         from nekopower.host.worktrees import WorktreeError
+
+        safety = await asyncio.to_thread(_classify_path_safety, Path(row.path), self._paths.worktrees_dir())
+        if safety not in ("ok", "missing"):
+            logger.warning(
+                "discarded worktree %s path %s failed managed-root safety check (%s); skipping",
+                row.id,
+                row.path,
+                safety,
+            )
+            return False
 
         guard_mtime = row.reason == "expired" and check_mtime is not None and until is not None
         if guard_mtime and not await self._tree_is_gone(row):
@@ -2249,6 +2260,7 @@ class TreeWork:
         check_mtime: Any = None,
     ) -> dict[str, Any]:
         """Automatically remove a left-over worktree older than ``until`` if untouched since then."""
+        from nekopower.host.storage import _classify_path_safety
         from nekopower.host.worktrees import WorktreeError, WorktreeRemovalIncomplete
 
         def evaluate_mtime(path: Path) -> str | None:
@@ -2257,6 +2269,15 @@ class TreeWork:
         async with self._tree_in_hand(tree_id, TREE_STATES_LEFT) as row:
             if row.updated_at > until:
                 return {"expired": False, "reason": "recent"}
+            safety = await asyncio.to_thread(_classify_path_safety, Path(row.path), self._paths.worktrees_dir())
+            if safety not in ("ok", "missing"):
+                logger.warning(
+                    "worktree %s path %s failed managed-root safety check (%s); skipping expiry",
+                    row.id,
+                    row.path,
+                    safety,
+                )
+                return {"expired": False, "reason": "unsafe_path"}
             if check_mtime is not None and not await self._tree_is_gone(row):
                 pre_abort = await asyncio.to_thread(evaluate_mtime, Path(row.path))
                 if pre_abort is not None:

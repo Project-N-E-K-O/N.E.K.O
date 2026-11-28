@@ -1216,6 +1216,7 @@ class Ledger:
             # Not in the script above: in a ledger of an earlier build the
             # column is only there once it was added.
             conn.execute("CREATE INDEX IF NOT EXISTS commissions_by_session ON commissions (session_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS sessions_by_forked_from ON sessions (forked_from)")
             if version < _SESSIONS_SINCE_VERSION:
                 # Only a ledger of a build without sessions. In one of this
                 # build a commission without a session was never given one

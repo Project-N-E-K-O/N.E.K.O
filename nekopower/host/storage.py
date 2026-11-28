@@ -1108,7 +1108,7 @@ class StorageManager:
                     default=row.updated_at,
                 )
                 stale = can_clean and (
-                    row.state == "discarding"
+                    (row.state == "discarding" and row.reason != "expired")
                     or (stats.whole and (not stats.exists or effective_time <= worktree_cutoff))
                 )
                 if can_clean and stats.exists:
@@ -1902,6 +1902,10 @@ class StorageManager:
                         return "scan_incomplete", 0
                     if recheck_mtime is not None and recheck_mtime > until:
                         return "recent", 0
+                    if expected_kept_days is not None and not self.settings.allows_auto_clean(
+                        "work_dirs", expected_kept_days
+                    ):
+                        return "policy_changed", 0
                 removed, freed = remove_dir_safely(target, ta_root)
                 return ("cleaned" if removed else "not_removed"), freed
 

@@ -2070,6 +2070,39 @@ def _remove_worktree_dir(path: Path) -> None:
                 return
     except OSError:
         return
+    git_marker = path / ".git"
+    git_fs = _fs(git_marker)
+    git_bytes: bytes | None = None
+    try:
+        git_st = os.lstat(git_fs)
+        if stat.S_ISREG(git_st.st_mode):
+            with open(git_fs, "rb") as handle:
+                git_bytes = handle.read()
+    except OSError:
+        git_bytes = None
+    if git_bytes is not None:
+        try:
+            os.unlink(git_fs)
+        except OSError:
+            with contextlib.suppress(OSError):
+                os.chmod(git_fs, stat.S_IWRITE | stat.S_IREAD)
+                os.unlink(git_fs)
+        if os.path.lexists(git_fs):
+            return
+        try:
+            os.rmdir(fs_path)
+            return
+        except OSError:
+            with contextlib.suppress(OSError):
+                os.chmod(fs_path, stat.S_IWRITE | stat.S_IREAD | stat.S_IEXEC)
+                os.rmdir(fs_path)
+                return
+            # Root removal failed (e.g. read-only parent or open cwd): restore .git so
+            # _whose() can still prove worktree identity on the next retry.
+            with contextlib.suppress(OSError):
+                with open(git_fs, "wb") as handle:
+                    handle.write(git_bytes)
+            return
     _remove_tree(path)
 
 

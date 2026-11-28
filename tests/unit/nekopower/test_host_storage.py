@@ -1747,5 +1747,143 @@ async def test_round5_storage_safety_and_correctness(tmp_path: Path, monkeypatch
         assert not (part_wt / "removable.txt").exists()
         assert locked.exists()
         assert (part_wt / ".git").exists()
+
+        # 11. _remove_worktree_dir restores .git when rmdir(root) fails after .git was unlinked.
+        rmdir_wt = tmp_path / "rmdir_fail_wt"
+        rmdir_wt.mkdir()
+        git_content = "gitdir: /fake/.git/worktrees/rmdir_fail\n"
+        (rmdir_wt / ".git").write_text(git_content, encoding="utf-8")
+        (rmdir_wt / "done.txt").write_text("bye", encoding="utf-8")
+
+        def fail_rmdir(p: Any) -> None:
+            raise PermissionError("parent directory read-only or cwd in use")
+
+        with monkeypatch.context() as mp:
+            mp.setattr(wt_mod.os, "rmdir", fail_rmdir)
+            wt_mod._remove_worktree_dir(rmdir_wt)
+        assert not (rmdir_wt / "done.txt").exists()
+        assert (rmdir_wt / ".git").read_text(encoding="utf-8") == git_content
+
+        # 12. Ledger sessions_by_forked_from index prevents full table SCAN on forks_of queries.
+        plan = await host.ledger.run(
+            lambda conn: [
+                str(row[3])
+                for row in conn.execute(
+                    "EXPLAIN QUERY PLAN SELECT * FROM sessions WHERE forked_from = ? ORDER BY created_at, rowid",
+                    (sess_a.id,),
+                ).fetchall()
+            ]
+        )
+        assert any("sessions_by_forked_from" in step for step in plan), plan
+
+        # 13. Auto-expired discarding worktree with recent edits is NOT marked stale in overview(),
+        #     whereas a user-discarded discarding worktree remains stale.
+        user_disc_wt = host.paths.worktree_dir("userdisc1")
+        user_disc_wt.mkdir(parents=True)
+        (user_disc_wt / "f.txt").write_text("recent user edit", encoding="utf-8")
+        _set_tree_mtime(user_disc_wt, recent_ts)
+        await host.ledger.add_tree(
+            id="userdisc1",
+            session_id=None,
+            commission_id=None,
+            lanlan_name="Lan",
+            project=DEFAULT_PROJECT,
+            project_dir=str(fake_repo),
+            repo_root=str(fake_repo),
+            path=str(user_disc_wt),
+            workdir=str(user_disc_wt),
+            state="discarding",
+            reason="",
+        )
+        view_disc = await host.storage_overview()
+        wt_by_id = {w["id"]: w for w in view_disc["worktrees"]}
+        assert wt_by_id["expdef01"]["stale"] is False
+        assert wt_by_id["userdisc1"]["stale"] is True
+
+        # 14. Policy disabled DURING _verify_and_remove's second newest_mtime_of scan aborts deletion.
+        pol_sess = await host.ledger.create_session(name="mid-recheck-pol", lanlan_name="Lan", project=DEFAULT_PROJECT)
+        await host.ledger.update_session(pol_sess.id, status="idle")
+        await host.ledger.run(
+            lambda conn: conn.execute("UPDATE sessions SET last_active_at = ? WHERE id = ?", (old_ts, pol_sess.id))
+        )
+        pol_work = host.paths.work_dir(pol_sess.id, DEFAULT_PROJECT)
+        pol_work.mkdir(parents=True)
+        (pol_work / "keep.txt").write_text("must survive", encoding="utf-8")
+        _set_tree_mtime(pol_work, old_ts)
+        await host.set_storage_settings(auto_clean_work_dirs=True, work_dir_kept_days=7)
+        recheck_n = {"n": 0}
+
+        def disable_on_second_scan(path: Path, budget: float = 0.25, *, skip_git: bool = False) -> tuple[float | None, bool]:
+            res = real_newest(path, budget, skip_git=skip_git)
+            if path == pol_work:
+                recheck_n["n"] += 1
+                if recheck_n["n"] == 2:
+                    host.storage.settings._kept = {**(host.storage.settings._kept or {}), "auto_clean_work_dirs": False}
+            return res
+
+        with monkeypatch.context() as mp:
+            mp.setattr(storage_mod, "newest_mtime_of", disable_on_second_scan)
+            out_pol, _ = await host.storage._clean_one_work_dir(
+                "session",
+                DEFAULT_PROJECT,
+                pol_sess.id,
+                until=clock.now - 7 * DAY,
+                skip_project_referenced=True,
+                expected_kept_days=7,
+            )
+        assert out_pol == "policy_changed"
+        assert (pol_work / "keep.txt").read_text(encoding="utf-8") == "must survive"
+    finally:
+        await host.shutdown()
+
+
+async def test_expire_and_retry_tree_reject_linked_wt_root(tmp_path: Path):
+    """Tracked worktree expiry and discarded-tree retry must fail closed when ``wt/`` is a symlink/junction."""
+    import asyncio
+
+    clock = Clock(1_800_000_000.0)
+    host = make_host(tmp_path)
+    host.storage._clock = clock
+    try:
+        old_ts = clock.now - 30 * DAY
+        outside_wt = tmp_path / "outside_wt"
+        victim = outside_wt / "keptlink1"
+        victim.mkdir(parents=True)
+        missing_repo = tmp_path / "missing_repo"
+        (victim / ".git").write_text(
+            f"gitdir: {(missing_repo / '.git' / 'worktrees' / 'keptlink1').as_posix()}\n", encoding="utf-8"
+        )
+        secret = victim / "important.txt"
+        secret.write_text("do not delete", encoding="utf-8")
+        _set_tree_mtime(victim, old_ts)
+
+        wt_root = host.paths.worktrees_dir()
+        wt_root.parent.mkdir(parents=True, exist_ok=True)
+        assert await asyncio.to_thread(_make_dir_link, wt_root, outside_wt)
+
+        linked_path = host.paths.worktree_dir("keptlink1")
+        await host.ledger.add_tree(
+            id="keptlink1",
+            session_id=None,
+            commission_id=None,
+            lanlan_name="Lan",
+            project=DEFAULT_PROJECT,
+            project_dir=str(missing_repo),
+            repo_root=str(missing_repo),
+            path=str(linked_path),
+            workdir=str(linked_path),
+            state="kept",
+        )
+        await host.ledger.run(
+            lambda conn: conn.execute("UPDATE worktrees SET updated_at = ? WHERE id = ?", (old_ts, "keptlink1"))
+        )
+
+        exp = await host.task_agents.expire_tree("keptlink1", until=clock.now - 14 * DAY)
+        assert exp == {"expired": False, "reason": "unsafe_path"}
+        assert secret.read_text(encoding="utf-8") == "do not delete"
+
+        await host.ledger.update_tree("keptlink1", state="discarding", reason="expired")
+        assert await host.task_agents.retry_discarded_tree("keptlink1") is False
+        assert secret.read_text(encoding="utf-8") == "do not delete"
     finally:
         await host.shutdown()
