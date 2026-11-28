@@ -273,6 +273,7 @@
     // Rollback restores config, not necessarily its renderer. Keep weak evidence of the
     // original mounted object: a timed-out attempt may have already mounted a different mesh.
     let rolledBackRenderer = null;
+    const abandonedColdRenderers = new WeakSet();
     let rolledBackPngtuberName = null;
     let committedRenderer = null;
     function getMountedRenderer(type) {
@@ -291,9 +292,9 @@
     }
 
     function rolledBackRendererNeedsRecovery(name) {
-        if (rolledBackRenderer?.name !== name) return null;
         const mounted = getMountedRenderer(configuredRenderer(window.lanlan_config));
-        return !rolledBackRenderer.original.has(mounted);
+        if (abandonedColdRenderers.has(mounted)) return true;
+        return rolledBackRenderer?.name === name ? !rolledBackRenderer.original.has(mounted) : null;
     }
 
     function confirmRestoredRenderer(name, type, mounted) {
@@ -569,6 +570,7 @@
             if (coldTarget) {
                 const occupant = getMountedRenderer(coldTarget.type);
                 if (!occupant || coldTarget.before.has(occupant)) rolledBackRenderer = null;
+                else if (!previousRenderer) abandonedColdRenderers.add(occupant);
             }
             if (window.lanlan_config) {
                 window.lanlan_config.lanlan_name = previousLanlanConfig.lanlan_name;
@@ -913,9 +915,11 @@
 
             // Capture at teardown: cold boot may have completed during the config read. If A is
             // still cold, only remember a failed attempt that actually installed a different model.
-            if (!previousRenderer && localModelPage && ['live2d', 'mmd', 'vrm'].includes(renderer)) {
+            if (!previousRenderer && localModelPage) {
                 const mounted = getMountedRenderer(renderer);
-                previousRenderer = { name: previousLanlanConfig.lanlan_name, original: weakRendererSet(mounted) };
+                if (['live2d', 'mmd', 'vrm'].includes(renderer)) {
+                    previousRenderer = { name: previousLanlanConfig.lanlan_name, original: weakRendererSet(mounted) };
+                }
                 if (!mounted) coldTarget = { type: effectiveModelType, before: weakRendererSet(getMountedRenderer(effectiveModelType)) };
             }
 

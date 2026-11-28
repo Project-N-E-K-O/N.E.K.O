@@ -485,8 +485,7 @@ async function autoInitMMDOnMainPage() {
         await window.pageConfigReady;
     }
 
-    if (window.__nekoPageModelConfigPending || window.appState?.isSwitchingCatgirl
-        || window.mmdManager?.currentModel?.mesh) return;
+    if (window.__nekoPageModelConfigPending || window.appState?.isSwitchingCatgirl) return;
     const modelType = (window.lanlan_config?.model_type || '').toLowerCase();
     const subType = (window.lanlan_config?.live3d_sub_type || '').toLowerCase();
     if (modelType !== 'live3d' || subType !== 'mmd') return;
@@ -512,6 +511,10 @@ async function autoInitMMDOnMainPage() {
     const rendererNeedsRecovery = () => window.appCharacter?.rolledBackRendererNeedsRecovery?.(catgirlName) === true;
     const startupAttemptChanged = () => (window.appState?._switchAttemptCounter || 0) !== startupAttempt;
     const resolvedMmdPath = value => window._mmdConvertPath ? window._mmdConvertPath(value) : value;
+    const mountedManager = window.mmdManager;
+    const mounted = mountedManager?.currentModel;
+    // A timed-out switch can have attached a mesh without committing its owner.
+    if (mounted?.mesh && mounted.url === resolvedMmdPath(startupMmdPath) && !rendererNeedsRecovery()) return;
     const stillOwnsStartup = () => !window.appState?.isSwitchingCatgirl
         && currentStillTargetsMmd()
         && currentMmdPath() === startupMmdPath
@@ -524,18 +527,6 @@ async function autoInitMMDOnMainPage() {
     const scheduleCurrentMmdRecovery = () => {
         if (recoveryScheduled || !currentStillTargetsMmd()) return;
         recoveryScheduled = true;
-        const activeManager = window.mmdManager;
-        const desiredResolvedPath = resolvedMmdPath(currentMmdPath());
-        const activeResolvedPath = activeManager?.currentModel?.url || '';
-        if (activeManager?.currentModel?.mesh && (activeResolvedPath !== desiredResolvedPath || rendererNeedsRecovery())) {
-            // A failed successor may already have mounted its mesh before a
-            // later step failed. Retire that wrong owner so the normal startup
-            // path is allowed to rebuild the rolled-back/current configuration.
-            try { activeManager.dispose?.(); } catch (error) {
-                console.warn('[MMD Init] 回滚恢复时销毁错误 MMD 实例失败:', error);
-            }
-            if (window.mmdManager === activeManager) window.mmdManager = null;
-        }
         Promise.resolve().then(() => autoInitMMDOnMainPage()).catch(error => {
             console.warn('[MMD Init] 回滚/路径刷新后的重新启动失败:', error);
         });
@@ -594,7 +585,17 @@ async function autoInitMMDOnMainPage() {
     try {
         await window._waitForMMDModules(10000);
         if (!await ownsStartupAfterSwitchSettlement()) return;
-        manager = await initMMDModel();
+        // A stale mesh does not make its canvas or renderer stale. loadModel
+        // already retires the old mesh and animation without recreating WebGL.
+        if (mounted?.mesh && window.mmdManager === mountedManager && mountedManager.currentModel === mounted
+            && mountedManager.scene && mountedManager.renderer && !mountedManager._isDisposed
+            && !mountedManager.renderer.getContext?.()?.isContextLost?.()) {
+            manager = mountedManager;
+            _stopMmdIdleRotation();
+            manager.currentAnimationUrl = null;
+        } else {
+            manager = await initMMDModel();
+        }
         if (!await ownsStartupAfterSwitchSettlement()) return;
         if (!manager) {
             const replacementManager = window.mmdManager;

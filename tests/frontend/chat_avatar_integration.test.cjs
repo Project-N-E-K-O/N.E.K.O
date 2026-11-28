@@ -2190,7 +2190,7 @@ test('MMD startup restarts from current config after an MMD-to-MMD takeover disp
     const originalManager = h.window.mmdManager;
 
     assert.equal(await h.window.handleCatgirlSwitch('C', 'B', { switchRevision: 83 }), false);
-    const failedManager = h.window.mmdManager;
+    const failedManager = h.window.mmdManager, staleMesh = failedManager.currentModel.mesh;
     assert.ok(originalManager._isDisposed);
     assert.equal(h.window.lanlan_config.lanlan_name, 'B');
     firstSettings.resolve();
@@ -2201,9 +2201,9 @@ test('MMD startup restarts from current config after an MMD-to-MMD takeover disp
     const restoredManager = h.window.mmdManager;
     assert.ok(startup.loads.includes(pathC), 'the failed takeover reached the replacement MMD manager');
     assert.notEqual(restoredManager, originalManager);
-    assert.notEqual(restoredManager, failedManager);
+    assert.equal(restoredManager, failedManager, 'a failed model can leave a healthy WebGL renderer');
     assert.equal(restoredManager?.currentModel?.url, pathB, 'the fresh manager must actually own the restored mesh');
-    assert.ok(restoredManager.currentModel.mesh);
+    assert.notEqual(restoredManager.currentModel.mesh, staleMesh);
     assert.ok(bSettingsReads >= 2, 'recovery must re-read B settings rather than reuse the disposed startup instance');
 });
 
@@ -2781,6 +2781,106 @@ test('healthy same-current chat socket is not replaced, including encoded names 
     }
 });
 
+for (const sharedAsset of [false, true]) test('cold pinned MMD startup replaces a mesh left by the first timed-out switch (shared=' + sharedAsset + ')', {timeout: 5000}, async () => {
+    const h = harness(), w = h.window, started = deferred(), page = deferred(), idle = deferred(), resume = deferred();
+    const a = '/static/mmd/A/A.pmx', b = sharedAsset ? a : '/static/mmd/B/B.pmx';
+    let failedMesh;
+    const cfgA = desktopAvatarConfig('A', 'mmd', 0, a);
+    const startup = startDesktopAvatarBootstrap(h, undefined, async url => {
+        if (String(url).startsWith('/api/config/page_config')) {
+            assert.equal(new URL(String(url), w.location.href).searchParams.get('lanlan_name'), 'A');
+            started.resolve();
+            await page.promise;
+            return {ok: true, json: async () => cfgA};
+        }
+        if (url === '/api/characters') return {ok: true, json: async () => ({'猫娘': {
+            A: {...cfgA, mmd: a},
+            B: {model_type: 'mmd', mmd: b, mmd_idle_animation: '/B.vmd'},
+        }})};
+        return {ok: true, json: async () => ({})};
+    }, false, {
+        async mmdLoadModel({manager, loads}) {
+            if (loads.length !== 1) return;
+            manager.loadAnimation = async () => { idle.resolve(); await resume.promise; };
+            manager.playAnimation = () => {};
+        },
+    });
+    w.location = {pathname: '/A', search: '', href: 'https://example.test/A'};
+    w.__NEKO_MULTI_WINDOW__ = false;
+    Object.assign(w.lanlan_config, {lanlan_name: '', model_type: '', live3d_sub_type: ''});
+    await started.promise;
+    const switching = w.handleCatgirlSwitch('B', '', {switchRevision: 83});
+    await idle.promise;
+    assert.equal(w.mmdManager.currentModel.url, b);
+    failedMesh = w.mmdManager.currentModel.mesh;
+    await advanceModelBootTimer(h, 45000);
+    assert.equal(w.appState.isSwitchingCatgirl, false);
+    assert.equal(w.mmdManager.currentModel.url, b, 'watchdog leaves the failed mesh');
+    page.resolve();
+    try {
+        assert.equal(await startup.ready, true);
+        await startup.vrmBoot;
+        await new Promise(setImmediate);
+        assert.equal(w.mmdModel, a);
+        assert.equal(w.mmdManager.currentModel.url, a, 'the mounted model must match the accepted named snapshot');
+        assert.notEqual(w.mmdManager.currentModel.mesh, failedMesh, 'same asset does not prove same owner');
+        assert.deepEqual(startup.loads, [b, a]);
+    } finally {
+        resume.resolve();
+        assert.equal(await switching, false);
+    }
+    assert.equal(w.mmdManager.currentModel.url, a, 'retired B must not disturb A when it resumes');
+    await w.autoInitMMDOnMainPage();
+    assert.deepEqual(startup.loads, [b, a], 'do not reload the healthy A mesh');
+});
+
+test('MMD animation completion cannot change the reused manager for a new mesh', async () => {
+    const h = harness(), release = deferred();
+    h.load('static/mmd/mmd-manager.js');
+    const manager = new h.window.MMDManager();
+    manager.currentModel = { mesh: {} };
+    manager.animationModule = { async loadAnimation() { await release.promise; return null; } };
+    const retired = manager.loadAnimation('/B.vmd');
+    manager.currentModel = { mesh: {} };
+    manager.animationModule = { async loadAnimation() { return {}; } };
+    await manager.loadAnimation('/A.vmd');
+    release.resolve();
+    assert.equal(await retired, null);
+    assert.equal(manager.currentAnimationUrl, '/A.vmd');
+});
+
+for (const changePath of [true, false]) {
+    test('cold VRM same-name same-revision snapshot respects the accepted asset (changed=' + changePath + ')', {timeout: 5000}, async () => {
+        const h = setupReviewWindow('/'), w = h.window, started = deferred(), page = deferred();
+        const old = '/static/vrm/A-old.vrm', desired = changePath ? '/static/vrm/A-new.vrm' : old;
+        w.__NEKO_MULTI_WINDOW__ = false;
+        h.context.fetch = async url => {
+            if (String(url).startsWith('/api/config/page_config')) {
+                started.resolve();
+                await page.promise;
+                return {ok: true, json: async () => desktopAvatarConfig('A', 'vrm', 83, desired)};
+            }
+            // Return the same old role-list asset, even after the finer-grained snapshot arrives.
+            if (url === '/api/characters') return {ok: true, json: async () => ({'猫娘': {
+                A: {model_type: 'vrm', vrm: old},
+            }})};
+            return {ok: true, json: async () => ({})};
+        };
+        const loads = reviewFbAttachVrm(h);
+        Object.assign(w.lanlan_config, {lanlan_name: '', model_type: '', live3d_sub_type: ''});
+        const ready = w.startPageConfigLoad(), boot = w.initVRMModel();
+        await started.promise;
+        assert.equal(await w.handleCatgirlSwitch('A', '', {switchRevision: 83}), true);
+        assert.equal(w.vrmManager.currentModel.url, old);
+        page.resolve();
+        assert.equal(await ready, true);
+        await boot;
+        assert.equal(w.vrmModel, desired);
+        assert.equal(w.vrmManager.currentModel.url, desired, 'do not leave the old asset mounted beside the new path');
+        assert.deepEqual(loads, changePath ? [old, desired] : [old]);
+    });
+}
+
 test('same-character HTTP refresh still fills a cold VRM model path without a switch attempt', async () => {
     const h = harness(), calls = avatarCalls(h);
     h.context.URLSearchParams = URLSearchParams;
@@ -2848,6 +2948,7 @@ test('MMD startup restores the original settings after watchdog rollback between
     const takeover = h.window.handleCatgirlSwitch('B', 'A', { switchRevision: 83 });
     await idleStarted.promise;
     assert.equal(failedManager.currentModel.character, 'B', 'the failed takeover already mounted its mesh');
+    const staleMesh = failedManager.currentModel.mesh;
     assert.equal(failedManager.appliedPhysics.strength, 1.8);
     assert.ok(originalManager._isDisposed);
     const watchdog = [...h.timers.values()].find(x => x.delay === 45000);
@@ -2861,9 +2962,10 @@ test('MMD startup restores the original settings after watchdog rollback between
     await new Promise(setImmediate);
     const restoredManager = h.window.mmdManager;
     assert.notEqual(restoredManager, originalManager);
-    assert.notEqual(restoredManager, failedManager);
+    assert.equal(restoredManager, failedManager, 'reuse the live renderer, not its failed owner');
     assert.equal(restoredManager?.currentModel?.character, 'A');
     assert.equal(restoredManager.currentModel.url, shared);
+    assert.notEqual(restoredManager.currentModel.mesh, staleMesh);
     assert.equal(restoredManager.physicsStrength, 0.4);
     assert.deepEqual([settingsA, attempts], [2, 2]);
     assert.equal(h.window.appCharacter.needsCurrentCharacterRecovery('A', { fromSnapshot: true }), false);

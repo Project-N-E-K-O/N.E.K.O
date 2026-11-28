@@ -444,7 +444,7 @@ async function initVRMModelWithPathRetries(pathRetries, previousOwner = null) {
         window._isVRMLoading = true;
         let startupName = window.lanlan_config?.lanlan_name || '';
         const initialAttempt = window.appState?._switchAttemptCounter || 0;
-        let startupManager, loadToken, selectedRenderer;
+        let startupManager, loadToken, selectedRenderer, sameRevisionPathRefresh;
         let loadStarted = false;
         const rendererType = () => {
             const config = window.lanlan_config;
@@ -455,6 +455,12 @@ async function initVRMModelWithPathRetries(pathRetries, previousOwner = null) {
             if ((startupName && startupName !== window.lanlan_config?.lanlan_name)
                 || (startupManager && window.vrmManager !== startupManager)
                 || (selectedRenderer !== undefined && selectedRenderer !== rendererType())) return false;
+            if (sameRevisionPathRefresh) {
+                // A different accepted revision/attempt supersedes this path-only refresh.
+                if (window.lanlan_config?.switch_revision !== sameRevisionPathRefresh.revision
+                    || window.appState?._switchAttemptCounter !== sameRevisionPathRefresh.attempt) return false;
+                if (!loadStarted) return true;
+            }
             if (loadStarted) return startupManager._activeLoadToken === loadToken;
             // A saved-path retry is still the same startup until its next load
             // claims a token. An intervening failed attempt isn't a takeover.
@@ -488,6 +494,20 @@ async function initVRMModelWithPathRetries(pathRetries, previousOwner = null) {
             await window.pageConfigReady;
         }
         const resolvedStartupName = window.lanlan_config?.lanlan_name || '';
+        const mounted = window.vrmManager?.currentModel;
+        const revision = window.lanlan_config?.switch_revision;
+        const configuredPath = window.vrmModel;
+        if (rendererType() === 'vrm' && mounted?.url && typeof configuredPath === 'string'
+            && configuredPath.trim() && !['undefined', 'null'].includes(configuredPath)
+            && window.appCharacter?.hasCommittedPageModel?.(resolvedStartupName, revision)) {
+            const url = window.convertVRMModelPath(configuredPath);
+            const escaped = /^\/(?:user_vrm|static\/vrm|workshop)\//.test(url)
+                ? url.split('/').map(encodeURIComponent).join('/') : url;
+            if (mounted.url !== url && mounted.url !== escaped) {
+                sameRevisionPathRefresh = { revision, attempt: window.appState?._switchAttemptCounter };
+                startupName ||= resolvedStartupName;
+            }
+        }
         if (!startupName && resolvedStartupName) {
             const resolvedModelType = (window.lanlan_config?.model_type || '').toLowerCase();
             const resolvedLive3DSubType = (window.lanlan_config?.live3d_sub_type || '').toLowerCase();
