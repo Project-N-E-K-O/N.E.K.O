@@ -1,6 +1,6 @@
 <template>
   <section class="perm-tab">
-    <PluginLegacyConsentBanner :plugin-id="pluginId" @changed="load" />
+    <PluginLegacyConsentBanner :plugin-id="pluginId" @changed="load()" />
     <div v-if="loading && !panel" class="perm-tab__state">{{ t('pluginConsent.tab.loading') }}</div>
     <div v-else-if="!panel" class="perm-tab__state">
       {{ t('pluginConsent.tab.loadFailed') }}
@@ -405,21 +405,26 @@ function needsRefresh(p: PermissionPanel | null): boolean {
 }
 /** A running scan is followed every 5 s; a failed refresh or a declaration still unreadable waits longer each time. */
 function nextPollMs() {
-  const held = panel.value && !scanPending(panel.value) ? Math.max(heldPolls - 1, 0) : 0
+  const held = panel.value && !scanPending(panel.value) ? heldPolls : 0
   return Math.min(SCAN_POLL_MS * 2 ** Math.max(failedPolls, held), MAX_POLL_MS)
 }
-function shown(next: PermissionPanel) {
+/**
+ * Only the timed reads of a finished scan move the backoff for an unreadable
+ * declaration; a user action or a running scan starts it over.
+ */
+function shown(next: PermissionPanel, timed = false) {
   panel.value = next
   failedPolls = 0
-  heldPolls = next.manifest === 'unavailable' ? heldPolls + 1 : 0
+  heldPolls = next.manifest === 'unavailable' && timed && !scanPending(next) ? heldPolls + 1 : 0
 }
+const poll = () => load(true)
 
 function stopPolling() {
   if (pollTimer !== null) clearTimeout(pollTimer)
   pollTimer = null
 }
 
-async function load() {
+async function load(timed = false) {
   if (saving > 0) {
     // Not even sent: its answer could arrive after the save and predate it.
     reloadAfterSave = true
@@ -439,7 +444,7 @@ async function load() {
     if (seq !== loadSeq || unmounted) return
     // A refresh that fails keeps what is shown: only the first load can fail the tab.
     if (validPanel(nextPanel)) {
-      shown(nextPanel)
+      shown(nextPanel, timed)
     } else if (panel.value) {
       failedPolls++
     }
@@ -456,12 +461,12 @@ async function load() {
       }
     }
     // Follow a running scan or a held declaration; retry a failed refresh too, waiting longer each time.
-    if (needsRefresh(panel.value)) pollTimer = setTimeout(load, nextPollMs())
+    if (needsRefresh(panel.value)) pollTimer = setTimeout(poll, nextPollMs())
   } finally {
     if (seq === loadSeq) loading.value = false
   }
 }
-onMounted(load)
+onMounted(() => load())
 onBeforeUnmount(() => {
   unmounted = true
   stopPolling()
@@ -663,7 +668,7 @@ async function save(row: PanelRow, run: () => Promise<PermissionPanel>) {
       } else if (pollTimer === null && needsRefresh(panel.value)) {
         // Resume what the save paused: following a running scan, or retrying a
         // failed refresh (with its backoff), also after a failed save.
-        pollTimer = setTimeout(load, nextPollMs())
+        pollTimer = setTimeout(poll, nextPollMs())
       }
     }
   }

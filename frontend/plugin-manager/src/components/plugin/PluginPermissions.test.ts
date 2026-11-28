@@ -259,6 +259,51 @@ describe('PluginPermissions tab', () => {
     }
   })
 
+  it('starts the held-declaration backoff over after a user action', async () => {
+    vi.useFakeTimers()
+    try {
+      const held = panel({ manifest: 'unavailable', rows: [row({ declared: null, reconcile: null, anytime_allowed: null })] })
+      serve(held)
+      const root = await mount()
+      await vi.advanceTimersByTimeAsync(5000)
+      await flush()
+      expect(api.getPermissionPanel).toHaveBeenCalledTimes(2)
+      // The timed read moved the backoff to 10 s; a reload asked for by the user starts it over.
+      q(root, 'banner-changed')!.click()
+      await flush()
+      expect(api.getPermissionPanel).toHaveBeenCalledTimes(3)
+      await vi.advanceTimersByTimeAsync(5000)
+      await flush()
+      expect(api.getPermissionPanel).toHaveBeenCalledTimes(4)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not count the reads during a scan toward the held-declaration backoff', async () => {
+    vi.useFakeTimers()
+    try {
+      const rows = [row({ declared: null, reconcile: null, anytime_allowed: null })]
+      const scanning = panel({ manifest: 'unavailable', rows, analysis: { ...panel().analysis, status: 'running' } })
+      const held = panel({ manifest: 'unavailable', rows })
+      serve(held)
+      api.getPermissionPanel.mockReset()
+        .mockResolvedValueOnce(scanning).mockResolvedValueOnce(scanning).mockResolvedValueOnce(scanning)
+        .mockResolvedValue(held)
+      await mount()
+      await vi.advanceTimersByTimeAsync(15000)
+      await flush()
+      // Three reads while scanning, then the finished scan with the declaration still held.
+      expect(api.getPermissionPanel).toHaveBeenCalledTimes(4)
+      // The first step after the scan is 10 s, not a backoff grown during it.
+      await vi.advanceTimersByTimeAsync(10000)
+      await flush()
+      expect(api.getPermissionPanel).toHaveBeenCalledTimes(5)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('reads the shared plugin-wide consent again after a decision, not after a failed one', async () => {
     serve(panel({ rows: [row({ state: 'undecided', condition: null })] }))
     api.decidePermission.mockRejectedValueOnce(new Error('x')).mockResolvedValue(panel())
