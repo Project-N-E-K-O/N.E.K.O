@@ -177,15 +177,26 @@ class ModelGatewayService:
         )
 
     @staticmethod
-    def _make_pooled_client() -> httpx.AsyncClient:
-        from utils.http.pool_utils import DEFAULT_HTTP_KEEPALIVE_EXPIRY_SECONDS
+    def _make_pooled_client(proxy_mount_map: dict[str, str | None]) -> httpx.AsyncClient:
+        from utils.http.pool_utils import (
+            DEFAULT_HTTP_KEEPALIVE_EXPIRY_SECONDS,
+            build_async_proxy_mounts,
+            create_default_ssl_context,
+            make_stateless_cookie_jar,
+        )
 
         httpx = load_httpx()
+        verify = create_default_ssl_context()
+        limits = httpx.Limits(keepalive_expiry=DEFAULT_HTTP_KEEPALIVE_EXPIRY_SECONDS)
         # Do not install blind transport-level POST retry here: _send_pooled_request
         # coordinates stale-socket recovery with observation.restart and before_send.
         return httpx.AsyncClient(
             follow_redirects=False,
-            limits=httpx.Limits(keepalive_expiry=DEFAULT_HTTP_KEEPALIVE_EXPIRY_SECONDS),
+            verify=verify,
+            limits=limits,
+            cookies=make_stateless_cookie_jar(),
+            mounts=build_async_proxy_mounts(proxy_mount_map, verify=verify, limits=limits),
+            trust_env=False,
         )
 
     @staticmethod
@@ -227,15 +238,16 @@ class ModelGatewayService:
         from utils.http.pool_utils import (
             credential_fingerprint,
             http_origin_key,
-            proxy_env_fingerprint,
+            snapshot_http_proxy_config,
         )
 
         loop = asyncio.get_running_loop()
+        proxy_fp, proxy_mount_map = snapshot_http_proxy_config()
         key = (
             http_origin_key(slot.base_url),
             slot.protocol,
             credential_fingerprint(slot.api_key),
-            proxy_env_fingerprint(),
+            proxy_fp,
         )
         pool = self._pools.get(loop)
         if pool is not None:
@@ -248,7 +260,7 @@ class ModelGatewayService:
                 existing.evicted = True
                 pool.pop(key, None)
 
-        made = await asyncio.to_thread(self._make_pooled_client)
+        made = await asyncio.to_thread(self._make_pooled_client, proxy_mount_map)
         pool = self._pools.get(loop)
         if pool is None:
             pool = OrderedDict()

@@ -164,8 +164,10 @@ class ChatOpenAI:
             self.extra_body = {**self.extra_body, **model_kwargs["extra_body"]}
 
         from utils.http.pool_utils import (
+            build_async_proxy_mounts,
             build_split_http_timeout,
             install_stale_connection_retry,
+            make_stateless_cookie_jar,
         )
         from .http_pool import (
             SHARED_LLM_HTTP_POOL_KEEPALIVE_SECONDS,
@@ -174,7 +176,11 @@ class ChatOpenAI:
         )
 
         _api_key = "sk-placeholder" if api_key is None else api_key
-        effective_base_url = base_url if base_url else (os.environ.get("OPENAI_BASE_URL") or "https://api.openai.com/v1")
+        effective_base_url = (
+            base_url
+            if base_url is not None
+            else os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
+        )
         _timeout = build_split_http_timeout(timeout)
         if _timeout is None:
             _timeout = build_split_http_timeout(request_timeout)
@@ -203,6 +209,7 @@ class ChatOpenAI:
         self._borrowed_http_release: Any = None
         self._closed = False
         async_http = None
+        release_borrowed: Any = None
         pool_ctx = (
             get_active_shared_http_pool_context()
             if (keepalive_expiry is None and use_shared_http_pool)
@@ -211,17 +218,25 @@ class ChatOpenAI:
         if pool_ctx is not None:
             pool_loop, pool_epoch = pool_ctx
 
-            def _make_shared_async_http():
+            def _make_shared_async_http(proxy_mount_map: dict[str, str | None]):
                 import httpx
                 from openai import DEFAULT_CONNECTION_LIMITS
 
+                limits = httpx.Limits(
+                    max_connections=DEFAULT_CONNECTION_LIMITS.max_connections,
+                    max_keepalive_connections=DEFAULT_CONNECTION_LIMITS.max_keepalive_connections,
+                    keepalive_expiry=SHARED_LLM_HTTP_POOL_KEEPALIVE_SECONDS,
+                )
                 return DefaultAsyncHttpxClient(
                     verify=ssl_context,
-                    limits=httpx.Limits(
-                        max_connections=DEFAULT_CONNECTION_LIMITS.max_connections,
-                        max_keepalive_connections=DEFAULT_CONNECTION_LIMITS.max_keepalive_connections,
-                        keepalive_expiry=SHARED_LLM_HTTP_POOL_KEEPALIVE_SECONDS,
+                    limits=limits,
+                    cookies=make_stateless_cookie_jar(),
+                    mounts=build_async_proxy_mounts(
+                        proxy_mount_map,
+                        verify=ssl_context,
+                        limits=limits,
                     ),
+                    trust_env=False,
                 )
 
             async_http, release_borrowed = acquire_shared_async_http_client(
@@ -235,10 +250,8 @@ class ChatOpenAI:
                 label="LLM HTTP",
                 expected_epoch=pool_epoch,
             )
-            if async_http is not None:
-                self._borrowed_async_http = True
-                self._borrowed_http_release = release_borrowed
 
+        borrowed = async_http is not None
         if async_http is None:
             async_http = DefaultAsyncHttpxClient(**http_kw)
             # Only opt pooled/warm clients (explicit keepalive_expiry) into
@@ -246,14 +259,43 @@ class ChatOpenAI:
             if keepalive_expiry is not None:
                 async_http = install_stale_connection_retry(async_http, label="LLM HTTP")
 
-        sync_http = DefaultHttpxClient(**http_kw)
-        if keepalive_expiry is not None:
-            sync_http = install_stale_connection_retry(sync_http, label="LLM HTTP")
+        sync_http = None
+        created_aclient = None
+        created_client = None
+        try:
+            sync_http = DefaultHttpxClient(**http_kw)
+            if keepalive_expiry is not None:
+                sync_http = install_stale_connection_retry(sync_http, label="LLM HTTP")
 
-        client_kw["http_client"] = async_http
-        self._aclient = AsyncOpenAI(**client_kw)
-        client_kw["http_client"] = sync_http
-        self._client = OpenAI(**client_kw)
+            client_kw["http_client"] = async_http
+            created_aclient = AsyncOpenAI(**client_kw)
+            client_kw["http_client"] = sync_http
+            created_client = OpenAI(**client_kw)
+        except BaseException:
+            if release_borrowed is not None:
+                release_borrowed()
+            elif created_aclient is not None:
+                _close_async_openai_client_from_sync_best_effort(created_aclient)
+            elif not borrowed:
+                _close_async_openai_client_from_sync_best_effort(async_http)
+            if created_client is not None:
+                try:
+                    created_client.close()
+                except Exception:
+                    # Best-effort cleanup when constructor fails midway.
+                    pass
+            elif sync_http is not None:
+                try:
+                    sync_http.close()
+                except Exception:
+                    # Best-effort cleanup when constructor fails midway.
+                    pass
+            raise
+
+        self._borrowed_async_http = borrowed
+        self._borrowed_http_release = release_borrowed
+        self._aclient = created_aclient
+        self._client = created_client
         self._client_finalizer = weakref.finalize(
             self,
             _close_chat_openai_clients_best_effort,
@@ -333,12 +375,15 @@ class ChatOpenAI:
         if stream:
             p["stream_options"] = {"include_usage": True}
         if "timeout" in overrides:
-            from utils.http.pool_utils import build_split_http_timeout
-
             raw_timeout = overrides.pop("timeout")
-            split_timeout = build_split_http_timeout(raw_timeout)
-            if split_timeout is not None:
-                p["timeout"] = split_timeout
+            if raw_timeout is None:
+                p["timeout"] = None
+            else:
+                from utils.http.pool_utils import build_split_http_timeout
+
+                split_timeout = build_split_http_timeout(raw_timeout)
+                if split_timeout is not None:
+                    p["timeout"] = split_timeout
         # Anything else the caller passed (e.g. logit_bias) goes
         # straight through to the SDK call.
         p.update(overrides)

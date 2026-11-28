@@ -804,8 +804,10 @@ class ChatAnthropic:
         self.tool_choice = tool_choice
 
         from utils.http.pool_utils import (
+            build_async_proxy_mounts,
             build_split_http_timeout,
             install_stale_connection_retry,
+            make_stateless_cookie_jar,
         )
         from .http_pool import (
             SHARED_LLM_HTTP_POOL_KEEPALIVE_SECONDS,
@@ -816,8 +818,8 @@ class ChatAnthropic:
         _api_key = api_key or "sk-placeholder"
         effective_base_url = (
             self.base_url
-            if self.base_url
-            else (os.environ.get("ANTHROPIC_BASE_URL") or "https://api.anthropic.com")
+            if self.base_url is not None
+            else os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com")
         )
         _timeout = build_split_http_timeout(timeout)
         if _timeout is None:
@@ -838,6 +840,10 @@ class ChatAnthropic:
         self._borrowed_async_http = False
         self._borrowed_http_release: Any = None
         self._closed = False
+        borrowed = False
+        release_borrowed: Any = None
+        async_http = None
+        sync_http = None
         sync_kw = dict(client_kw)
         async_kw = dict(client_kw)
         try:
@@ -865,7 +871,6 @@ class ChatAnthropic:
                                 keepalive_expiry=keepalive_expiry,
                             )
 
-                async_http = None
                 pool_ctx = (
                     get_active_shared_http_pool_context()
                     if (keepalive_expiry is None and use_shared_http_pool)
@@ -874,8 +879,13 @@ class ChatAnthropic:
                 if pool_ctx is not None:
                     pool_loop, pool_epoch = pool_ctx
 
-                    def _make_shared_async_http():
-                        shared_http_kw: dict[str, Any] = {"verify": ssl_context}
+                    def _make_shared_async_http(proxy_mount_map: dict[str, str | None]):
+                        shared_http_kw: dict[str, Any] = {
+                            "verify": ssl_context,
+                            "cookies": make_stateless_cookie_jar(),
+                            "trust_env": False,
+                        }
+                        limits = None
                         try:
                             from anthropic import DEFAULT_CONNECTION_LIMITS
                         except ImportError:
@@ -884,11 +894,17 @@ class ChatAnthropic:
                             if DEFAULT_CONNECTION_LIMITS is not None:
                                 import httpx
 
-                                shared_http_kw["limits"] = httpx.Limits(
+                                limits = httpx.Limits(
                                     max_connections=DEFAULT_CONNECTION_LIMITS.max_connections,
                                     max_keepalive_connections=DEFAULT_CONNECTION_LIMITS.max_keepalive_connections,
                                     keepalive_expiry=SHARED_LLM_HTTP_POOL_KEEPALIVE_SECONDS,
                                 )
+                                shared_http_kw["limits"] = limits
+                        shared_http_kw["mounts"] = build_async_proxy_mounts(
+                            proxy_mount_map,
+                            verify=ssl_context,
+                            limits=limits,
+                        )
                         return DefaultAsyncHttpxClient(**shared_http_kw)
 
                     async_http, release_borrowed = acquire_shared_async_http_client(
@@ -901,10 +917,10 @@ class ChatAnthropic:
                         make_client=_make_shared_async_http,
                         label="Anthropic HTTP",
                         expected_epoch=pool_epoch,
+                        extra_credential=os.environ.get("ANTHROPIC_AUTH_TOKEN"),
                     )
                     if async_http is not None:
-                        self._borrowed_async_http = True
-                        self._borrowed_http_release = release_borrowed
+                        borrowed = True
 
                 if async_http is None:
                     async_http = DefaultAsyncHttpxClient(**http_kw)
@@ -913,15 +929,50 @@ class ChatAnthropic:
                     if keepalive_expiry is not None:
                         async_http = install_stale_connection_retry(async_http, label="Anthropic HTTP")
 
-                sync_http = DefaultHttpxClient(**http_kw)
-                if keepalive_expiry is not None:
-                    sync_http = install_stale_connection_retry(sync_http, label="Anthropic HTTP")
+                try:
+                    sync_http = DefaultHttpxClient(**http_kw)
+                    if keepalive_expiry is not None:
+                        sync_http = install_stale_connection_retry(sync_http, label="Anthropic HTTP")
+                except BaseException:
+                    if release_borrowed is not None:
+                        release_borrowed()
+                    elif not borrowed and async_http is not None:
+                        _close_async_openai_client_from_sync_best_effort(async_http)
+                    raise
 
                 sync_kw["http_client"] = sync_http
                 async_kw["http_client"] = async_http
 
-        self._client = anthropic_cls(**sync_kw)
-        self._aclient = async_anthropic_cls(**async_kw)
+        created_client = None
+        created_aclient = None
+        try:
+            created_client = anthropic_cls(**sync_kw)
+            created_aclient = async_anthropic_cls(**async_kw)
+        except BaseException:
+            if release_borrowed is not None:
+                release_borrowed()
+            elif created_aclient is not None:
+                _close_async_openai_client_from_sync_best_effort(created_aclient)
+            elif not borrowed and async_http is not None:
+                _close_async_openai_client_from_sync_best_effort(async_http)
+            if created_client is not None:
+                try:
+                    created_client.close()
+                except Exception:
+                    # Best-effort cleanup when constructor fails midway.
+                    pass
+            elif sync_http is not None:
+                try:
+                    sync_http.close()
+                except Exception:
+                    # Best-effort cleanup when constructor fails midway.
+                    pass
+            raise
+
+        self._borrowed_async_http = borrowed
+        self._borrowed_http_release = release_borrowed
+        self._client = created_client
+        self._aclient = created_aclient
         self._client_finalizer = weakref.finalize(
             self,
             _close_chat_clients_best_effort,
@@ -1015,15 +1066,19 @@ class ChatAnthropic:
             else:
                 payload.pop("tool_choice", None)
         for key, value in overrides.items():
+            if key == "timeout":
+                if value is None:
+                    payload["timeout"] = None
+                    continue
+                from utils.http.pool_utils import build_split_http_timeout
+
+                split_timeout = build_split_http_timeout(value)
+                if split_timeout is not None:
+                    payload["timeout"] = split_timeout
+                continue
             if value is None:
                 continue
             if key in _ANTHROPIC_REQUEST_OPTION_KEYS:
-                if key == "timeout":
-                    from utils.http.pool_utils import build_split_http_timeout
-
-                    value = build_split_http_timeout(value)
-                    if value is None:
-                        continue
                 payload[key] = value
             elif key in _ANTHROPIC_BODY_OVERRIDE_KEYS:
                 _apply_anthropic_body_fields(payload, {key: value})

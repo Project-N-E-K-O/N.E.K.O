@@ -154,6 +154,14 @@ def create_chat_llm(
 create_chat_llm._original_impl = create_chat_llm
 
 
+def _is_borrowed_async_http_closed(llm: Any) -> bool:
+    if not getattr(llm, "_borrowed_async_http", False):
+        return False
+    aclient = getattr(llm, "_aclient", None)
+    underlying = getattr(aclient, "_client", None)
+    return bool(getattr(underlying, "is_closed", False))
+
+
 async def create_chat_llm_async(*args: Any, **kwargs: Any) -> "ChatOpenAI | ChatAnthropic":
     """Create a chat client without blocking the running event loop."""
     from utils import llm_client as _facade
@@ -171,12 +179,32 @@ async def create_chat_llm_async(*args: Any, **kwargs: Any) -> "ChatOpenAI | Chat
     finally:
         reset_active_shared_http_pool_loop(token)
     try:
-        return await asyncio.shield(task)
+        llm = await asyncio.shield(task)
     except asyncio.CancelledError:
         task.add_done_callback(
             lambda done: loop.create_task(_close_cancelled_chat_llm_result(done))
         )
         raise
+
+    if _is_borrowed_async_http_closed(llm):
+        try:
+            await llm.aclose()
+        except Exception:
+            # Best-effort cleanup of the stale wrapper before rebuilding.
+            pass
+        retry_token = set_active_shared_http_pool_loop(None)
+        try:
+            retry_task = asyncio.create_task(asyncio.to_thread(factory, *args, **kwargs))
+        finally:
+            reset_active_shared_http_pool_loop(retry_token)
+        try:
+            return await asyncio.shield(retry_task)
+        except asyncio.CancelledError:
+            retry_task.add_done_callback(
+                lambda done: loop.create_task(_close_cancelled_chat_llm_result(done))
+            )
+            raise
+    return llm
 
 async def _close_cancelled_chat_llm_result(task: asyncio.Task["ChatOpenAI | ChatAnthropic"]) -> None:
     try:

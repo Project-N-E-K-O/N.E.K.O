@@ -100,8 +100,12 @@ def test_http_origin_and_fingerprint_helpers(monkeypatch):
 
     _clear_proxy_env(monkeypatch)
     fp1 = proxy_env_fingerprint()
+    monkeypatch.setenv("https_proxy", "")
+    fp_empty = proxy_env_fingerprint()
+    assert fp1 != fp_empty
     monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:7890")
     fp2 = proxy_env_fingerprint()
+    assert fp_empty != fp2
     assert fp1 != fp2
 
     assert credential_fingerprint("a", "bc") != credential_fingerprint("ab", "c")
@@ -203,23 +207,25 @@ async def test_shared_http_pool_retries_dead_reused_socket_once(monkeypatch):
 
     _clear_proxy_env(monkeypatch)
     connections = 0
-    posts = 0
+    requests_received = 0
+    responses_sent = 0
 
     async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-        nonlocal connections, posts
+        nonlocal connections, requests_received, responses_sent
         connections += 1
         conn_id = connections
         try:
             await _read_http_request(reader)
-            posts += 1
+            requests_received += 1
             writer.write(_json_http_response(_openai_chat_payload(f"c{conn_id}"), keep_alive=True))
             await writer.drain()
+            responses_sent += 1
             if conn_id == 1:
-                # Wait for the second request to hit the pooled socket, then drop
-                # before sending any response headers to simulate a stale socket.
+                # Drop as soon as the second request hits the stale keep-alive
+                # socket before the server reads the full request or replies.
                 try:
-                    await _read_http_request(reader)
-                except (asyncio.IncompleteReadError, ConnectionError):
+                    await reader.read(1)
+                except ConnectionError:
                     # Peer closed first during teardown.
                     return
                 writer.close()
@@ -259,7 +265,8 @@ async def test_shared_http_pool_retries_dead_reused_socket_once(monkeypatch):
         await llm2.aclose()
         assert r2.content == "c2"
         assert connections == 2
-        assert posts == 2
+        assert requests_received == 2
+        assert responses_sent == 2
     finally:
         await close_warm_chat_llms()
         server.close()
@@ -609,9 +616,237 @@ def test_per_call_timeout_splitting_symmetry_openai_and_anthropic():
         assert oa._params([{"role": "user", "content": "hi"}], timeout=explicit)["timeout"] is explicit
         assert an._build_payload_for_call([{"role": "user", "content": "hi"}], {"timeout": explicit})["timeout"] is explicit
 
-        for disabled in (False, 0, -3.0, None):
+        assert oa._params([{"role": "user", "content": "hi"}], timeout=None)["timeout"] is None
+        assert an._build_payload_for_call([{"role": "user", "content": "hi"}], {"timeout": None})["timeout"] is None
+
+        for disabled in (False, 0, -3.0):
             assert "timeout" not in oa._params([{"role": "user", "content": "hi"}], timeout=disabled)
             assert "timeout" not in an._build_payload_for_call([{"role": "user", "content": "hi"}], {"timeout": disabled})
     finally:
         oa.close()
         an.close()
+
+
+@pytest.mark.asyncio
+async def test_shared_http_pool_preserves_empty_base_url_and_isolates_anthropic_auth_token(monkeypatch):
+    from utils.llm_client import create_chat_llm_async
+    from utils.llm_client.warm_pool import close_warm_chat_llms
+
+    _clear_proxy_env(monkeypatch)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
+    monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
+
+    try:
+        # Empty base_url="" must NOT silently fall back to public OpenAI/Anthropic endpoints.
+        oa_empty = await create_chat_llm_async("m", "", "k-empty", max_completion_tokens=16, timeout=10.0)
+        assert str(oa_empty._aclient.base_url) == ""
+
+        monkeypatch.setenv("OPENAI_BASE_URL", "")
+        oa_env_empty = await create_chat_llm_async("m", None, "k-empty", max_completion_tokens=16, timeout=10.0)
+        assert str(oa_env_empty._aclient.base_url) == ""
+
+        monkeypatch.setenv("ANTHROPIC_BASE_URL", "")
+        an_env_empty = await create_chat_llm_async(
+            "m", None, "k-empty", max_completion_tokens=16, timeout=10.0, provider_type="anthropic"
+        )
+        assert str(an_env_empty._aclient.base_url) == ""
+
+        # Different ANTHROPIC_AUTH_TOKEN values isolate Anthropic pooled clients.
+        monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "tok-1")
+        an_tok1 = await create_chat_llm_async(
+            "m", "https://anth-tok.example.test", "k-same", max_completion_tokens=16, timeout=10.0, provider_type="anthropic"
+        )
+        monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "tok-2")
+        an_tok2 = await create_chat_llm_async(
+            "m", "https://anth-tok.example.test", "k-same", max_completion_tokens=16, timeout=10.0, provider_type="anthropic"
+        )
+        assert an_tok1._aclient._client is not an_tok2._aclient._client
+
+        for llm in (oa_empty, oa_env_empty, an_env_empty, an_tok1, an_tok2):
+            await llm.aclose()
+    finally:
+        await close_warm_chat_llms()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider_type", [None, "anthropic"])
+async def test_shared_http_pool_releases_borrow_on_sdk_constructor_error(monkeypatch, provider_type):
+    from utils.llm_client import create_chat_llm_async, http_pool
+    from utils.llm_client.warm_pool import close_warm_chat_llms
+
+    _clear_proxy_env(monkeypatch)
+    monkeypatch.setattr(http_pool, "SHARED_LLM_HTTP_POOL_MAX_CLIENTS", 1)
+
+    try:
+        good = await create_chat_llm_async(
+            "m",
+            "https://bad-port.example.test",
+            "k1",
+            max_completion_tokens=16,
+            timeout=10.0,
+            provider_type=provider_type,
+        )
+        good_http = good._aclient._client
+        await good.aclose()
+
+        # Invalid port hits the same origin key (port fallback 443) then fails inside SDK.
+        with pytest.raises(httpx.InvalidURL):
+            await create_chat_llm_async(
+                "m",
+                "https://bad-port.example.test:bad",
+                "k1",
+                max_completion_tokens=16,
+                timeout=10.0,
+                provider_type=provider_type,
+            )
+
+        # Borrow count must have been released, so evicting good_http closes it promptly.
+        evictor = await create_chat_llm_async(
+            "m",
+            "https://other.example.test",
+            "k2",
+            max_completion_tokens=16,
+            timeout=10.0,
+            provider_type=provider_type,
+        )
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert good_http.is_closed is True
+        await evictor.aclose()
+    finally:
+        await close_warm_chat_llms()
+
+
+@pytest.mark.asyncio
+async def test_shared_http_pool_is_stateless_and_rejects_set_cookie(monkeypatch):
+    from utils.llm_client import create_chat_llm_async
+    from utils.llm_client.warm_pool import close_warm_chat_llms
+
+    _clear_proxy_env(monkeypatch)
+    seen_heads: list[bytes] = []
+
+    async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        try:
+            while True:
+                try:
+                    head, _ = await _read_http_request(reader)
+                except (asyncio.IncompleteReadError, ConnectionError):
+                    break
+                seen_heads.append(head)
+                body = json.dumps(_openai_chat_payload(f"ok-{len(seen_heads)}")).encode("utf-8")
+                resp = (
+                    f"HTTP/1.1 200 OK\r\n"
+                    f"Content-Type: application/json\r\n"
+                    f"Content-Length: {len(body)}\r\n"
+                    f"Set-Cookie: session_id=leak-me; Path=/\r\n"
+                    f"Connection: keep-alive\r\n\r\n"
+                ).encode("ascii") + body
+                writer.write(resp)
+                await writer.drain()
+        finally:
+            writer.close()
+
+    server = await asyncio.start_server(handle, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    base_url = f"http://127.0.0.1:{port}/v1"
+
+    try:
+        llm1 = await create_chat_llm_async("m", base_url, "k-cookie", max_completion_tokens=16, timeout=10.0)
+        await llm1.ainvoke([{"role": "user", "content": "one"}])
+        await llm1.aclose()
+
+        llm2 = await create_chat_llm_async("m", base_url, "k-cookie", max_completion_tokens=16, timeout=10.0)
+        assert llm2._aclient._client is llm1._aclient._client
+        await llm2.ainvoke([{"role": "user", "content": "two"}])
+        await llm2.aclose()
+
+        assert len(seen_heads) == 2
+        assert b"cookie:" not in seen_heads[1].lower()
+    finally:
+        await close_warm_chat_llms()
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_aclose_shared_llm_http_clients_preserves_in_flight_close_on_waiter_cancel():
+    from collections import OrderedDict
+
+    from utils.llm_client import http_pool
+
+    loop = asyncio.get_running_loop()
+    started = asyncio.Event()
+    allow_finish = asyncio.Event()
+    calls = 0
+
+    class _SlowClient:
+        async def aclose(self) -> None:
+            nonlocal calls
+            calls += 1
+            started.set()
+            await allow_finish.wait()
+
+    with http_pool._POOL_LOCK:
+        http_pool._http_pools[loop] = OrderedDict([(("slow",), http_pool._SharedPoolEntry(_SlowClient()))])
+
+    first_shutdown = asyncio.create_task(http_pool.aclose_shared_llm_http_clients())
+    await asyncio.wait_for(started.wait(), timeout=1.0)
+    first_shutdown.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first_shutdown
+
+    # A second shutdown awaits the exact same in-flight close task without calling aclose() twice.
+    second_shutdown = asyncio.create_task(http_pool.aclose_shared_llm_http_clients())
+    await asyncio.sleep(0)
+    assert second_shutdown.done() is False
+    allow_finish.set()
+    await asyncio.wait_for(second_shutdown, timeout=1.0)
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_create_chat_llm_async_rebuilds_if_shutdown_closes_borrowed_http_mid_build(monkeypatch):
+    import threading
+
+    from utils.llm_client import create_chat_llm_async, factory as llm_factory
+    from utils.llm_client.warm_pool import close_warm_chat_llms
+
+    _clear_proxy_env(monkeypatch)
+    borrowed_done = threading.Event()
+    release_return = threading.Event()
+    real_create = llm_factory.create_chat_llm
+    call_count = 0
+
+    def slow_after_borrow(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        llm = real_create(*args, **kwargs)
+        if call_count == 1:
+            borrowed_done.set()
+            release_return.wait(timeout=5.0)
+        return llm
+
+    monkeypatch.setattr(llm_factory, "create_chat_llm", slow_after_borrow)
+    try:
+        build_task = asyncio.create_task(
+            create_chat_llm_async(
+                "m",
+                "https://mid-shutdown.example.test/v1",
+                "k-mid",
+                max_completion_tokens=16,
+                timeout=10.0,
+            )
+        )
+        await asyncio.to_thread(borrowed_done.wait, 5.0)
+        await close_warm_chat_llms()
+        release_return.set()
+
+        delivered = await asyncio.wait_for(build_task, timeout=5.0)
+        assert call_count == 2
+        assert delivered._borrowed_async_http is False
+        assert delivered._aclient._client.is_closed is False
+        await delivered.aclose()
+    finally:
+        release_return.set()
+        await close_warm_chat_llms()

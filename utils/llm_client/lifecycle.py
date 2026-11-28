@@ -59,9 +59,11 @@ def _get_default_ssl_context() -> ssl.SSLContext:
             _DEFAULT_SSL_CONTEXT = _create_httpx_default_ssl_context()
         return _DEFAULT_SSL_CONTEXT
 
-async def _close_async_openai_client_best_effort(aclient: AsyncOpenAI) -> None:
+async def _close_async_openai_client_best_effort(aclient: Any) -> None:
     try:
-        await aclient.close()
+        close = getattr(aclient, "close", None) or getattr(aclient, "aclose", None)
+        if close is not None:
+            await close()
     except Exception:
         # Finalizer-triggered cleanup must never surface async close failures.
         pass

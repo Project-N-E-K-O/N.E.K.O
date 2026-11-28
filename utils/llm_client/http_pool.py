@@ -18,10 +18,10 @@ One-shot callers throughout the codebase construct a chat client via
 ``create_chat_llm_async(...)`` and call ``await llm.aclose()`` right after a
 single request. OpenAI and Anthropic SDK clients resolve request URLs, headers,
 credentials, and timeouts per request without mutating their underlying
-``httpx.AsyncClient``, so borrowing a shared ``httpx.AsyncClient`` keyed by
-``(event_loop, family, origin, credential_fingerprint, proxy_env, ssl_context)``
-reuses warm TCP + TLS connections transparently across calls while keeping
-cookies, credentials, and proxy settings strictly isolated.
+``httpx.AsyncClient``, so borrowing a shared stateless ``httpx.AsyncClient``
+keyed by ``(event_loop, family, origin, credential_fingerprint, proxy_snapshot,
+ssl_context)`` reuses warm TCP + TLS connections transparently across calls
+while keeping cookies, credentials, and proxy settings strictly isolated.
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ from utils.http.pool_utils import (
     credential_fingerprint,
     http_origin_key,
     install_stale_connection_retry,
-    proxy_env_fingerprint,
+    snapshot_http_proxy_config,
 )
 from utils.logger_config import get_module_logger
 
@@ -69,6 +69,12 @@ _http_pools: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, OrderedDict[t
     weakref.WeakKeyDictionary()
 )
 _draining_pools: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, set[_SharedPoolEntry]]" = (
+    weakref.WeakKeyDictionary()
+)
+# Clients removed from _http_pools as idle or raced losers whose async close task
+# has not yet finished; registered under _POOL_LOCK before scheduling so shutdown
+# cannot miss them during the handoff window.
+_pending_close_clients: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, set[Any]]" = (
     weakref.WeakKeyDictionary()
 )
 _loop_epochs: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, int]" = weakref.WeakKeyDictionary()
@@ -131,60 +137,97 @@ def _http_pool_key(
     api_key: str | None,
     default_headers: Mapping[str, Any] | None,
     ssl_context: Any,
+    proxy_fingerprint: tuple[Any, ...],
+    extra_credential: str | None = None,
 ) -> tuple:
     auth_hdr, api_key_hdr = _credential_header_values(default_headers)
     return (
         str(family or ""),
         http_origin_key(base_url),
-        credential_fingerprint(api_key, auth_hdr, api_key_hdr),
-        proxy_env_fingerprint(),
+        credential_fingerprint(api_key, auth_hdr, api_key_hdr, extra_credential),
+        proxy_fingerprint,
         id(ssl_context),
     )
 
 
-async def _close_quietly(client: Any) -> None:
+def _register_pending_close_client_locked(loop: asyncio.AbstractEventLoop, client: Any) -> None:
+    pending = _pending_close_clients.get(loop)
+    if pending is None:
+        pending = set()
+        _pending_close_clients[loop] = pending
+    pending.add(client)
+
+
+def _discard_pending_close_client(loop: asyncio.AbstractEventLoop, client: Any) -> None:
+    with _POOL_LOCK:
+        pending = _pending_close_clients.get(loop)
+        if pending is not None:
+            pending.discard(client)
+
+
+async def _close_quietly(client: Any, loop: asyncio.AbstractEventLoop | None = None) -> None:
     close = getattr(client, "aclose", None)
-    if close is None:
-        return
     try:
-        await close()
+        if close is not None:
+            await close()
     except Exception as exc:
         logger.debug("[llm_http_pool] closing shared HTTP client failed: %s", exc)
+    finally:
+        if loop is not None:
+            _discard_pending_close_client(loop, client)
+
+
+def _start_tracked_close_task(
+    loop: asyncio.AbstractEventLoop,
+    client: Any,
+) -> asyncio.Task[None] | None:
+    if loop.is_closed():
+        _discard_pending_close_client(loop, client)
+        return None
+    coro = _close_quietly(client, loop)
+    try:
+        task = loop.create_task(coro)
+    except Exception:
+        coro.close()
+        _discard_pending_close_client(loop, client)
+        return None
+
+    with _POOL_LOCK:
+        tasks = _pending_close_tasks.get(loop)
+        if tasks is None:
+            tasks = set()
+            _pending_close_tasks[loop] = tasks
+        tasks.add(task)
+
+    def _cleanup(done: asyncio.Task[None]) -> None:
+        with _POOL_LOCK:
+            loop_tasks = _pending_close_tasks.get(loop)
+            if loop_tasks is not None:
+                loop_tasks.discard(done)
+
+    task.add_done_callback(_cleanup)
+    return task
 
 
 def _schedule_close_on_loop(loop: asyncio.AbstractEventLoop, client: Any) -> None:
     if loop.is_closed():
+        _discard_pending_close_client(loop, client)
         return
 
     def _spawn() -> None:
-        if loop.is_closed():
-            return
-        coro = _close_quietly(client)
-        try:
-            task = loop.create_task(coro)
-        except Exception:
-            coro.close()
-        else:
-            with _POOL_LOCK:
-                tasks = _pending_close_tasks.get(loop)
-                if tasks is None:
-                    tasks = set()
-                    _pending_close_tasks[loop] = tasks
-                tasks.add(task)
-
-            def _cleanup(done: asyncio.Task[None]) -> None:
-                with _POOL_LOCK:
-                    loop_tasks = _pending_close_tasks.get(loop)
-                    if loop_tasks is not None:
-                        loop_tasks.discard(done)
-
-            task.add_done_callback(_cleanup)
+        # If shutdown already claimed and started closing this client, skip duplicating.
+        with _POOL_LOCK:
+            pending = _pending_close_clients.get(loop)
+            if pending is not None and client not in pending:
+                return
+            if pending is not None:
+                pending.discard(client)
+        _start_tracked_close_task(loop, client)
 
     try:
         loop.call_soon_threadsafe(_spawn)
     except RuntimeError:
-        # Loop closed between check and callback scheduling; nothing to drain.
-        pass
+        _discard_pending_close_client(loop, client)
 
 
 def _is_loop_accepting_locked(
@@ -222,6 +265,8 @@ def _make_release(
                     draining = _draining_pools.get(target_loop)
                     if draining is not None:
                         draining.discard(entry)
+                    if not defer_close:
+                        _register_pending_close_client_locked(target_loop, entry.client)
                 client_to_close = entry.client
         if client_to_close is None:
             return None
@@ -242,24 +287,30 @@ def acquire_shared_async_http_client(
     api_key: str | None,
     default_headers: Mapping[str, Any] | None,
     ssl_context: Any,
-    make_client: Callable[[], Any],
+    make_client: Callable[[dict[str, str | None]], Any],
     label: str = "LLM HTTP",
     expected_epoch: int | None = None,
+    extra_credential: str | None = None,
 ) -> tuple[Any, Callable[..., Any | None]] | tuple[None, None]:
     """Borrow a pooled ``httpx.AsyncClient`` for *loop* and return ``(client, release)``.
 
     Safe to call from worker threads (such as ``asyncio.to_thread`` inside
-    ``create_chat_llm_async``). Returns ``(None, None)`` if *loop* is closed,
-    shutting down, or advanced past *expected_epoch* via
-    :func:`aclose_shared_llm_http_clients`, so late worker threads fall back to
-    an owned client instead of repopulating a closed pool.
+    ``create_chat_llm_async``). Proxy configuration is snapshotted once and
+    reused for both the pool key and ``make_client(proxy_mount_map)``.
+    Returns ``(None, None)`` if *loop* is closed, shutting down, or advanced
+    past *expected_epoch* via :func:`aclose_shared_llm_http_clients`, so late
+    worker threads fall back to an owned client instead of repopulating a
+    closed pool.
     """
+    proxy_fp, proxy_mount_map = snapshot_http_proxy_config()
     key = _http_pool_key(
         family=family,
         base_url=base_url,
         api_key=api_key,
         default_headers=default_headers,
         ssl_context=ssl_context,
+        proxy_fingerprint=proxy_fp,
+        extra_credential=extra_credential,
     )
 
     with _POOL_LOCK:
@@ -276,13 +327,14 @@ def acquire_shared_async_http_client(
                 existing.evicted = True
                 pool.pop(key, None)
 
-    made = install_stale_connection_retry(make_client(), label=label)
+    made = install_stale_connection_retry(make_client(proxy_mount_map), label=label)
 
     loser = None
     evicted_idle: list[Any] = []
     with _POOL_LOCK:
         if not _is_loop_accepting_locked(loop, expected_epoch):
             loser = made
+            _register_pending_close_client_locked(loop, loser)
             chosen_entry = None
             release_cb = None
         else:
@@ -295,6 +347,7 @@ def acquire_shared_async_http_client(
                 pool.move_to_end(key)
                 raced.borrows += 1
                 loser = made
+                _register_pending_close_client_locked(loop, loser)
                 chosen_entry = raced
             else:
                 if raced is not None:
@@ -307,6 +360,7 @@ def acquire_shared_async_http_client(
                     _, evicted = pool.popitem(last=False)
                     evicted.evicted = True
                     if evicted.borrows == 0:
+                        _register_pending_close_client_locked(loop, evicted.client)
                         evicted_idle.append(evicted.client)
                     else:
                         draining = _draining_pools.get(loop)
@@ -325,42 +379,22 @@ def acquire_shared_async_http_client(
     return (chosen_entry.client, release_cb)
 
 
-def get_shared_async_http_client(
-    loop: asyncio.AbstractEventLoop,
-    *,
-    family: str,
-    base_url: str | None,
-    api_key: str | None,
-    default_headers: Mapping[str, Any] | None,
-    ssl_context: Any,
-    make_client: Callable[[], Any],
-    label: str = "LLM HTTP",
-    expected_epoch: int | None = None,
-) -> Any | None:
-    """Return a pooled ``httpx.AsyncClient`` for *loop*, creating one if needed."""
-    client, _release = acquire_shared_async_http_client(
-        loop,
-        family=family,
-        base_url=base_url,
-        api_key=api_key,
-        default_headers=default_headers,
-        ssl_context=ssl_context,
-        make_client=make_client,
-        label=label,
-        expected_epoch=expected_epoch,
-    )
-    return client
-
-
 async def aclose_shared_llm_http_clients() -> None:
-    """Concurrently close and forget every active and evicted shared LLM HTTP client."""
+    """Concurrently close and forget every active and evicted shared LLM HTTP client.
+
+    Close tasks are tracked on the loop and shielded from waiter cancellation:
+    if a caller cancels while waiting, the caller receives ``CancelledError``
+    while in-flight close tasks continue to completion and can be awaited by a
+    subsequent shutdown call.
+    """
     loop = asyncio.get_running_loop()
     with _POOL_LOCK:
         _loop_epochs[loop] = _loop_epochs.get(loop, 0) + 1
         _closing_loops[loop] = _closing_loops.get(loop, 0) + 1
         pool = _http_pools.pop(loop, None)
         draining = _draining_pools.pop(loop, None)
-        pending_tasks = list(_pending_close_tasks.get(loop, ()))
+        pending_clients = _pending_close_clients.pop(loop, None)
+        existing_tasks = list(_pending_close_tasks.get(loop, ()))
         entries: list[_SharedPoolEntry] = []
         if pool:
             for entry in pool.values():
@@ -377,9 +411,23 @@ async def aclose_shared_llm_http_clients() -> None:
             if cid not in seen_ids:
                 seen_ids.add(cid)
                 clients.append(client)
-        coros = [_close_quietly(client) for client in clients]
-        if coros or pending_tasks:
-            await asyncio.gather(*coros, *pending_tasks, return_exceptions=True)
+        if pending_clients:
+            for client in pending_clients:
+                cid = id(client)
+                if cid not in seen_ids:
+                    seen_ids.add(cid)
+                    clients.append(client)
+
+        all_tasks: list[asyncio.Task[None]] = list(existing_tasks)
+        for client in clients:
+            task = _start_tracked_close_task(loop, client)
+            if task is not None:
+                all_tasks.append(task)
+        if all_tasks:
+            await asyncio.gather(
+                *(asyncio.shield(task) for task in all_tasks),
+                return_exceptions=True,
+            )
     finally:
         with _POOL_LOCK:
             remaining = _closing_loops.get(loop, 0) - 1

@@ -432,3 +432,75 @@ def test_model_gateway_service_keeps_pool_utils_import_lazy():
             top_level_imports.add(node.module)
     assert "utils.http.pool_utils" not in top_level_imports
     assert "httpx" not in top_level_imports
+
+
+@pytest.mark.asyncio
+async def test_gateway_pooled_client_does_not_leak_cookies_across_calls(monkeypatch):
+    _clear_proxy_env(monkeypatch)
+    seen_heads: list[bytes] = []
+
+    async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        try:
+            while True:
+                try:
+                    head, _ = await _read_http_request(reader)
+                except (asyncio.IncompleteReadError, ConnectionError):
+                    break
+                seen_heads.append(head)
+                body = json.dumps(_openai_payload(f"ok-{len(seen_heads)}")).encode("utf-8")
+                resp = (
+                    f"HTTP/1.1 200 OK\r\n"
+                    f"Content-Type: application/json\r\n"
+                    f"Content-Length: {len(body)}\r\n"
+                    f"Set-Cookie: session=slot-a-secret; Path=/\r\n"
+                    f"Connection: keep-alive\r\n\r\n"
+                ).encode("ascii") + body
+                writer.write(resp)
+                await writer.drain()
+        finally:
+            writer.close()
+
+    server = await asyncio.start_server(handle, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    gateway = ModelGatewayService()
+
+    try:
+        slot_a = _make_slot(f"http://127.0.0.1:{port}/a/v1", api_key="shared-key")
+        slot_b = _make_slot(f"http://127.0.0.1:{port}/b/v1", api_key="shared-key")
+        await gateway.complete(slot_a, _request_body())
+        await gateway.complete(slot_b, _request_body())
+
+        assert len(seen_heads) == 2
+        assert b"cookie:" not in seen_heads[1].lower()
+    finally:
+        await gateway.aclose()
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_gateway_pooled_client_uses_atomic_proxy_snapshot(monkeypatch):
+    _clear_proxy_env(monkeypatch)
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:7777")
+    gateway = ModelGatewayService()
+    orig_make = ModelGatewayService._make_pooled_client
+
+    def mutating_make(proxy_mount_map):
+        # Simulate set_proxy_mode mutating os.environ while the worker thread constructs the client.
+        monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:9999")
+        return orig_make(proxy_mount_map)
+
+    monkeypatch.setattr(gateway, "_make_pooled_client", mutating_make)
+    try:
+        loop, entry, _, _ = await gateway._acquire_pooled_client(_make_slot("https://proxy-race.example.test/v1"))
+        await gateway._release_pooled_client(loop, entry)
+        # Client must reflect the 7777 snapshot that matched its pool key, not the concurrent 9999 mutation.
+        proxy_urls = [
+            str(t._pool._proxy_url)
+            for t in entry.client._mounts.values()
+            if t is not None and hasattr(t, "_pool") and hasattr(t._pool, "_proxy_url")
+        ]
+        assert any("7777" in u for u in proxy_urls)
+        assert not any("9999" in u for u in proxy_urls)
+    finally:
+        await gateway.aclose()
