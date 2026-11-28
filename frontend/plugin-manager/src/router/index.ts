@@ -30,6 +30,12 @@ const routes: RouteRecordRaw[] = [
         }
       },
       {
+        path: 'plugins/_privacy',
+        name: 'PrivacyOverview',
+        component: () => import('@/views/PrivacyOverview.vue'),
+        meta: { titleKey: 'pluginConsent.privacy.title' },
+      },
+      {
         path: 'plugins/_forge',
         name: 'PluginAuthoring',
         component: () => import('@/views/PluginAuthoring.vue'),

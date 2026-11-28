@@ -118,6 +118,70 @@ export interface PendingPermissions {
   incomplete: string[]
 }
 
+/** One use as the privacy page lists it; no content, only what and why. */
+export interface PrivacyUse {
+  at: string
+  plugin_id: string
+  permission: string
+  outcome: UseOutcome
+  origin_kind: string | null
+  /** Network target host, when the use reported one. */
+  target: string | null
+}
+
+export interface PrivacyOverview {
+  checks_disabled: boolean
+  history: UsageHistory
+  pending: { to_confirm: number; upgraded: number; inferred: number; first_use: number }
+  /** Plugins whose declaration could not be read this time. */
+  incomplete: string[]
+  groups: Array<{
+    group: string
+    tier: RiskTier
+    /** Plugins that can use this data now. */
+    plugins: number
+    /** Newest use that was not refused, by any plugin. */
+    latest: { plugin_id: string; at: string } | null
+    partial_block: boolean
+  }>
+  /** Plugins that can both read personal data and send it out. */
+  combos: Array<{ plugin_id: string; reads: string[]; sends: string[] }>
+}
+
+export interface PrivacyGroupItem {
+  permission: string
+  /** null for a plugin that is no longer installed. */
+  state: PermissionState | null
+  condition: PermissionCondition | null
+  condition_basis: string
+  legacy_any: boolean
+  enforced: boolean
+  usage_tracked: boolean
+  last_used: { at: string; origin_kind: string | null; outcome: UseOutcome } | null
+  unused_30d: boolean | null
+  uses_7d: number
+}
+
+export interface PrivacyGroupPlugin {
+  plugin_id: string
+  name: string
+  installed: boolean
+  has_permission: boolean
+  items: PrivacyGroupItem[]
+}
+
+export interface PrivacyGroupDetail {
+  group: string
+  tier: RiskTier
+  partial_block: boolean
+  checks_disabled: boolean
+  history: UsageHistory
+  incomplete: string[]
+  plugins: PrivacyGroupPlugin[]
+  /** Newest first. */
+  recent: PrivacyUse[]
+}
+
 const base = (id: string) => `/plugin-permissions/plugins/${encodeURIComponent(id)}`
 const quiet = { suppressErrorMessage: true }
 
@@ -133,6 +197,12 @@ export function getPermissionAuditHistory(id: string) {
 }
 export function getPendingPermissions() {
   return get<PendingPermissions>('/plugin-permissions/pending', quiet)
+}
+export function getPrivacyOverview() {
+  return get<PrivacyOverview>('/plugin-permissions/privacy', quiet)
+}
+export function getPrivacyGroup(group: string) {
+  return get<PrivacyGroupDetail>(`/plugin-permissions/privacy/${encodeURIComponent(group)}`, quiet)
 }
 export function decidePermission(
   id: string,

@@ -94,7 +94,7 @@ import { useI18n } from 'vue-i18n'
 import { usePluginStore } from '@/stores/plugin'
 import MotionTransition from '@/motion/MotionTransition.vue'
 import { useSidebarState } from '@/composables/useSidebarState'
-import { Odometer, Box, VideoPlay, Monitor, Link, Collection, Connection, Tools, Setting, FolderOpened, HomeFilled, Tickets, DArrowLeft, DArrowRight, ArrowDown } from '@element-plus/icons-vue'
+import { Odometer, Box, VideoPlay, Monitor, Link, Collection, Connection, Tools, Setting, FolderOpened, HomeFilled, Lock, Tickets, DArrowLeft, DArrowRight, ArrowDown } from '@element-plus/icons-vue'
 
 const emit = defineEmits<{ 'collapse-change': [collapsed: boolean] }>()
 const sidebar = ref<HTMLElement | null>(null)
@@ -131,6 +131,7 @@ const navItems = computed<NavItem[]>(() => [
   { path: '/familiars/mcp', icon: Link, label: t('power.nav.mcp'), sub: true },
   { path: '/plugins', icon: Box, label: t('nav.plugins'), guideId: 'sidebar-plugins' },
   { path: '/plugins/_overview', icon: Odometer, label: t('power.nav.overview'), guideId: 'sidebar-dashboard', sub: true },
+  { path: '/plugins/_privacy', icon: Lock, label: t('pluginConsent.privacy.title'), sub: true },
   { path: '/plugins/_forge', icon: Tools, label: t('authoring.title'), sub: true },
   { path: '/knowledge', icon: Collection, label: t('nav.knowledge') },
   { path: '/model-api', icon: Connection, label: t('modelApi.title') },
@@ -140,10 +141,10 @@ const navItems = computed<NavItem[]>(() => [
 
 function isRouteActive(path: string): boolean {
   if (path === '/') return route.path === '/'
-  // The plugins' own entry is not the current page while one of the two below it is.
-  // Only those two: a plugin's own id may begin with an underscore.
+  // The plugins' own entry is not the current page while one of the entries below it is.
+  // Only those: a plugin's own id may begin with an underscore.
   if (path === '/plugins') {
-    const below = ['/plugins/_overview', '/plugins/_forge'].some(own => route.path === own || route.path.startsWith(`${own}/`))
+    const below = ['/plugins/_overview', '/plugins/_privacy', '/plugins/_forge'].some(own => route.path === own || route.path.startsWith(`${own}/`))
     return route.path === path || (route.path.startsWith('/plugins/') && !below)
   }
   return route.path === path || route.path.startsWith(`${path}/`)

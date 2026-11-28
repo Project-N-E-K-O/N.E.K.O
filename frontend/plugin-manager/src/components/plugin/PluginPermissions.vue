@@ -1,5 +1,5 @@
 <template>
-  <section class="perm-tab">
+  <section class="perm-tab perm-palette">
     <PluginLegacyConsentBanner :plugin-id="pluginId" @changed="load()" />
     <div v-if="loading && !panel" class="perm-tab__state">{{ t('pluginConsent.tab.loading') }}</div>
     <div v-else-if="!panel" class="perm-tab__state">
@@ -299,8 +299,8 @@
 import { computed, defineComponent, h, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import type { PropType } from 'vue'
 import { useI18n } from 'vue-i18n'
-import dayjs from 'dayjs'
 import { ElMessage } from 'element-plus'
+import '@/assets/styles/permissionPalette.css'
 import {
   clearPermission,
   decidePermission,
@@ -332,7 +332,9 @@ import {
   partialBlock,
   permissionsToml,
   reconcileMark,
-  relativeDay,
+  formatUseDate,
+  formatUseTime,
+  NOT_REFUSABLE,
   scanFiles,
   scanNotice,
   scanPending,
@@ -352,8 +354,6 @@ const consentState = usePluginConsentState()
 const stopAction = usePluginStopAction()
 
 /** Disclosure only: the server takes no refusal for it (back to undecided instead). */
-const NOT_REFUSABLE = new Set(['plugin_sdk.main_agent.messages:push'])
-
 const panel = ref<PermissionPanel | null>(null)
 const catalog = ref<PermissionCatalog | null>(null)
 const audit = ref<PermissionAuditPage | null>(null)
@@ -507,15 +507,9 @@ function spotText(types: Record<string, number>) {
     .join(t('pluginConsent.tab.listSeparator'))
 }
 function formatTime(value: string) {
-  const at = dayjs(value)
-  if (!at.isValid()) return value
-  const day = relativeDay(value)
-  return day ? t(`pluginConsent.tab.${day}`, { time: at.format('HH:mm') }) : at.format('YYYY-MM-DD HH:mm')
+  return formatUseTime(value, t)
 }
-function formatDate(value: string) {
-  const at = dayjs(value)
-  return at.isValid() ? at.format('YYYY-MM-DD') : value
-}
+const formatDate = formatUseDate
 
 const notices = computed(() => {
   const p = panel.value
@@ -772,18 +766,6 @@ const RowFacts = defineComponent({
 .perm-tab {
   display: grid;
   gap: 12px;
-  --perm-high: #d9534f;
-  --perm-high-bg: #fdf8f7;
-  --perm-high-tag: #fbe9e7;
-  --perm-medium: #e0a84a;
-  --perm-medium-bg: #fffdf6;
-  --perm-medium-tag: #fbf1dc;
-  --perm-low: #7aa7d6;
-  --perm-low-bg: #f8fbfe;
-  --perm-low-tag: #e6effa;
-  --perm-line: var(--el-border-color-lighter);
-  --perm-summary-bg: #fff8ef;
-  --perm-summary-border: #f3c58f;
 }
 .perm-tab__state {
   display: flex;
@@ -857,21 +839,6 @@ const RowFacts = defineComponent({
 .perm-tier__note {
   margin-left: auto;
   color: var(--el-text-color-secondary);
-}
-[data-tier='high'] {
-  --perm-tier-color: var(--perm-high);
-  --perm-tier-bg: var(--perm-high-bg);
-  --perm-tier-tag: var(--perm-high-tag);
-}
-[data-tier='medium'] {
-  --perm-tier-color: var(--perm-medium);
-  --perm-tier-bg: var(--perm-medium-bg);
-  --perm-tier-tag: var(--perm-medium-tag);
-}
-[data-tier='low'] {
-  --perm-tier-color: var(--perm-low);
-  --perm-tier-bg: var(--perm-low-bg);
-  --perm-tier-tag: var(--perm-low-tag);
 }
 .perm-folded {
   display: block;

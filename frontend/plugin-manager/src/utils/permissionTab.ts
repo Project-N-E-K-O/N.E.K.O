@@ -6,6 +6,7 @@
  * without the component.
  */
 import { isAxiosError } from 'axios'
+import dayjs from 'dayjs'
 import type {
   ManifestStatus,
   PermissionCondition,
@@ -20,6 +21,9 @@ import { readErrorCode } from '@/utils/request'
 import { permissionErrorKey } from '@/utils/pluginPermissionErrors'
 
 export const LISTED_TIERS: RiskTier[] = ['high', 'medium', 'low']
+
+/** The server does not take "refuse" for these; switching off returns them to undecided. */
+export const NOT_REFUSABLE = new Set(['plugin_sdk.main_agent.messages:push'])
 
 /** A plugin.toml that was read but cannot be used counts as no declaration. */
 export function declarationUsable(manifest: ManifestStatus): boolean {
@@ -73,7 +77,7 @@ export function partialBlock(catalog: PermissionCatalog | null, permission: stri
 }
 
 /** The small tag about what the host does with a use of this permission. */
-export function enforcementTag(row: PanelRow): 'notEnforcedNotTracked' | 'recordOnly' | null {
+export function enforcementTag(row: Pick<PanelRow, 'enforced' | 'usage_tracked'>): 'notEnforcedNotTracked' | 'recordOnly' | null {
   if (row.enforced) return null
   return row.usage_tracked ? 'recordOnly' : 'notEnforcedNotTracked'
 }
@@ -117,7 +121,7 @@ export type UsageLine =
  * process reported lost may hide a use: then nothing is claimed.
  */
 export function usageLine(
-  row: PanelRow,
+  row: Pick<PanelRow, 'permission' | 'state' | 'usage_tracked' | 'last_used' | 'unused_30d'>,
   history: UsageHistory | null,
   lostAt: string | null,
 ): UsageLine {
@@ -170,6 +174,21 @@ export function relativeDay(value: string, now: Date = new Date()): 'today' | 'y
   if (at >= today && at < tomorrow) return 'today'
   if (at >= yesterday && at < today) return 'yesterday'
   return null
+}
+
+type Translate = (key: string, params?: Record<string, unknown>) => string
+
+/** "Today 14:02", "Yesterday 21:17", else "2026-11-18 09:30". */
+export function formatUseTime(value: string, t: Translate, now: Date = new Date()): string {
+  const at = dayjs(value)
+  if (!at.isValid()) return value
+  const day = relativeDay(value, now)
+  return day ? t(`pluginConsent.tab.${day}`, { time: at.format('HH:mm') }) : at.format('YYYY-MM-DD HH:mm')
+}
+
+export function formatUseDate(value: string): string {
+  const at = dayjs(value)
+  return at.isValid() ? at.format('YYYY-MM-DD') : value
 }
 
 /** Blind spot files, most first; rows without a file are not files. */
