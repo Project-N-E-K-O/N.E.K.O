@@ -576,7 +576,7 @@ export default {
   },
   mirrorSource: {
     title: 'Mirror Source',
-    description: 'Choose how Plugin Market downloads GitHub Release packages and reaches the PyPI index for plugin dependencies.',
+    description: 'Choose how Plugin Market packages and plugin tools (uv and Python) are downloaded from GitHub Release, and how plugin dependencies reach the PyPI index.',
     close: 'Close mirror source',
     sourceMode: 'Download source',
     direct: 'GitHub Direct',
@@ -590,7 +590,7 @@ export default {
     resetHistory: 'Choose sources again on next install',
     resetSuccess: 'Recent transfer history cleared; the next install will select sources again.',
     resetFailed: 'Could not clear the recent transfer history.',
-    notice: 'Only github.com plugin download links are proxied; the package is still verified with the SHA-256 from Market.',
+    notice: 'Only github.com release download links are proxied; plugin packages are still verified with the SHA-256 from Market, uv with the SHA-256 pinned in the app, and Python by uv with the SHA-256 built into it.',
     preferenceNotice: 'Settings affect future tasks. Download progress shows the routes actually in use.',
     saveFailed: 'Could not save download settings. Please retry.',
     actualSources: 'Downloading from {sources}',

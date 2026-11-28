@@ -576,7 +576,7 @@ export default {
   },
   mirrorSource: {
     title: 'Fonte espelho',
-    description: 'Escolha como o Plugin Market baixa pacotes do GitHub Release e acessa o índice do PyPI para dependências de plugins.',
+    description: 'Escolha como os pacotes do Plugin Market e as ferramentas de plugins (uv e Python) são baixados do GitHub Release e como as dependências de plugins acessam o índice do PyPI.',
     close: 'Fechar fonte espelho',
     sourceMode: 'Origem do download',
     direct: 'GitHub direto',
@@ -590,7 +590,7 @@ export default {
     resetHistory: 'Escolher fontes novamente na próxima instalação',
     resetSuccess: 'Histórico recente limpo; a próxima instalação escolherá as fontes novamente.',
     resetFailed: 'Não foi possível limpar o histórico recente de downloads.',
-    notice: 'Apenas links de download de plugins de github.com usam proxy; o pacote continua validado pelo SHA-256 do Market.',
+    notice: 'Apenas links de download de releases de github.com usam proxy; os pacotes de plugins continuam validados pelo SHA-256 do Market, o uv pelo SHA-256 fixo no aplicativo, e o Python pelo uv com o SHA-256 embutido nele.',
     preferenceNotice: 'As configurações afetam tarefas futuras. O progresso mostra as rotas em uso.',
     saveFailed: 'Não foi possível salvar as configurações de download. Tente novamente.',
     actualSources: 'Baixando de {sources}',
