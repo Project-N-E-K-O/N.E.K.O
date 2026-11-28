@@ -80,9 +80,13 @@ export const usePluginStore = defineStore('plugin', () => {
   // Metadata ticket of a dependencies_pending entry a later runtime status
   // showed running: that entry is stale even if a metadata refresh failed.
   const dependenciesPendingEnded = new Map<string, number>()
-  function noteRuntimeStatus(pluginId: string, data: PluginStatusData | undefined) {
-    if (runtimeStatus(data) === 'running' && metadataStatuses.value[pluginId]?.status === 'dependencies_pending') {
-      dependenciesPendingEnded.set(pluginId, metadataStatuses.value[pluginId]!.ticket)
+  function noteRuntimeStatus(pluginId: string, data: PluginStatusData | undefined, statusTicket: number) {
+    const metadata = metadataStatuses.value[pluginId]
+    // Only a running status requested after that metadata ends it: a slow,
+    // older response must not retire a pending entry that is still current.
+    if (runtimeStatus(data) === 'running' && metadata?.status === 'dependencies_pending'
+      && statusTicket >= metadata.ticket) {
+      dependenciesPendingEnded.set(pluginId, metadata.ticket)
     }
   }
   const metadataStatuses = ref<Record<string, { status: string; ticket: number }>>({})
@@ -503,7 +507,7 @@ export const usePluginStore = defineStore('plugin', () => {
           if (statusTicket < (runtimeStatusTickets.get(pluginId) ?? 0)) return supersededStatusResult(statusTicket)
           if (reportedStatus(response)) {
             runtimeStatusTickets.set(pluginId, statusTicket)
-            noteRuntimeStatus(pluginId, response as PluginStatusData)
+            noteRuntimeStatus(pluginId, response as PluginStatusData, statusTicket)
             pluginStatuses.value = { ...pluginStatuses.value, [pluginId]: response as PluginStatusData }
           }
         } else {
@@ -514,7 +518,7 @@ export const usePluginStore = defineStore('plugin', () => {
             if (statusTicket < (runtimeStatusTickets.get(id) ?? 0)) continue
             if (reportedStatus(incoming[id])) {
               runtimeStatusTickets.set(id, statusTicket)
-              noteRuntimeStatus(id, incoming[id])
+              noteRuntimeStatus(id, incoming[id], statusTicket)
               next[id] = incoming[id]!
             } else if (!(id in incoming)) {
               runtimeStatusTickets.set(id, statusTicket)

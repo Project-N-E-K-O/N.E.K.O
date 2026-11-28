@@ -115,13 +115,17 @@ class _Task:
     staging_token: str | None = None
 
     def as_dict(self) -> dict[str, object]:
-        packages = self.packages  # read once: the worker thread may replace the list meanwhile
+        # State before packages: the worker publishes packages (and the lock
+        # digest) first, then the state, so a state read here never comes
+        # with an older, empty list. Each field is read once.
+        state, phase = self.state, self.phase
+        packages = self.packages
         sizes = [package.size for package in packages]
         known = [size for size in sizes if size is not None]
         return {
             "plugin_id": self.plugin_id,
-            "state": self.state,
-            "phase": self.phase,
+            "state": state,
+            "phase": phase,
             "lock_sha256": self.lock_sha256,
             "packages": [
                 {"name": package.name, "version": package.version, "size": package.size}

@@ -490,3 +490,23 @@ def test_status_reads_the_package_list_once():
     status = task.as_dict()
 
     assert status["total_size"] == 10 and status["size_complete"] is False
+
+
+def test_status_never_pairs_awaiting_confirmation_with_an_empty_list():
+    """The planner publishes packages, then the state, while a status read is under way."""
+
+    class RacingTask(deps._Task):
+        published = False
+
+        def __getattribute__(self, name):
+            value = object.__getattribute__(self, name)
+            if name == "packages" and not object.__getattribute__(self, "published"):
+                # The worker publishes right after this read returned the old list.
+                object.__setattr__(self, "published", True)
+                object.__setattr__(self, "packages", [lock_install.LockedPackage("a", "1", 10)])
+                object.__setattr__(self, "state", "awaiting_confirmation")
+            return value
+
+    status = RacingTask("demo", Path(".")).as_dict()
+
+    assert not (status["state"] == "awaiting_confirmation" and status["packages"] == [])
