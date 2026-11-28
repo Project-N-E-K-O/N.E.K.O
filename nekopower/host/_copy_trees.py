@@ -249,6 +249,7 @@ def is_binary_bytes(data: bytes) -> bool:
 
 
 _MAX_DIFF_LINES = 25_000
+_MAX_DIFF_SPAN = 2_000
 _MAX_DIFF_PAIR_WORK = 1_500_000
 
 
@@ -284,6 +285,16 @@ def _diff_work_exceeds_budget(left: list[bytes], right: list[bytes], budget: int
     return False
 
 
+def _prepare_diff_inputs(left: list[bytes], right: list[bytes]) -> tuple[int, list[bytes], list[bytes]] | None:
+    """Return ``(prefix_offset, left_slice, right_slice)`` within SequenceMatcher budget, or None if over budget."""
+    if max(len(left), len(right)) <= _MAX_DIFF_SPAN and not _diff_work_exceeds_budget(left, right):
+        return 0, left, right
+    prefix, left_mid, right_mid = _trim_common_edges(left, right)
+    if max(len(left_mid), len(right_mid)) > _MAX_DIFF_SPAN or _diff_work_exceeds_budget(left_mid, right_mid):
+        return None
+    return prefix, left_mid, right_mid
+
+
 def line_diff_counts(old: bytes | None, new: bytes | None) -> tuple[int | None, int | None]:
     """Return ``(added_lines, deleted_lines)`` between ``old`` and ``new``, or ``(None, None)`` for binary/oversized data."""
     old_bytes = old or b""
@@ -294,10 +305,11 @@ def line_diff_counts(old: bytes | None, new: bytes | None) -> tuple[int | None, 
     new_lines = new_bytes.splitlines()
     if len(old_lines) + len(new_lines) > _MAX_DIFF_LINES:
         return None, None
-    _prefix, old_mid, new_mid = _trim_common_edges(old_lines, new_lines)
-    if _diff_work_exceeds_budget(old_mid, new_mid):
+    prepared = _prepare_diff_inputs(old_lines, new_lines)
+    if prepared is None:
         return None, None
-    matcher = difflib.SequenceMatcher(None, old_mid, new_mid, autojunk=False)
+    _prefix, old_cmp, new_cmp = prepared
+    matcher = difflib.SequenceMatcher(None, old_cmp, new_cmp, autojunk=False)
     added = 0
     deleted = 0
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
@@ -316,14 +328,15 @@ class _Hunk:
 
 
 def _diff_hunks(base: list[bytes], side: list[bytes]) -> list[_Hunk]:
-    prefix, base_mid, side_mid = _trim_common_edges(base, side)
-    if _diff_work_exceeds_budget(base_mid, side_mid):
+    prepared = _prepare_diff_inputs(base, side)
+    if prepared is None:
         raise _DiffWorkExceeded()
-    matcher = difflib.SequenceMatcher(None, base_mid, side_mid, autojunk=False)
+    prefix, base_cmp, side_cmp = prepared
+    matcher = difflib.SequenceMatcher(None, base_cmp, side_cmp, autojunk=False)
     hunks: list[_Hunk] = []
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
         if tag != "equal":
-            hunks.append(_Hunk(i1 + prefix, i2 + prefix, tuple(side_mid[j1:j2])))
+            hunks.append(_Hunk(i1 + prefix, i2 + prefix, tuple(side_cmp[j1:j2])))
     return hunks
 
 
@@ -357,6 +370,27 @@ def _ensure_trailing_nl(chunks: list[bytes]) -> list[bytes]:
     if chunks[-1].endswith((b"\n", b"\r")):
         return chunks
     return [*chunks[:-1], chunks[-1] + b"\n"]
+
+
+def _whole_file_conflict(
+    current: bytes,
+    worktree: bytes,
+    current_label: bytes,
+    worktree_label: bytes,
+) -> bytes:
+    c_body = current if (not current or current.endswith((b"\n", b"\r"))) else current + b"\n"
+    w_body = worktree if (not worktree or worktree.endswith((b"\n", b"\r"))) else worktree + b"\n"
+    return (
+        b"<<<<<<< "
+        + current_label
+        + b"\n"
+        + c_body
+        + b"=======\n"
+        + w_body
+        + b">>>>>>> "
+        + worktree_label
+        + b"\n"
+    )
 
 
 def merge3_bytes(
@@ -400,13 +434,14 @@ def merge3_bytes(
     curr_lines = current.splitlines(keepends=True)
     wt_lines = worktree.splitlines(keepends=True)
     if max(len(base_lines), len(curr_lines), len(wt_lines)) > _MAX_DIFF_LINES:
-        # Avoid worst-case quadratic SequenceMatcher stalls when both sides edit huge files.
-        return worktree, True
+        # Avoid worst-case quadratic SequenceMatcher stalls when both sides edit huge files;
+        # embed whole-file conflict markers in O(N) so marker checks still guard landing.
+        return _whole_file_conflict(current, worktree, current_label, worktree_label), True
     try:
         curr_hunks = _diff_hunks(base_lines, curr_lines)
         wt_hunks = _diff_hunks(base_lines, wt_lines)
     except _DiffWorkExceeded:
-        return worktree, True
+        return _whole_file_conflict(current, worktree, current_label, worktree_label), True
 
     out: list[bytes] = []
     has_conflict = False
@@ -1035,6 +1070,12 @@ def verify_project_unchanged(
                 continue
             if _hash_file(target) != str(expected.get("sha256", "")):
                 changed.append(rel)
+            elif (
+                sys.platform != "win32"
+                and "mode" in expected
+                and bool(st.st_mode & stat.S_IXUSR) != bool(int(expected["mode"]) & stat.S_IXUSR)
+            ):
+                changed.append(rel)
         except OSError:
             changed.append(rel)
     return changed
@@ -1087,6 +1128,15 @@ def compute_copy_merge(
     blobs_dir = meta_dir / _BLOBS_DIR
     base_files: dict[str, dict[str, Any]] = dict(base.get("files") or {})
     base_digest = str(base.get("digest") or "")
+    meta_start = str(meta.get("start") or "")
+    if not meta_start or meta_start != base_digest:
+        return {
+            "status": "failed",
+            "detail": (
+                f"working copy {copy_path} baseline metadata is inconsistent "
+                "(meta.start != base_manifest.digest); recover or discard it before landing"
+            ),
+        }
     links = active_links(copy_path, meta.get("links") or ())
 
     try:
@@ -1582,13 +1632,15 @@ def prepare_copy_conflicts_sync(
         if rel in skipped_set or any(up in skipped_set for up in _parents(rel)):
             raise ValueError(f"preparing would overwrite skipped path in the working copy: {rel}")
 
-    # Back up every copy path we are about to delete or overwrite plus the old metadata on disk
-    # so a mid-preparation failure or double-fault rollback never discards recovery materials.
+    # Back up every copy path we are about to delete or overwrite plus the old metadata on disk,
+    # and persist the transaction marker BEFORE the first mutation so even a crash or triple-fault
+    # during rollback still blocks subsequent merges until recovered or discarded.
     old_base_bytes = (meta_dir / _BASE_MANIFEST_FILE).read_bytes()
     old_meta_bytes = (meta_dir / _META_FILE).read_bytes()
     prep_backup_dir = meta_dir / _PENDING_DIR / f"prep-bak-{uuid.uuid4().hex}"
     prep_backup_dir.mkdir(parents=True, exist_ok=True)
     saved_entries: list[tuple[str, str, str | None]] = []
+    mutated_copy = False
     mutated_base = False
     mutated_meta = False
     rollback_failed = False
@@ -1607,6 +1659,11 @@ def prepare_copy_conflicts_sync(
                 bak_name = f"b{idx}"
                 shutil.copy2(src, fs_path(prep_backup_dir / bak_name), follow_symlinks=False)
                 saved_entries.append((rel, "file", bak_name))
+        _atomic_write_json(
+            prep_backup_dir / _ROLLBACK_INCOMPLETE_FILE,
+            {"status": "in_progress", "merge_id": merge_id, "copy_path": str(copy_path)},
+        )
+        mutated_copy = True
 
         # Remove files deleted by the merge.
         for rel in to_delete:
@@ -1692,7 +1749,7 @@ def prepare_copy_conflicts_sync(
         _atomic_write_json(meta_dir / _META_FILE, meta)
     except BaseException as exc:
         # Roll back partial copy mutations AND baseline metadata so copy files and baseline stay in sync.
-        for rel, orig_kind, payload in saved_entries:
+        for rel, orig_kind, payload in saved_entries if mutated_copy else ():
             dst_path = copy_path / rel
             dst = fs_path(dst_path)
             try:

@@ -1086,19 +1086,19 @@ class WorktreeManager:
             return await self._has_changes(worktree.repo_root, worktree.path, worktree.id, worktree.start, linked=links)
 
     async def has_pending_delivery(self, worktree: Worktree) -> bool:
-        """Return whether a git worktree has a pushed branch awaiting retryable PR creation."""
+        """Return whether a git worktree has a pushed branch awaiting retryable PR creation.
+
+        Propagates git or filesystem read errors so cleanup paths stay fail-closed and keep the worktree.
+        """
         if worktree.kind == "copy":
             return False
         async with await self._lock(worktree.repo_root):
             if not await asyncio.to_thread(worktree.path.is_dir):
                 return False
-            try:
-                common = Path(
-                    (await self._git(worktree.repo_root, "rev-parse", "--path-format=absolute", "--git-common-dir")).lines()[0]
-                )
-            except (GitError, IndexError):
-                return False
-            delivery = await asyncio.to_thread(_noted_delivery, common, worktree.path)
+            common = Path(
+                (await self._git(worktree.repo_root, "rev-parse", "--path-format=absolute", "--git-common-dir")).lines()[0]
+            )
+            delivery = await asyncio.to_thread(_noted_delivery, common, worktree.path, strict=True)
             return bool(delivery.get("pr_pending"))
 
     async def remove(self, worktree: Worktree) -> None:
@@ -1648,6 +1648,7 @@ class WorktreeManager:
                         root,
                         "rm",
                         "--cached",
+                        "--force",
                         "--ignore-unmatch",
                         "--pathspec-from-file=-",
                         "--pathspec-file-nul",
@@ -1881,6 +1882,22 @@ class WorktreeManager:
             current = parents[0]
         return None
 
+    async def _resolve_push_target(self, root: Path, remote_name: str) -> tuple[str, bool]:
+        """Return ``(push_url, differs_from_fetch)`` for ``remote_name``, rejecting multiple push URLs."""
+        push_urls_run = await self._git(
+            root, "remote", "get-url", "--push", "--all", "--", remote_name, check=False
+        )
+        push_urls = list(dict.fromkeys(line.strip() for line in push_urls_run.lines() if line.strip()))
+        if len(push_urls) > 1:
+            raise WorktreeError(
+                f"remote {remote_name!r} has multiple push URLs configured; refusing to push"
+            )
+        fetch_url_run = await self._git(root, "remote", "get-url", "--", remote_name, check=False)
+        fetch_url = fetch_url_run.lines()[0].strip() if fetch_url_run.ok and fetch_url_run.lines() else ""
+        if push_urls:
+            return push_urls[0], push_urls[0] != fetch_url
+        return fetch_url, False
+
     async def _land_on_branch(
         self,
         worktree: Worktree,
@@ -1890,6 +1907,7 @@ class WorktreeManager:
         message: str = "",
         remote: str | None = None,
         base_branch: str | None = None,
+        mark_pr_pending: bool = False,
     ) -> MergeResult:
         root = worktree.repo_root
         base = await self._start(worktree)
@@ -1915,21 +1933,12 @@ class WorktreeManager:
                 await self._ensure_remote(root, remote_name)
                 # Inspect actual push target(s): reject multi-pushurl remotes and protect the push
                 # destination's live default branch even when pushurl differs from fetch url.
-                push_urls_run = await self._git(
-                    root, "remote", "get-url", "--push", "--all", "--", remote_name, check=False
-                )
-                push_urls = list(dict.fromkeys(line.strip() for line in push_urls_run.lines() if line.strip()))
-                if len(push_urls) > 1:
-                    raise WorktreeError(
-                        f"remote {remote_name!r} has multiple push URLs configured; refusing to push"
-                    )
-                fetch_url_run = await self._git(root, "remote", "get-url", "--", remote_name, check=False)
-                fetch_url = fetch_url_run.lines()[0].strip() if fetch_url_run.ok and fetch_url_run.lines() else ""
-                if push_urls and push_urls[0] != fetch_url:
-                    push_default = await self._discover_remote_url_default_branch(root, push_urls[0])
+                push_url, differs_from_fetch = await self._resolve_push_target(root, remote_name)
+                if differs_from_fetch and push_url:
+                    push_default = await self._discover_remote_url_default_branch(root, push_url)
                     if not push_default:
                         raise WorktreeError(
-                            f"could not determine the default branch of push destination {push_urls[0]!r}"
+                            f"could not determine the default branch of push destination {push_url!r}"
                         )
                     protected.add(push_default)
                 else:
@@ -2049,7 +2058,8 @@ class WorktreeManager:
                     "remote": remote_name,
                     "pushed": True,
                     "pushed_commit": existing_tip,
-                    "base_branch": str(delivery.get("base_branch") or ""),
+                    "base_branch": str(base_branch or delivery.get("base_branch") or ""),
+                    "pr_pending": True if mark_pr_pending else bool(delivery.get("pr_pending")),
                     "pr_url": str(delivery.get("pr_url") or ""),
                     "pr_number": delivery.get("pr_number"),
                     "prs": dict(delivery.get("prs") or {}) if isinstance(delivery.get("prs"), dict) else {},
@@ -2272,7 +2282,8 @@ class WorktreeManager:
             "remote": remote_name,
             "pushed": bool(remote_name) or (same_branch and bool(delivery.get("pushed"))),
             "pushed_commit": new_commit if remote_name else (str(delivery.get("pushed_commit") or "") if same_branch else ""),
-            "base_branch": str(delivery.get("base_branch") or "") if same_branch else "",
+            "base_branch": str(base_branch or (delivery.get("base_branch") if same_branch else "") or ""),
+            "pr_pending": True if mark_pr_pending else (bool(delivery.get("pr_pending")) if same_branch else False),
             "pr_url": str(delivery.get("pr_url") or "") if same_branch else "",
             "pr_number": delivery.get("pr_number") if same_branch else None,
             "prs": dict(delivery.get("prs") or {}) if same_branch and isinstance(delivery.get("prs"), dict) else {},
@@ -2321,23 +2332,32 @@ class WorktreeManager:
                     remote=remote_name,
                 )
         else:
-            # Prefer live remote default branch when opening a PR so stale local refs/remotes/<remote>/HEAD
-            # does not target a renamed/deleted branch; fall back to cached local ref if offline.
+            # Resolve default base branch from the actual push destination (when pushurl differs
+            # from fetch URL) so the PR base matches the repository _create_pr_with_gh targets.
             try:
-                base_branch = await self._discover_remote_default_branch(root, remote_name, fetch=True)
-            except (WorktreeError, GitError):
-                try:
-                    base_branch = await self._discover_remote_default_branch(root, remote_name, fetch=False)
-                except WorktreeError as exc:
-                    return MergeResult(
-                        "failed",
-                        detail=str(exc),
-                        skipped=result.skipped,
-                        result=result.commit,
-                        result_tree=result.tree,
-                        base=base,
-                        remote=remote_name,
-                    )
+                push_url, differs_from_fetch = await self._resolve_push_target(root, remote_name)
+                if differs_from_fetch and push_url:
+                    discovered = await self._discover_remote_url_default_branch(root, push_url)
+                    if not discovered:
+                        raise WorktreeError(
+                            f"could not determine the default branch of push destination {push_url!r}"
+                        )
+                    base_branch = discovered
+                else:
+                    try:
+                        base_branch = await self._discover_remote_default_branch(root, remote_name, fetch=True)
+                    except (WorktreeError, GitError):
+                        base_branch = await self._discover_remote_default_branch(root, remote_name, fetch=False)
+            except WorktreeError as exc:
+                return MergeResult(
+                    "failed",
+                    detail=str(exc),
+                    skipped=result.skipped,
+                    result=result.commit,
+                    result_tree=result.tree,
+                    base=base,
+                    remote=remote_name,
+                )
 
         target_branch = pr.branch.strip() or f"nekopower/{worktree.id}"
         common = Path((await self._git(root, "rev-parse", "--path-format=absolute", "--git-common-dir")).lines()[0])
@@ -2362,6 +2382,7 @@ class WorktreeManager:
             message=pr.commit_message or title,
             remote=remote_name,
             base_branch=base_branch,
+            mark_pr_pending=not bool(existing_pr_url),
         )
         if branch_result.status in ("conflict", "failed"):
             return branch_result
@@ -2385,6 +2406,22 @@ class WorktreeManager:
         if existing_pr_url:
             return replace(branch_result, pr_url=existing_pr_url, pr_number=existing_pr_number)
 
+        # Durably record pending PR creation BEFORE awaiting the PR callback/CLI so cancellation
+        # or crash mid-request still preserves the worktree for retry on restart.
+        pending_pr_delivery: dict[str, Any] = {
+            **delivery,
+            "branch": branch_result.branch,
+            "commit": commit_sha,
+            "remote": remote_name,
+            "base_branch": base_branch,
+            "pushed": True,
+            "pushed_commit": commit_sha,
+            "pr_pending": True,
+            "prs": saved_prs,
+        }
+        with contextlib.suppress(OSError):
+            await _to_the_end(asyncio.to_thread(_note_delivery, common, worktree.path, pending_pr_delivery))
+
         request = PRRequest(
             repo_root=root,
             remote=remote_name,
@@ -2405,19 +2442,6 @@ class WorktreeManager:
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - report clear landing failure while preserving pushed branch
-            pending_pr_delivery: dict[str, Any] = {
-                **delivery,
-                "branch": branch_result.branch,
-                "commit": commit_sha,
-                "remote": remote_name,
-                "base_branch": base_branch,
-                "pushed": True,
-                "pushed_commit": commit_sha,
-                "pr_pending": True,
-                "prs": saved_prs,
-            }
-            with contextlib.suppress(OSError):
-                await _to_the_end(asyncio.to_thread(_note_delivery, common, worktree.path, pending_pr_delivery))
             return replace(
                 branch_result,
                 status="failed",
@@ -2612,29 +2636,25 @@ class WorktreeManager:
         if not disk.enough:
             raise WorktreeUnavailable(DISK_SPACE, f"{disk.free} bytes free, {disk.needed} needed")
 
-        claiming = asyncio.ensure_future(asyncio.to_thread(_claim_directory, target))
+        token = uuid.uuid4().hex
+        stop = threading.Event()
+        claiming = asyncio.ensure_future(asyncio.to_thread(_claim_copy_target, target, token))
         cancelled = await _settle(claiming)
         failed = claiming.exception()
         if failed is not None:
             if cancelled:
                 raise asyncio.CancelledError from failed
+            if isinstance(failed, WorktreeError):
+                raise failed
             raise WorktreeError(f"the working copy directory {target} could not be made: {failed}") from failed
+        created, claimed_identity, claimed_xattr, claimed_stat = claiming.result()
+        existed = not created
         if cancelled:
-            if claiming.result():
+            if created and await _to_the_end(
+                asyncio.to_thread(_claimed_target_matches, target, claimed_identity, claimed_xattr, token, claimed_stat)
+            ):
                 await _to_the_end(asyncio.to_thread(_unclaim_directory, target))
             raise asyncio.CancelledError
-        existed = not claiming.result()
-        if existed and not await asyncio.to_thread(_is_existing_empty_dir, target):
-            raise WorktreeError(f"{target} already exists and is not an empty directory")
-        token = uuid.uuid4().hex
-        stop = threading.Event()
-        claimed_identity = await asyncio.to_thread(_directory_identity, target)
-        claimed_xattr = False
-        claimed_stat: tuple[int, int] | None = None
-        if claimed_identity is None:
-            claimed_xattr = await asyncio.to_thread(_copy_trees._set_copy_xattr, target, token)
-            if not claimed_xattr:
-                claimed_stat = await asyncio.to_thread(_nonlink_dir_stat, target)
         try:
             start_digest, linked, _scan = await self._run_copy_worker(
                 _copy_trees.populate_copy,
@@ -2656,13 +2676,9 @@ class WorktreeManager:
 
             async def clean_copy() -> None:
                 try:
-                    can_clean_target = False
-                    if claimed_identity is not None:
-                        can_clean_target = await asyncio.to_thread(_directory_identity, target) == claimed_identity
-                    elif claimed_xattr:
-                        can_clean_target = await asyncio.to_thread(_copy_trees._get_copy_xattr, target) == token
-                    elif claimed_stat is not None:
-                        can_clean_target = await asyncio.to_thread(_nonlink_dir_stat, target) == claimed_stat
+                    can_clean_target = await asyncio.to_thread(
+                        _claimed_target_matches, target, claimed_identity, claimed_xattr, token, claimed_stat
+                    )
                     if can_clean_target:
                         await asyncio.to_thread(_remove_tree, target)
                         if existed:
@@ -3410,6 +3426,46 @@ def _nonlink_dir_stat(path: Path) -> tuple[int, int] | None:
     return (st.st_dev, st.st_ino)
 
 
+def _claim_copy_target(
+    target: Path, token: str
+) -> tuple[bool, dict[str, int] | None, bool, tuple[int, int] | None]:
+    """Claim ``target`` for a working copy and record its identity credentials before returning."""
+    created = _claim_directory(target)
+    if not created and not _is_existing_empty_dir(target):
+        raise WorktreeError(f"{target} already exists and is not an empty directory")
+    try:
+        identity = _directory_identity(target)
+    except OSError:
+        identity = None
+    xattr_ok = False
+    dir_stat: tuple[int, int] | None = None
+    if identity is None:
+        xattr_ok = _copy_trees._set_copy_xattr(target, token)
+        if not xattr_ok:
+            dir_stat = _nonlink_dir_stat(target)
+    return created, identity, xattr_ok, dir_stat
+
+
+def _claimed_target_matches(
+    target: Path,
+    claimed_identity: dict[str, int] | None,
+    claimed_xattr: bool,
+    token: str,
+    claimed_stat: tuple[int, int] | None,
+) -> bool:
+    """Return whether ``target`` still matches the identity recorded when it was claimed."""
+    if claimed_identity is not None:
+        try:
+            return _directory_identity(target) == claimed_identity
+        except OSError:
+            return False
+    if claimed_xattr:
+        return _copy_trees._get_copy_xattr(target) == token
+    if claimed_stat is not None:
+        return _nonlink_dir_stat(target) == claimed_stat
+    return False
+
+
 def _verify_copy_handle(worktree: Worktree) -> str | None:
     """Verify on-disk copy metadata, project binding, token, and directory identity match ``worktree``."""
     meta = _copy_trees.read_copy_meta(worktree.path)
@@ -3754,15 +3810,24 @@ def _note_delivery(common_dir: Path, path: Path, payload: Mapping[str, Any]) -> 
     _copy_trees._atomic_write_json(entry / _DELIVERY_NOTE, dict(payload))
 
 
-def _noted_delivery(common_dir: Path, path: Path) -> dict[str, Any]:
+def _noted_delivery(common_dir: Path, path: Path, *, strict: bool = False) -> dict[str, Any]:
     entry = _registration_of(common_dir, path)
     if entry is None:
         return {}
+    note = entry / _DELIVERY_NOTE
     try:
-        raw = json.loads((entry / _DELIVERY_NOTE).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        raw = json.loads(note.read_text(encoding="utf-8"))
+    except FileNotFoundError:
         return {}
-    return raw if isinstance(raw, dict) else {}
+    except (OSError, ValueError):
+        if strict:
+            raise
+        return {}
+    if not isinstance(raw, dict):
+        if strict:
+            raise ValueError(f"delivery note {note} is not a JSON object")
+        return {}
+    return raw
 
 
 def _directory_identity(path: Path) -> dict[str, int] | None:

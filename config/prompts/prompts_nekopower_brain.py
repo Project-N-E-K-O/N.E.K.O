@@ -1966,7 +1966,7 @@ TREE_LANDED = "Merged into the project's directory ({project}): {files}."
 # Rendered with str.format (branch, commit, files).
 TREE_LANDED_BRANCH = "Committed to branch {branch} ({commit}): {files}."
 # Rendered with str.format (branch, commit).
-TREE_LANDED_BRANCH_NO_FILES = "Pushed branch {branch} ({commit})."
+TREE_LANDED_BRANCH_NO_FILES = "Committed to branch {branch} ({commit})."
 # Rendered with str.format (branch, pr_url, files).
 TREE_LANDED_PR = "Pushed branch {branch} and opened pull request {pr_url}: {files}."
 # Rendered with str.format (branch, pr_url).

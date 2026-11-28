@@ -3464,7 +3464,7 @@ CodeRabbit 在 17.17 那个 PR（#4119）的第 6 轮指出两处叫停没收干
 
 - `WorktreeManager(allow_non_git=True)`（默认开启，`probe(..., allow_non_git=False)` 可按需关闭）：对非 git 普通目录（含空的非 git 目录）、`git` 缺失或版本过旧时的非 git 目录，探测返回 `usable=True, kind="copy", repo_root=None`（`families.in_git` 按 `repo_root is not None` 判断，行为不变）；不存在或不可读的目录返回 `not_a_repository`，超过上限（`WORKTREE_COPY_MAX_FILES = 20_000` 或 `WORKTREE_COPY_MAX_BYTES = 512 MiB`）返回 `directory_too_large` 不可用；裸仓库和 `.git` 内部目录仍明确拒绝。
 - 存储与隔离：元数据、基线快照和备份全部放在副本目录同级 `<copies_base>/.nekopower-copies/<id>/` 下，**不往用户项目目录写入任何元数据文件**；创建时忽略 `.git`、已链接的依赖目录和单文件超过 20 MiB 的大文件。
-- 合回与冲突：`merge_back`（仅支持 `WorkingFiles`；`BranchCommit` / `PullRequest` 及 `FromRef` / `RemoteDefaultBranch` 对非 git 目录明确拒绝）对文本文件做纯 Python diff3 三方合并，二进制文件按内容字节比对；冲突时项目目录零修改，返回 `conflict`，`prepare_conflicts` 将 `<<<<<<< project` / `=======` / `>>>>>>> worktree` 冲突标记写入副本供使魔解决；应用前先备份原文件，写入后逐文件读回校验，任一步失败或被取消则原样回滚；替换空目录时仅用 `os.rmdir`，绝不误删非空用户目录。
+- 合回与冲突：`merge_back`（仅支持 `WorkingFiles`；`BranchCommit` / `PullRequest` 及 `FromRef` / `RemoteDefaultBranch` 对非 git 目录明确拒绝）对文本文件做纯 Python diff3 三方合并（超出行数或重复行配对预算时退化为整文件冲突标记，不静默覆盖），二进制文件按内容字节比对；冲突时项目目录零修改，返回 `conflict`，`prepare_conflicts` 将 `<<<<<<< project` / `=======` / `>>>>>>> worktree` 冲突标记写入副本供使魔解决；应用前先备份原文件，写入后逐文件读回校验——**应用与读回校验完成即到达提交点**：提交点前失败或被取消会原样回滚项目目录，提交点后被取消不会回滚已生效的项目文件，而是在基线更新完成后再向调用方传播取消（调用方需区分这两种情况，避免把已落地改动误判为未应用）；替换空目录时仅用 `os.rmdir`，绝不误删非空用户目录。
 - 生命周期：支持 `open`、`has_changes`、`remove`（校验目录身份 `(dev, ino, birth)`，Linux 无创建时间时优先绑定目录 `user.nekopower.copy_token` 扩展属性）、`reconcile` 以及 `TreeWork` 下的并行成员、组队与监工猫验收（`TASK_AGENT_IN_COPY` / `TREE_COPY_CHECK_BRIEF`）。
 
 **已知边界**
