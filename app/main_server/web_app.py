@@ -23,7 +23,7 @@ import re
 import secrets
 import stat
 from pathlib import Path
-from urllib.parse import parse_qsl, urlsplit
+from urllib.parse import parse_qsl, unquote, urlsplit
 
 import httpx
 from fastapi import Depends, HTTPException, Request
@@ -168,6 +168,14 @@ class CustomStaticFiles(StaticFiles):
         return response
 
 
+# User-model reads share one transport guard with Monitor; Main alone performs recovery.
+from app.model_workshop_static import WorkshopStaticMixin
+
+
+class UserModelStaticFiles(WorkshopStaticMixin, CustomStaticFiles):
+    pass
+
+
 class StaticRootFiles(LegacyStaticAssetAliasMixin, CustomStaticFiles):
     """The repository ``static/`` mount; also answers retired asset URLs."""
 
@@ -280,7 +288,7 @@ if _IS_MAIN_PROCESS:
     if os.path.exists(_serve_live2d_path):
         app.mount(
             "/user_live2d",
-            CustomStaticFiles(directory=_serve_live2d_path),
+            UserModelStaticFiles(directory=_serve_live2d_path, config_manager=_config_manager, maintain_main=True),
             name="user_live2d",
         )
         logger.info(f"已挂载用户Live2D目录: {_serve_live2d_path}")
@@ -291,7 +299,7 @@ if _IS_MAIN_PROCESS:
         if os.path.exists(_writable_live2d_path):
             app.mount(
                 "/user_live2d_local",
-                CustomStaticFiles(directory=_writable_live2d_path),
+                UserModelStaticFiles(directory=_writable_live2d_path, config_manager=_config_manager, maintain_main=True),
                 name="user_live2d_local",
             )
             logger.info(f"已挂载本地Live2D目录(CFA回退): {_writable_live2d_path}")
@@ -316,7 +324,7 @@ if _IS_MAIN_PROCESS:
     user_vrm_path = str(_config_manager.vrm_dir)
     if os.path.exists(user_vrm_path):
         app.mount(
-            "/user_vrm", CustomStaticFiles(directory=user_vrm_path), name="user_vrm"
+            "/user_vrm", UserModelStaticFiles(directory=user_vrm_path, config_manager=_config_manager, maintain_main=True), name="user_vrm"
         )
         logger.info(f"已挂载VRM目录: {user_vrm_path}")
 
@@ -339,7 +347,7 @@ if _IS_MAIN_PROCESS:
     user_mmd_path = str(_config_manager.mmd_dir)
     if os.path.exists(user_mmd_path):
         app.mount(
-            "/user_mmd", CustomStaticFiles(directory=user_mmd_path), name="user_mmd"
+            "/user_mmd", UserModelStaticFiles(directory=user_mmd_path, config_manager=_config_manager, maintain_main=True), name="user_mmd"
         )
         logger.info(f"已挂载MMD目录: {user_mmd_path}")
 
@@ -394,6 +402,7 @@ from main_routers.live2d_router import router as live2d_router  # noqa
 from main_routers.memory_router import router as memory_router  # noqa
 from main_routers.chat_sync_router import router as chat_sync_router, close_runtime as close_chat_sync_runtime  # noqa
 from main_routers.mmd_router import router as mmd_router  # noqa
+from main_routers.model_market_router import router as model_market_router  # noqa
 from main_routers.music_router import router as music_router  # noqa
 from main_routers.pages_router import router as pages_router  # noqa
 from main_routers.pngtuber_router import router as pngtuber_router  # noqa
@@ -877,6 +886,23 @@ async def proxy_user_plugin_market_bridge(request: Request, path: str = ""):
     served by the main server, so it needs the same same-origin bridge here.
     """
 
+    # Model bytes go directly between backend services. Only exact command
+    # paths may use this buffering proxy: checking a package prefix alone would
+    # miss dot segments normalized by the outgoing HTTP client.
+    try:
+        decoded = unquote(path, errors="strict")
+    except (ValueError, UnicodeError):
+        return JSONResponse(status_code=403, content={"detail": "local service endpoint"})
+    if path and ("\\" in decoded or any(part in {"", ".", ".."} for part in decoded.split("/"))):
+        return JSONResponse(status_code=403, content={"detail": "local service endpoint"})
+    if decoded == "models" or decoded.startswith("models/"):
+        from services.model_workshop.market import REQUEST as model_request
+        parts = path.split("/")
+        if not (path == decoded and len(parts) in {3, 4} and parts[1] == "launch"
+                and model_request.fullmatch(parts[2])
+                and (len(parts) == 3 or parts[3] in {"select", "cancel"})):
+            return JSONResponse(status_code=403, content={"detail": "local service endpoint"})
+
     target = f"{_resolve_user_plugin_base()}/market"
     if path:
         target = f"{target}/{path}"
@@ -936,7 +962,10 @@ async def proxy_user_plugin_market_bridge(request: Request, path: str = ""):
     # streamed through under their size cap instead; see below.
     knowledge_path = path == "knowledge" or path.startswith("knowledge/")
     theater_path = path.startswith("theater/")
-    body = b"" if knowledge_path or theater_path else await request.body()
+    # Connected model commands are streamed under their own small cap. The
+    # local-only package reader refuses remote Market origins independently.
+    model_path = path.startswith("models/")
+    body = b"" if knowledge_path or theater_path or model_path else await request.body()
     scope_identity = request.scope.get("neko.instance_identity")
     if scope_identity:
         # This is a new authenticated service-to-service hop. The plugin's
@@ -972,9 +1001,9 @@ async def proxy_user_plugin_market_bridge(request: Request, path: str = ""):
         refused, body = _knowledge_body(request, path[len("knowledge"):].lstrip("/"))
         if refused is not None:
             return refused
-    elif theater_path and request.method == "POST":
+    elif (theater_path or model_path) and request.method == "POST":
         from utils.http.knowledge_proxy import capped_body, declared_size_problem
-        limit = 8 * 1024 * 1024 if path.endswith("/import") else 4096
+        limit = 8 * 1024 * 1024 if theater_path and path.endswith("/import") else 4096
         problem = declared_size_problem(request.headers.get("content-length"), limit)
         if problem is not None:
             return _payload_too_large()
@@ -1034,6 +1063,9 @@ app.include_router(characters_router)
 app.include_router(live2d_router)
 app.include_router(vrm_router)
 app.include_router(mmd_router)
+# The independent package importer uses its own pre-body guard in the facade;
+# it must precede the page fallback and never register through the Steam router.
+app.include_router(model_market_router)
 app.include_router(pngtuber_router)
 app.include_router(jukebox_router)
 app.include_router(workshop_router)

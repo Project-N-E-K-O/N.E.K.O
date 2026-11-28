@@ -214,6 +214,9 @@ LEGACY_RUNTIME_DIR_NAMES = (
     "live2d",
     "vrm",
     "mmd",
+    # Completed model-workshop records belong to the runtime root alongside
+    # model resources; empty private infrastructure is handled by its probe.
+    "model_workshop",
     "workshop",
     "theater",
     "character_cards",

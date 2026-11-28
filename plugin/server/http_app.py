@@ -424,6 +424,10 @@ def build_plugin_server_app(
     app.include_router(market_bridge_router)
     from plugin.server.routes.theater_market import router as theater_market_router
     app.include_router(theater_market_router)
+    # A built-in bridge, not an installable plugin; commands stay small and
+    # desktop-authenticated package reads remain local-only.
+    from plugin.server.routes.model_market import router as model_market_router
+    app.include_router(model_market_router)
     # Keep the Host/Origin guard outside CORS and the cache-header middleware;
     # untrusted requests must not be short-circuited before the guard runs.
     from utils.instance_access import InstanceAccessMiddleware

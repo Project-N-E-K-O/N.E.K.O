@@ -1371,24 +1371,41 @@ document.addEventListener('DOMContentLoaded', async () => {
         }, characterName);
     }
 
+    function legacyModelUploadError(result) {
+        // Old upload handlers consume error, while workshop guards return a stable
+        // error_code. Translate only those codes; keep ordinary server errors intact.
+        const code = result?.error_code;
+        if (code === 'model_workshop_install_conflict') return t('modelWorkshop.conflict', 'Model installation conflict');
+        if (['model_workshop_busy', 'model_workshop_state_busy', 'model_workshop_closed'].includes(code)) {
+            return t('modelWorkshop.busy', 'Model service unavailable');
+        }
+        if (typeof code === 'string' && code.startsWith('model_workshop_')) {
+            return t('modelWorkshop.stateUnavailable', 'Model installation state unavailable');
+        }
+        return result?.error || t('modelWorkshop.importFailed', 'Model import failed');
+    }
+
     function createLive2DModelOption(model) {
         const option = document.createElement('option');
         const selection = getLive2DModelSelection(model);
         option.value = selection.name;
+        // Live2D display_name also disambiguates ordinary and Steam duplicates.
+        // The native value/path/item_id remain separate from this backend label.
         option.textContent = model.display_name || selection.name;
         option.setAttribute('data-model-type', 'live2d');
         option.dataset.modelName = selection.name;
         option.dataset.modelPath = selection.path;
         option.dataset.modelSource = selection.source;
         if (selection.item_id) option.dataset.itemId = selection.item_id;
+        // Local installation identity is separate from the existing Steam item ID.
+        if (model.model_workshop?.install_id) option.dataset.workshopInstallId = model.model_workshop.install_id;
         return option;
     }
 
     async function loadLive2DModelOptions({ showLoadedStatus = true } = {}) {
         try {
-            // 使用助手替换原有 fetch
-            availableModels = await RequestHelper.fetchJson('/api/live2d/models');
-
+            const models = await RequestHelper.fetchJson('/api/live2d/models');
+            availableModels = models;
             if (availableModels.length > 0) {
                 modelSelect.innerHTML = ''; // 不添加第一个"选择模型"选项
                 availableModels.forEach(model => {
@@ -3020,8 +3037,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     // 模型类型选择事件
+    let modelTypeChangeHandler = null;
     if (modelTypeSelect) {
-        modelTypeSelect.addEventListener('change', async (e) => {
+        modelTypeChangeHandler = async (e) => {
             const type = e.target.value;
 
             // 关键修复：自定义下拉会手动 dispatch change，即使值未变也会触发。
@@ -3159,7 +3177,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                     console.warn('[模型管理] 切到 Live3D 自动加载模型失败:', autoLoadError);
                 }
             }
-        });
+        };
+        modelTypeSelect.addEventListener('change', modelTypeChangeHandler);
     }
 
     // 加载 VRM 模型列表
@@ -3199,7 +3218,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                     if (model.item_id) {
                         option.dataset.itemId = model.item_id;
                     }
-                    option.textContent = model.name || filename || validPath;
+                    // The package label is display-only; value/data-path/item_id stay native.
+                    option.textContent = (model.model_workshop?.install_id && model.display_name) || model.name || filename || validPath;
                     vrmModelSelect.appendChild(option);
                 });
                 vrmModelSelect.disabled = false;
@@ -4505,7 +4525,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                     if (model.item_id) {
                         option.dataset.itemId = model.item_id;
                     }
-                    option.textContent = model.name || model.filename || modelPath.split('/').pop();
+                    // Match the merged 3D list without reinterpreting this legacy save selector.
+                    option.textContent = (model.model_workshop?.install_id && model.display_name) || model.name || model.filename || modelPath.split('/').pop();
                     mmdModelSelect.appendChild(option);
                 });
                 mmdModelSelect.disabled = false;
@@ -4990,17 +5011,13 @@ document.addEventListener('DOMContentLoaded', async () => {
     async function loadLive3DModels() {
         try {
             showStatus(t('live2d.loading', '正在加载模型列表...'));
-
-            // 并行请求 VRM 和 MMD 模型列表
             const [vrmData, mmdData] = await Promise.all([
                 RequestHelper.fetchJson('/api/model/vrm/models'),
                 RequestHelper.fetchJson('/api/model/mmd/models')
             ]);
-
             const vrmModels = (vrmData.success && Array.isArray(vrmData.models)) ? vrmData.models : [];
             const mmdModelsList = (mmdData.success && Array.isArray(mmdData.models)) ? mmdData.models : [];
-
-            if (!vrmModelSelect) return;
+            if (!vrmModelSelect) return { status: 'refresh_failed' };
             vrmModelSelect.innerHTML = '';
 
             // 添加 VRM 模型
@@ -5018,7 +5035,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                 option.setAttribute('data-sub-type', 'vrm');
                 if (filename) option.setAttribute('data-filename', filename);
                 if (model.item_id) option.dataset.itemId = model.item_id;
-                const baseName = model.name || filename || validPath;
+                // Reopening uses the same registered package label as import refresh.
+                const baseName = (model.model_workshop?.install_id && model.display_name) || model.name || filename || validPath;
                 option.textContent = baseName;
                 vrmModelSelect.appendChild(option);
             });
@@ -5033,7 +5051,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 option.setAttribute('data-sub-type', 'mmd');
                 if (model.filename) option.setAttribute('data-filename', model.filename);
                 if (model.item_id) option.dataset.itemId = model.item_id;
-                const baseName = model.name || model.filename || modelPath.split('/').pop();
+                const baseName = (model.model_workshop?.install_id && model.display_name) || model.name || model.filename || modelPath.split('/').pop();
                 option.textContent = baseName;
                 vrmModelSelect.appendChild(option);
             });
@@ -5060,15 +5078,13 @@ document.addEventListener('DOMContentLoaded', async () => {
                     option.setAttribute('data-path', modelPath);
                     if (model.filename) option.setAttribute('data-filename', model.filename);
                     if (model.item_id) option.dataset.itemId = model.item_id;
-                    option.textContent = model.name || model.filename || modelPath.split('/').pop();
+                    option.textContent = (model.model_workshop?.install_id && model.display_name) || model.name || model.filename || modelPath.split('/').pop();
                     mmdModelSelect.appendChild(option);
                 });
             }
         } catch (error) {
             console.error('加载Live3D模型列表失败:', error);
-            if (vrmModelSelect) {
-                vrmModelSelect.innerHTML = `<option value="">${t('live2d.loadFailed', '加载失败')}</option>`;
-            }
+            if (vrmModelSelect) vrmModelSelect.innerHTML = `<option value="">${t('live2d.loadFailed', '加载失败')}</option>`;
             updateVRMModelDropdown();
             updateVRMModelSelectButtonText();
             showStatus(t('live2d.loadError', `错误: ${error.message}`, { error: error.message }), 5000);
@@ -8411,7 +8427,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                         await loadMMDModels();
                     }
                 } else {
-                    showStatus(`上传失败: ${result.error}`, 3000);
+                    showStatus(t('live2d.uploadFailed', 'Upload failed: {{error}}', { error: legacyModelUploadError(result) }), 3000);
                 }
             } catch (error) {
                 console.error('上传MMD模型失败:', error);
@@ -8639,7 +8655,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     }
                 }, 1500);
             } else {
-                uploadStatus.textContent = t('live2d.uploadFailed', `✗ ${result.error}`, { error: result.error });
+                uploadStatus.textContent = t('live2d.uploadFailed', 'Upload failed: {{error}}', { error: legacyModelUploadError(result) });
                 uploadStatus.style.color = '#dc3545';
                 setTimeout(() => {
                     uploadStatus.textContent = '';
@@ -8752,7 +8768,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     showStatus(`${result.message}`, 3000);
                     await loadLive3DModels();
                 } else {
-                    showStatus(`上传失败: ${result.error}`, 3000);
+                    showStatus(t('live2d.uploadFailed', 'Upload failed: {{error}}', { error: legacyModelUploadError(result) }), 3000);
                 }
             } catch (error) {
                 console.error('上传MMD ZIP包失败:', error);
@@ -8885,7 +8901,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     }
                 }, 1500);
             } else {
-                uploadStatus.textContent = t('live2d.uploadVRMFailed', `✗ ${result.error}`, { error: result.error });
+                uploadStatus.textContent = t('live2d.uploadVRMFailed', 'Upload failed: {{error}}', { error: legacyModelUploadError(result) });
                 uploadStatus.style.color = '#dc3545';
                 setTimeout(() => {
                     uploadStatus.textContent = '';
@@ -10088,6 +10104,44 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (currentModelType === 'live2d' && currentModelInfo && currentModelInfo.name) {
         const selectedOption = findLive2DOptionBySelection(getLive2DModelSelection(currentModelInfo));
         if (selectedOption) selectLive2DOption(selectedOption);
+    }
+
+    // The workshop owns only a short-lived edit witness. Ordinary save,
+    // character selection and model loading keep their existing semantics.
+    if (window.NekoModelWorkshop) {
+        window.NekoModelWorkshop.mount(document.getElementById('model-workshop-panel'), {
+            translate: (key, params) => t('modelWorkshop.' + key, key, params),
+            capture: async () => ({ character: await getLanlanName(),
+                settings: captureSettingsSnapshot(), selection: userModelSelectionGeneration }),
+            current: async (context, name) => {
+                const character = await getLanlanName();
+                return context && character === name && context.character === name
+                    && !savingInProgress && !window.hasUnsavedChanges
+                    && !window._modelManagerParameterEditedSinceSave && !isModelManagerSettingsWaiting()
+                    && context.selection === userModelSelectionGeneration
+                    && snapshotsEqual(context.settings, captureSettingsSnapshot());
+            },
+            applied: (data, clean) => {
+                // Use the established role-filtered notification, then the page's
+                // original startup loader. No form fields or second save are sent.
+                sendMessageToMainPage('reload_model', { lanlan_name: data.character_name });
+                if (clean) {
+                    // The workshop saved a new type without using the local type
+                    // selector. Align only its clean reload with that committed type;
+                    // restoring the old mode can preload another model and race the
+                    // authoritative character loader (notably VRM -> Live2D).
+                    const format = data.result?.model_format;
+                    try {
+                        if (format === 'live2d') localStorage.setItem('modelType', 'live2d');
+                        else if (format === 'vrm' || format === 'mmd') {
+                            localStorage.setItem('modelType', 'live3d');
+                            localStorage.setItem('live3dSubType', format);
+                        }
+                    } catch (_) { console.warn('[ModelWorkshop] Could not remember the saved model type'); }
+                    window.location.reload();
+                }
+            }
+        });
     }
 
     await restorePendingParameterEditorSaveState(savePositionBtn, {

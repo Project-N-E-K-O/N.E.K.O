@@ -178,6 +178,14 @@ def _runtime_root_has_user_content(root: Path, *, config_manager=None) -> bool:
         if name in NON_RUNTIME_CONTENT_DIR_NAMES:
             continue
         candidate = root / name
+        if name == "model_workshop":
+            from utils.model_workshop_storage import model_workshop_has_user_content
+
+            # This read-only probe also preserves dangling links/unknown files;
+            # opening an empty workshop must not make a fresh root user-owned.
+            if model_workshop_has_user_content(candidate):
+                return True
+            continue
         if candidate.is_file():
             return True
         if candidate.is_dir():
@@ -746,7 +754,8 @@ def _legacy_source_was_already_imported(
     if str(root_state.get("last_migration_source") or "") != str(source_root):
         return False
     last_result = str(root_state.get("last_migration_result") or "")
-    return last_result.startswith("legacy_root_")
+    # Older builds could persist a deferred result with the same prefix.
+    return last_result in {"legacy_root_imported", "legacy_root_repaired_target"}
 
 
 def _root_has_staged_cloudsave_snapshot(root: Path) -> bool:
@@ -809,6 +818,16 @@ def import_legacy_runtime_root_if_needed(config_manager) -> dict[str, Any]:
         ):
             continue
 
+        from utils.model_workshop_storage import ModelWorkshopStorageError, inspect_model_workshop_metadata, model_workshop_has_user_content
+        try:
+            inspect_model_workshop_metadata(source_root)
+        except ModelWorkshopStorageError as error:
+            # Preserve the original root; never transplant an unfinished commit
+            # into a fresh runtime where its identities cannot be recovered.
+            logger.warning("Legacy runtime import deferred: %s", str(error))
+            return {"migrated": False, "source": str(source_root), "copied_paths": [],
+                    "backup_path": "", "repair_reason": "", "result": "legacy_root_" + str(error)}
+
         source_summary = _runtime_root_summary(config_manager, source_root)
         should_repair, repair_reason = _legacy_root_provides_repair_benefit(
             config_manager,
@@ -817,6 +836,20 @@ def import_legacy_runtime_root_if_needed(config_manager) -> dict[str, Any]:
         )
         if target_has_user_content and not should_repair:
             continue
+        if target_has_user_content:
+            try:
+                inspect_model_workshop_metadata(target_root)
+            except ModelWorkshopStorageError as error:
+                # Replacing the current root with a copy changes the file
+                # identities needed to recover an unfinished installation.
+                logger.warning("Legacy runtime import deferred: %s", str(error))
+                return {"migrated": False, "source": str(source_root), "copied_paths": [],
+                        "backup_path": "", "repair_reason": "", "result": "legacy_root_" + str(error)}
+        if (target_has_user_content and model_workshop_has_user_content(source_root / "model_workshop")
+                and os.path.lexists(target_root / "model_workshop")):
+            logger.warning("Legacy runtime import deferred: model workshop roots conflict")
+            return {"migrated": False, "source": str(source_root), "copied_paths": [],
+                    "backup_path": "", "repair_reason": "", "result": "legacy_root_model_workshop_root_conflict"}
 
         temp_root = target_root.parent / f".{target_root.name}.bootstrap-import"
         if temp_root.exists():

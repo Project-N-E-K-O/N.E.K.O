@@ -37,7 +37,7 @@ import stat
 import tempfile
 import uuid
 from collections.abc import Callable
-from contextlib import suppress
+from contextlib import nullcontext, suppress
 from datetime import datetime, timezone
 from functools import partial
 from pathlib import Path
@@ -45,6 +45,8 @@ from typing import Any
 
 from fastapi import APIRouter, Request, Response
 from pydantic import BaseModel, Field, field_validator
+
+from services.model_workshop import runtime as model_workshop
 
 from config import APP_NAME
 from main_routers.shared_state import (
@@ -532,6 +534,7 @@ async def _apply_storage_mutation_writes(
     write: Callable[[], Any],
     include_policy: bool = True,
     include_migration: bool = True,
+    write_guard: Callable[[], Any] | None = None,
 ) -> Any:
     """Take the rollback snapshot and run one storage-state write sequence off the loop.
 
@@ -542,6 +545,9 @@ async def _apply_storage_mutation_writes(
     migration checkpoint deleted while root mode still says maintenance. One job
     keeps the sequence indivisible from the caller's point of view, because a
     cancelled ``to_thread`` still lets the worker run to completion.
+
+    The optional ``write_guard`` freezes model admissions before root_state is
+    acquired and remains in the same worker through both commit and rollback.
 
     ``snapshot_out`` is filled in place rather than returned so the rollback
     snapshot survives a write that fails halfway through; returning it would
@@ -557,7 +563,10 @@ async def _apply_storage_mutation_writes(
         #
         # Also avoid snapshotting cloud_apply_fence's temporary mode and restoring it after fence exit;
         # snapshot and writes must share a transaction.
-        with root_state_transaction():
+        # Model admissions must be frozen BEFORE taking root_state: an active
+        # model writer may already own admission while waiting for that fence.
+        # The optional guard remains held until rollback has finished too.
+        with (write_guard() if write_guard is not None else nullcontext()), root_state_transaction():
             snapshot_out.clear()
             snapshot_out.update(_snapshot_storage_mutation_state(
                 config_manager, anchor_root=anchor_root,
@@ -597,6 +606,7 @@ async def _apply_storage_mutation_writes_or_rollback(
     write: Callable[[], Any],
     include_policy: bool = True,
     include_migration: bool = True,
+    write_guard: Callable[[], Any] | None = None,
 ) -> tuple[Any, dict[str, Any] | None]:
     """Run one storage-state write; on failure roll back and return the shared failure body.
 
@@ -627,6 +637,9 @@ async def _apply_storage_mutation_writes_or_rollback(
             write=write,
             include_policy=include_policy,
             include_migration=include_migration,
+            # First-selection/rebind callers retain their original call
+            # contract; only the model-aware full migration supplies a guard.
+            **({"write_guard": write_guard} if write_guard is not None else {}),
         )
     except asyncio.CancelledError:
         # Worker finished. Successful writes still behind an uncleared fence require rollback; failed writes already
@@ -665,6 +678,13 @@ async def _apply_storage_mutation_writes_or_rollback(
             "error": "写入存储位置配置失败：状态文件当前无法读取（可能不存在，或所在目录不可访问），未发生落盘改动，请稍后重试或检查本机状态目录是否可访问。",
         }
     except Exception as exc:
+        # A guard can reject before any snapshot/write, or a final recheck can
+        # reject inside the transaction. Only a successful rollback may report
+        # that latter conflict as a retryable model-workshop error.
+        if not snapshot_out or snapshot_out.get("_write_outcome") == "rolled_back":
+            blocked = _model_workshop_migration_error(exc)
+            if blocked is not None:
+                return None, blocked
         # Write failed, typically an unwritable local-state directory under sandbox / ransomware protection.
         # _job already performed synchronous rollback within the same root_state_transaction()
         # (see _apply_storage_mutation_writes). Never submit another rollback job here: the transaction gap
@@ -929,6 +949,33 @@ def _collect_warning_codes(current_root: Path, target_root: Path) -> list[str]:
         warning_codes.append("external_volume")
 
     return sorted(set(warning_codes))
+
+
+def _model_workshop_migration_error(exc) -> dict[str, Any] | None:
+    """Expose only stable model-conflict codes, never paths or raw I/O errors."""
+    if not isinstance(exc, (model_workshop.WorkshopError, StorageMigrationError)):
+        return None
+    code = getattr(exc, "error_code", str(exc))
+    if not code.startswith("model_workshop_"):
+        return None
+    messages = {
+        "model_workshop_busy": "Model changes are still in progress. Please retry after they finish.",
+        "model_workshop_pending": "An unfinished model installation must be resolved at its current location.",
+        "model_workshop_state_unreadable": "Model installation state cannot be verified. Please check it before moving data.",
+        "model_workshop_root_conflict": "The selected location would mix model files and installation records. Choose an empty location.",
+    }
+    if code not in messages:
+        code = "model_workshop_state_unreadable"
+    return {"ok": False, "error_code": code, "error": messages[code]}
+
+
+async def _workshop_migration_preflight(current_root: Path, target_root: Path):
+    """Read-only and off the event loop; actual scheduling must check again."""
+    try:
+        await _run_locked_storage_job(partial(model_workshop.check_migration_ready, current_root, target_root))
+    except model_workshop.WorkshopError as exc:
+        return _model_workshop_migration_error(exc)
+    return None
 
 
 def _build_restart_preflight(
@@ -2314,6 +2361,13 @@ async def _post_storage_location_select_locked(
             **restart_preflight,
         }
 
+    # The existing storage overlay previews through /select, while desktop
+    # consumers can call /preflight directly. Both must use the same check.
+    workshop_blocked = await _workshop_migration_preflight(current_root, normalized_selected_root)
+    if workshop_blocked is not None:
+        response.status_code = 409
+        return workshop_blocked
+
     restart_preflight = _build_restart_preflight(
         current_root,
         normalized_selected_root,
@@ -2388,6 +2442,11 @@ async def post_storage_location_preflight(
             "target_root": str(normalized_selected_root),
             "selection_source": payload.selection_source,
         }
+
+    workshop_blocked = await _workshop_migration_preflight(current_root, normalized_selected_root)
+    if workshop_blocked is not None:
+        response.status_code = 409
+        return workshop_blocked
 
     restart_preflight = _build_restart_preflight(
         current_root,
@@ -2561,6 +2620,11 @@ async def _post_storage_location_restart_locked(
             **restart_preflight,
         }
 
+    workshop_blocked = await _workshop_migration_preflight(current_root, normalized_selected_root)
+    if workshop_blocked is not None:
+        response.status_code = 409
+        return workshop_blocked
+
     restart_preflight = _build_restart_preflight(
         current_root,
         normalized_selected_root,
@@ -2592,6 +2656,9 @@ async def _post_storage_location_restart_locked(
         # The pre-images cannot be captured while cloud_apply_fence exposes a
         # temporary root mode. Keep them in the same transaction as both writes
         # so rollback always restores the state immediately preceding this job.
+        # Admission stays frozen by write_guard; verify full metadata again
+        # here under root_state, rather than trusting the earlier HTTP result.
+        model_workshop.check_migration_ready(current_root, normalized_selected_root)
         pending_payload = create_pending_storage_migration(
             config_manager,
             source_root=current_root,
@@ -2611,9 +2678,10 @@ async def _post_storage_location_restart_locked(
     migration_payload, write_error = await _apply_storage_mutation_writes_or_rollback(
         config_manager, anchor_root=anchor_root, snapshot_out=rollback_state,
         write=_schedule_pending_migration, include_policy=False,
+        write_guard=partial(model_workshop.prepare_migration, current_root, normalized_selected_root),
     )
     if write_error is not None:
-        response.status_code = 500
+        response.status_code = 409 if write_error.get("error_code", "").startswith("model_workshop_") else 500
         return _restart_write_error(
             write_error, restart_mode="migrate_after_shutdown", preflight=restart_preflight,
         )

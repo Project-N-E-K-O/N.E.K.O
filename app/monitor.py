@@ -32,6 +32,7 @@ import json
 import os
 import logging
 from contextlib import asynccontextmanager
+from urllib.parse import urlsplit
 from config import (
     MONITOR_SERVER_PORT,
     MONITOR_HOST,
@@ -52,7 +53,8 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 import uvicorn
 from fastapi.templating import Jinja2Templates
-from utils.frontend_utils import _is_within, find_models, find_model_config_file, find_model_directory
+from utils.frontend_utils import _is_within, find_model_config_file
+from services.model_workshop.catalog import find_models, find_model_directory
 from utils.live2d_model_refs import sanitize_emotion_mapping
 from utils.workshop_utils import create_workshop_static_files, get_default_workshop_folder
 from utils.preferences import GLOBAL_CONVERSATION_KEY, aload_user_preferences
@@ -122,8 +124,6 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
-# Gates every route except the static asset mounts once MONITOR_TOKEN is set.
-app.add_middleware(MonitorAuthMiddleware)
 
 # Viewers only need model layout; keep other preference fields off the LAN.
 _ALLOWED_VIEWER_PREFERENCE_KEYS = {
@@ -155,17 +155,25 @@ class _StaticRootFiles(LegacyStaticAssetAliasMixin, StaticFiles):
 app.mount("/static", _StaticRootFiles(directory=get_resource_path("static")), name="static")
 _config_manager = get_config_manager()
 
+from app.model_workshop_static import ModelWorkshopRequestGate, ReadOnlyWorkshopStaticFiles
+
+# Monitor checks named reads without claiming Main's writer or recovering tasks.
+app.add_middleware(ModelWorkshopRequestGate, config_getter=lambda: _config_manager, maintain_main=False)
+# Auth is outermost: unauthenticated callers must not even probe private model
+# state or learn that a particular import is unfinished.
+app.add_middleware(MonitorAuthMiddleware)
+
 # Mount the user's Live2D directory (consistent with the main_server package and CFA-aware)
 _readable_live2d = _config_manager.readable_live2d_dir
 _serve_live2d_path = str(_readable_live2d) if _readable_live2d else str(_config_manager.live2d_dir)
 if os.path.exists(_serve_live2d_path):
-    app.mount("/user_live2d", StaticFiles(directory=_serve_live2d_path), name="user_live2d")
+    app.mount("/user_live2d", ReadOnlyWorkshopStaticFiles(directory=_serve_live2d_path, config_manager=_config_manager), name="user_live2d")
     logger.info(f"已挂载用户Live2D目录: {_serve_live2d_path}")
 # CFA scenario: also mount the writable fallback directory
 if _readable_live2d and str(_config_manager.live2d_dir) != _serve_live2d_path:
     _writable_live2d_path = str(_config_manager.live2d_dir)
     if os.path.exists(_writable_live2d_path):
-        app.mount("/user_live2d_local", StaticFiles(directory=_writable_live2d_path), name="user_live2d_local")
+        app.mount("/user_live2d_local", ReadOnlyWorkshopStaticFiles(directory=_writable_live2d_path, config_manager=_config_manager), name="user_live2d_local")
         logger.info(f"已挂载本地Live2D目录(CFA回退): {_writable_live2d_path}")
 
 def _mount_model_roots(target_app, workshop_path, user_mod_path):
@@ -235,8 +243,14 @@ async def get_page_config(response: Response, lanlan_name: str = ""):
         if live2d in LEGACY_DEFAULT_LIVE2D_MODELS:
             live2d = DEFAULT_LIVE2D_MODEL
 
+        # Do not let the historical fallback reconstruct an unfinished URL.
+        from services.model_workshop.runtime import require_url, require_identifier
+        from services.model_workshop.tasks import _drain_sync
+        url_encoded = live2d_model_path.startswith('/') or bool(urlsplit(live2d_model_path).scheme)
+        await _drain_sync(lambda: require_url(_config_manager, live2d_model_path, url_encoded=url_encoded))
+        await _drain_sync(lambda: require_identifier(_config_manager, 'live2d', live2d))
         # Find all models
-        models = find_models()
+        models = await _drain_sync(find_models)
 
         # Find the corresponding model path based on the live2d field
         model_path = next((m["path"] for m in models if m["name"] == live2d), find_model_config_file(live2d))

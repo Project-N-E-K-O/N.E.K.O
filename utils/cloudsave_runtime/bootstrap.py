@@ -195,7 +195,7 @@ def bootstrap_local_cloudsave_environment(config_manager) -> dict[str, Any]:
         if not root_state.get("last_successful_boot_at"):
             root_state["last_successful_boot_at"] = ""
             root_changed = True
-        if legacy_import.get("source"):
+        if legacy_import.get("migrated") and legacy_import.get("source"):
             root_state["last_migration_source"] = str(legacy_import["source"])
             root_state["last_migration_result"] = str(legacy_import.get("result") or "")
             root_changed = True

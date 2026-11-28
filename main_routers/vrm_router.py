@@ -49,6 +49,10 @@ from utils.frontend_utils import _resolve_workshop_search_dir
 from utils.url_utils import is_utf8_text
 from utils.logger_config import get_module_logger
 
+from services.model_workshop.runtime import filter_catalog as _filter_workshop_models
+from services.model_workshop.tasks import _drain_sync
+from services.model_workshop.paths import WorkshopError
+
 router = APIRouter(prefix="/api/model/vrm", tags=["vrm"])
 logger = get_module_logger(__name__, "Main")
 
@@ -426,7 +430,7 @@ async def get_vrm_models():
             logger.warning(f"跳过 {unchecked} 个无法检查类型的 VRM 模型路径")
         return JSONResponse(content={
             "success": True,
-            "models": models
+            "models": await _drain_sync(lambda: _filter_workshop_models(config_mgr, models))
         })
     except Exception as e:
         logger.error(f"获取VRM模型列表失败: {e}")
@@ -641,11 +645,15 @@ async def delete_vrm_model(request: Request):
         elif not found:
             return JSONResponse(status_code=404, content={"success": False, "error": "模型文件不存在"})
 
+        if await _delete_managed_vrm(config_mgr, target):
+            return {"success": True, "deleted": True}
         target.unlink()
         await _cleanup_vrm_model_configs(target.stem)
         logger.info(f"已删除 VRM 模型: {target.name}")
 
         return JSONResponse(content={"success": True, "message": f"VRM 模型 {target.stem} 已删除"})
+    except WorkshopError as exc:
+        return JSONResponse(status_code=409, content={"success": False, "error_code": str(exc)})
     except Exception as e:
         logger.error(f"删除 VRM 模型失败: {e}", exc_info=True)
         return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
@@ -970,6 +978,57 @@ async def _cleanup_vrm_model_configs(model_name: str):
         logger.warning(f"删除模型配置失败: {e}")
 
 
+async def _delete_managed_vrm(config_mgr, target):
+    """Keep the original deletion entry points, but fence all managed cleanup together."""
+    from services.model_workshop import runtime
+    captured = await _drain_sync(lambda: runtime.snapshot_for_mutation(config_mgr).record_for(target))
+    if captured is None:
+        return False
+    model_name = target.stem
+    def targets():
+        return [(path, suffix) for suffix in ('_emotion.json', '_physics.json')
+                if (path := _get_vrm_config_path(model_name, suffix, create_dir=False)) is not None and path.is_file()]
+    # Steam discovery can wait for the main loop/network. Never hold the local
+    # lifecycle or storage fence while awaiting that independent service.
+    workshop = None
+    if await _drain_sync(targets):
+        try:
+            workshop = await get_subscribed_workshop_items()
+        except Exception:
+            # Match ordinary deletion: unavailable Steam discovery cannot
+            # prevent model removal, and uncertain shared mappings stay intact.
+            logger.warning("Steam discovery unavailable; preserving VRM mappings")
+    def auxiliary():
+        current = targets()
+        if not current:
+            return True
+        if not isinstance(workshop, dict) or not workshop.get('success'):
+            logger.warning("Steam ownership unknown; preserving shared VRM mappings")
+            return True  # Best-effort config cleanup, as in the original route.
+        directories = [config_mgr.project_root / 'static' / 'vrm', config_mgr.vrm_dir]
+        for item in workshop.get('items', []):
+            if item.get('installedFolder') and item.get('publishedFileId'):
+                folder = Path(item['installedFolder'])
+                if folder.is_dir():
+                    directories.append(folder)
+                    directories.extend(child for child in folder.iterdir() if child.is_dir())
+        complete = True
+        for config_path, suffix in current:
+            try:
+                shared = any(model.stem == model_name or (
+                    (other := config_path.parent / f"{model.stem}{suffix}").is_file() and other.samefile(config_path)
+                ) for directory in directories for model in _iter_vrm_model_files(directory))
+                if not shared:
+                    config_path.unlink()
+            except OSError:
+                complete = False
+        return complete
+    # Capture above the network await: an old request must not delete a new
+    # reinstall, including its associated emotion/physics configuration.
+    await _drain_sync(lambda: runtime.remove_managed_model(config_mgr, captured, auxiliary))
+    return True
+
+
 @router.delete('/model/{model_name}')
 async def delete_vrm_model(model_name: str):
     """Delete the specified user-imported VRM model."""
@@ -993,10 +1052,14 @@ async def delete_vrm_model(model_name: str):
         if vrm_path is None:
             return JSONResponse(status_code=404, content={"success": False, "error": f"未在用户目录中找到模型 {model_name}，可能是内置模型，无法删除"})
 
+        if await _delete_managed_vrm(config_mgr, vrm_path):
+            return {"success": True, "deleted": True}
         vrm_path.unlink()
         await _cleanup_vrm_model_configs(model_name)
         logger.info(f"已删除VRM模型: {model_name}")
         return {"success": True, "message": f"模型 {model_name} 已成功删除"}
+    except WorkshopError as exc:
+        return JSONResponse(status_code=409, content={"success": False, "error_code": str(exc)})
     except Exception as e:
         logger.error(f"删除VRM模型失败: {e}")
         return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
@@ -1130,7 +1193,10 @@ async def update_emotion_mapping(model_name: str, request: Request):
                 content={"success": False, "error": "无法创建配置目录"}
             )
 
-        await atomic_write_json_async(config_path, normalized_data, ensure_ascii=False, indent=2)
+        # Serialize this existing local edit with managed delete/reinstall.
+        from services.model_workshop.runtime import write_managed_json
+        if not await _drain_sync(lambda: write_managed_json(get_config_manager(), config_path, normalized_data, kind='vrm', name=model_name)):
+            await atomic_write_json_async(config_path, normalized_data, ensure_ascii=False, indent=2)
 
         logger.info(f"已保存VRM模型 {model_name} 的情感映射配置")
 
@@ -1141,6 +1207,8 @@ async def update_emotion_mapping(model_name: str, request: Request):
             status_code=400,
             content={"success": False, "error": "无效的JSON格式"}
         )
+    except WorkshopError as exc:
+        return JSONResponse(status_code=409, content={"success": False, "error_code": str(exc)})
     except Exception as e:
         logger.error(f"保存VRM情感映射配置失败: {e}")
         return JSONResponse(

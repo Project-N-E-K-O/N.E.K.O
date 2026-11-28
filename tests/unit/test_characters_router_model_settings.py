@@ -423,6 +423,27 @@ async def test_switching_back_to_live2d_preserves_saved_live3d_configs(monkeypat
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(('payload', 'checked'), [
+    ({'model_type': 'live2d', 'live2d': 'mao_pro', 'vrm': '/user_vrm/old.vrm'}, []),
+    ({'model_type': 'live3d', 'vrm': '/user_vrm/hero.vrm'}, ['/user_vrm/hero.vrm']),
+    ({'model_type': 'live3d', 'mmd': '/user_mmd/new.pmx'}, ['/user_mmd/new.pmx']),
+])
+async def test_model_save_checks_only_the_active_3d_binding(monkeypatch, payload, checked):
+    references = []
+    original = characters_router_module.require_url
+
+    def observe(config, ref, **kwargs):
+        if ref.endswith(('.vrm', '.pmx')):
+            references.append(ref)
+        return original(config, ref, **kwargs)
+
+    monkeypatch.setattr(characters_router_module, 'require_url', observe)
+    response, body, _ = await _call_update(monkeypatch, payload)
+    assert response.status_code == 200 and body['success']
+    assert references == checked
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ('payload', 'expected_sub_type', 'preserved_path_key', 'preserved_path'),
     [

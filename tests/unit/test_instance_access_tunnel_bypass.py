@@ -600,6 +600,8 @@ _INTERNAL_HTTPX_EXEMPT_SITES = {
     ("plugin/server/routes/knowledge_market.py", "_download"),
     ("plugin/server/routes/knowledge_market.py", "_report_subscription_best_effort"),
     ("plugin/server/routes/knowledge_market.py", "_report_unsubscribe_best_effort"),
+    # This factory only fetches from Market. The relay to Main has its own signed client.
+    ("plugin/server/routes/model_market.py", "_client"),
     # Only the external Market upload is exempt; the Main artifact client
     # in the same function must still carry hooks (one exemption per site).
     ("plugin/server/routes/knowledge_publish.py", "_publish_owned"),

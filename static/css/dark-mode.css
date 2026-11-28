@@ -1987,6 +1987,7 @@ html[data-theme="dark"].subtitle-window-host body.subtitle-window-host {
 /* 图片背景按钮无法直接随主题换色，暗色下用伪元素加一层低透明遮罩。 */
 [data-theme="dark"] #backToMainBtn,
 [data-theme="dark"] #upload-btn,
+[data-theme="dark"] #model-workshop-btn,
 [data-theme="dark"] #model-type-select-btn,
 [data-theme="dark"] #model-select-btn,
 [data-theme="dark"] #live2d-model-select-btn,
@@ -2010,6 +2011,7 @@ html[data-theme="dark"].subtitle-window-host body.subtitle-window-host {
 
 [data-theme="dark"] #backToMainBtn::before,
 [data-theme="dark"] #upload-btn::before,
+[data-theme="dark"] #model-workshop-btn::before,
 [data-theme="dark"] #model-type-select-btn::before,
 [data-theme="dark"] #model-select-btn::before,
 [data-theme="dark"] #live2d-model-select-btn::before,
@@ -2043,6 +2045,7 @@ html[data-theme="dark"].subtitle-window-host body.subtitle-window-host {
 
 [data-theme="dark"] #backToMainBtn:hover:not(:disabled)::before,
 [data-theme="dark"] #upload-btn:hover:not(:disabled)::before,
+[data-theme="dark"] #model-workshop-btn:hover:not(:disabled)::before,
 [data-theme="dark"] #model-type-select-btn:hover:not(:disabled)::before,
 [data-theme="dark"] #model-select-btn:hover:not(:disabled)::before,
 [data-theme="dark"] #live2d-model-select-btn:hover:not(:disabled)::before,

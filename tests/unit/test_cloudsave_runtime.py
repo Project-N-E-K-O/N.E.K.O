@@ -1,6 +1,7 @@
 import copy
 import contextlib
 import json
+import os
 import shutil
 import sqlite3
 import sys
@@ -5775,6 +5776,110 @@ def test_keyed_write_bookkeeping_names_match_the_memory_server():
     assert set(KEYED_WRITE_BOOKKEEPING_FILENAMES) == {idempotency.IDEMPOTENCY_KEYS_FILENAME}
     assert KEYED_WRITE_TOMBSTONES_FILENAME == idempotency.TOMBSTONES_FILENAME
     assert KEYED_WRITE_STAGING_DIRNAME == idempotency.STAGING_DIRNAME
+
+
+@pytest.mark.parametrize('state', ['pending', 'unreadable'])
+def test_legacy_bootstrap_preserves_old_root_with_unfinished_workshop(tmp_path, state):
+    from utils.cloudsave_runtime import import_legacy_runtime_root_if_needed
+    from utils.model_workshop_storage import inspect_model_workshop_metadata
+    cm = _make_config_manager(tmp_path / 'new')
+    cm.app_docs_dir.mkdir(parents=True, exist_ok=True)
+    old = tmp_path / 'old'; workshop = old / 'model_workshop'; workshop.mkdir(parents=True)
+    if state == 'pending':
+        transactions = workshop / 'transactions'; transactions.mkdir()
+        (transactions / ('a' * 32 + '.json')).write_text('{}', encoding='utf-8')
+    else:
+        (workshop / 'installed.json').write_text('{', encoding='utf-8')
+    cm.get_legacy_app_root_candidates = lambda: [old]
+    before = {str(p.relative_to(old)): p.read_bytes() for p in old.rglob('*') if p.is_file()}
+    result = import_legacy_runtime_root_if_needed(cm)
+    assert not result['migrated'] and result['result'].startswith('legacy_root_model_workshop_')
+    assert not (cm.app_docs_dir / 'model_workshop').exists()
+    assert inspect_model_workshop_metadata(cm.app_docs_dir) is None
+    assert {str(p.relative_to(old)): p.read_bytes() for p in old.rglob('*') if p.is_file()} == before
+
+
+@pytest.mark.parametrize('state,error', [
+    ('pending', 'model_workshop_pending'),
+    ('unreadable', 'model_workshop_state_unreadable'),
+])
+def test_legacy_bootstrap_does_not_replace_current_workshop_with_unfinished_state(tmp_path, state, error):
+    from utils.cloudsave_runtime import bootstrap_local_cloudsave_environment
+
+    cm = _make_config_manager(tmp_path / 'current')
+    cm._get_localized_characters_source = lambda: None
+    cm.project_config_dir = tmp_path / 'empty_project_config'
+    cm.ensure_config_directory()
+    atomic_write_json(cm.config_dir / 'characters.json', cm.get_default_characters())
+    old = tmp_path / 'old'
+    shutil.copytree(cm.config_dir, old / 'config')
+    legacy_characters = old / 'config/characters.json'
+    characters = cm.get_default_characters()
+    next(iter(characters['猫娘'].values()))['性格'] = 'Edited legacy character'
+    atomic_write_json(legacy_characters, characters)
+    workshop = cm.app_docs_dir / 'model_workshop'
+    evidence = workshop / ('transactions/' + 'a' * 32 + '.json' if state == 'pending' else 'installed.json')
+    evidence.parent.mkdir(parents=True)
+    evidence.write_text('{}' if state == 'pending' else '{', encoding='utf-8')
+    evidence_before = evidence.stat(), evidence.read_bytes()
+    legacy_before = legacy_characters.read_bytes()
+    current_before = (cm.config_dir / 'characters.json').read_bytes()
+    cm.get_legacy_app_root_candidates = lambda: [old]
+
+    result = bootstrap_local_cloudsave_environment(cm)['legacy_import']
+
+    assert not result['migrated'] and result['result'] == 'legacy_root_' + error
+    assert result['backup_path'] == '' and result['copied_paths'] == []
+    assert os.path.samestat(evidence.stat(), evidence_before[0])
+    assert evidence.read_bytes() == evidence_before[1]
+    assert legacy_characters.read_bytes() == legacy_before
+    assert (cm.config_dir / 'characters.json').read_bytes() == current_before
+    root_state = cm.load_root_state()
+    assert root_state.get('last_migration_source') != str(old)
+    root_state['last_successful_boot_at'] = '2026-11-27T00:00:00Z'
+    if state == 'pending':
+        # Recover a state file previously written by a build with the bug.
+        root_state.update(last_migration_source=str(old), last_migration_result=result['result'])
+    cm.save_root_state(root_state)
+    evidence.unlink()
+
+    retry = bootstrap_local_cloudsave_environment(cm)['legacy_import']
+
+    assert retry['migrated'] and retry['result'] == 'legacy_root_imported'
+    assert cm.load_root_state()['last_migration_source'] == str(old)
+    assert cm.load_root_state()['last_migration_result'] == retry['result']
+
+
+def test_legacy_bootstrap_preserves_both_completed_workshop_registries(tmp_path):
+    from utils.cloudsave_runtime import import_legacy_runtime_root_if_needed
+    from services.model_workshop.registry import make_record, REGISTRY_SCHEMA
+    from services.model_workshop.formats import validate_model_bundle
+    from tests.unit.test_model_workshop_formats import live2d_files, make_native_bundle
+    cm = _make_config_manager(tmp_path / 'current')
+    cm._get_localized_characters_source = lambda: None
+    cm.project_config_dir = tmp_path / 'empty_project_config'
+    cm.ensure_config_directory()
+    atomic_write_json(cm.config_dir / 'characters.json', cm.get_default_characters())
+    old = tmp_path / 'old'; shutil.copytree(cm.config_dir, old / 'config')
+    characters = cm.get_default_characters()
+    next(iter(characters['猫娘'].values()))['性格'] = 'Edited legacy character'
+    atomic_write_json(old / 'config' / 'characters.json', characters)
+    for index, root in enumerate((old, cm.app_docs_dir)):
+        files = live2d_files(); files['LICENSE.txt'] = str(index).encode()
+        bundle = validate_model_bundle(make_native_bundle(tmp_path, files=files))
+        record = make_record(bundle, str(index + 1) * 32)
+        workshop = root / 'model_workshop'; workshop.mkdir()
+        atomic_write_json(workshop / 'installed.json', {'schema': REGISTRY_SCHEMA,
+            'installed': {bundle.sha256: record}, 'attempts': {bundle.sha256: record['install_id']}})
+        for item in record['files']:
+            path = root / item['local_path']; path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(files[item['path']])
+    def snapshot(root): return {p.relative_to(root).as_posix(): p.read_bytes() for p in root.rglob('*') if p.is_file()}
+    before = snapshot(old), snapshot(cm.app_docs_dir)
+    cm.get_legacy_app_root_candidates = lambda: [old]
+    result = import_legacy_runtime_root_if_needed(cm)
+    assert not result['migrated'] and result['result'] == 'legacy_root_model_workshop_root_conflict'
+    assert (snapshot(old), snapshot(cm.app_docs_dir)) == before
 
 
 @pytest.mark.unit

@@ -70,6 +70,7 @@ ACTIVE_STORAGE_MIGRATION_STATUSES = frozenset(
 )
 
 _PLUGIN_INSTALLATION_ENTRIES = (".neko-plugin-installations/plugins", "plugins.lock.json")
+_MODEL_WORKSHOP_ENTRIES = ("model_workshop", "live2d", "vrm", "mmd")
 _PLUGIN_SCOPED_LOCK_NAME = re.compile(r"plugins\.[0-9a-f]{16}\.lock\.json")
 _PLUGIN_AUTOSTART_ENTRIES = (
     "config/plugin_runtime_overrides.json",
@@ -125,6 +126,9 @@ MIGRATED_RUNTIME_ENTRY_NAMES = (
     "live2d",
     "vrm",
     "mmd",
+    # Logical installation records must move with the model resources, while
+    # all servers are stopped. The writer lock cannot be copied while owned.
+    "model_workshop",
     "workshop",
     "theater",
     "character_cards",
@@ -184,6 +188,9 @@ _V1_CATCH_UP_ENTRIES = tuple(
     name for name in MIGRATED_RUNTIME_ENTRY_NAMES
     if name not in V1_MIGRATED_RUNTIME_ENTRY_NAMES
     and name not in _PLUGIN_INSTALLATION_ENTRIES
+    # v1 already moved model directories; an independent catch-up could attach
+    # the retained root's records to another root's models.
+    and name != "model_workshop"
     and name not in _COMPANION_ENTRIES
     and name not in _COMPANION_ENTRIES.values()
 )
@@ -1804,6 +1811,12 @@ def root_has_migrated_entry_content(root: Path, names: Any = MIGRATED_RUNTIME_EN
                 return True
         except OSError:
             return True
+        if entry_name == "model_workshop":
+            from utils.model_workshop_storage import model_workshop_has_user_content
+
+            if model_workshop_has_user_content(entry):
+                return True
+            continue
         # As in the cloud-save probe, a dot-named transaction entry directly
         # under the entry (an interrupted update's backup) may be the only
         # copy of something, so it counts.
@@ -2134,6 +2147,48 @@ def remove_remembered_transaction_leftovers(config_manager, *, anchor_root: Path
             logger.warning("Failed to remove a merged leftover migration transaction: %s", exc)
 
 
+def _require_stopped_model_workshops(*roots: Path) -> None:
+    """Keep lifecycle probing below the service layer and errors path-free."""
+    from utils.model_workshop_storage import (
+        ModelWorkshopStorageError,
+        assert_model_workshop_stopped,
+    )
+
+    for root in roots:
+        try:
+            assert_model_workshop_stopped(root)
+        except ModelWorkshopStorageError as exc:
+            raise StorageMigrationError(str(exc), str(exc)) from exc
+
+
+def require_paired_model_workshop_roots(source: Path, target: Path, *, reuse_target: bool) -> None:
+    # Full overwrite selects source entries; legacy/recovery reuse keeps
+    # existing target entries. A target-only entry is kept in either mode.
+    from_source = {
+        name for name in _MODEL_WORKSHOP_ENTRIES
+        if os.path.lexists(source / name) and not (reuse_target and os.path.lexists(target / name))
+    }
+    _require_paired_model_workshop_entries(source, target, from_source)
+
+
+def _require_paired_model_workshop_entries(source: Path, target: Path, from_source: Collection[str]) -> None:
+    """Keep the selected registry and model directories from the same root."""
+    from utils.model_workshop_storage import model_workshop_has_user_content
+
+    def owner(name):
+        if name in from_source:
+            return source
+        return target if os.path.lexists(target / name) else None
+
+    registry_root = owner("model_workshop")
+    if registry_root is None or not any(
+        model_workshop_has_user_content(root / "model_workshop") for root in (source, target)
+    ):
+        return
+    if any(owner(name) not in (None, registry_root) for name in _MODEL_WORKSHOP_ENTRIES[1:]):
+        raise StorageMigrationError("model_workshop_root_conflict", "model_workshop_root_conflict")
+
+
 def create_pending_storage_migration(
     config_manager,
     *,
@@ -2144,15 +2199,22 @@ def create_pending_storage_migration(
     backup_root: Path | str | None = None,
     confirmed_existing_target_content: bool = False,
 ) -> dict[str, Any]:
-    _remember_transaction_leftover(config_manager, anchor_root=anchor_root)
-    payload = build_pending_storage_migration_payload(
-        source_root=source_root,
-        target_root=target_root,
-        selection_source=selection_source,
-        backup_root=backup_root,
-        confirmed_existing_target_content=confirmed_existing_target_content,
-    )
-    return save_storage_migration(config_manager, payload, anchor_root=anchor_root)
+    from utils.root_state_lock import root_state_transaction
+
+    # Recheck before even recording leftovers: a rejected scheduling attempt
+    # must not leave a checkpoint or enter maintenance. Main quiescence is a
+    # separate higher-layer responsibility, never a service import from utils.
+    with root_state_transaction():
+        _require_stopped_model_workshops(Path(source_root), Path(target_root))
+        _remember_transaction_leftover(config_manager, anchor_root=anchor_root)
+        payload = build_pending_storage_migration_payload(
+            source_root=source_root,
+            target_root=target_root,
+            selection_source=selection_source,
+            backup_root=backup_root,
+            confirmed_existing_target_content=confirmed_existing_target_content,
+        )
+        return save_storage_migration(config_manager, payload, anchor_root=anchor_root)
 
 
 def record_retained_root_removal_started(config_manager, *, anchor_root: Path) -> None:
@@ -3036,6 +3098,10 @@ def run_pending_storage_migration(
                 "目标路径已经包含现有数据，需要先确认覆盖目标中的同名运行时数据目录。",
             )
 
+        # Scheduling and copying are separate processes. Check ownership and
+        # unfinished transactions again after shutdown, just before any copy.
+        _require_stopped_model_workshops(source_root, target_root)
+        require_paired_model_workshop_roots(source_root, target_root, reuse_target=use_existing_target)
         _ensure_target_root_writable(target_root)
 
         source_snapshots: dict[str, dict[str, int | str]] = {}
@@ -3271,6 +3337,9 @@ def run_pending_storage_migration(
                 _require_backup_unchanged(entry_name, expected)
             _require_no_unpaired_target_installation()
             _require_no_companion_left_by_the_target()
+            # A sync client may have populated the target while earlier entries
+            # were copied. Use the entries selected for publication now.
+            _require_paired_model_workshop_entries(source_root, target_root, entries_to_publish)
             if use_existing_target:
                 kept_install_entries = reused_target_entries.difference(identical_entries).intersection(
                     _PLUGIN_INSTALLATION_ENTRIES

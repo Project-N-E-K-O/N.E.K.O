@@ -14,6 +14,7 @@ import asyncio
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -54,7 +55,8 @@ class _FakeRequest:
 
 
 @pytest.fixture(autouse=True)
-def _clear_model_config_write_locks():
+def _clear_model_config_write_locks(monkeypatch, tmp_path):
+    monkeypatch.setattr(live2d_router, "get_config_manager", lambda: SimpleNamespace(app_docs_dir=tmp_path))
     live2d_router._MODEL_CONFIG_WRITE_LOCKS.clear()
     yield
     live2d_router._MODEL_CONFIG_WRITE_LOCKS.clear()

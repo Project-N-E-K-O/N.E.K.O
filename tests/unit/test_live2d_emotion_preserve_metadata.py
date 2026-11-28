@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -44,6 +45,7 @@ def model_dir(monkeypatch, tmp_path: Path) -> Path:
     monkeypatch.setattr(
         live2d_router, "find_model_directory", lambda _name: (str(path), "/user_live2d")
     )
+    monkeypatch.setattr(live2d_router, "get_config_manager", lambda: SimpleNamespace(app_docs_dir=tmp_path))
     return path
 
 

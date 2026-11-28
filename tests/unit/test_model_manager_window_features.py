@@ -771,3 +771,46 @@ def test_voice_clone_api_settings_uses_shared_named_window():
     assert "openApiSettings({ focusKeyBook: true });" in open_api_settings_key_book
     assert "'apiSettings'" not in open_api_settings
     assert "width=820,height=700" not in source
+
+
+@pytest.mark.parametrize('loader_name,end_marker', [
+    ('loadVRMModels', '// 更新VRM模型下拉菜单'),
+    ('loadMMDModels', 'function updateMMDModelDropdown('),
+    ('loadLive3DModels', '// 自动选择默认 Live3D 模型'),
+])
+def test_managed_3d_labels_use_package_name_without_changing_model_identity(loader_name, end_marker):
+    """Normal/reopen and legacy loaders consume metadata just like import refresh."""
+    source = Path('static/js/model_manager/page-controller.js').read_text(encoding='utf-8')
+    helper = Path('static/js/model_manager/path-request-fullscreen.js').read_text(encoding='utf-8').split('const RequestHelper', 1)[0]
+    start = source.index('async function ' + loader_name + '(')
+    loader = source[start:source.index(end_marker, start)]
+    run_model_manager_node(f"""
+const assert = require('node:assert/strict');
+const vm = require('node:vm');
+const vrm = {{name:'neko_model_raw', filename:'neko_model_raw.vrm', path:'/user_vrm/neko_model_raw.vrm', url:'/user_vrm/neko_model_raw.vrm', display_name:'Package title <b>plain</b>',model_workshop:{{install_id:'a'.repeat(32)}}}};
+const mmd = {{name:'neko_model_raw', filename:'neko_model_raw.pmx', path:'/user_mmd/neko_model_raw/neko_model_raw.pmx', display_name:vrm.display_name,model_workshop:vrm.model_workshop}};
+const steamVrm = {{...vrm,name:'Steam title',path:'/workshop/42/original.vrm',url:'/workshop/42/original.vrm',model_workshop:null,item_id:'42',display_name:'Ignored ordinary metadata'}};
+const steamMmd = {{...mmd,name:'Steam title',path:'/workshop/42/original.pmx',model_workshop:null,item_id:'42',display_name:'Ignored ordinary metadata'}};
+function select() {{ const options=[];return {{options,appendChild(option) {{options.push(option);}}}}; }}
+const context = vm.createContext({{
+    document: {{createElement() {{return {{dataset:{{}},attributes:{{}},setAttribute(k,v) {{this.attributes[k]=v;}},getAttribute(k) {{return this.attributes[k];}}}};}}}},
+    vrmModelSelect: select(), mmdModelSelect: select(), mmdModels: [],
+    vrmModelSelectBtn:null, mmdModelSelectBtn:null,
+    RequestHelper:{{async fetchJson(url) {{return {{success:true,models:url.includes('/vrm/')?[vrm,steamVrm]:[mmd,steamMmd]}};}}}},
+    t:(_,fallback)=>fallback,showStatus(){{}},console,
+    updateVRMModelDropdown(){{}},updateVRMModelSelectButtonText(){{}},updateMMDModelDropdown(){{}},updateMMDModelSelectButtonText(){{}},
+}});
+vm.runInContext({json.dumps(helper + loader)}, context);
+(async () => {{
+    await vm.runInContext({json.dumps(loader_name + '()')},context);
+    const options = [...context.vrmModelSelect.options, ...context.mmdModelSelect.options];
+    assert.ok(options.length);
+    for (const option of options) {{
+        const ordinary = option.dataset.itemId === '42';
+        assert.equal(option.textContent, ordinary?'Steam title':vrm.display_name);
+        assert.ok((ordinary?[steamVrm.path,steamMmd.path]:[vrm.path,mmd.path]).includes(option.value));
+        assert.equal(option.getAttribute('data-path'),option.value);
+        assert.equal(option.dataset.itemId, ordinary?'42':undefined);
+    }}
+}})().catch(error=>{{console.error(error);process.exit(1);}});
+""")
