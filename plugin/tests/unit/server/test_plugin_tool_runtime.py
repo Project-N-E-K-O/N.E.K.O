@@ -25,7 +25,6 @@ from urllib.request import url2pathname
 import zipfile
 
 from packaging.tags import Tag
-import portalocker
 import pytest
 
 from plugin.server.infrastructure import package_download as module_download
@@ -314,7 +313,7 @@ def test_packaged_first_preparation_downloads_verifies_installs_and_records(root
     assert record["uv"] == str(cached)
     assert record["uv_version"] == module.PINNED_UV_VERSION
     assert record["python_version"] == list(sys.version_info[:3])
-    assert [event.phase for event in events][0] == "waiting"
+    assert [event.phase for event in events][0] == "downloading_uv"
     assert {"downloading_uv", "installing_python", "checking_python"} <= {event.phase for event in events}
     assert events[-1].phase == "checking_python"
     downloaded = [event for event in events if event.phase == "downloading_uv" and event.downloaded_bytes]
@@ -582,24 +581,6 @@ def test_two_threads_preparing_together_download_once(root, monkeypatch):
     assert sum(1 for cmd, _env in uv.calls if cmd[1:3] == ["python", "install"]) == 1
 
 
-def test_lock_held_elsewhere_reports_busy_without_waiting(root):
-    root.mkdir(parents=True)
-    with portalocker.Lock(root / ".prepare.lock", timeout=0, fail_when_locked=True):
-        _expect_failure(_no_runner, "busy", wait_for_lock=False)
-
-
-def test_busy_is_not_recorded_as_a_failure(root, monkeypatch):
-    root.mkdir(parents=True)
-    with portalocker.Lock(root / ".prepare.lock", timeout=0, fail_when_locked=True):
-        _expect_failure(_no_runner, "busy", wait_for_lock=False)
-    assert module.read_tool_runtime_status().state == "missing"
-    FakeRelease(digest="0" * 64).install(monkeypatch)
-    _expect_failure(FakeUv(root), "checksum_mismatch")
-    with portalocker.Lock(root / ".prepare.lock", timeout=0, fail_when_locked=True):
-        _expect_failure(_no_runner, "busy", wait_for_lock=False)
-    assert module.read_tool_runtime_status().error_code == "checksum_mismatch"
-
-
 def test_cancel_clears_an_earlier_failure(root, monkeypatch):
     pypi = FakeRelease(digest="0" * 64).install(monkeypatch)
     _expect_failure(FakeUv(root), "checksum_mismatch")
@@ -649,40 +630,6 @@ def test_tools_root_does_not_run_config_migrations(tmp_path, monkeypatch):
     monkeypatch.setattr(config_manager, "get_config_manager", get_config_manager)
     assert module.tools_root() == tmp_path / "plugin-runtime" / "tools"
     assert calls == [{"migrate": False}]
-
-
-def test_in_process_preparation_reports_busy_without_waiting(root):
-    with module._flight:
-        _expect_failure(_no_runner, "busy", wait_for_lock=False)
-
-
-def test_waiting_on_a_held_lock_honours_the_deadline_and_cancel(root):
-    root.mkdir(parents=True)
-    with portalocker.Lock(root / ".prepare.lock", timeout=0, fail_when_locked=True):
-        _expect_failure(_no_runner, "timeout", deadline=time.monotonic() + 0.2)
-        canceled = threading.Event()
-        threading.Timer(0.1, canceled.set).start()
-        started = time.monotonic()
-        _expect_failure(_no_runner, "canceled", cancel=canceled)
-        assert time.monotonic() - started < 5
-
-
-def test_waiter_uses_what_the_other_process_prepared(root, monkeypatch):
-    FakeRelease().install(monkeypatch)
-    uv = FakeUv(root)
-    _prepare(uv)
-    record = (root / "python.json").read_text(encoding="utf-8")
-    (root / "python.json").unlink()
-    lock = portalocker.Lock(root / ".prepare.lock", timeout=0, fail_when_locked=True)
-    lock.acquire()
-
-    def finish():
-        (root / "python.json").write_text(record, encoding="utf-8")
-        lock.release()
-
-    threading.Timer(0.1, finish).start()
-    result = _prepare(_no_runner)
-    assert result.python == uv.python
 
 
 # ---------------------------------------------------------------------------
@@ -822,7 +769,7 @@ def test_unexpected_error_becomes_internal_error(root, monkeypatch):
     def broken(*_args, **_kwargs):
         raise LookupError("boom")
 
-    monkeypatch.setattr(module, "_prepare_locked", broken)
+    monkeypatch.setattr(module, "_prepare_in_flight", broken)
     _expect_failure(_no_runner, "internal_error")
     assert module.read_tool_runtime_status().error_code == "internal_error"
     assert not module._flight.locked()
@@ -1178,24 +1125,52 @@ def test_falling_back_to_a_system_uv_reports_its_own_phase(root, monkeypatch):
     assert phases.index("downloading_uv") < phases.index("checking_uv") < phases.index("installing_python")
 
 
-def test_lock_wait_timeout_behind_another_process_keeps_the_previous_state(root, monkeypatch):
+def test_waiting_behind_another_thread_honours_the_deadline_and_cancel(root):
+    with module._flight:
+        _expect_failure(_no_runner, "timeout", deadline=time.monotonic() + 0.2)
+        canceled = threading.Event()
+        threading.Timer(0.1, canceled.set).start()
+        started = time.monotonic()
+        _expect_failure(_no_runner, "canceled", cancel=canceled)
+        assert time.monotonic() - started < 5
+
+
+def test_timeout_behind_another_thread_keeps_the_previous_state(root, monkeypatch):
     FakeRelease(digest="0" * 64).install(monkeypatch)
     _expect_failure(FakeUv(root), "checksum_mismatch")
-    with portalocker.Lock(root / ".prepare.lock", timeout=0, fail_when_locked=True):
+    with module._flight:
         _expect_failure(_no_runner, "timeout", deadline=time.monotonic() + 0.2)
     status = module.read_tool_runtime_status()
     assert (status.state, status.error_code) == ("failed", "checksum_mismatch")
 
 
-def test_background_lock_wait_timeout_behind_another_process_is_reported(root, monkeypatch):
-    # The background preparation has no caller to hand the timeout to.
-    FakeRelease(digest="0" * 64).install(monkeypatch)
-    _expect_failure(FakeUv(root), "checksum_mismatch")
-    with portalocker.Lock(root / ".prepare.lock", timeout=0, fail_when_locked=True):
-        module.start_tool_runtime_preparation(timeout=0.3)
-        module._background[0].join(10)
-    status = module.read_tool_runtime_status()
-    assert (status.state, status.error_code) == ("failed", "timeout")
+def test_waiter_uses_what_the_other_thread_prepared(root, monkeypatch):
+    FakeRelease().install(monkeypatch)
+    uv = FakeUv(root)
+    _prepare(uv)
+    record = (root / "python.json").read_text(encoding="utf-8")
+    (root / "python.json").unlink()
+    module._flight.acquire()
+
+    def finish():
+        (root / "python.json").write_text(record, encoding="utf-8")
+        module._flight.release()
+
+    threading.Timer(0.1, finish).start()
+    result = _prepare(_no_runner)
+    assert result.python == uv.python
+
+
+def test_no_cross_process_lock_and_a_leftover_one_is_ignored(root, monkeypatch):
+    # An earlier build left .prepare.lock behind (or another one even holds it).
+    root.mkdir(parents=True)
+    (root / ".prepare.lock").write_bytes(b"")
+    FakeRelease().install(monkeypatch)
+    events: list[module.ProgressEvent] = []
+    _prepare(FakeUv(root), progress=events.append)
+    assert module.read_tool_runtime_status().state == "ready"
+    assert "waiting" not in {event.phase for event in events}
+    assert "busy" not in module.ErrorCode.__args__ and "waiting" not in module.ProgressPhase.__args__
 
 
 # ---------------------------------------------------------------------------

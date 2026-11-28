@@ -9,7 +9,6 @@ root::
         uv/<version>/<os>-<arch>/uv[.exe]   pinned uv, from its GitHub release
         python/                             uv-managed CPython (UV_PYTHON_INSTALL_DIR)
         python.json                         record of the prepared interpreter
-        .prepare.lock                       cross-process preparation lock
         .python-download/                   a CPython build while uv installs it
         envs/                               reserved for tool virtualenvs (not created here)
 
@@ -28,9 +27,10 @@ the downloaded file.
 
 Reading the status never starts a child process, touches the network or
 creates a directory. Preparing runs in a worker thread, honours a cancel event
-and a deadline, is single-flight within the process and serialized across
-processes by a file lock polled without blocking, so cancellation stays
-responsive while another process prepares.
+and a deadline, and is single-flight within the process: a packaged build
+runs one backend per user (the desktop shell and the launcher each hold a
+single-instance lock), and only its plugin server prepares, so nothing
+serializes preparation across processes.
 
 Nothing calls this module yet; dependency sync and the plugin CLI tool
 environment are meant to build on it.
@@ -61,7 +61,6 @@ import zipfile
 
 from packaging.tags import sys_tags
 from packaging.version import InvalidVersion, Version
-import portalocker
 
 from plugin.core.packaged_metadata import build_environment
 from plugin.neko_plugin_cli.git_env import git_env
@@ -108,7 +107,7 @@ _MAX_PYTHON_ARCHIVE_BYTES = 256 * 1024 * 1024
 _MAX_BINARY_BYTES = 256 * 1024 * 1024
 _MAX_OUTPUT_BYTES = 1024 * 1024
 _SUPPORTED_PLATFORMS = frozenset({"win32", "darwin", "linux"})
-# How often lock waits re-check the cancel event and the deadline.
+# How often waits re-check the cancel event and the deadline.
 _POLL_SECONDS = 0.1
 # Inherited settings that would make the managed Python or uv use another
 # standard library, packages or environment than the prepared one.
@@ -129,10 +128,9 @@ ErrorCode = Literal[
     "python_mismatch",
     "canceled",
     "timeout",
-    "busy",
     "internal_error",
 ]
-ProgressPhase = Literal["waiting", "downloading_uv", "checking_uv", "installing_python", "checking_python"]
+ProgressPhase = Literal["downloading_uv", "checking_uv", "installing_python", "checking_python"]
 
 
 class ToolRuntimeError(RuntimeError):
@@ -140,9 +138,6 @@ class ToolRuntimeError(RuntimeError):
         super().__init__(detail)
         self.code: ErrorCode = code
         self.detail = detail
-        # False when the status should keep its previous state, e.g. a timeout
-        # spent waiting for another process that is preparing the same tools.
-        self.reportable = True
 
 
 @dataclass(frozen=True)
@@ -1017,7 +1012,7 @@ def _prepare_python(
         # uv answers "already installed" for an existing but broken interpreter
         # (emptied, or stripped of its executable bit) and leaves it alone, so
         # `find` would keep failing. Only interpreters this module installed
-        # live here, under the preparation lock: start from an empty directory.
+        # live here, under the in-process flight: start from an empty directory.
         try:
             shutil.rmtree(python_root)
         except FileNotFoundError:
@@ -1130,72 +1125,38 @@ def _ensure_uv(
     return str(cached), PINNED_UV_VERSION
 
 
-def _acquire_file_lock(lock: portalocker.Lock, cancel: threading.Event, deadline: float, *, wait: bool) -> None:
-    # Never block inside the OS call: a cancel or the deadline must be noticed
-    # while another process holds the lock.
-    held_elsewhere = False
-    while True:
-        try:
-            _check(cancel, deadline)
-        except ToolRuntimeError as exc:
-            if held_elsewhere and exc.code == "timeout" and not _on_background_thread():
-                # A foreground caller gets the error itself, and the other
-                # process may well finish; like busy, this says nothing about
-                # the tools. The background preparation has no caller to tell.
-                exc.reportable = False
-            raise
-        try:
-            lock.acquire()
-            return
-        except portalocker.exceptions.LockException:
-            if not wait:
-                raise ToolRuntimeError("busy", "Another N.E.K.O. process is preparing plugin tools") from None
-            held_elsewhere = True
-        cancel.wait(_POLL_SECONDS)
-
-
-def _acquire_flight(cancel: threading.Event, deadline: float, *, wait: bool) -> None:
+def _acquire_flight(cancel: threading.Event, deadline: float) -> None:
+    """Wait for any other preparation in this process, honouring cancel and deadline."""
     while True:
         _check(cancel, deadline)
-        acquired = _flight.acquire(timeout=_POLL_SECONDS) if wait else _flight.acquire(blocking=False)
-        if acquired:
+        if _flight.acquire(timeout=_POLL_SECONDS):
             return
-        if not wait:
-            raise ToolRuntimeError("busy", "Plugin tools are already being prepared")
 
 
-def _prepare_locked(
+def _prepare_in_flight(
     run_command: CommandRunner, report: Callable[[ProgressEvent], None],
-    cancel: threading.Event, deadline: float, *, wait: bool, prefer_system_uv: bool,
+    cancel: threading.Event, deadline: float, *, prefer_system_uv: bool,
 ) -> ToolRuntime:
+    """Prepare the tools; the caller holds the in-process flight.
+
+    Only this process prepares them: a packaged build runs one backend per
+    user (the desktop shell and the launcher each hold a single-instance
+    lock), and the plugin server is the only part of it that prepares.
+    """
     prepared = _prepared_runtime()
     if prepared is not None:
         # Another thread finished while this one waited.
         return prepared
-    root = tools_root()
-    root.mkdir(parents=True, exist_ok=True)
-    lock = portalocker.Lock(root / ".prepare.lock", timeout=0, fail_when_locked=True)
-    _acquire_file_lock(lock, cancel, deadline, wait=wait)
-    try:
-        result = _prepared_runtime()
-        if result is None:
-            env = tool_runtime_env()
-            uv, uv_version = _ensure_uv(
-                run_command, report, env, cancel, deadline, prefer_system_uv=prefer_system_uv,
-            )
-            result = _prepare_python(uv, uv_version, run_command, report, env, cancel, deadline)
-    finally:
-        lock.release()
-    return result
+    tools_root().mkdir(parents=True, exist_ok=True)
+    env = tool_runtime_env()
+    uv, uv_version = _ensure_uv(run_command, report, env, cancel, deadline, prefer_system_uv=prefer_system_uv)
+    return _prepare_python(uv, uv_version, run_command, report, env, cancel, deadline)
 
 
 def _record_outcome(error: ToolRuntimeError | None) -> None:
     global _last_error, _progress
     with _state_lock:
         _progress = None
-        if error is not None and (error.code == "busy" or not error.reportable):
-            # Another process is preparing; this attempt says nothing new.
-            return
         # A cancel is the caller's choice, not a failure to report, and it
         # supersedes the outcome of any earlier attempt.
         _last_error = None if error is not None and error.code == "canceled" else error
@@ -1220,8 +1181,6 @@ def _record_unstarted(error: ToolRuntimeError) -> None:
     caller to tell, so its timeout is recorded.
     """
     global _last_error
-    if error.code == "busy":
-        return
     with _state_lock:
         is_background = _on_background_thread()
         if error.code == "timeout" and not is_background:
@@ -1240,15 +1199,15 @@ def prepare_tool_runtime(
     cancel: threading.Event,
     deadline: float,
     progress: Callable[[ProgressEvent], None] | None = None,
-    wait_for_lock: bool = True,
     prefer_system_uv: bool = False,
     run_command: CommandRunner | None = None,
 ) -> ToolRuntime:
     """Return a usable runtime, preparing the packaged tools first if needed.
 
     Call from a worker thread. ``deadline`` is a ``time.monotonic()`` value.
-    With ``wait_for_lock=False`` a preparation already running in this or
-    another process raises ``busy`` instead of waiting for it. A compatible uv
+    Single-flight within the process: a call made while another thread
+    prepares waits for it (cancel and deadline still apply) and then uses
+    what it prepared. A compatible uv
     on PATH is used only when downloading the pinned one fails, or first with
     ``prefer_system_uv``. ``progress`` is called on this thread. Raises
     :class:`ToolRuntimeError`.
@@ -1262,7 +1221,7 @@ def prepare_tool_runtime(
         prepared = _prepared_runtime()
         if prepared is not None:
             return prepared
-        _acquire_flight(cancel, deadline, wait=wait_for_lock)
+        _acquire_flight(cancel, deadline)
     except ToolRuntimeError as exc:
         _record_unstarted(exc)
         raise
@@ -1274,10 +1233,7 @@ def prepare_tool_runtime(
     report = _Reporter(progress)
     outcome: ToolRuntimeError | None = None
     try:
-        report(ProgressEvent("waiting"))
-        result = _prepare_locked(
-            runner, report, cancel, deadline, wait=wait_for_lock, prefer_system_uv=prefer_system_uv,
-        )
+        result = _prepare_in_flight(runner, report, cancel, deadline, prefer_system_uv=prefer_system_uv)
     except ToolRuntimeError as exc:
         outcome = exc
         raise
@@ -1294,7 +1250,6 @@ async def ensure_tool_runtime(
     *,
     timeout: float,
     progress: Callable[[ProgressEvent], None] | None = None,
-    wait_for_lock: bool = True,
     prefer_system_uv: bool = False,
 ) -> ToolRuntime:
     """asyncio wrapper of :func:`prepare_tool_runtime`; cancelling the awaiting
@@ -1306,7 +1261,7 @@ async def ensure_tool_runtime(
     try:
         return await asyncio.to_thread(
             prepare_tool_runtime, cancel=cancel, deadline=deadline, progress=progress,
-            wait_for_lock=wait_for_lock, prefer_system_uv=prefer_system_uv,
+            prefer_system_uv=prefer_system_uv,
         )
     except asyncio.CancelledError:
         cancel.set()
