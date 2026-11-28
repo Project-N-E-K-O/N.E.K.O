@@ -6,6 +6,8 @@ afterwards (``nekopower_on`` on the agent side). Before, its opening was only th
 role-play sentence, so she would answer "on it" to a request to open a file and
 nothing happened. The opening now adds ``SESSION_INIT_NO_NEKOPOWER``. Only the master
 switch is looked at (owner, 2026-11-26): the task agent is to start with it alone.
+When asked, she tells the user NekoPower is off and suggests switching it on; the
+built-in tools she still has are named as staying in use (owner, 2026-11-26).
 
 The real ``NotifyMixin`` methods run here, ``_is_agent_enabled`` included.
 """
@@ -24,7 +26,11 @@ from config.prompts.prompts_sys import (
     SESSION_INIT_PROMPT,
     SESSION_INIT_PROMPT_AGENT,
 )
+from config.prompts.prompts_task_tools import DISPATCH_TOOL_NAME
+from main_logic import public_knowledge
 from main_logic.core.notify import NotifyMixin
+from main_logic.core.tool_calling import ToolCallingMixin
+from main_logic.tool_calling import ToolRegistry
 from utils.http import internal_client
 
 NAME = "Lan"
@@ -95,11 +101,12 @@ async def test_a_capability_on_with_the_master_switch_off_is_still_off(capabilit
     assert prompt == SESSION_INIT_PROMPT["zh"].format(name=NAME) + SESSION_INIT_NO_NEKOPOWER["zh"] + PERSONA
 
 
-async def test_the_master_switch_on_adds_nothing_whatever_capability_is_on():
-    # Only the master switch is looked at: with it on and no capability, the opening is
-    # the plain one, as it was before.
+async def test_the_master_switch_on_gives_the_opening_of_nekopower_whatever_capability_is_on():
+    # Only the master switch is looked at: with it on and no capability, NekoPower is on, and
+    # the opening is its own, with no note that she cannot act.
     prompt = await _opening(_flags(True))
-    assert prompt == SESSION_INIT_PROMPT["zh"].format(name=NAME) + PERSONA
+    assert prompt == SESSION_INIT_PROMPT_AGENT["zh"].format(name=NAME) + PERSONA
+    assert SESSION_INIT_NO_NEKOPOWER["zh"] not in prompt
 
 
 @pytest.mark.parametrize("capability", CAPABILITIES)
@@ -141,12 +148,24 @@ TASK_TOOLS = {
     "zh": "任务工具", "zh-TW": "任務工具", "en": "task tool", "ja": "タスクツール",
     "ko": "작업 도구", "ru": "инструмент", "es": "herramientas de tareas", "pt": "ferramentas de tarefas",
 }
-# The clause that ends the rule once task tools appear (NekoPower switched on mid-session).
-ONCE_THEY_APPEAR = {
-    "zh": "之后有了任务工具", "zh-TW": "之後有了任務工具", "en": "If task tools appear later",
-    "ja": "あとでタスクツールが使えるようになったら", "ko": "나중에 작업 도구가 생기면",
-    "ru": "Если инструменты задач появятся позже", "es": "Si más adelante aparecen herramientas de tareas",
-    "pt": "Se mais tarde aparecerem ferramentas de tarefas",
+# She asks the user herself to authorize her to switch NekoPower on (owner, 2026-11-26).
+SUGGESTS_SWITCHING_ON = {
+    "zh": "主动引导对方授权你把喵能力打开", "zh-TW": "主動引導對方授權你把喵能力打開",
+    "en": "on your own ask them to authorize you to switch NekoPower on",
+    "ja": "にゃんパワーをオンにする許可をくれるよう自分から頼んで", "ko": "냥파워를 켤 수 있게 허락해 달라고 먼저 부탁하세요",
+    "ru": "сами попросите разрешить вам включить NekoPower", "es": "pídele por tu cuenta que te autorice a activar NekoPower",
+    "pt": "peça por iniciativa própria que autorizem você a ativar o NekoPower",
+}
+# The built-in tool every session without NekoPower has (recall_memory), as each language names it.
+RECALL = {
+    "zh": "回忆记忆", "zh-TW": "回想記憶", "en": "recalling memories", "ja": "記憶の呼び出し",
+    "ko": "기억 떠올리기", "ru": "воспоминаниями", "es": "recordar memorias", "pt": "lembrar memórias",
+}
+# The knowledge base, as each language would name it: there only once a knowledge pack is
+# imported (not the usual state), so the sentence leaves it to "and the like".
+KNOWLEDGE_BASE = {
+    "zh": "知识", "zh-TW": "知識", "en": "knowledge", "ja": "知識",
+    "ko": "지식", "ru": "знаний", "es": "conocimiento", "pt": "conhecimento",
 }
 # Web search, as the first wording named it: Gemini Live searches on its own whatever NekoPower is.
 WEB_SEARCH = {
@@ -156,12 +175,42 @@ WEB_SEARCH = {
 
 
 @pytest.mark.parametrize("key", PROMPT_KEYS)
-def test_the_rule_holds_while_she_has_no_task_tools_and_ends_once_she_has(key):
-    # Switching NekoPower on mid-session brings the task tools but leaves this opening as it
-    # was: the sentence says "without task tools ..." and "once there are task tools, use them".
+def test_she_has_no_task_tools_by_the_name_the_nekopower_opening_uses(key):
     assert TASK_TOOLS[key] in SESSION_INIT_NO_NEKOPOWER[key], key
     assert TASK_TOOLS[key] in SESSION_INIT_PROMPT_AGENT[key], key
-    assert ONCE_THEY_APPEAR[key] in SESSION_INIT_NO_NEKOPOWER[key], key
+
+
+@pytest.mark.parametrize("key", PROMPT_KEYS)
+def test_she_suggests_switching_nekopower_on(key):
+    assert SUGGESTS_SWITCHING_ON[key] in SESSION_INIT_NO_NEKOPOWER[key], key
+
+
+@pytest.mark.parametrize("key", PROMPT_KEYS)
+def test_she_keeps_using_the_built_in_tool_every_session_has(key):
+    assert RECALL[key] in SESSION_INIT_NO_NEKOPOWER[key], key
+
+
+@pytest.mark.parametrize("key", PROMPT_KEYS)
+def test_the_knowledge_base_is_not_named(key):
+    # With no knowledge pack imported there is no such tool: named, she might claim to search it.
+    assert KNOWLEDGE_BASE[key] not in SESSION_INIT_NO_NEKOPOWER[key], key
+
+
+@pytest.mark.parametrize("pack_imported", (True, False))
+def test_the_tool_named_is_there_without_nekopower_whatever_is_imported(monkeypatch, pack_imported):
+    monkeypatch.delenv("NEKO_DISABLE_BUILTIN_TOOLS", raising=False)
+    monkeypatch.setattr(public_knowledge, "tool_available", lambda: pack_imported)
+    monkeypatch.setattr(public_knowledge, "add_availability_listener", lambda owner: None)
+    manager = object.__new__(ToolCallingMixin)
+    manager.user_language = "zh"
+    manager.tool_registry = ToolRegistry()
+    manager._is_agent_enabled = lambda: False
+    manager._register_builtin_tools()
+
+    assert manager.tool_registry.get("recall_memory") is not None
+    # The knowledge base comes and goes with the packs: why the sentence does not name it.
+    assert (manager.tool_registry.get(public_knowledge.TOOL_NAME) is not None) is pack_imported
+    assert manager.tool_registry.get(DISPATCH_TOOL_NAME) is None
 
 
 @pytest.mark.parametrize("key", PROMPT_KEYS)
@@ -169,8 +218,27 @@ def test_web_search_is_not_ruled_out(key):
     assert WEB_SEARCH[key] not in SESSION_INIT_NO_NEKOPOWER[key], key
 
 
+# What she tells the user when asked: that NekoPower is off and she cannot do it now.
+TELLS_IT_IS_OFF = {
+    "zh": "告诉对方喵能力没开", "zh-TW": "告訴對方喵能力沒開",
+    "en": "tell them plainly that NekoPower is off",
+    "ja": "にゃんパワーがオフでいまはできないと正直に伝え",
+    "ko": "냥파워가 꺼져 있어 지금은 할 수 없다고 솔직하게 말하고",
+    "ru": "честно скажите, что NekoPower выключен",
+    "es": "di con franqueza que NekoPower está desactivado",
+    "pt": "diga com franqueza que o NekoPower está desativado",
+}
+
+
 @pytest.mark.parametrize("key", PROMPT_KEYS)
-def test_she_tells_the_user_that_nekopower_is_off_by_its_panel_name(key):
+def test_she_tells_the_user_that_nekopower_is_off(key):
+    assert TELLS_IT_IS_OFF[key] in SESSION_INIT_NO_NEKOPOWER[key], key
+
+
+@pytest.mark.parametrize("key", PROMPT_KEYS)
+def test_nekopower_goes_by_its_panel_name(key):
     toggles = json.loads((LOCALES_DIR / f"{LOCALE_FILES[key]}.json").read_text(encoding="utf-8"))["settings"]["toggles"]
-    # Named twice: why she has no task tools, and what she tells the user.
-    assert SESSION_INIT_NO_NEKOPOWER[key].count(toggles["agentMaster"]) == 2, key
+    # Why she has no task tools, what she tells the user, and what she suggests switching on.
+    assert SESSION_INIT_NO_NEKOPOWER[key].count(toggles["agentMaster"]) >= 3, key
+    assert toggles["agentMaster"] in TELLS_IT_IS_OFF[key], key
+    assert toggles["agentMaster"] in SUGGESTS_SWITCHING_ON[key], key

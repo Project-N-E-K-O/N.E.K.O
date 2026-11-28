@@ -18,9 +18,9 @@ import hashlib
 import numpy as np
 import pytest
 
-from knowledge.retrieval import named_in_text
-from knowledge.store import StoredEntry
-from tests.unit.test_knowledge_subsystem import _import, _pack, _started, fast_indexer  # noqa: F401
+from services.knowledge.retrieval import named_in_text
+from services.knowledge.store import StoredEntry
+from tests.knowledge_fixtures import _import, _pack, _started, fast_indexer  # noqa: F401
 from utils.semantic_calibration import (
     Background,
     background_from_scores,
@@ -337,7 +337,7 @@ async def test_many_close_knowledge_cards_do_not_crowd_out_the_corpus_leader(tmp
 async def test_a_background_is_never_served_for_a_later_snapshot():
     from types import SimpleNamespace
 
-    from knowledge.passive import Calibration
+    from services.knowledge.passive import Calibration
 
     calibration = Calibration()
     calibration._probes.vectors["m"] = np.eye(1, 4, dtype=np.float32)
@@ -358,7 +358,7 @@ async def test_a_background_is_never_served_for_a_later_snapshot():
 
 
 def test_a_token_dense_title_and_summary_stay_within_the_card_budget():
-    from knowledge.render import RenderCard, render_turn_cards
+    from services.knowledge.render import RenderCard, render_turn_cards
     from utils.tokenize import count_tokens
 
     card = RenderCard(
@@ -427,7 +427,7 @@ async def test_failed_probe_embedding_backs_off_before_retrying():
 async def test_a_disabled_card_stays_out_of_the_calibration_background():
     from types import SimpleNamespace
 
-    from knowledge.passive import Calibration
+    from services.knowledge.passive import Calibration
 
     calibration = Calibration()
     calibration._probes.vectors["m"] = np.tile(np.eye(1, 4, dtype=np.float32), (40, 1))

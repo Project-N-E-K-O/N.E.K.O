@@ -111,15 +111,30 @@ import json
 import logging
 import secrets
 from collections import Counter
-from collections.abc import Awaitable, Callable, Iterator
+from collections.abc import Awaitable, Callable, Iterator, Sequence
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Protocol
 
 from nekopower.host import call_audit
-from nekopower.host.capabilities import BUILTIN_GROUP_BROWSER, KIND_BUILTIN, Capability, CapabilityRegistry
+from nekopower.host.capabilities import (
+    BUILTIN_GROUP_BROWSER,
+    BUILTIN_GROUP_KEYBOARD_MOUSE,
+    KIND_BUILTIN,
+    Capability,
+    CapabilityRegistry,
+)
 from nekopower.host.leases import BuiltinLeases
 from nekopower.host.ledger import Commission, Ledger
-from nekopower.host.permissions import BROWSER_REOPEN, DENIED_BY_SETTINGS, DENIED_BY_USER, GrantScope, PermissionGate
+from nekopower.host.permissions import (
+    BROWSER_REOPEN,
+    DENIED_BY_SETTINGS,
+    DENIED_BY_USER,
+    ENABLE_BROWSER,
+    ENABLE_KEYBOARD_MOUSE,
+    ENABLE_PLUGINS,
+    GrantScope,
+    PermissionGate,
+)
 from nekopower.host.plugin_runs import (
     PluginRunner,
     audited_run_entry,
@@ -136,6 +151,11 @@ SUPPORTED_PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
 MCP_PATH = "/mcp"
 SEARCH_TOOL = "capability_search"
 CALL_TOOL = "capability_call"
+# Not a tool of the gateway's own list: a name ``capability_call`` takes, with
+# which a task agent asks the user to turn on the browser, the keyboard and mouse
+# or the user plugins when it finds one switched off (``CapabilityGateway._call_enable``).
+ENABLE_TOOL = "enable_capability"
+_ENABLE_ID = f"host:{ENABLE_TOOL}"
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "[::1]", "::1"})
 _START_TIMEOUT_SECONDS = 10.0
 # What a plugin's request for confirmation was answered with by a button of a
@@ -176,6 +196,110 @@ _CALL_TOOL_DEFINITION = {
 AskUser = Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]]
 
 
+class CapabilityEnabler(Protocol):
+    """Turns on what a task agent found switched off; implemented by whoever owns the switches.
+
+    ``capability`` is ``browser``, ``keyboard_mouse`` or ``plugins``. Both
+    calls return whether it can be (or was) done and, if not, why.
+    ``can_enable`` changes nothing: it is asked before the user is.
+    ``enable`` is given what the user's answer stands on (``still_valid``)
+    and must look at it again at the moment it writes a switch, after
+    whatever it waited on (a check of the computer): a switch is not
+    written for an answer that no longer stands.
+    ``may_request`` (optional; the gateway takes a missing one as "yes")
+    says whether a capability may be offered to a task agent at all on this
+    computer; nothing that takes time is looked at in it.
+    """
+
+    async def can_enable(self, capability: str) -> tuple[bool, str]: ...
+
+    def may_request(self, capability: str) -> bool: ...
+
+    async def enable(
+        self, capability: str, *, lanlan_name: str | None = None, still_valid: Callable[[], bool] | None = None
+    ) -> tuple[bool, str]: ...
+
+
+@dataclass(frozen=True, slots=True)
+class _EnableTarget:
+    """One thing a task agent may ask the user to turn on."""
+
+    canonical: str
+    aliases: tuple[str, ...]
+    # The name a model knows it by (the group's name, or ``plugins``).
+    display: str
+    # The permission category the settings forbid or allow it by.
+    permission: str
+    # What the user is asked.
+    ask_category: str
+    builtin_group: str | None
+
+
+_ENABLE_TARGETS: tuple[_EnableTarget, ...] = (
+    _EnableTarget("browser", ("browser", "browser_use"), "browser", "browser", ENABLE_BROWSER, BUILTIN_GROUP_BROWSER),
+    _EnableTarget(
+        BUILTIN_GROUP_KEYBOARD_MOUSE,
+        ("desktop", "keyboard_mouse", "computer", "computer_use"),
+        "desktop",
+        "keyboard_mouse",
+        ENABLE_KEYBOARD_MOUSE,
+        BUILTIN_GROUP_KEYBOARD_MOUSE,
+    ),
+    _EnableTarget("plugins", ("plugins", "plugin", "user_plugin", "user_plugins"), "plugins", "plugin_entry", ENABLE_PLUGINS, None),
+)
+_ENABLE_NAMES = ", ".join(target.display for target in _ENABLE_TARGETS)
+# What a task agent is told when the answer it was given no longer stands (not a refusal of the settings).
+_APPROVAL_STALE = (
+    "The earlier approval no longer stands because the run or the settings changed. "
+    "Ask again if the task still needs it."
+)
+# What a failed start of the plugins says when it may still come up by itself.
+_PLUGINS_PENDING_HINTS = ("still starting", "did not respond in time")
+# What a search query says when it is about one of the things that may be asked for: whole words,
+# and phrases (the Chinese words are looked for as they stand: they have no spaces to split on).
+_OFF_QUERY_WORDS: dict[str, tuple[frozenset[str], tuple[str, ...]]] = {
+    "browser": (
+        frozenset({"browser", "web", "webpage", "website", "url", "http", "https", "site", "tab", "navigate", "html", "chrome", "edge"}),
+        ("浏览器", "网页", "网站", "网址"),
+    ),
+    BUILTIN_GROUP_KEYBOARD_MOUSE: (
+        frozenset({"desktop", "computer", "screen", "screenshot", "mouse", "keyboard", "click", "hotkey", "shortcut", "cursor", "window", "gui", "type", "typing"}),
+        ("桌面", "屏幕", "截图", "鼠标", "键盘", "点击"),
+    ),
+    "plugins": (
+        frozenset({"plugin", "plugins", "extension", "extensions", "mcp", "web_search"}),
+        ("web search", "插件"),
+    ),
+}
+
+
+def _target_named(asked: Any) -> _EnableTarget | None:
+    wanted = str(asked or "").strip().lower()
+    return next((target for target in _ENABLE_TARGETS if wanted in target.aliases), None) if wanted else None
+
+
+def _target_of_group(group: str | None) -> _EnableTarget | None:
+    return next((target for target in _ENABLE_TARGETS if group and target.builtin_group == group), None)
+
+
+def _enable_how(display: str) -> str:
+    return f'call {CALL_TOOL} with name "{ENABLE_TOOL}" and arguments {{"capability": "{display}"}}'
+
+
+@dataclass(slots=True)
+class _EnableGate:
+    """What was found out about a request to turn something on, before the user is asked."""
+
+    target: _EnableTarget | None = None
+    commission: Commission | None = None
+    # What the request is answered with when it is refused or settled without asking.
+    answer: dict[str, Any] | None = None
+    # It is on already.
+    already: bool = False
+    # Why the settings refused it, for the ledger.
+    denied: str | None = None
+
+
 def wants_confirmation(run_data: Any) -> bool:
     """Return whether a plugin result asks for the user's confirmation (not a clarification)."""
     if not isinstance(run_data, dict) or bool(run_data.get("observation_only")):
@@ -204,6 +328,9 @@ class _Cleared:
     # Drops it when it has waited for its call long enough.
     expiry: asyncio.TimerHandle | None = None
     device_group: str | None = None
+    # For a request to turn something on: whether what the user approved still stands, as it was
+    # when they were asked (the run it was asked in, and the settings of what it was asked about).
+    still_valid: Callable[[], bool] | None = None
 
 
 def _call_key(capability_id: str, arguments: dict[str, Any]) -> tuple[str, str]:
@@ -374,7 +501,24 @@ def _first_call(group: str, capabilities: list[Capability]) -> tuple[Capability,
     return None
 
 
-def _search_tool_definition(capabilities: list[Capability]) -> dict[str, Any]:
+def _search_tool_definition(capabilities: list[Capability], *, off_capabilities: Sequence[str] = ()) -> dict[str, Any]:
+    """Return the search tool as offered to a task agent that can call ``capabilities``.
+
+    ``off_capabilities`` are the things it may ask the user to turn on
+    (``browser``, ``desktop``, ``plugins``): with any, one line says how.
+    With none, the definition is exactly what it was.
+    """
+    definition = _search_tool_base(capabilities)
+    if not off_capabilities:
+        return definition
+    note = (
+        f"Switched off; to ask the user to turn one on, {_enable_how('<name>')}: "
+        f"{', '.join(off_capabilities)}."
+    )
+    return {**definition, "description": f"{definition['description']}\n{note}"}
+
+
+def _search_tool_base(capabilities: list[Capability]) -> dict[str, Any]:
     """Return the search tool as offered to a task agent that can call ``capabilities``.
 
     With a built-in tool among them, its description ends in one line
@@ -484,12 +628,16 @@ class CapabilityGateway:
         ledger: Ledger,
         ask_user: AskUser | None = None,
         leases: BuiltinLeases | None = None,
+        capability_enabler: CapabilityEnabler | None = None,
     ) -> None:
         self._registry = registry
         self._runner = runner
         self._permissions = permissions
         self._ledger = ledger
         self._ask_user = ask_user
+        # Who turns on what a task agent finds switched off; without it a
+        # task agent is not told it may ask.
+        self._enabler = capability_enabler
         # Who occupies the desktop and the browser; without it nothing is
         # occupied and every call of a built-in tool goes straight through.
         self._leases = leases
@@ -503,6 +651,64 @@ class CapabilityGateway:
     def set_ask_user(self, ask_user: AskUser | None) -> None:
         """Set how a plugin's request for confirmation is put to the user."""
         self._ask_user = ask_user
+
+    @property
+    def can_enable_capabilities(self) -> bool:
+        """Whether a task agent may ask the user to turn on what it finds switched off."""
+        return self._enabler is not None
+
+    def can_enable_for(self, commission_id: str) -> bool:
+        """Whether this commission's task agent may ask the user to turn something on.
+
+        Not a reads-only copy, and not a commission that has no token here (it has no call tool to ask with).
+        """
+        if self._enabler is None:
+            return False
+        grant = self._by_commission.get(commission_id)
+        return grant is not None and not grant.reads_only
+
+    def _enabler_allows_request(self, canonical: str) -> bool:
+        """Whether what turns the switches on says this one may be asked for here (not, say, a screen the user must share first)."""
+        if self._enabler is None:
+            return False
+        check = getattr(self._enabler, "may_request", None)
+        return bool(check(canonical)) if callable(check) else True
+
+    async def _requestable_off_capabilities(
+        self, grant: Grant, callable_now: list[Capability] | None = None
+    ) -> list[str]:
+        """Return what this commission may ask the user to turn on, by the names a model knows: browser, desktop, plugins.
+
+        Only what is switched off (not what cannot be used on this
+        computer), that the settings do not forbid, that the commission's
+        model can make something of, and only for a commission that may
+        call things at all.
+        """
+        if self._enabler is None or grant.reads_only:
+            return []
+        if callable_now is None:
+            callable_now = await self._registry.callable_by_task_agents()
+        on = set(_groups_of(callable_now))
+        off_groups = {
+            item.group
+            for item in self._registry.builtins()
+            if not item.available and item.unavailable_reason == "switched off"
+        }
+        found: list[str] = []
+        for target in _ENABLE_TARGETS:
+            if target.builtin_group is not None:
+                if target.builtin_group in on or target.builtin_group not in off_groups:
+                    continue
+                if target.canonical == BUILTIN_GROUP_KEYBOARD_MOUSE and not grant.supports_images:
+                    continue
+            elif self._registry.plugins_enabled():
+                continue
+            if not self._enabler_allows_request(target.canonical):
+                continue
+            if await self._permissions.forbidden(target.permission):
+                continue
+            found.append(target.display)
+        return found
 
     # -- tokens -----------------------------------------------------------
 
@@ -805,6 +1011,8 @@ class CapabilityGateway:
         from config.prompts.prompts_nekopower_builtin import BUILTIN_GROUP_GUIDANCE
 
         requested_at = grant.folded_at
+        # Read before the cycle is rotated below, with the registry: nothing is awaited from there on.
+        off_capabilities = await self._requestable_off_capabilities(grant)
         callable_now = self._offered(grant, await self._registry.callable_by_task_agents())
         # Read the registry before rotating the cycle. No await from here
         # through the returned declarations, including on simultaneous lists.
@@ -822,7 +1030,7 @@ class CapabilityGateway:
         epoch = requested_at if compactions is None else compactions
         if wanted and epoch >= grant.folded_at:
             grant.mounted_groups.update(wanted.intersection(grant.first_turn_groups))
-        listed = [_search_tool_definition(callable_now), _CALL_TOOL_DEFINITION]
+        listed = [_search_tool_definition(callable_now, off_capabilities=off_capabilities), _CALL_TOOL_DEFINITION]
         grant.declared_devices.clear()
         described: set[str] = set()
         for item in callable_now:
@@ -927,6 +1135,8 @@ class CapabilityGateway:
     async def _call_named(
         self, grant: Grant, name: str, arguments: dict[str, Any], reply: int | str | None
     ) -> dict[str, Any]:
+        if name == ENABLE_TOOL:
+            return await self._call_enable(grant, arguments, reply)
         callable_now = await self._registry.callable_by_task_agents()
         capability = next((item for item in self._offered(grant, callable_now) if item.tool_name == name), None)
         if capability is None:
@@ -935,6 +1145,13 @@ class CapabilityGateway:
                 return _text(
                     f"{name} works from pictures, and the model in use does not take pictures: it cannot be used "
                     "in this task. Go on without it, or report that the task needs a model that can see.",
+                    error=True,
+                )
+            switched_off = await self._switched_off_tool(grant, name)
+            if switched_off is not None:
+                return _text(
+                    f"{name} is one of the {switched_off.display} tools, which are switched off right now. "
+                    f"If this task needs them, {_enable_how(switched_off.display)} to ask the user to turn them on.",
                     error=True,
                 )
             return _text(f"no capability named {name}; use {SEARCH_TOOL} to find one", error=True)
@@ -1004,8 +1221,21 @@ class CapabilityGateway:
         from config.prompts.prompts_nekopower_builtin import BUILTIN_GROUP_NAMES
 
         wanted = asked.lower()
-        group = next((key for key, known in BUILTIN_GROUP_NAMES.items() if wanted in (key, known)), None)
         callable_now = await self._registry.callable_by_task_agents()
+        if (
+            wanted in _ENABLE_TARGETS[-1].aliases
+            and self._enabler is not None
+            and not self._registry.plugins_enabled()
+            and self._enabler_allows_request(_ENABLE_TARGETS[-1].canonical)
+            and not await self._permissions.forbidden(_ENABLE_TARGETS[-1].permission)
+        ):
+            # Not a group of built-in tools, but what a task agent may look for here all the same.
+            return _text(
+                f"The plugins are switched off right now. If this task needs them, {_enable_how('plugins')} "
+                "to ask the user to turn them on.",
+                error=True,
+            )
+        group = next((key for key, known in BUILTIN_GROUP_NAMES.items() if wanted in (key, known)), None)
         if group is None:
             on_offer = ", ".join(_group_name(item) for item in _groups_of(self._offered(grant, callable_now)))
             return _text(f"no tool group named {asked}; the groups on offer: {on_offer or 'none'}", error=True)
@@ -1014,6 +1244,20 @@ class CapabilityGateway:
         if not tools:
             # A group there is, but none of its tools can be called now.
             reason = next((item.unavailable_reason for item in self._registry.builtins() if item.group == group), "")
+            target = _target_of_group(group)
+            if (
+                reason == "switched off"
+                and target is not None
+                and self._enabler is not None
+                and self._enabler_allows_request(target.canonical)
+                and (target.canonical != BUILTIN_GROUP_KEYBOARD_MOUSE or grant.supports_images)
+                and not await self._permissions.forbidden(target.permission)
+            ):
+                return _text(
+                    f"The {name} tools are not available right now: switched off. If this task needs them, "
+                    f"{_enable_how(name)} to ask the user to turn them on.",
+                    error=True,
+                )
             return _text(
                 f"The {name} tools are not available right now: {reason or 'switched off'}. "
                 "Go on without them, or report that the task needs them.",
@@ -1041,6 +1285,15 @@ class CapabilityGateway:
         from utils.tokenize import truncate_to_tokens
 
         capabilities = self._offered(grant, await self._registry.callable_by_task_agents())
+        off = await self._requestable_off_capabilities(grant, capabilities)
+        # Said where nothing is found, or where what is found is not what the query is about
+        # because it is switched off.
+        note = (
+            f"\nSwitched off right now: {', '.join(off)}. If this task needs one, {_enable_how('<name>')} "
+            "to ask the user to turn it on."
+            if off
+            else ""
+        )
         if not capabilities:
             # The two tools are there whether or not anything can be called,
             # and the session goes on after this answer: what it says holds
@@ -1048,6 +1301,7 @@ class CapabilityGateway:
             return (
                 "No capabilities are available right now. That can change while you work (a plugin gets "
                 "installed, the browser gets switched on): search again when a later commission needs one."
+                + note
             )
         # A built-in tool is not found on its own: its definition is of no
         # use without how its group is used, and the rest of the group is
@@ -1064,7 +1318,7 @@ class CapabilityGateway:
         ranked = sorted(zip(bm25_scores(query, searched), found, strict=True), key=lambda pair: pair[0], reverse=True)
         matches = [item for score, item in ranked if score > 0][:GATEWAY_SEARCH_RESULTS]
         if not matches:
-            return f"No capability matches {query!r}."
+            return f"No capability matches {query!r}." + note
         blocks = [
             TOOL_GROUP_POINTER.format(
                 name=_group_name(item), summary=BUILTIN_GROUP_SUMMARIES[item], search_tool=SEARCH_TOOL
@@ -1073,7 +1327,48 @@ class CapabilityGateway:
             else json.dumps(_definition(item), ensure_ascii=False)
             for item in matches
         ]
+        if note and self._off_matches(off, query):
+            blocks.append(note.strip())
         return truncate_to_tokens("\n".join(blocks), GATEWAY_RESULT_MAX_TOKENS)
+
+    def _off_matches(self, off: list[str], query: str) -> bool:
+        """Whether a query is about one of the switched-off things that may be asked for.
+
+        By a few words of each: matching a query against the tools' own
+        descriptions took in every common word ("the", "to") and put the
+        note on nearly every search.
+        """
+        import re
+
+        lowered = query.lower()
+        words = set(re.findall(r"[a-z0-9_]+", lowered))
+        # A tool name is one word to the pattern above (``browser_navigate_page``): its parts count too.
+        words |= {part for word in tuple(words) for part in word.split("_") if part}
+        for display in off:
+            target = next((item for item in _ENABLE_TARGETS if item.display == display), None)
+            if target is None:
+                continue
+            ascii_words, phrases = _OFF_QUERY_WORDS.get(target.canonical, (frozenset(), ()))
+            if words & ascii_words or any(phrase in lowered for phrase in phrases):
+                return True
+        return False
+
+    async def _switched_off_tool(self, grant: Grant, name: str) -> _EnableTarget | None:
+        """Return what a call of a built-in tool that is switched off may ask the user to turn on; None if not that."""
+        if self._enabler is None:
+            return None
+        for item in self._registry.builtins():
+            if item.tool_name != name or item.available or item.unavailable_reason != "switched off":
+                continue
+            target = _target_of_group(item.group)
+            if (
+                target is None
+                or (target.canonical == BUILTIN_GROUP_KEYBOARD_MOUSE and not grant.supports_images)
+                or not self._enabler_allows_request(target.canonical)
+            ):
+                return None
+            return None if await self._permissions.forbidden(target.permission) else target
+        return None
 
     async def clear_call(self, commission_id: str, name: str, arguments: dict[str, Any]) -> None:
         """Rule on a call before it is made, asking whoever has to be asked.
@@ -1110,8 +1405,286 @@ class CapabilityGateway:
                 return
             inner = arguments.get("arguments")
             name, arguments = target, inner if isinstance(inner, dict) else {}
+        if name == ENABLE_TOOL:
+            await self._clear_enable(grant, arguments)
+            return
         with grant.using_device(name):
             await self._clear_named(grant, name, arguments)
+
+    async def _enable_gate(
+        self, grant: Grant, arguments: dict[str, Any], *, check_enabler: bool = True
+    ) -> _EnableGate:
+        """Find out what a request to turn something on comes to before the user is asked about it.
+
+        Nothing is asked of the user, and nothing is changed, for what is
+        refused or settled here: an unknown name, nobody to turn it on, an
+        ended commission, a model that cannot see (for the desktop), what is
+        on already, what the settings forbid, what cannot be turned on on
+        this computer.
+        """
+        asked = arguments.get("capability")
+        target = _target_named(asked)
+        if target is None:
+            return _EnableGate(
+                answer=_text(f'nothing named "{asked}" can be turned on; the ones that can: {_ENABLE_NAMES}', error=True)
+            )
+        if self._enabler is None:
+            return _EnableGate(
+                target=target, answer=_text("turning capabilities on is not offered by this process", error=True)
+            )
+        commission = await self._ledger.get(grant.commission_id)
+        if commission is None or not commission.active:
+            return _EnableGate(
+                target=target, answer=_text("this commission is no longer under way", error=True)
+            )
+        gate = _EnableGate(target=target, commission=commission)
+        if target.canonical == BUILTIN_GROUP_KEYBOARD_MOUSE and not grant.supports_images:
+            gate.answer = _text(
+                f"The {target.display} tools work from pictures, and the model in use does not take pictures: they "
+                "cannot be used in this task. Go on without them, or report that the task needs a model that can see.",
+                error=True,
+            )
+            return gate
+        if target.builtin_group is not None:
+            gate.already = any(
+                item.group == target.builtin_group for item in await self._registry.callable_by_task_agents()
+            )
+        else:
+            gate.already = self._registry.plugins_enabled()
+        if gate.already:
+            return gate
+        if await self._permissions.forbidden(target.permission):
+            gate.answer, gate.denied = _text(DENIED_BY_SETTINGS, error=True), DENIED_BY_SETTINGS
+            return gate
+        if not check_enabler:
+            # Ruled on ahead already (``clear_call``): whether it can be done is not asked a second time.
+            return gate
+        try:
+            possible, why = await self._enabler.can_enable(target.canonical)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - not asked about what cannot be told to work
+            logger.warning("looking whether %s can be turned on failed: %s", target.canonical, type(exc).__name__)
+            possible, why = False, type(exc).__name__
+        if not possible:
+            gate.answer = _text(
+                f"The {target.display} cannot be turned on: {why or 'unavailable'}. Go on without it, or report "
+                "that the task needs it.",
+                error=True,
+            )
+        return gate
+
+    async def _permit_enable(self, commission: Commission, target: _EnableTarget) -> _Cleared:
+        """Ask the user whether to turn something on; what the question says is the host's alone.
+
+        What the answer stands on is taken before the user is asked
+        (``_Cleared.still_valid``): the run this is asked in, and the
+        settings of what it is asked about. Text another session adds
+        meanwhile, or a setting tightened and put back, ends it: the
+        approval is then no ground for turning anything on, nor for
+        covering the call that follows.
+        """
+        in_this_run = self._permissions.current_run(commission.id)
+        same_settings = self._permissions.current_rules(commission.id, target.permission)
+
+        def still_valid() -> bool:
+            return in_this_run() and same_settings()
+
+        decision = await self._permissions.ask_each_time(commission.id, target.ask_category, detail={})
+        if not decision.allow:
+            await self._ledger.append_event(
+                commission.id, "capability_denied", {"capability": f"host:enable:{target.canonical}", "reason": decision.reason}
+            )
+            if decision.reason == DENIED_BY_USER:
+                said = f"The user declined to turn on the {target.display}. Nothing was changed."
+                return _Cleared(refusal=_text(f"{said} Go on without it, or report that the task needs it.", error=True), reason="user")
+            return _Cleared(
+                refusal=_text(
+                    f"The user could not be asked whether to turn on the {target.display}. Nothing was changed.",
+                    error=True,
+                ),
+                reason="no_approval",
+            )
+        # The answer may have been long in coming: forbidden in the settings since, it stays forbidden.
+        if await self._permissions.forbidden(target.permission):
+            await self._ledger.append_event(
+                commission.id,
+                "capability_denied",
+                {"capability": f"host:enable:{target.canonical}", "reason": DENIED_BY_SETTINGS},
+            )
+            return _Cleared(refusal=_text(DENIED_BY_SETTINGS, error=True), reason="settings")
+        return _Cleared(still_valid=still_valid)
+
+    async def _clear_enable(self, grant: Grant, arguments: dict[str, Any]) -> None:
+        """Ask ahead of time what ``_call_enable`` would ask, for a runtime that gives a call little time."""
+        from config.nekopower_settings import GATEWAY_CLEARED_CALL_SECONDS
+
+        gate = await self._enable_gate(grant, arguments)
+        if gate.answer is not None or gate.already or gate.target is None or gate.commission is None:
+            return
+        key = _call_key(_ENABLE_ID, {"capability": gate.target.canonical})
+        cleared = await self._permit_enable(gate.commission, gate.target)
+        if self._by_commission.get(grant.commission_id) is not grant:
+            return
+        self._drop_cleared(grant, key)
+        cleared.expiry = asyncio.get_running_loop().call_later(
+            GATEWAY_CLEARED_CALL_SECONDS, self._drop_cleared, grant, key
+        )
+        grant.cleared[key] = cleared
+
+    async def _call_enable(self, grant: Grant, arguments: dict[str, Any], reply: int | str | None) -> dict[str, Any]:
+        """Turn on the browser, the keyboard and mouse or the plugins, after the user said yes, and hand over what that gives.
+
+        What is asked is the host's own question with no word of the task
+        agent in it. What the settings forbid is not asked about and not done,
+        nor is what cannot be done on this computer.
+        """
+        asked = arguments.get("capability")
+        target = _target_named(asked)
+        cleared = (
+            self._take_cleared(grant.commission_id, _ENABLE_ID, {"capability": target.canonical})
+            if target is not None
+            else None
+        )
+        gate = await self._enable_gate(grant, arguments, check_enabler=cleared is None or cleared.refusal is None)
+        if gate.target is None or gate.commission is None or self._enabler is None:
+            return gate.answer or _text("this commission is no longer under way", error=True)
+        target, commission = gate.target, gate.commission
+        if gate.denied is not None and (cleared is None or cleared.reason != "settings"):
+            # (Not twice: what was ruled on ahead has put a settings refusal on record already.)
+            await self._ledger.append_event(
+                commission.id, "capability_denied", {"capability": f"host:enable:{target.canonical}", "reason": gate.denied}
+            )
+        if gate.already:
+            if target.builtin_group is not None:
+                return await self._load_group(grant, target.display, reply)
+            return _text(f"The plugins are on already. Use {SEARCH_TOOL} to find what they offer.")
+        if gate.answer is not None:
+            return gate.answer
+        try:
+            async with call_audit.call(self._ledger, commission.id, "gateway", f"host:enable:{target.canonical}") as record:
+                if cleared is None:
+                    cleared = await self._permit_enable(commission, target)
+                if cleared.refusal is not None:
+                    record.status, record.reason = "denied", cleared.reason
+                    return cleared.refusal
+                current = await self._ledger.get(commission.id)
+                if current is None or not current.active:
+                    return _text("this commission is no longer under way", error=True)
+                # Everything that waits comes first (the registry may ask the plugin server): what the
+                # answer stands on is looked at last, with nothing awaited between it and turning on.
+                turned_on_meanwhile = target.builtin_group is not None and any(
+                    item.group == target.builtin_group for item in await self._registry.callable_by_task_agents()
+                )
+                if await self._permissions.forbidden(target.permission):
+                    record.status, record.reason = "denied", "settings"
+                    return _text(DENIED_BY_SETTINGS, error=True)
+                if cleared.still_valid is not None and not cleared.still_valid():
+                    # Approved before text another session added, or before a setting was tightened
+                    # (and put back): that answer is no ground for this. Nothing is turned on, and
+                    # the settings do not forbid it now (looked at just above): it may be asked again.
+                    await self._ledger.append_event(
+                        commission.id,
+                        "capability_denied",
+                        {"capability": f"host:enable:{target.canonical}", "reason": "approval_stale"},
+                    )
+                    record.status, record.reason = "denied", "stale_approval"
+                    return _text(_APPROVAL_STALE, error=True)
+                if turned_on_meanwhile:
+                    # Turned on meanwhile by someone else (the user at the panel): not turned on again.
+                    done, why = True, ""
+                else:
+                    try:
+                        done, why = await self._enabler.enable(
+                            target.canonical, lanlan_name=commission.lanlan_name, still_valid=cleared.still_valid
+                        )
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:  # noqa: BLE001 - the task agent is told and decides how to go on
+                        logger.exception("turning on %s failed", target.canonical)
+                        done, why = False, type(exc).__name__
+                if not done:
+                    if cleared.still_valid is not None and not cleared.still_valid():
+                        # The switch was not written because the answer stopped standing while it waited
+                        # on the checks of this computer (``CapabilityEnabler.enable``): not a failure of the computer.
+                        forbidden_now = await self._permissions.forbidden(target.permission)
+                        reason = DENIED_BY_SETTINGS if forbidden_now else "approval_stale"
+                        await self._ledger.append_event(
+                            commission.id,
+                            "capability_denied",
+                            {"capability": f"host:enable:{target.canonical}", "reason": reason},
+                        )
+                        record.status, record.reason = "denied", "settings" if forbidden_now else "stale_approval"
+                        return _text(DENIED_BY_SETTINGS if forbidden_now else _APPROVAL_STALE, error=True)
+                    record.status = "failed"
+                    if (
+                        target.builtin_group is None
+                        and self._registry.plugins_enabled()
+                        and (not why or any(hint in why for hint in _PLUGINS_PENDING_HINTS))
+                    ):
+                        # The switch stays on for the plugin server to recover: not "could not be turned on".
+                        return _text(
+                            f"The plugins switch is on, but they are not ready yet: {why or 'still starting'}. "
+                            f"Try {SEARCH_TOOL} again in a moment, or go on without them.",
+                            error=True,
+                        )
+                    return _text(
+                        f"The {target.display} could not be turned on: {why or 'unavailable'}. Go on without it, or "
+                        "report that the task needs it.",
+                        error=True,
+                    )
+                await self._ledger.append_event(commission.id, "capability_enabled", {"capability": target.canonical})
+                return await self._handed_after_enable(grant, commission, target, reply, still_valid=cleared.still_valid)
+        except (call_audit.AuditFull, call_audit.CommissionEnded) as exc:
+            return _text(str(exc), error=True)
+
+    async def _handed_after_enable(
+        self,
+        grant: Grant,
+        commission: Commission,
+        target: _EnableTarget,
+        reply: int | str | None,
+        *,
+        still_valid: Callable[[], bool] | None = None,
+    ) -> dict[str, Any]:
+        """Hand a task agent what it asked for, now that it is on: the group's tools, or the plugins' entries."""
+        from config.nekopower_settings import GATEWAY_RESULT_MAX_TOKENS
+        from utils.tokenize import truncate_to_tokens
+
+        if target.builtin_group is not None:
+            # The user just said yes to this very group: the first call of the task agent is not asked again,
+            # as long as that yes still stands (``_Cleared.still_valid``).
+            await self._permissions.grant_run(
+                commission.id,
+                target.permission,
+                scope=GrantScope(KIND_BUILTIN, target.builtin_group),
+                still_valid=still_valid,
+            )
+            tools = [
+                item
+                for item in await self._registry.callable_by_task_agents()
+                if item.group == target.builtin_group
+            ]
+            offered = self._offered(grant, tools)
+            if not offered:
+                return _text(
+                    f"The {target.display} was turned on, but none of its tools can be used now.", error=True
+                )
+            _hand_over(grant, target.builtin_group, reply)
+            return _text(f"The {target.display} is on now.\n\n{_group_text(target.builtin_group, offered)}")
+        self._registry.invalidate()
+        plugins = await self._registry.plugins()
+        if not plugins:
+            return _text("The plugins are on, but there is no plugin with an entry to call.")
+        listed = "\n".join(
+            f"- {plugin.get('name') or plugin.get('id')}: {plugin.get('short_description') or plugin.get('description') or ''}".rstrip(": ")
+            for plugin in plugins
+        )
+        text = (
+            f"The plugins are on now. Find their entries with {SEARCH_TOOL} and call them with {CALL_TOOL}. "
+            f"Plugins:\n{listed}"
+        )
+        return _text(truncate_to_tokens(text, GATEWAY_RESULT_MAX_TOKENS))
 
     async def _clear_named(self, grant: Grant, name: str, arguments: dict[str, Any]) -> None:
         from config.nekopower_settings import GATEWAY_CLEARED_CALL_SECONDS

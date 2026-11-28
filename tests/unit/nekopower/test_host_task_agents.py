@@ -2289,6 +2289,65 @@ async def test_addition_for_a_queued_commission_goes_along_when_it_starts(hosts,
     assert request[-1]["content"].endswith("\n\nput the backup on drive E:")
 
 
+async def test_nothing_is_said_to_a_commission_while_the_end_of_its_run_writes_that_it_is_done(hosts, tmp_path):
+    llm = ScriptedLLM([[say("photos sorted"), finish()], [say("and the drafts"), finish()]])
+    host = _host(hosts, tmp_path, llm)
+    manager = host.task_agents
+    waiting: list[str] = []
+    written = manager._landing_end_written
+
+    async def recorded(commission_id: str) -> None:
+        if commission_id in manager._landing_ends:
+            waiting.append(commission_id)
+        await written(commission_id)
+
+    manager._landing_end_written = recorded
+    transition = manager._reporter.transition
+    saying: list[Any] = []
+
+    async def as_more_is_said(commission_id: str, target: str, **kwargs: Any) -> Any:
+        if target == "done" and not saying:
+            # Its run ended with no closing report, and whether more was said to it was asked a
+            # moment ago (``unless``); this is said before the write is through.
+            saying.append(asyncio.ensure_future(manager.tell(commission_id, "and skip the drafts")))
+            await wait_until(
+                lambda: saying[0].done() or commission_id in waiting, timeout=5, what="what is said being through or waiting"
+            )
+        return await transition(commission_id, target, **kwargs)
+
+    manager._reporter.transition = as_more_is_said
+    receipt = await _dispatch(host, "sort the photos")
+    done = await wait_status(host, receipt.commission_id, "done")
+    told = await asyncio.wait_for(saying[0], 5)
+
+    # Not passed on, so it is work of its own: steered in, it would start a run of a commission
+    # that is done, in a session that is closed under it, and be lost with it.
+    assert told is False and not any("and skip the drafts" in str(request) for request in llm.requests)
+    assert done.result_summary == "photos sorted"
+    assert await _events(host, receipt.commission_id, "told") == []
+    assert manager._landing_ends == {} and manager._landing_holds == {}
+
+
+async def test_what_is_said_to_a_commission_held_back_twice_at_once_waits_for_the_last_hold(hosts, tmp_path):
+    host = _host(hosts, tmp_path, ScriptedLLM([]))
+    manager = host.task_agents
+    # A landing holds it back, and the end of a run is written within that (``_end``'s ``hold``);
+    # the first of them is through before the other.
+    first = manager._nothing_more_said("c1")
+    second = manager._nothing_more_said("c1")
+    first.__enter__()
+    second.__enter__()
+    waits = asyncio.ensure_future(manager._landing_end_written("c1"))
+    await asyncio.sleep(0)
+    first.__exit__(None, None, None)
+    await asyncio.sleep(0)
+
+    assert not waits.done() and "c1" in manager._landing_ends
+    second.__exit__(None, None, None)
+    await asyncio.wait_for(waits, 5)
+    assert manager._landing_ends == {} and manager._landing_holds == {}
+
+
 # ---------------------------------------------------------------------------
 # Task agents started by task agents
 # ---------------------------------------------------------------------------
@@ -3568,8 +3627,18 @@ async def _ended(host: Any, commission_id: str) -> bool:
 
 
 async def _child_working(host: Any, commission_id: str) -> bool:
+    """Whether the first child task agent is working and its start is over.
+
+    The ledger says ``working`` before the start is done with the session: a
+    stop that comes in between is seen by the start, which closes the session
+    itself, rather than by the stop. Tests that look at what the stop does wait
+    for the session to be ready as well.
+    """
     children = await host.ledger.select(parent_id=commission_id)
-    return bool(children) and children[0].status == "working"
+    if not children or children[0].status != "working":
+        return False
+    session = host.task_agents._sessions.get(children[0].id)
+    return session is not None and session.ready
 
 
 async def test_a_task_agent_being_started_outlives_whoever_handed_it_over(tmp_path, hosts):

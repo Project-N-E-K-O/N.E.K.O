@@ -22,8 +22,8 @@ from fastapi import FastAPI
 from pydantic import ValidationError
 
 from app.memory_server import knowledge_routes
-from knowledge.service import KnowledgeService
-from knowledge.subscriptions import SubscriptionError, parse_subscription
+from services.knowledge.service import KnowledgeService
+from services.knowledge.subscriptions import SubscriptionError, parse_subscription
 from main_routers import public_knowledge_router
 from main_routers.system_router import _shared as system_shared
 from plugin.server.routes import knowledge_market as km

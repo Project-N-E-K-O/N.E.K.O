@@ -328,11 +328,18 @@ def collect_llm_tool_methods(instance: Any) -> list[tuple[LlmToolMeta, Callable[
 #                 request could not reach main_server: connect failure or
 #                 no pooled connection), "main_server_error" (HTTP status >= 400),
 #                 "rejected" (register: no role accepted the tool),
+#                 "plugin_stopped" (register: the plugin was stopped while
+#                 the register was in flight; what main_server may have
+#                 stored is withdrawn by its registration id on a best-effort
+#                 basis: if that fails it may remain until the plugin's next
+#                 cleanup),
 #                 "partial_failure" (unregister: some roles failed).
 #   both       -- "timeout" (no usable answer: none from the host within
 #                 ``request_timeout``, or none from main_server after the
 #                 request was sent, or one that is not a JSON object; the
-#                 outcome on main_server is unknown).
+#                 outcome on main_server is unknown; for a register whose
+#                 answer the host lost, the host first tries to withdraw it
+#                 by its registration id).
 #   SDK side   -- "host_unavailable" (the request could not reach the host or
 #                 the host failed to handle it), "busy" (earlier calls for
 #                 the same name used up the budget, or the calling entry's

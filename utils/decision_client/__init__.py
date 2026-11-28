@@ -23,7 +23,18 @@ from .adapters import (
     SystemOneAdapter,
     get_decision_adapter,
 )
-from .client import DecisionClient, clear_native_cooldown, decide
+from .client import DecisionClient, clear_native_cooldown, decide, native_decision_in_cooldown
+from .rehost import rehost_choice, rehost_choices
+from .routing import (
+    ROUTE_CHAT,
+    ROUTE_NATIVE,
+    ROUTE_REHOST,
+    ask_site_questions,
+    chat_logprobs_usable,
+    decide_route,
+    native_decision_usable,
+    site_question_would_send,
+)
 from .schema import (
     ALL_DECISION_PROTOCOLS,
     NATIVE_DECISION_PROTOCOLS,
@@ -61,4 +72,15 @@ __all__ = [
     "is_native_decision_protocol",
     "infer_decision_protocol",
     "resolve_decision_endpoint",
+    "ROUTE_CHAT",
+    "ROUTE_NATIVE",
+    "ROUTE_REHOST",
+    "ask_site_questions",
+    "chat_logprobs_usable",
+    "decide_route",
+    "native_decision_in_cooldown",
+    "native_decision_usable",
+    "site_question_would_send",
+    "rehost_choice",
+    "rehost_choices",
 ]

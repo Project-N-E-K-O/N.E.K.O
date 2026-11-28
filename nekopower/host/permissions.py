@@ -147,6 +147,15 @@ SPACE_COMMAND = "space_command"
 # allowed is allowed once.
 USAGE_LIMIT = "usage_limit"
 
+# Nor are these three: a task agent that finds the browser, the keyboard and
+# mouse or the user plugins switched off asks the user to turn them on
+# (``CapabilityGateway`` and its ``enable_capability``), asked each time
+# whatever the settings say. A category the settings forbid is never asked
+# about: ``deny`` stays ``deny``.
+ENABLE_BROWSER = "enable_browser"
+ENABLE_KEYBOARD_MOUSE = "enable_keyboard_mouse"
+ENABLE_PLUGINS = "enable_plugins"
+
 _FILE_VERSION = 1
 # The mode of every category while an existing file cannot be read.
 _UNREADABLE_MODE = "deny"
@@ -1057,6 +1066,59 @@ class PermissionGate:
         if choice != "once":
             return PermissionDecision(False, DENIED_BY_USER)
         return PermissionDecision(True, asked=True)
+
+    async def grant_run(
+        self,
+        commission_id: str,
+        category: str,
+        *,
+        scope: GrantScope,
+        still_valid: Callable[[], bool] | None = None,
+    ) -> bool:
+        """Cover the rest of a commission's run for a category the user just turned on, if it asks once.
+
+        For the keyboard and mouse and the browser (``RUN_SCOPED_CATEGORIES``):
+        a task agent asked the user to turn the group on and was allowed, and
+        asking again at its very next call would put the same question twice.
+        Only a category on ``first_ask`` is covered; ``deny`` and
+        ``always_ask`` stay as the settings say, and a setting tightened
+        afterwards withdraws what is granted here like any run loan.
+
+        ``still_valid`` is what the caller took before it asked the user
+        (``PermissionGate.current_run`` and ``current_rules``): nothing is
+        granted on an answer that no longer stands, neither when this is
+        called nor after the waits in it. The settings are looked at again
+        after the lineage is read, a tightening put back included.
+        Returns whether a grant was made.
+        """
+        if category not in RUN_SCOPED_CATEGORIES or not scope.registered() or not scope.provider:
+            return False
+        if still_valid is not None and not still_valid():
+            return False
+        work = self._work.setdefault(commission_id, object())
+        lookup = object()
+        ended = self._lineage_lookups[lookup] = set()
+        slot = _slot(category, None)
+        try:
+            if await self._store.mode(category) != "first_ask":
+                return False
+            revision = self._store.revision(*slot)
+            lineage = await self._lineage(commission_id, set(), verified=True)
+            if await self._store.mode(category) != "first_ask" or self._store.revision(*slot) != revision:
+                return False
+        finally:
+            del self._lineage_lookups[lookup]
+        if (
+            not lineage
+            or not ended.isdisjoint(lineage)
+            or self._work.get(commission_id) is not work
+            or not scope.registered()
+            or (still_valid is not None and not still_valid())
+        ):
+            return False
+        branch = tuple(lineage)
+        self._record_loan(commission_id, branch[-1], slot, scope, "run", branch=branch)
+        return True
 
     async def _decide_again(self, category: str, key: str | None) -> PermissionDecision:
         """Decide a request the user approved after the settings changed under the question.

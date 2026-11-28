@@ -1,0 +1,73 @@
+/* Shared knowledge table chrome. Imported through scoped SFC styles only. */
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.toolbar {
+  justify-content: flex-start;
+  margin-bottom: 14px;
+  padding: 12px;
+  border: 1px solid var(--knowledge-line);
+  border-radius: var(--radius-panel);
+  background: var(--knowledge-surface-muted);
+}
+
+.toolbar .el-select {
+  width: min(220px, 100%);
+}
+
+.toolbar .el-input {
+  flex: 1 1 320px;
+  min-width: 0;
+  max-width: 520px;
+}
+
+.toolbar__hint {
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+}
+
+.toolbar__end {
+  margin-left: auto;
+}
+
+.table-shell {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--knowledge-line);
+  border-radius: var(--radius-panel);
+  background: var(--knowledge-surface);
+}
+
+.table-shell :deep(.el-table) {
+  --el-table-border-color: var(--knowledge-line);
+  --el-table-header-bg-color: var(--knowledge-surface-muted);
+  --el-table-row-hover-bg-color: var(--el-color-primary-light-9);
+}
+
+.table-shell :deep(.el-table__inner-wrapper::before) {
+  display: none;
+}
+
+.table-shell :deep(.el-table th.el-table__cell) {
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+@media (max-width: 640px) {
+  .toolbar .el-input,
+  .toolbar .el-select,
+  .toolbar .el-button {
+      width: 100%;
+      max-width: none;
+    }
+
+  .toolbar__end {
+      margin-left: 0;
+    }
+}

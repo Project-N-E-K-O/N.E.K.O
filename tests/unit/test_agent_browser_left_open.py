@@ -888,7 +888,7 @@ async def test_switching_the_master_switch_off_drops_what_was_kept_of_the_main_d
 
 
 # ---------------------------------------------------------------------------
-# The last capability switch went off: NekoPower is off as with the master switch off
+# The last capability switch went off: NekoPower stays on with the master switch alone
 # ---------------------------------------------------------------------------
 
 
@@ -902,19 +902,29 @@ def _kept_for_task_agents(monkeypatch: pytest.MonkeyPatch) -> Any:
     return kept
 
 
-async def test_switching_the_last_capability_switch_off_drops_what_was_kept_of_the_main_dialogue_for_task_agents(
+async def test_switching_the_last_capability_switch_off_keeps_what_was_kept_while_the_master_switch_is_on(
     stage: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     kept = _kept_for_task_agents(monkeypatch)
 
-    # Only the browser tools are on (the fixture): with them off NekoPower is off, whatever the
-    # master switch says.
+    # Only the browser tools are on (the fixture): NekoPower is on with the master switch
+    # alone, so with them off the task agents still start from what was said.
     await api_routes.set_agent_flags({"browser_use_enabled": False, "_persist_intent": False})
     await stage.settled()
 
-    # Then and there, with no message of the main dialogue coming by: nothing from before is
-    # handed to a task agent when a switch is put on again.
     assert stage.state.analyzer_enabled is True
+    assert [turn.text for turn in kept.recent("Lan")] == ["sort the photos please"]
+
+
+async def test_with_the_master_switch_off_what_was_kept_is_dropped_whatever_the_capability_switches_say(
+    stage: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    kept = _kept_for_task_agents(monkeypatch)
+    stage.state.agent_flags["browser_use_enabled"] = True
+    monkeypatch.setattr(stage.state, "analyzer_enabled", False)
+
+    api_runtime.forget_turns_if_nekopower_is_off()
+
     assert kept.recent("Lan") == []
 
 
@@ -932,7 +942,7 @@ async def test_switching_one_of_two_capability_switches_off_keeps_what_was_kept_
     assert [turn.text for turn in kept.recent("Lan")] == ["sort the photos please"]
 
 
-async def test_the_keyboard_and_mouse_found_unusable_drops_what_was_kept_when_theirs_was_the_last_switch_on(
+async def test_the_keyboard_and_mouse_found_unusable_keeps_what_was_kept_while_the_master_switch_is_on(
     stage: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     kept = _kept_for_task_agents(monkeypatch)
@@ -950,10 +960,10 @@ async def test_the_keyboard_and_mouse_found_unusable_drops_what_was_kept_when_th
         await asyncio.sleep(0)
 
     assert stage.state.agent_flags["computer_use_enabled"] is False
-    assert kept.recent("Lan") == []
+    assert [turn.text for turn in kept.recent("Lan")] == ["sort the photos please"]
 
 
-async def test_user_plugins_that_do_not_come_up_drop_what_was_kept_when_theirs_was_the_last_switch_on(
+async def test_user_plugins_that_do_not_come_up_keep_what_was_kept_while_the_master_switch_is_on(
     stage: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     stage.state.agent_flags.update({"browser_use_enabled": False})
@@ -977,7 +987,7 @@ async def test_user_plugins_that_do_not_come_up_drop_what_was_kept_when_theirs_w
     await asyncio.wait(pending, timeout=10.0)
 
     assert stage.state.agent_flags["user_plugin_enabled"] is False
-    assert kept.recent("Lan") == []
+    assert [turn.text for turn in kept.recent("Lan")] == ["sort the photos please"]
 
 
 class _AsItWas:
@@ -999,7 +1009,7 @@ class _AsItWas:
         return self.answer
 
 
-async def test_what_was_kept_is_gone_before_the_plugins_that_were_not_found_are_stopped(
+async def test_what_was_kept_stays_while_the_plugins_that_were_not_found_are_stopped(
     stage: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     stage.state.agent_flags.update({"browser_use_enabled": False})
@@ -1027,11 +1037,11 @@ async def test_what_was_kept_is_gone_before_the_plugins_that_were_not_found_are_
     await asyncio.wait(pending, timeout=10.0)
 
     assert stage.state.agent_flags["user_plugin_enabled"] is False
-    assert as_it_was.seen == [[]]
-    assert kept.recent("Lan") == []
+    assert as_it_was.seen == [["sort the photos please"]]
+    assert [turn.text for turn in kept.recent("Lan")] == ["sort the photos please"]
 
 
-async def test_what_was_kept_is_gone_before_a_switch_that_takes_the_place_of_the_last_one_is_looked_into(
+async def test_what_was_kept_stays_while_a_switch_takes_the_place_of_the_last_one(
     stage: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     kept = _kept_for_task_agents(monkeypatch)
@@ -1047,8 +1057,8 @@ async def test_what_was_kept_is_gone_before_a_switch_that_takes_the_place_of_the
     await stage.settled()
 
     assert stage.state.agent_flags["browser_use_enabled"] is True
-    assert as_it_was.seen == [[]]
-    assert kept.recent("Lan") == []
+    assert as_it_was.seen == [["sort the photos please"]]
+    assert [turn.text for turn in kept.recent("Lan")] == ["sort the photos please"]
 
 
 _CAPABILITY_SWITCHES = {"computer_use_enabled", "browser_use_enabled", "user_plugin_enabled"}
@@ -1357,3 +1367,202 @@ def test_a_capability_switch_is_put_off_in_one_place_which_looks_whether_nekopow
     # drops what was kept in the same breath.
     assert capability == ["_shared.py:_put_switch_off"]
     assert sorted(master) == [("api_routes.py:admin_control", [True]), ("api_routes.py:agent_command", [True])]
+
+
+# ---------------------------------------------------------------------------
+# A switch is not written for an approval that stopped standing while the checks were awaited (#4182 review)
+# ---------------------------------------------------------------------------
+
+
+def _approval(stage: Any) -> Any:
+    """A predicate a test can turn false: the answer a task agent's request stands on."""
+    standing = [True]
+
+    def still_valid() -> bool:
+        return standing[0]
+
+    still_valid.standing = standing  # type: ignore[attr-defined]
+    return still_valid
+
+
+@pytest.mark.parametrize("then_invalid", [False, True])
+async def test_the_browser_switch_is_written_only_while_the_approval_stands(
+    stage: Any, monkeypatch: pytest.MonkeyPatch, then_invalid: bool
+) -> None:
+    stage.state.agent_flags["browser_use_enabled"] = False
+    approval = _approval(stage)
+
+    def availability() -> tuple[bool, str]:
+        # Runs on the thread the route waits on: the user's answer stops standing meanwhile.
+        approval.standing[0] = not then_invalid
+        return True, ""
+
+    monkeypatch.setattr(api_routes, "_browser_availability", availability)
+
+    await api_routes.set_agent_flags(
+        {"browser_use_enabled": True, "_persist_intent": False, "_still_valid": approval}
+    )
+    await stage.settled()
+
+    assert stage.state.agent_flags["browser_use_enabled"] is (not then_invalid)
+    assert stage.state.notification is None
+
+
+@pytest.mark.parametrize("then_invalid", [False, True])
+async def test_the_keyboard_and_mouse_switch_is_written_only_while_the_approval_stands(
+    stage: Any, monkeypatch: pytest.MonkeyPatch, then_invalid: bool
+) -> None:
+    approval = _approval(stage)
+
+    def availability() -> dict[str, Any]:
+        approval.standing[0] = not then_invalid
+        return {"enabled": True, "ready": True, "reasons": []}
+
+    monkeypatch.setattr(api_routes, "_keyboard_mouse_availability", availability)
+
+    await api_routes.set_agent_flags(
+        {"computer_use_enabled": True, "_persist_intent": False, "_still_valid": approval}
+    )
+    await stage.settled()
+
+    assert stage.state.agent_flags["computer_use_enabled"] is (not then_invalid)
+    assert stage.state.notification is None
+
+
+async def test_a_request_whose_approval_has_stopped_standing_touches_nothing(stage: Any) -> None:
+    state = stage.state
+    state.agent_flags.update({"browser_use_enabled": False, "computer_use_enabled": False, "user_plugin_enabled": False})
+    before = (
+        state.browser_use_lifecycle_seq,
+        state.computer_use_switch_seq,
+        state.user_plugin_lifecycle_seq,
+    )
+
+    await api_routes.set_agent_flags(
+        {
+            "browser_use_enabled": True,
+            "computer_use_enabled": True,
+            "user_plugin_enabled": True,
+            "_persist_intent": False,
+            "_still_valid": lambda: False,
+        }
+    )
+    await stage.settled()
+
+    # Neither a switch nor the counters later toggles are compared with: a stale request overtakes nobody.
+    assert (state.browser_use_lifecycle_seq, state.computer_use_switch_seq, state.user_plugin_lifecycle_seq) == before
+    assert [state.agent_flags[key] for key in ("browser_use_enabled", "computer_use_enabled", "user_plugin_enabled")] == [
+        False,
+        False,
+        False,
+    ]
+
+
+# ---------------------------------------------------------------------------
+# A request for a task agent that fell does not swallow a toggle the user made while it waited (#4182 review)
+# ---------------------------------------------------------------------------
+
+_KINDS = {
+    "browser": ("browser_use_enabled", "_browser_availability", (True, "")),
+    "keyboard_mouse": ("computer_use_enabled", "_keyboard_mouse_availability", {"enabled": True, "ready": True, "reasons": []}),
+}
+
+
+class _TwoChecks:
+    """Holds the availability checks of two requests on threads until the test lets each of them go."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch, symbol: str, answer: Any) -> None:
+        import threading
+
+        self.lock = threading.Lock()
+        self.order: list[str] = []
+        self.entered = {"first": threading.Event(), "second": threading.Event()}
+        self.gates = {"first": threading.Event(), "second": threading.Event()}
+
+        def availability() -> Any:
+            with self.lock:
+                who = "first" if not self.order else "second"
+                self.order.append(who)
+            self.entered[who].set()
+            assert self.gates[who].wait(5.0)
+            return answer
+
+        monkeypatch.setattr(api_routes, symbol, availability)
+
+    async def entered_check(self, who: str) -> None:
+        assert await asyncio.to_thread(self.entered[who].wait, 5.0)
+
+    def release(self, who: str) -> None:
+        self.gates[who].set()
+
+
+@pytest.mark.parametrize("kind", sorted(_KINDS))
+@pytest.mark.parametrize("task_agent_finishes", ["first", "last"])
+async def test_a_request_for_a_task_agent_that_fell_does_not_swallow_the_users_toggle(
+    stage: Any, monkeypatch: pytest.MonkeyPatch, kind: str, task_agent_finishes: str
+) -> None:
+    flag, symbol, answer = _KINDS[kind]
+    stage.state.agent_flags[flag] = False
+    checks = _TwoChecks(monkeypatch, symbol, answer)
+    approval = _approval(stage)
+    users = asyncio.ensure_future(api_routes.set_agent_flags({flag: True, "_persist_intent": False}))
+    await checks.entered_check("first")
+    agents = asyncio.ensure_future(
+        api_routes.set_agent_flags({flag: True, "_persist_intent": False, "_still_valid": approval})
+    )
+    await checks.entered_check("second")
+    # The answer the task agent's request stands on falls while both wait for their checks.
+    approval.standing[0] = False
+
+    if task_agent_finishes == "first":
+        checks.release("second")
+        await agents
+        checks.release("first")
+        await users
+    else:
+        checks.release("first")
+        await users
+        checks.release("second")
+        await agents
+    await stage.settled()
+
+    assert stage.state.agent_flags[flag] is True
+
+
+@pytest.mark.parametrize("kind", sorted(_KINDS))
+async def test_a_later_toggle_of_the_user_still_overtakes_a_request_for_a_task_agent_that_waits(
+    stage: Any, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    flag, symbol, answer = _KINDS[kind]
+    stage.state.agent_flags[flag] = False
+    checks = _TwoChecks(monkeypatch, symbol, answer)
+    approval = _approval(stage)
+    agents = asyncio.ensure_future(
+        api_routes.set_agent_flags({flag: True, "_persist_intent": False, "_still_valid": approval})
+    )
+    await checks.entered_check("first")
+
+    # The user switches it off at the panel while the request waits; the answer still stands.
+    await api_routes.set_agent_flags({flag: False, "_persist_intent": False})
+    checks.release("first")
+    await agents
+    await stage.settled()
+
+    assert stage.state.agent_flags[flag] is False
+
+
+async def test_the_switch_a_request_for_a_task_agent_wrote_takes_its_place_in_the_order_of_the_browser_lifecycle(
+    stage: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stage.state.agent_flags["browser_use_enabled"] = False
+    monkeypatch.setattr(api_routes, "_browser_availability", lambda: (True, ""))
+    before = stage.state.browser_use_lifecycle_seq
+
+    await api_routes.set_agent_flags(
+        {"browser_use_enabled": True, "_persist_intent": False, "_still_valid": lambda: True}
+    )
+    await stage.settled()
+
+    # A close meant for an earlier setting (``expected_lifecycle_seq=before``) finds it is not its own.
+    assert stage.state.agent_flags["browser_use_enabled"] is True
+    assert stage.state.browser_use_lifecycle_seq > before

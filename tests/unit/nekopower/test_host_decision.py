@@ -505,8 +505,10 @@ def test_every_system_prompt_of_the_task_brain_opens_as_the_analyzers_did(table,
     from config.prompts import prompts_nekopower_brain
 
     # The phrase the analyzer's prompts opened with in every language, untranslated;
-    # the paired block markers of the other prompts would do as well.
-    phrase = "automation assessment agent"
+    # the paired block markers of the other prompts would do as well. The free tier
+    # takes the phrase only with the comma after it: the Spanish coarse screen,
+    # which had none, was turned away on every request (2026-11-26).
+    phrase = "automation assessment agent, "
     prompts = getattr(prompts_nekopower_brain, table)
 
     assert set(prompts) == set(LANGUAGES)

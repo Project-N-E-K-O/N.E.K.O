@@ -5393,7 +5393,8 @@ class TaskAgentManager(TreeWork):
                     return
                 # (Writing it asks the ledger once more, and again where
                 # that fails: looked at there too, for what is said to the
-                # session in that while.)
+                # session in that while. What is said after that look waits
+                # until it is written: ``hold``.)
                 ended = await self._end(
                     commission_id,
                     "done",
@@ -5401,6 +5402,7 @@ class TaskAgentManager(TreeWork):
                     text=text,
                     result_summary=self._summary(text),
                     unless=went_on,
+                    hold=True,
                 )
                 if not ended and went_on():
                     session.held_end = event
@@ -6446,6 +6448,7 @@ class TaskAgentManager(TreeWork):
         quiet: bool = False,
         suggested_delivery: Any = None,
         unless: Callable[[], bool] | None = None,
+        hold: bool = False,
         **values: Any,
     ) -> bool:
         """Move a commission to a final status and tell whoever commissioned it.
@@ -6465,6 +6468,13 @@ class TaskAgentManager(TreeWork):
         so, nothing is changed. For the end of a run that leaves its
         commission done, which is not to end it under a run that began in
         that while.
+
+        ``hold``: from that look until the change is written, what is said
+        to the commission waits (``_nothing_more_said``), and goes by how
+        it stands then. Said in between and sent on, it would start a run
+        that the end closes. A landing's own ends are within its hold
+        already and are not given one; held again within it, it is let go
+        once both are through.
         """
         # Asked again where it cannot be read this moment: given up on at
         # once, a run that is over would leave its commission at work.
@@ -6500,7 +6510,9 @@ class TaskAgentManager(TreeWork):
                 delivery_mode=delivery,
                 visibility=[] if quiet else None,
             )
-        moved = await self._reporter.transition(commission_id, target, reason=reason, report=report, **values)
+        # (Nothing is awaited between ``unless`` and here.)
+        with self._nothing_more_said(commission_id) if hold else contextlib.nullcontext():
+            moved = await self._reporter.transition(commission_id, target, reason=reason, report=report, **values)
         if not moved.applied or moved.commission is None:
             return False
         if moved.commission.parent_id is not None:
@@ -6869,8 +6881,9 @@ class TaskAgentManager(TreeWork):
             if session.closing or commission.status not in ("working", "waiting_user"):
                 return False
             if commission_id in self._landing_ends:
-                # What it changed is landed, and it is being put down as done this moment: whether
-                # more was said to it was looked at just before (``_landed_or_not``), and steered
+                # What it changed is landed (or its run is over, ``_end``'s ``hold``), and it is being
+                # put down as done this moment: whether more was said to it was looked at just before
+                # (``_landed_or_not``, ``unless``), and steered
                 # in now this would start a run of a commission that is done. Said to it as it
                 # stands once that is written (done, this is work of its own).
                 await self._landing_end_written(commission_id)
@@ -7806,6 +7819,20 @@ class TaskAgentManager(TreeWork):
         if ruled is not None:
             self._permissions.release_grant(ruled[1].grant_id)
 
+    async def _web_search_off_reason(self, commission_id: str) -> str:
+        """Return why web search is refused while the plugins are off, with how to ask the user to turn them on if it may."""
+        base = "web search is not available: plugins are switched off"
+        if (
+            self._gateway is not None
+            and self._gateway.can_enable_for(commission_id)
+            and not await self._permissions.forbidden("plugin_entry")
+        ):
+            return (
+                f"{base}. If this task needs plugins, call capability_call with name \"enable_capability\" "
+                'and arguments {"capability": "plugins"} to ask the user to turn them on.'
+            )
+        return base
+
     async def _search_permission(self, commission: Commission) -> PermissionDecision:
         """Decide whether the task agent may send this batch of web queries.
 
@@ -7813,7 +7840,7 @@ class TaskAgentManager(TreeWork):
         ``plugin_entry`` permission apply as they do through the gateway.
         """
         if not self._registry.plugins_enabled():
-            return PermissionDecision(False, "web search is not available: plugins are switched off")
+            return PermissionDecision(False, await self._web_search_off_reason(commission.id))
         return await self._permissions.check(
             commission.id,
             "plugin_entry",
@@ -7922,7 +7949,7 @@ class TaskAgentManager(TreeWork):
             decision = await self._search_permission(commission)
         refusal = decision.reason
         if not self._registry.plugins_enabled():
-            refusal = "web search is not available: plugins are switched off"
+            refusal = refusal if (not decision.allow and refusal) else await self._web_search_off_reason(commission.id)
         elif decision.allow and not self._permissions.grant_active(decision.grant_id):
             refusal = DENIED_BY_SETTINGS
         if refusal is not None:
