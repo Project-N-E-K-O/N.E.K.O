@@ -120,6 +120,7 @@ const messages: PluginConsentMessages = {
     scanFileSites: "{n} local(is)",
     allow: "Permitir",
     refuse: "Não permitir",
+    undecide: "Voltar para sem decisão",
     lastUse: "Último uso: {time}",
     wouldBlock: "Seria bloqueado (por enquanto só registrado)",
     unused30d: "Sem uso há 30 dias",
@@ -180,6 +181,7 @@ const messages: PluginConsentMessages = {
       unknown: "desconhecido",
     },
     errors: {
+      rescanFailed: "Não foi possível iniciar a análise novamente. Tente mais tarde.",
       manifestUnavailable: "Não é possível ler a declaração do plugin agora. Tente novamente mais tarde.",
       manifestUnusable: "O arquivo de declaração do plugin não pode ser usado; só “Só enquanto eu uso” é possível.",
       backgroundNotDeclared: "O plugin não declara uso em segundo plano desta permissão; só “Só enquanto eu uso” é possível.",

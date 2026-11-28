@@ -16,7 +16,7 @@
         type="success"
         :icon="VideoPlay"
         @click="handleStart"
-        :loading="loading"
+        :loading="busy"
       >
         {{ t('plugins.start') }}
       </el-button>
@@ -25,7 +25,7 @@
         type="warning"
         :icon="VideoPause"
         @click="handleStop"
-        :loading="loading"
+        :loading="busy"
       >
         {{ t('plugins.stop') }}
       </el-button>
@@ -33,7 +33,7 @@
         type="primary"
         :icon="Refresh"
         @click="handleReload"
-        :loading="loading"
+        :loading="busy"
       >
         {{ t('plugins.reload') }}
       </el-button>
@@ -49,10 +49,10 @@ import { VideoPlay, VideoPause, Refresh, Monitor } from '@element-plus/icons-vue
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { usePluginStore } from '@/stores/plugin'
 import { usePluginStartGate } from '@/composables/usePluginStartGate'
+import { showActionError, usePluginStopAction } from '@/composables/usePluginStopAction'
 import { resolveLocalizedText } from '@/utils/i18nLabel'
 import { isSafeAppRoute, isSafeSameTabUrl, openExternalUrl } from '@/utils/openExternal'
 import { isOpenUiNavigationAction } from '@/utils/pluginListActions'
-import { formatHttpError } from '@/utils/request'
 import { PLUGIN_DETAIL_REFRESH_HOSTED_PANELS_KEY } from '@/views/pluginDetailHostedPanelRefresh'
 
 interface Props {
@@ -92,16 +92,6 @@ const uiActionLabel = computed(() =>
   resolveLocalizedText(uiAction.value?.label, locale.value, t('plugins.ui.open')),
 )
 
-function showActionError(error: any, fallbackMessage: string) {
-  const status = error?.response?.status
-  if (error?.request && !error?.response) {
-    return
-  }
-  if (typeof status === 'number' && ![401, 403, 404].includes(status)) {
-    return
-  }
-  ElMessage.error(formatHttpError(error) || fallbackMessage)
-}
 
 async function handleOpenUi() {
   if (!uiAction.value || uiDisabled.value) {
@@ -199,22 +189,10 @@ async function handleStart() {
   }
 }
 
-async function handleStop() {
-  try {
-    await ElMessageBox.confirm(t('messages.confirmStop'), t('common.confirm'), {
-      type: 'warning'
-    })
-    loading.value = true
-    await pluginStore.stop(props.pluginId)
-    void refreshHostedPanelsAfterRuntimeChange?.().catch(() => {})
-    ElMessage.success(t('messages.pluginStopped'))
-  } catch (error: any) {
-    if (error !== 'cancel') {
-      showActionError(error, t('messages.stopFailed'))
-    }
-  } finally {
-    loading.value = false
-  }
+const stopAction = usePluginStopAction()
+const busy = computed(() => loading.value || stopAction.stopping.value)
+function handleStop() {
+  return stopAction.stop(props.pluginId)
 }
 
 async function handleReload() {

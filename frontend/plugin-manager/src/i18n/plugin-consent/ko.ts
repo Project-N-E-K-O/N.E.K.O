@@ -120,6 +120,7 @@ const messages: PluginConsentMessages = {
     scanFileSites: "{n}곳",
     allow: "허용",
     refuse: "허용 안 함",
+    undecide: "결정 전으로 되돌리기",
     lastUse: "최근 사용: {time}",
     wouldBlock: "원래는 차단됨(지금은 기록만 함)",
     unused30d: "30일간 사용 안 함",
@@ -180,6 +181,7 @@ const messages: PluginConsentMessages = {
       unknown: "알 수 없음",
     },
     errors: {
+      rescanFailed: "다시 스캔을 시작하지 못했습니다. 잠시 후 다시 시도하세요.",
       manifestUnavailable: "지금은 플러그인 선언을 읽을 수 없습니다. 잠시 후 다시 시도하세요.",
       manifestUnusable: "플러그인 선언 파일을 사용할 수 없어 「내가 사용할 때만」만 선택할 수 있습니다.",
       backgroundNotDeclared: "플러그인이 이 권한의 백그라운드 사용을 선언하지 않아 「내가 사용할 때만」만 선택할 수 있습니다.",

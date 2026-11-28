@@ -122,6 +122,7 @@ const messages = {
     scanFileSites: "{n} place(s)",
     allow: "Allow",
     refuse: "Don't allow",
+    undecide: "Back to undecided",
     lastUse: "Last use: {time}",
     wouldBlock: "Would be blocked (only recorded for now)",
     unused30d: "Unused for 30 days",
@@ -182,6 +183,7 @@ const messages = {
       unknown: "unknown",
     },
     errors: {
+      rescanFailed: "The scan could not be started again. Please try again later.",
       manifestUnavailable: "The plugin's declaration cannot be read right now. Please try again later.",
       manifestUnusable: "The plugin's manifest cannot be used, so only “Only while I use it” is possible.",
       backgroundNotDeclared: "The plugin does not declare background use of this permission, so only “Only while I use it” is possible.",

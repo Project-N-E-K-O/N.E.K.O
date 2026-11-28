@@ -120,6 +120,7 @@ const messages: PluginConsentMessages = {
     scanFileSites: "{n} 箇所",
     allow: "許可",
     refuse: "許可しない",
+    undecide: "未決定に戻す",
     lastUse: "最終使用：{time}",
     wouldBlock: "本来ならブロック（現在は記録のみ）",
     unused30d: "30 日間未使用",
@@ -180,6 +181,7 @@ const messages: PluginConsentMessages = {
       unknown: "不明",
     },
     errors: {
+      rescanFailed: "スキャンを再開できませんでした。後でもう一度お試しください。",
       manifestUnavailable: "プラグインの宣言を今は読み込めません。後でもう一度お試しください。",
       manifestUnusable: "プラグインの宣言ファイルが使えないため「使用中のみ」しか選べません。",
       backgroundNotDeclared: "プラグインはこの権限のバックグラウンド使用を宣言していないため「使用中のみ」しか選べません。",

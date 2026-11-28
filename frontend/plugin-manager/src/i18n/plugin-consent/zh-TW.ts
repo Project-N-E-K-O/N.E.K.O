@@ -119,6 +119,7 @@ const messages: PluginConsentMessages = {
     scanFileSites: "{n} 處",
     allow: "允許",
     refuse: "不允許",
+    undecide: "改回未決定",
     lastUse: "最近一次：{time}",
     wouldBlock: "本會攔下（目前只記錄）",
     unused30d: "30 天未使用",
@@ -179,6 +180,7 @@ const messages: PluginConsentMessages = {
       unknown: "未知",
     },
     errors: {
+      rescanFailed: "重新掃描沒能開始，請稍後再試。",
       manifestUnavailable: "外掛的聲明暫時讀不到，請稍後再試。",
       manifestUnusable: "外掛的聲明檔案不可用，只能選「僅在我使用時」。",
       backgroundNotDeclared: "外掛沒聲明要在背景使用這項權限，只能選「僅在我使用時」。",

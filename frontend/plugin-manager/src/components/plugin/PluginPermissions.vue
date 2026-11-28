@@ -24,8 +24,9 @@
         <el-button
           v-if="running"
           class="perm-summary__stop"
-          :loading="stopping"
-          @click="stopPluginNow"
+          :loading="stopAction.stopping.value"
+          data-test="stop-plugin"
+          @click="stopAction.stop(pluginId)"
         >
           {{ t('pluginConsent.tab.stop') }}
         </el-button>
@@ -33,6 +34,17 @@
 
       <p v-for="notice in notices" :key="notice.key" class="perm-notice" :data-test="notice.key">
         {{ notice.text }}
+        <el-button
+          v-if="notice.rescan"
+          size="small"
+          text
+          type="primary"
+          :loading="rescanning"
+          data-test="rescan"
+          @click="rescan"
+        >
+          {{ t('pluginConsent.retry') }}
+        </el-button>
       </p>
 
       <div class="perm-table">
@@ -163,6 +175,16 @@
                   >
                     {{ t('pluginConsent.tab.refuse') }}
                   </el-button>
+                  <!-- Disclosure only: it cannot be refused, but an approval can be taken back. -->
+                  <el-button
+                    v-else-if="row.state === 'granted'"
+                    size="small"
+                    :disabled="busy !== null"
+                    :data-test="`undecide-${row.permission}`"
+                    @click="save(row, () => clearPermission(pluginId, row.permission))"
+                  >
+                    {{ t('pluginConsent.tab.undecide') }}
+                  </el-button>
                 </span>
               </div>
               <div class="perm-cell__scan">
@@ -255,7 +277,10 @@
             <pre v-if="manifestText" class="perm-dev__toml">{{ manifestText }}</pre>
             <p v-else class="perm-muted">{{ t('pluginConsent.tab.developer.manifestNone') }}</p>
             <ul v-if="devLocations.length" class="perm-dev__locations">
-              <li v-for="item in devLocations" :key="item"><code>{{ item }}</code></li>
+              <li v-for="(item, index) in devLocations" :key="index"><code>{{ item }}</code></li>
+            </ul>
+            <ul v-if="scanWarnings.length" class="perm-dev__locations" data-test="scan-warnings">
+              <li v-for="(item, index) in scanWarnings" :key="index">{{ item }}</li>
             </ul>
           </div>
           <p class="perm-dev__footer" data-test="source-line">
@@ -291,6 +316,8 @@ import {
   type PermissionPanel,
 } from '@/api/pluginPermissions'
 import { usePluginStore } from '@/stores/plugin'
+import { usePluginConsentState } from '@/stores/pluginConsentState'
+import { usePluginStopAction } from '@/composables/usePluginStopAction'
 import PluginLegacyConsentBanner from './PluginLegacyConsentBanner.vue'
 import { capabilityMessageKey } from '@/utils/pluginCapabilities'
 import {
@@ -321,6 +348,8 @@ import {
 const props = defineProps<{ pluginId: string }>()
 const { t, te } = useI18n()
 const store = usePluginStore()
+const consentState = usePluginConsentState()
+const stopAction = usePluginStopAction()
 
 /** Disclosure only: the server takes no refusal for it (back to undecided instead). */
 const NOT_REFUSABLE = new Set(['plugin_sdk.main_agent.messages:push'])
@@ -331,7 +360,7 @@ const audit = ref<PermissionAuditPage | null>(null)
 const pending = ref<PendingPermissions | null>(null)
 const loading = ref(false)
 const busy = ref<string | null>(null)
-const stopping = ref(false)
+const rescanning = ref(false)
 const expanded = reactive(new Set<string>())
 const openTiers = reactive(new Set<string>())
 
@@ -357,7 +386,12 @@ const SCAN_POLL_MS = 5000
 let loadSeq = 0
 /** Saves in flight: a load answered meanwhile may predate them. */
 let saving = 0
+/** A load was dropped during a save: it runs again once the save is done. */
+let reloadAfterSave = false
 let pollTimer: ReturnType<typeof setTimeout> | null = null
+/** Failed refreshes in a row: the next poll waits longer (up to a minute). */
+let failedPolls = 0
+const MAX_POLL_MS = 60000
 let unmounted = false
 
 function stopPolling() {
@@ -377,12 +411,26 @@ async function load() {
       optional(getPendingPermissions()),
     ])
     // A later load (or a save) owns the view now.
-    if (seq !== loadSeq || unmounted || saving > 0) return
-    panel.value = validPanel(nextPanel) ? nextPanel : null
-    catalog.value = validCatalog(nextCatalog) ? nextCatalog : null
-    audit.value = validHistory(nextAudit) ? nextAudit : null
-    pending.value = validPending(nextPending) ? nextPending : null
-    if (panel.value && scanPending(panel.value)) pollTimer = setTimeout(load, SCAN_POLL_MS)
+    if (seq !== loadSeq || unmounted) return
+    if (saving > 0) {
+      // Its request may have reached the server before the save: not trusted,
+      // and not lost either (e.g. a consent change that asked for it).
+      reloadAfterSave = true
+      return
+    }
+    // A refresh that fails keeps what is shown: only the first load can fail the tab.
+    if (validPanel(nextPanel)) {
+      panel.value = nextPanel
+      failedPolls = 0
+    } else if (panel.value) {
+      failedPolls++
+    }
+    if (validCatalog(nextCatalog)) catalog.value = nextCatalog
+    if (validHistory(nextAudit)) audit.value = nextAudit
+    if (validPending(nextPending)) pending.value = nextPending
+    if (panel.value && scanPending(panel.value)) {
+      pollTimer = setTimeout(load, Math.min(SCAN_POLL_MS * 2 ** failedPolls, MAX_POLL_MS))
+    }
   } finally {
     if (seq === loadSeq) loading.value = false
   }
@@ -441,13 +489,18 @@ function formatDate(value: string) {
 const notices = computed(() => {
   const p = panel.value
   if (!p) return []
-  const out: Array<{ key: string; text: string }> = []
+  const out: Array<{ key: string; text: string; rescan?: boolean }> = []
   if (p.manifest === 'unavailable')
     out.push({ key: 'notice-unavailable', text: t('pluginConsent.tab.notices.manifestUnavailable') })
   if (p.manifest === 'unusable')
     out.push({ key: 'notice-unusable', text: t('pluginConsent.tab.notices.manifestUnusable') })
   const scan = scanNotice(p)
-  if (scan) out.push({ key: `notice-scan-${scan}`, text: t(`pluginConsent.tab.notices.scan.${scan}`) })
+  if (scan)
+    out.push({
+      key: `notice-scan-${scan}`,
+      text: t(`pluginConsent.tab.notices.scan.${scan}`),
+      rescan: scan === 'failed' || scan === 'partial',
+    })
   if (p.grants_reset)
     out.push({
       key: 'notice-reset',
@@ -457,6 +510,27 @@ const notices = computed(() => {
     })
   return out
 })
+
+/** Warnings of the last scan (budget, unreadable files), from the consent record. */
+const scanWarnings = computed(() =>
+  (consentState.details[props.pluginId]?.analysis.warnings ?? []).map((warning) => {
+    const key = `pluginConsent.warnings.${warning.code}`
+    const text = te(key) ? t(key) : warning.code
+    return warning.file ? `${text} (${warning.file})` : text
+  }),
+)
+
+async function rescan() {
+  rescanning.value = true
+  try {
+    await consentState.analyze(props.pluginId)
+  } catch {
+    ElMessage.error(t('pluginConsent.tab.errors.rescanFailed'))
+  } finally {
+    rescanning.value = false
+    await load()
+  }
+}
 
 const manifestText = computed(() => permissionsToml(panel.value?.developer.manifest_permissions ?? null))
 /** Shown once the scan answered, also to say that nothing was hard to see. */
@@ -524,18 +598,31 @@ async function save(row: PanelRow, run: () => Promise<PermissionPanel>) {
   loading.value = false
   try {
     const next = await run()
-    if (validPanel(next)) panel.value = next
-    // Uses while undecided count from the last answer: they change with it.
-    const nextPending = await optional(getPendingPermissions())
-    pending.value = validPending(nextPending) ? nextPending : pending.value
+    if (validPanel(next)) {
+      panel.value = next
+      failedPolls = 0
+    }
+    // Uses while undecided count from the last answer, and the last-use
+    // coverage may have moved: both are read again.
+    const [nextPending, nextAudit] = await Promise.all([
+      optional(getPendingPermissions()),
+      optional(getPermissionAuditHistory(props.pluginId)),
+    ])
+    if (validPending(nextPending)) pending.value = nextPending
+    if (validHistory(nextAudit)) audit.value = nextAudit
   } catch (error) {
     ElMessage.error(t(decisionErrorKey(error)))
   } finally {
     saving--
     busy.value = null
-    // Keep following a scan that is still running, also after a failed save.
-    if (!unmounted && saving === 0 && pollTimer === null && panel.value && scanPending(panel.value)) {
-      pollTimer = setTimeout(load, SCAN_POLL_MS)
+    if (!unmounted && saving === 0) {
+      if (reloadAfterSave) {
+        reloadAfterSave = false
+        void load()
+      } else if (pollTimer === null && panel.value && scanPending(panel.value)) {
+        // Keep following a scan that is still running, also after a failed save.
+        pollTimer = setTimeout(load, SCAN_POLL_MS)
+      }
     }
   }
 }
@@ -547,16 +634,6 @@ function toggle(row: PanelRow, on: boolean) {
   if (on) return decide(row, 'granted')
   if (!refusable(row)) return save(row, () => clearPermission(props.pluginId, row.permission))
   return decide(row, 'denied')
-}
-async function stopPluginNow() {
-  stopping.value = true
-  try {
-    await store.stop(props.pluginId)
-  } catch {
-    ElMessage.error(t('messages.stopFailed'))
-  } finally {
-    stopping.value = false
-  }
 }
 
 /** Condition, last use, uses while undecided and notes under a row. */

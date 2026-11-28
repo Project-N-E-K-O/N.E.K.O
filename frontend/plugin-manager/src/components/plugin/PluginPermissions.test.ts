@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia } from 'pinia'
 import { createApp, defineComponent, h, nextTick } from 'vue'
 import { AxiosError, AxiosHeaders } from 'axios'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import PluginPermissions from './PluginPermissions.vue'
 import type { PermissionPanel } from '@/api/pluginPermissions'
 import { panel, row } from '@/utils/permissionTab.fixtures'
@@ -22,6 +22,11 @@ const pluginStore = vi.hoisted(() => ({
   stop: vi.fn().mockResolvedValue(undefined),
 }))
 vi.mock('@/api/pluginPermissions', () => api)
+const consentStore = vi.hoisted(() => ({
+  details: {} as Record<string, unknown>,
+  analyze: vi.fn().mockResolvedValue(undefined),
+}))
+vi.mock('@/stores/pluginConsentState', () => ({ usePluginConsentState: () => consentStore }))
 // The earlier plugin-wide consent line has its own tests.
 vi.mock('./PluginLegacyConsentBanner.vue', async () => {
   const { defineComponent, h } = await import('vue')
@@ -126,6 +131,7 @@ function failure(status: number, code: string) {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  consentStore.details = {}
   pluginStore.status = 'running'
   vi.spyOn(ElMessage, 'error').mockImplementation(() => ({ close: () => {} }) as never)
 })
@@ -310,7 +316,7 @@ describe('PluginPermissions tab', () => {
   it('shows a source reset whose time is not saved yet', async () => {
     serve(panel({ grants_reset: { at: null, reason: 'source_changed' } }))
     const root = await mount()
-    expect(q(root, 'notice-reset')!.textContent).toBe('pluginConsent.tab.notices.grantsResetPending')
+    expect(q(root, 'notice-reset')!.textContent!.trim()).toBe('pluginConsent.tab.notices.grantsResetPending')
   })
 
   it('shows a source reset with its date', async () => {
@@ -449,6 +455,115 @@ describe('PluginPermissions tab', () => {
     const root = await mount()
     expect(q(root, 'notice-scan-partial')).not.toBeNull()
     expect(q(root, 'blind-spots-none')).toBeNull()
+  })
+
+  it('takes back an approval of the disclosure-only item found by the scan', async () => {
+    const pushRow = (state: 'granted' | 'undecided') =>
+      row({ permission: PUSH, tier: 'medium', enforced: false, declared: null, reconcile: 'undeclared', state })
+    serve(panel({ rows: [pushRow('granted')] }))
+    api.clearPermission.mockResolvedValue(panel({ rows: [pushRow('undecided')] }))
+    const root = await mount()
+    expect(q(root, `refuse-${PUSH}`)).toBeNull()
+    q(root, `undecide-${PUSH}`)!.click()
+    await flush()
+    expect(api.clearPermission).toHaveBeenCalledWith('demo', PUSH)
+    expect(q(root, `undecide-${PUSH}`)).toBeNull()
+  })
+
+  it('keeps the table when a refresh fails and polls again later, waiting longer', async () => {
+    vi.useFakeTimers()
+    try {
+      const running = panel({ analysis: { ...panel().analysis, status: 'running' } })
+      serve(running)
+      const root = await mount()
+      api.getPermissionPanel.mockRejectedValue(new Error('offline'))
+      await vi.advanceTimersByTimeAsync(5000)
+      await flush()
+      expect(api.getPermissionPanel).toHaveBeenCalledTimes(2)
+      expect(q(root, `row-${NET}`)).not.toBeNull()
+      expect(root.textContent).not.toContain('pluginConsent.tab.loadFailed')
+      // Backoff: the next try waits 10 s, not 5 s.
+      await vi.advanceTimersByTimeAsync(5000)
+      expect(api.getPermissionPanel).toHaveBeenCalledTimes(2)
+      api.getPermissionPanel.mockResolvedValue(panel())
+      await vi.advanceTimersByTimeAsync(5000)
+      await flush()
+      expect(api.getPermissionPanel).toHaveBeenCalledTimes(3)
+      expect(q(root, 'notice-scan-pending')).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('asks before stopping the plugin, then reports it stopped', async () => {
+    serve(panel())
+    const confirm = vi.spyOn(ElMessageBox, 'confirm').mockRejectedValueOnce('cancel')
+    const success = vi.spyOn(ElMessage, 'success').mockImplementation(() => ({ close: () => {} }) as never)
+    const root = await mount()
+    q(root, 'stop-plugin')!.click()
+    await flush()
+    expect(confirm).toHaveBeenCalledWith('messages.confirmStop', 'common.confirm', { type: 'warning' })
+    expect(pluginStore.stop).not.toHaveBeenCalled()
+    confirm.mockResolvedValueOnce('confirm' as never)
+    q(root, 'stop-plugin')!.click()
+    await flush()
+    expect(pluginStore.stop).toHaveBeenCalledWith('demo')
+    expect(success).toHaveBeenCalledWith('messages.pluginStopped')
+  })
+
+  it('offers to scan again after a failed scan and loads the result', async () => {
+    serve(panel({ analysis: { ...panel().analysis, status: 'failed' } }))
+    const root = await mount()
+    api.getPermissionPanel.mockResolvedValue(panel())
+    q(root, 'rescan')!.click()
+    await flush()
+    expect(consentStore.analyze).toHaveBeenCalledWith('demo')
+    expect(q(root, 'notice-scan-failed')).toBeNull()
+  })
+
+  it('shows the warnings of the last scan in the developer details', async () => {
+    consentStore.details = {
+      demo: { analysis: { warnings: [{ code: 'budget_exceeded' }, { code: 'source_unreadable', file: 'a.py' }] } },
+    }
+    serve(panel())
+    const root = await mount()
+    const warnings = q(root, 'scan-warnings')!.textContent!
+    expect(warnings).toContain('pluginConsent.warnings.budget_exceeded')
+    expect(warnings).toContain('pluginConsent.warnings.source_unreadable (a.py)')
+  })
+
+  it('reads the last-use coverage again after a decision', async () => {
+    const undecided = panel({ rows: [row({ state: 'undecided', condition: null })] })
+    serve(undecided)
+    api.decidePermission.mockResolvedValue(undecided)
+    const root = await mount()
+    expect(q(root, `usage-${NET}`)!.querySelector('[data-test="unused30d"]')).not.toBeNull()
+    api.getPermissionAuditHistory.mockResolvedValue({
+      history: { since: null, covers_30d: false, last_use_since: localDay(2026, 11, 20), last_use_covers_30d: false },
+      lost_at: null,
+    })
+    q(root, `switch-${NET}`)!.dispatchEvent(new Event('change'))
+    await flush()
+    expect(api.getPermissionAuditHistory).toHaveBeenCalledTimes(2)
+    expect(q(root, `usage-${NET}`)!.textContent).toContain('pluginConsent.tab.unusedSince')
+  })
+
+  it('loads again after a save when a consent change asked for a load during it', async () => {
+    serve(panel({ rows: [row({ state: 'undecided', condition: null })] }))
+    const root = await mount()
+    let finishSave: (value: PermissionPanel) => void = () => {}
+    api.decidePermission.mockImplementation(() => new Promise((resolve) => { finishSave = resolve }))
+    q(root, `switch-${NET}`)!.dispatchEvent(new Event('change'))
+    await flush()
+    q(root, 'banner-changed')!.click()
+    await flush()
+    expect(api.getPermissionPanel).toHaveBeenCalledTimes(2)
+    // The consent change granted it; the save answered with an older view.
+    api.getPermissionPanel.mockResolvedValue(panel({ rows: [row({ state: 'granted', legacy_any: true })] }))
+    finishSave(panel({ rows: [row({ state: 'undecided', condition: null })] }))
+    await flush()
+    expect(api.getPermissionPanel).toHaveBeenCalledTimes(3)
+    expect(q(root, 'legacy')).not.toBeNull()
   })
 
   it('says when the scan failed and does not claim there are no blind spots', async () => {

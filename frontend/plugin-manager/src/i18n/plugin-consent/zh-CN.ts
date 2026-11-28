@@ -119,6 +119,7 @@ const messages: PluginConsentMessages = {
     scanFileSites: "{n} 处",
     allow: "允许",
     refuse: "不允许",
+    undecide: "改回未决定",
     lastUse: "最近一次：{time}",
     wouldBlock: "本会拦下（目前只记录）",
     unused30d: "30 天未使用",
@@ -179,6 +180,7 @@ const messages: PluginConsentMessages = {
       unknown: "未知",
     },
     errors: {
+      rescanFailed: "重新扫描没能开始，请稍后再试。",
       manifestUnavailable: "插件的声明暂时读不到，请稍后再试。",
       manifestUnusable: "插件的声明文件不可用，只能选「仅在我使用时」。",
       backgroundNotDeclared: "插件没声明要在后台使用这项权限，只能选「仅在我使用时」。",
