@@ -394,6 +394,17 @@ let failedPolls = 0
 const MAX_POLL_MS = 60000
 let unmounted = false
 
+/**
+ * Whether the panel is read again on its own: a scan still to come, a
+ * declaration held by a plugin operation for now, or a failed refresh.
+ */
+function needsRefresh(p: PermissionPanel | null): p is PermissionPanel {
+  return Boolean(p && (scanPending(p) || p.manifest === 'unavailable' || failedPolls > 0))
+}
+function nextPollMs() {
+  return Math.min(SCAN_POLL_MS * 2 ** failedPolls, MAX_POLL_MS)
+}
+
 function stopPolling() {
   if (pollTimer !== null) clearTimeout(pollTimer)
   pollTimer = null
@@ -415,7 +426,6 @@ async function load() {
       optional(getPermissionAuditHistory(props.pluginId)),
       optional(getPendingPermissions()),
     ])
-    // A later load (or a save) owns the view now.
     // A later load owns the view now; a save that started meanwhile asked for a new one.
     if (seq !== loadSeq || unmounted) return
     // A refresh that fails keeps what is shown: only the first load can fail the tab.
@@ -429,10 +439,15 @@ async function load() {
     // Without a current answer, nothing is claimed about unused time.
     audit.value = validHistory(nextAudit) ? nextAudit : null
     if (validPending(nextPending)) pending.value = nextPending
-    // Follow a running scan; retry a failed refresh too, waiting longer each time.
-    if (panel.value && (scanPending(panel.value) || failedPolls > 0)) {
-      pollTimer = setTimeout(load, Math.min(SCAN_POLL_MS * 2 ** failedPolls, MAX_POLL_MS))
+    else if (pending.value && validPanel(nextPanel)) {
+      // The old counts belong to the rows before this answer: not shown for them.
+      pending.value = {
+        ...pending.value,
+        first_use: pending.value.first_use.filter((use) => use.plugin_id !== props.pluginId),
+      }
     }
+    // Follow a running scan or a held declaration; retry a failed refresh too, waiting longer each time.
+    if (needsRefresh(panel.value)) pollTimer = setTimeout(load, nextPollMs())
   } finally {
     if (seq === loadSeq) loading.value = false
   }
@@ -606,6 +621,8 @@ async function save(row: PanelRow, run: () => Promise<PermissionPanel>) {
       panel.value = next
       failedPolls = 0
     }
+    // The plugin-wide consent line above reads the shared record: it may have moved too.
+    void consentState.load(props.pluginId).catch(() => undefined)
     // Uses while undecided count from the last answer, and the last-use
     // coverage may have moved: both are read again.
     const [nextPending, nextAudit] = await Promise.all([
@@ -633,10 +650,10 @@ async function save(row: PanelRow, run: () => Promise<PermissionPanel>) {
       if (reloadAfterSave) {
         reloadAfterSave = false
         void load()
-      } else if (pollTimer === null && panel.value && (scanPending(panel.value) || failedPolls > 0)) {
+      } else if (pollTimer === null && needsRefresh(panel.value)) {
         // Resume what the save paused: following a running scan, or retrying a
         // failed refresh (with its backoff), also after a failed save.
-        pollTimer = setTimeout(load, Math.min(SCAN_POLL_MS * 2 ** failedPolls, MAX_POLL_MS))
+        pollTimer = setTimeout(load, nextPollMs())
       }
     }
   }
@@ -668,14 +685,19 @@ const RowFacts = defineComponent({
               'select',
               {
                 value: row.condition ?? 'in_use',
-                disabled: lock !== null || busy.value !== null,
+                // Only "any time" is locked: narrowing to "while in use" stays possible.
+                disabled: busy.value !== null,
                 'aria-label': `${label(row.permission)} · ${t('pluginConsent.tab.condition.label')}`,
                 'data-test': `condition-select-${row.permission}`,
                 onChange: (event: Event) =>
                   decide(row, 'granted', (event.target as HTMLSelectElement).value as PermissionCondition),
               },
               (['in_use', 'anytime'] as const).map((value) =>
-                h('option', { value }, t(`pluginConsent.tab.condition.${value}`)),
+                h(
+                  'option',
+                  { value, disabled: value === 'anytime' && lock !== null },
+                  t(`pluginConsent.tab.condition.${value}`),
+                ),
               ),
             ),
             h('span', { class: 'perm-tag' }, t('pluginConsent.tab.condition.selfReported')),

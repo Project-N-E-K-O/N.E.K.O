@@ -25,6 +25,7 @@ vi.mock('@/api/pluginPermissions', () => api)
 const consentStore = vi.hoisted(() => ({
   details: {} as Record<string, unknown>,
   analyze: vi.fn().mockResolvedValue(undefined),
+  load: vi.fn().mockResolvedValue(undefined),
 }))
 vi.mock('@/stores/pluginConsentState', () => ({ usePluginConsentState: () => consentStore }))
 // The earlier plugin-wide consent line has its own tests.
@@ -176,7 +177,7 @@ describe('PluginPermissions tab', () => {
     expect(q(root, 'left-empty')!.textContent).toContain('pluginConsent.tab.manifestUnavailableCell')
     // "Any time" cannot be chosen while the declaration is unknown.
     const select = q(root, `condition-select-${NET}`) as HTMLSelectElement
-    expect(select.disabled).toBe(true)
+    expect((select.querySelector('option[value="anytime"]') as HTMLOptionElement).disabled).toBe(true)
     expect(q(root, `condition-lock-${NET}`)!.textContent).toBe('pluginConsent.tab.condition.lock.unavailable')
   })
 
@@ -214,8 +215,68 @@ describe('PluginPermissions tab', () => {
   it('does not let "any time" be chosen when anytime_allowed is false', async () => {
     serve(panel({ rows: [row({ anytime_allowed: false })] }))
     const root = await mount()
-    expect((q(root, `condition-select-${NET}`) as HTMLSelectElement).disabled).toBe(true)
+    const select = q(root, `condition-select-${NET}`) as HTMLSelectElement
+    expect((select.querySelector('option[value="anytime"]') as HTMLOptionElement).disabled).toBe(true)
+    expect((select.querySelector('option[value="in_use"]') as HTMLOptionElement).disabled).toBe(false)
     expect(q(root, `condition-lock-${NET}`)!.textContent).toBe('pluginConsent.tab.condition.lock.notDeclared')
+  })
+
+  it('still narrows an earlier "any time" to "while in use" once it is no longer allowed', async () => {
+    serve(panel({ rows: [row({ condition: 'anytime', anytime_allowed: false })] }))
+    api.decidePermission.mockResolvedValue(panel({ rows: [row({ anytime_allowed: false })] }))
+    const root = await mount()
+    const select = q(root, `condition-select-${NET}`) as HTMLSelectElement
+    expect(select.disabled).toBe(false)
+    select.value = 'in_use'
+    select.dispatchEvent(new Event('change'))
+    await flush()
+    expect(api.decidePermission).toHaveBeenCalledWith('demo', NET, 'granted', 'in_use')
+  })
+
+  it('reads the declaration again while it is held, and stops once it is read', async () => {
+    vi.useFakeTimers()
+    try {
+      const held = panel({ manifest: 'unavailable', rows: [row({ declared: null, reconcile: null, anytime_allowed: null })] })
+      serve(held)
+      api.getPermissionPanel.mockReset().mockResolvedValueOnce(held).mockResolvedValue(panel())
+      const root = await mount()
+      expect(q(root, 'notice-unavailable')).not.toBeNull()
+      await vi.advanceTimersByTimeAsync(5000)
+      await flush()
+      expect(api.getPermissionPanel).toHaveBeenCalledTimes(2)
+      expect(q(root, 'notice-unavailable')).toBeNull()
+      await vi.advanceTimersByTimeAsync(60000)
+      expect(api.getPermissionPanel).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('reads the shared plugin-wide consent again after a decision, not after a failed one', async () => {
+    serve(panel({ rows: [row({ state: 'undecided', condition: null })] }))
+    api.decidePermission.mockRejectedValueOnce(new Error('x')).mockResolvedValue(panel())
+    const root = await mount()
+    q(root, `switch-${NET}`)!.dispatchEvent(new Event('change'))
+    await flush()
+    expect(consentStore.load).not.toHaveBeenCalled()
+    q(root, `switch-${NET}`)!.dispatchEvent(new Event('change'))
+    await flush()
+    expect(consentStore.load).toHaveBeenCalledWith('demo')
+  })
+
+  it('drops the counts of uses while undecided when a refresh cannot read them', async () => {
+    serve(panel({ rows: [row({ state: 'undecided', condition: null })] }), {
+      pending: {
+        incomplete: [],
+        first_use: [{ plugin_id: 'demo', permission: NET, at: localDay(2026, 11, 27), count: 4, count_is_lower_bound: false }],
+      },
+    })
+    const root = await mount()
+    expect(q(root, `first-use-${NET}`)).not.toBeNull()
+    api.getPendingPermissions.mockRejectedValue(new Error('offline'))
+    q(root, 'banner-changed')!.click()
+    await flush()
+    expect(q(root, `first-use-${NET}`)).toBeNull()
   })
 
   it.each([
