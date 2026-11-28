@@ -218,3 +218,109 @@ jobs:
           )
           $lines | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
           exit 0
+
+  plugin-pytest-demo-kill:
+    name: Plugin pytest (Windows, TEMPORARY demo of the re-run hard stop)
+    env:
+      NEKO_DEMO_MODE: kill
+    # Windows is the product's primary desktop platform. Directory junction,
+    # Windows shell API and msvcrt lock-retry cases only execute here; the
+    # Linux job skips them. Native-extra cohorts that are genuinely optional
+    # (dxcam etc.) self-skip when not installed.
+    runs-on: windows-latest
+    # The whole job takes about 6 min with -n 4 (14 min serial) when the uv
+    # cache hits. A uv.lock change misses the cache and makes `uv sync`
+    # slower, which that measurement does not include, hence the margin. A
+    # hung test adds up to 5 min to the full run and 5 to the flaky check.
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        # Plain `uv sync` = main deps + dev group (pytest, pytest-asyncio,
+        # pytest-xdist for the -n 4 run below, hypothesis, PyInstaller).
+        # The galgame group (rapidocr + cv2, ~130 MB) is NOT
+        # installed — the plugin degrades its OCR backend gracefully and the
+        # affected tests mock or skip that cohort.
+        run: uv sync
+
+      - name: Run plugin test suite
+        id: full-suite
+        # Explicit path (not bare `pytest` under plugin/tests): passing the
+        # directory overrides the testpaths whitelist in plugin/tests/
+        # pytest.ini, so unit/plugins — where the silent drift lived — is
+        # collected too.
+        # -n 4 --dist loadfile: in one measured run on windows-latest (4
+        # logical / 2 physical cores) against serial, -n 2 and -n auto, -n 4
+        # was the fastest with identical passed/skipped counts (PR #4176).
+        # -n auto is not used because it counts physical cores and starts
+        # only 2 workers here.
+        # loadfile keeps each file on one worker in order, as in the Linux job.
+        # --basetemp puts tmp_path on the runner work drive (D:) instead of the
+        # default %TEMP% on C:, and outside the checkout.
+        # --max-worker-restart 0: Windows has no signal-based timeout, so a test
+        # that hits the limit in plugin/tests/pytest.ini ends its worker process.
+        # --dist loadfile then puts that test back in the queue along with the
+        # rest of its file, and with xdist's default of 4 restarts per worker
+        # (16 here) the same hung test would run again and again, 5 min each,
+        # until the job ceiling. With 0 the first crash ends the run: the job is
+        # red, the crashed test is recorded for the flaky check below, and tests
+        # not yet run at that point are not run.
+        # The JUnit report is how the flaky check tells that the run was cut
+        # short: -q hides xdist's own "restarting disabled" line, but the
+        # crashed test's failure message is always there.
+        run: uv run pytest plugin/tests -n 4 --dist loadfile --max-worker-restart 0 --basetemp "${{ runner.temp }}/neko-plugin-tests" -q --durations=20 --junitxml "${{ runner.temp }}/plugin-junit/full.xml"
+
+      - name: Re-run failed tests once (flaky check)
+        # Same step as the Linux job above and unit-tests.yml; see the comment
+        # there, including `--session-timeout` and the 450 s hard stop (here
+        # WaitForExit plus taskkill of the process tree, exit 124).
+        # One addition: when the full run stopped at a crashed worker, the
+        # tests still queued never ran and are not in the `--lf` record, so a
+        # passing re-run says nothing about them. The step then prints no
+        # verdict (the reporter does not call the run flaky) and says why in
+        # the summary. A failing re-run is still reported as `failed`.
+        if: failure() && steps.full-suite.outcome == 'failure'
+        timeout-minutes: 8
+        shell: pwsh
+        run: |
+          $pytest = Start-Process -FilePath uv -NoNewWindow -PassThru -ArgumentList 'run pytest plugin/tests -q -n 0 --lf --lfnf none --session-timeout 120 --basetemp "${{ runner.temp }}/neko-plugin-rerun"'
+          $null = $pytest.Handle  # keeps ExitCode readable after the process exits
+          if ($pytest.WaitForExit(60000)) {
+            $rc = $pytest.ExitCode
+          } else {
+            taskkill /T /F /PID $pytest.Id | Out-Null
+            $rc = 124
+          }
+          $junit = "${{ runner.temp }}/plugin-junit/full.xml"
+          $cutShort = -not (Test-Path -LiteralPath $junit) -or (Select-String -LiteralPath $junit -Pattern 'crashed while running' -SimpleMatch -Quiet)
+          $verdict = if ($rc -ne 0) { 'failed' } elseif ($cutShort) { 'none' } else { 'passed' }
+          if ($verdict -ne 'none') {
+            Write-Host "NEKO_LF_RERUN_RESULT=$verdict (pytest exit $rc)"
+          }
+          $lines = @(
+            '### Flaky check (`--lf` re-run)',
+            '',
+            "Re-running only the failed tests exited with ${rc}: **$verdict**.",
+            $(if ($rc -eq 124) { 'The re-run was stopped after 7.5 min.' } else { '' }),
+            $(if ($verdict -eq 'passed') { 'The failures did not reproduce; treat them as flaky until proven otherwise.' } elseif ($verdict -eq 'none') { 'The full run stopped at a crashed worker, so the tests queued after it never ran; a passing re-run cannot tell whether this run is flaky.' } else { 'The failures reproduced.' })
+          )
+          $lines | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          exit 0
+
+      - name: Demo - processes left after the hard stop
+        if: always()
+        shell: pwsh
+        run: |
+          Get-Process -Name python, uv -ErrorAction SilentlyContinue | Format-Table Id, ProcessName, StartTime -AutoSize
+          Write-Host "leftover python/uv processes: $(@(Get-Process -Name python, uv -ErrorAction SilentlyContinue).Count)"
