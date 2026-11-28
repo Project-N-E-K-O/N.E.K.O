@@ -965,7 +965,14 @@ def prepare_tool_runtime(
         # use it only when it is at least the pinned release, else prepare the pinned one.
         if source_uv is not None and _uv_version(source_uv, runner, _with_utf8(git_env()), cancel, deadline):
             return _source_runtime(source_uv)
-        return _source_runtime(_prepare_source_uv(runner, _Reporter(progress), cancel, deadline, wait=wait_for_lock))
+        try:
+            uv = _prepare_source_uv(runner, _Reporter(progress), cancel, deadline, wait=wait_for_lock)
+        except ToolRuntimeError:
+            raise
+        except Exception as exc:
+            # As for a packaged server: callers get a ToolRuntimeError, never a bare OSError.
+            raise _unexpected(exc) from exc
+        return _source_runtime(uv)
     if sys.platform not in _SUPPORTED_PLATFORMS:
         raise ToolRuntimeError("unsupported_platform", f"Plugin tools are not available on {sys.platform}")
     try:

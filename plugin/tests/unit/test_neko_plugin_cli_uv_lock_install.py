@@ -29,7 +29,7 @@ def _plugin(tmp_path: Path, *, lock: str | None = "version = 1\n", vendor: str |
 
 
 def test_export_command_reads_the_lock_as_is_without_plugin_config(tmp_path):
-    command = lock_install.uv_export_command("uv", tmp_path)
+    command = lock_install.uv_export_command("uv", tmp_path, tmp_path / "req.txt")
 
     assert command[:2] == ["uv", "export"]
     for switch in (
@@ -39,6 +39,10 @@ def test_export_command_reads_the_lock_as_is_without_plugin_config(tmp_path):
         assert switch in command
     assert command[command.index("--format") + 1] == "requirements.txt"
     assert command[command.index("--directory") + 1] == str(tmp_path)
+    # A file, not stdout: a large lock is never cut at the capture limit.
+    assert command[command.index("--output-file") + 1] == str(tmp_path / "req.txt")
+    # The host's own package and what only it needs stay out, as in `neko-plugin sync`.
+    assert command[command.index("--prune") + 1] == "n-e-k-o"
     # Hashes are what --require-hashes checks; local sources must stay in the
     # list so that check rejects them instead of skipping them.
     assert "--no-hashes" not in command
@@ -272,3 +276,16 @@ def test_unpinned_lock_sources_allows_only_registry_and_the_root_project():
     assert [entry.split(" ")[0] for entry in lock_install.unpinned_lock_sources(lock)] == [
         "evil", "g", "p", "d", "member", "nosource",
     ]
+
+
+
+def test_host_provided_package_in_the_lock_is_not_a_foreign_source():
+    lock = {"package": [{"name": "N-E-K-O", "version": "1", "source": {"git": "https://example/neko.git"}}]}
+    assert lock_install.unpinned_lock_sources(lock) == []
+
+
+def test_lock_edited_in_place_marks_the_vendor_stale(tmp_path):
+    plugin = _plugin(tmp_path, vendor="locked")
+    assert lock_install.lock_vendor_stale(plugin) is False
+    (plugin / "uv.lock").write_text("version = 1\n# edited\n", encoding="utf-8")
+    assert lock_install.lock_vendor_stale(plugin) is True

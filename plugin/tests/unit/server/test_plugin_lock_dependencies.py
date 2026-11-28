@@ -15,6 +15,8 @@ from plugin.server.application.plugins import operation_lock
 from plugin.server.infrastructure.plugin_tool_runtime import ToolRuntime
 
 pytestmark = pytest.mark.plugin_unit
+# The fixture replaces it; one test needs the real best-effort refresh.
+_REAL_REFRESH = deps._refresh_registry
 
 _LOCK = """version = 1
 
@@ -26,6 +28,10 @@ wheels = [
     { url = "https://files.example/orjson-3.13.0-py3-none-any.whl", size = 130518 },
 ]
 """
+
+
+def _write_export(cmd: list[str], text: str) -> None:
+    Path(cmd[cmd.index("--output-file") + 1]).write_text(text, encoding="utf-8")
 
 
 class FakeUv:
@@ -41,7 +47,8 @@ class FakeUv:
         self.commands.append(cmd)
         self.envs.append(env)
         if cmd[1] == "export":
-            return subprocess.CompletedProcess(cmd, 0, "orjson==3.13.0 \\\n    --hash=sha256:" + "0" * 64 + "\n", "")
+            _write_export(cmd, "orjson==3.13.0 \\\n    --hash=sha256:" + "0" * 64 + "\n")
+            return subprocess.CompletedProcess(cmd, 0, "", "")
         if "--dry-run" in cmd:
             lines = "".join(f" + {name}=={version}\n" for name, version in self.installed)
             return subprocess.CompletedProcess(cmd, 0, "", f"Would install 1 package\n{lines}")
@@ -251,9 +258,8 @@ def test_direct_url_sources_are_rejected_before_uv_fetches_anything(uv, plugin_d
     def export_with_direct_url(cmd, **kwargs):
         if cmd[1] == "export":
             uv.commands.append(cmd)
-            return subprocess.CompletedProcess(
-                cmd, 0, "evil @ http://127.0.0.1:8080/admin/x.whl \\\n    --hash=sha256:" + "0" * 64 + "\n", "",
-            )
+            _write_export(cmd, "evil @ http://127.0.0.1:8080/admin/x.whl \\\n    --hash=sha256:" + "0" * 64 + "\n")
+            return subprocess.CompletedProcess(cmd, 0, "", "")
         return original(cmd, **kwargs)
 
     deps.run_tool_command = export_with_direct_url  # restored by monkeypatch
@@ -447,3 +453,40 @@ def test_lock_wait_timeout_is_a_retryable_busy(uv, plugin_dir, monkeypatch):
 
     assert status["error_code"] == "busy"
     assert not (plugin_dir / "vendor").exists() and _leftovers(plugin_dir) == []
+
+
+
+def test_lock_edited_in_place_makes_the_installed_vendor_pending(uv, plugin_dir):
+    planned = asyncio.run(_run())
+    assert asyncio.run(_run(planned["lock_sha256"]))["state"] == "completed"
+    assert deps.dependencies_pending(plugin_dir) is False
+
+    (plugin_dir / "uv.lock").write_text(_LOCK + "\n# bumped in a source checkout\n", encoding="utf-8")
+
+    assert deps.dependencies_pending(plugin_dir) is True
+
+
+def test_registry_refresh_failure_after_the_swap_still_completes(uv, plugin_dir, monkeypatch):
+    from plugin.server.application.plugins import registry_service
+    from plugin.server.application.plugins.operation_lock import PluginOperationBusy
+
+    async def busy_refresh(self, plugin_id):
+        raise PluginOperationBusy("held")
+
+    monkeypatch.setattr(deps, "_refresh_registry", _REAL_REFRESH)
+    monkeypatch.setattr(registry_service.PluginRegistryService, "refresh_plugin", busy_refresh)
+    planned = asyncio.run(_run())
+
+    status = asyncio.run(_run(planned["lock_sha256"]))
+
+    assert status["state"] == "completed"
+    assert (plugin_dir / "vendor" / "orjson-3.13.0.dist-info").is_dir()
+
+
+def test_status_reads_the_package_list_once():
+    task = deps._Task("demo", Path("."))
+    task.packages = [lock_install.LockedPackage("a", "1", 10), lock_install.LockedPackage("b", "1", None)]
+
+    status = task.as_dict()
+
+    assert status["total_size"] == 10 and status["size_complete"] is False

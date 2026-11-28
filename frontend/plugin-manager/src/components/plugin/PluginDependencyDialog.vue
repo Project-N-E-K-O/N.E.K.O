@@ -137,9 +137,10 @@ function apply(next: PythonDependencyStatus) {
 
 async function poll() {
   try {
-    apply(await getPythonDependencies(request.value.pluginId))
+    // Silent background poll: a dropped connection would otherwise toast on every retry.
+    apply(await getPythonDependencies(request.value.pluginId, { suppressErrorMessage: true }))
   } catch {
-    // The request layer already showed the error; keep the dialog and try again.
+    // Keep the dialog and try again; the progress stays on screen meanwhile.
     if (!closed) schedule()
   }
 }

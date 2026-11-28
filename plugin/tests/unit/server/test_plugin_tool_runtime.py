@@ -1222,3 +1222,15 @@ def test_background_lock_wait_timeout_behind_another_process_is_reported(root, m
         module._background[0].join(10)
     status = module.read_tool_runtime_status()
     assert (status.state, status.error_code) == ("failed", "timeout")
+
+
+def test_source_preparation_failure_is_a_tool_runtime_error(root, monkeypatch, tmp_path):
+    monkeypatch.setattr(module, "_is_packaged", lambda: False)
+    monkeypatch.setattr(module, "_source_uv", lambda: None)
+    blocker = tmp_path / "not-a-dir"
+    blocker.write_text("", encoding="utf-8")
+    monkeypatch.setattr(module, "tools_root", lambda: blocker / "tools")  # mkdir raises OSError
+
+    with pytest.raises(module.ToolRuntimeError) as caught:
+        _prepare(_no_runner)
+    assert caught.value.code == "internal_error"

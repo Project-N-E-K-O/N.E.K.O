@@ -50,6 +50,8 @@ except ImportError:  # pragma: no cover
     import tomli as tomllib  # type: ignore[no-redef]
 
 from packaging.tags import Tag, sys_tags
+
+from plugin.core.python_dependencies import HOST_PROVIDED_REQUIREMENT_NAMES
 from packaging.utils import canonicalize_name, parse_wheel_filename
 
 LOCK_FILE_NAME = "uv.lock"
@@ -100,9 +102,14 @@ def lock_sha256(plugin_dir: Path) -> str:
 # Commands
 
 
-def uv_export_command(uv: str, project_dir: Path) -> list[str]:
-    """``uv export`` printing the locked runtime dependencies, with hashes, to stdout."""
-    return [
+def uv_export_command(uv: str, project_dir: Path, output_file: Path) -> list[str]:
+    """``uv export`` writing the locked runtime dependencies, with hashes, to ``output_file``.
+
+    A file, not stdout, so a large lock is never cut short by a capture limit.
+    Host-provided distributions (the N.E.K.O package itself) are pruned with
+    the dependencies only they need, as ``neko-plugin sync`` leaves them out.
+    """
+    command = [
         uv, "export",
         "--no-config", "--frozen", "--no-default-groups",
         "--no-emit-project", "--no-emit-workspace",
@@ -110,7 +117,11 @@ def uv_export_command(uv: str, project_dir: Path) -> list[str]:
         "--format", "requirements.txt", "--no-header", "--no-annotate",
         "--quiet", "--color", "never",
         "--directory", str(project_dir),
+        "--output-file", str(output_file),
     ]
+    for name in sorted(HOST_PROVIDED_REQUIREMENT_NAMES):
+        command += ["--prune", name]
+    return command
 
 
 def uv_install_command(
@@ -300,13 +311,21 @@ def lock_install_applies(plugin_dir: Path) -> bool:
 
 
 def lock_vendor_stale(plugin_dir: Path) -> bool:
-    """Whether vendor/ was installed from the lock for another Python or platform.
+    """Whether a lock-installed vendor/ no longer matches: another lock, Python or platform.
 
-    Its compiled wheels may not load after the host's Python changed, though
-    the installed versions still satisfy the declared requirements.
+    The installed versions may still satisfy the declared requirements, yet
+    uv.lock was edited in place (a source checkout) or the host's Python
+    changed, so its compiled wheels may not load. Either way install again.
     """
     marker = _read_marker(plugin_dir / VENDOR_DIR_NAME)
-    return marker is not None and marker.get("python") != runtime_python_tag()
+    if marker is None:
+        return False
+    if marker.get("python") != runtime_python_tag():
+        return True
+    try:
+        return marker["lock_sha256"] != lock_sha256(plugin_dir)
+    except OSError:
+        return False
 
 
 def unpinned_lock_sources(lock_data: Mapping[str, object]) -> list[str]:
@@ -324,6 +343,8 @@ def unpinned_lock_sources(lock_data: Mapping[str, object]) -> list[str]:
         if not isinstance(package, dict):
             continue
         name = str(package.get("name") or "?")
+        if canonicalize_name(name) in HOST_PROVIDED_REQUIREMENT_NAMES:
+            continue  # pruned from the export; the host provides it
         source = package.get("source")
         if not isinstance(source, dict):
             offending.append(name)

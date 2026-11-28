@@ -115,7 +115,8 @@ class _Task:
     staging_token: str | None = None
 
     def as_dict(self) -> dict[str, object]:
-        sizes = [package.size for package in self.packages]
+        packages = self.packages  # read once: the worker thread may replace the list meanwhile
+        sizes = [package.size for package in packages]
         known = [size for size in sizes if size is not None]
         return {
             "plugin_id": self.plugin_id,
@@ -124,7 +125,7 @@ class _Task:
             "lock_sha256": self.lock_sha256,
             "packages": [
                 {"name": package.name, "version": package.version, "size": package.size}
-                for package in self.packages
+                for package in packages
             ],
             "total_size": sum(known),
             "size_complete": len(known) == len(sizes),
@@ -287,15 +288,18 @@ def _snapshot(plugin_dir: Path, work_dir: Path) -> tuple[Path, str]:
 
 def _export(task: _Task, runtime: ToolRuntime, project: Path, work_dir: Path, deadline: float) -> Path:
     task.phase = "resolving"
-    result = _run(task, runtime, uv_export_command(runtime.uv, project), "uv export", deadline)
+    requirements = work_dir / "requirements.txt"
+    result = _run(task, runtime, uv_export_command(runtime.uv, project, requirements), "uv export", deadline)
     if result.returncode:
         raise _Failure("lock_invalid", _detail(result))
-    offending = unpinned_requirements(result.stdout)
+    try:
+        exported = requirements.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise _Failure("lock_invalid", f"uv export wrote no requirements: {exc}") from exc
+    offending = unpinned_requirements(exported)
     if offending:
         # Rejected before uv sees them: planning would fetch these URLs before the user confirmed.
         raise _Failure("unpinned_source", _redact("Not from the package index: " + ", ".join(offending))[:_DETAIL_LIMIT])
-    requirements = work_dir / "requirements.txt"
-    requirements.write_text(result.stdout, encoding="utf-8")
     return requirements
 
 
@@ -450,9 +454,11 @@ async def _refresh_registry(plugin_id: str) -> None:
 
     try:
         await PluginRegistryService().refresh_plugin(plugin_id)
-    except ServerDomainError as exc:
-        # The next start refreshes again; the install itself succeeded.
-        logger.warning("registry refresh after dependency install failed plugin_id={} code={}", plugin_id, exc.code)
+    except Exception as exc:  # e.g. ServerDomainError, PluginOperationBusy
+        # Best effort: vendor/ is already in place and the next start refreshes again.
+        logger.warning(
+            "registry refresh after dependency install failed plugin_id={} err_type={}", plugin_id, type(exc).__name__,
+        )
 
 
 async def _execute(task: _Task, *, install: bool) -> None:

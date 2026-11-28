@@ -77,6 +77,14 @@ export const usePluginStore = defineStore('plugin', () => {
   const registryRevision = ref(0)
   let statusReadSequence = 0
   const runtimeStatusTickets = new Map<string, number>()
+  // Metadata ticket of a dependencies_pending entry a later runtime status
+  // showed running: that entry is stale even if a metadata refresh failed.
+  const dependenciesPendingEnded = new Map<string, number>()
+  function noteRuntimeStatus(pluginId: string, data: PluginStatusData | undefined) {
+    if (runtimeStatus(data) === 'running' && metadataStatuses.value[pluginId]?.status === 'dependencies_pending') {
+      dependenciesPendingEnded.set(pluginId, metadataStatuses.value[pluginId]!.ticket)
+    }
+  }
   const metadataStatuses = ref<Record<string, { status: string; ticket: number }>>({})
   
   // 防止请求堆积：正在进行的请求
@@ -139,9 +147,15 @@ export const usePluginStore = defineStore('plugin', () => {
     if (status === 'load_failed' || status === 'source_missing') return status
     const runtime = runtimeStatus(pluginStatuses.value[plugin.id])
     const runtimeIsNewer = runtime && (runtimeStatusTickets.get(plugin.id) ?? 0) >= (metadata?.ticket ?? 0)
-    // Pending dependencies hold until a newer runtime status says it runs:
-    // installing them and starting it ends the state even before metadata refreshes.
-    if (status === 'dependencies_pending') return runtimeIsNewer && runtime === 'running' ? runtime : status
+    // Pending dependencies hold over a synthesized stop until a newer runtime
+    // status says it runs: installing them and starting it ends the state for
+    // that metadata entry, even if the metadata refresh afterwards failed.
+    if (status === 'dependencies_pending') {
+      if (dependenciesPendingEnded.get(plugin.id) === (metadata?.ticket ?? 0)) {
+        return runtimeIsNewer ? runtime : StatusEnum.STOPPED
+      }
+      return runtimeIsNewer && runtime === 'running' ? runtime : status
+    }
     return runtimeIsNewer ? runtime : status
   }
 
@@ -489,6 +503,7 @@ export const usePluginStore = defineStore('plugin', () => {
           if (statusTicket < (runtimeStatusTickets.get(pluginId) ?? 0)) return supersededStatusResult(statusTicket)
           if (reportedStatus(response)) {
             runtimeStatusTickets.set(pluginId, statusTicket)
+            noteRuntimeStatus(pluginId, response as PluginStatusData)
             pluginStatuses.value = { ...pluginStatuses.value, [pluginId]: response as PluginStatusData }
           }
         } else {
@@ -499,6 +514,7 @@ export const usePluginStore = defineStore('plugin', () => {
             if (statusTicket < (runtimeStatusTickets.get(id) ?? 0)) continue
             if (reportedStatus(incoming[id])) {
               runtimeStatusTickets.set(id, statusTicket)
+              noteRuntimeStatus(id, incoming[id])
               next[id] = incoming[id]!
             } else if (!(id in incoming)) {
               runtimeStatusTickets.set(id, statusTicket)

@@ -307,6 +307,16 @@ describe('plugin state ownership and registry cache invalidation', () => {
     vi.mocked(getPluginStatus).mockResolvedValueOnce(runtime('running'))
     await store.fetchPluginStatus('demo')
     expectVisibleStatus(store, 'running')
+
+    // The metadata refresh failed: a later stop or crash must not bring the stale pending back.
+    vi.mocked(getPluginStatus).mockResolvedValueOnce(runtime('stopped'))
+    await store.fetchPluginStatus('demo')
+    expectVisibleStatus(store, 'stopped')
+
+    // New metadata saying pending again (a later lock change) shows it again.
+    vi.mocked(getPluginSummaries).mockResolvedValueOnce({ plugins: [plugin({ status: 'dependencies_pending' })], message: '' })
+    await store.fetchPluginSummaries(true)
+    expectVisibleStatus(store, 'dependencies_pending')
   })
 
   it('retains readable runtime state after a failed refresh', async () => {
