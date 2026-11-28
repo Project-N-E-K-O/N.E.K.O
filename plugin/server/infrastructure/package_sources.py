@@ -347,7 +347,11 @@ def _parse_route(source_id: str, values: Any, now: float) -> RouteStats:
     # from there, instead of being lost.
     updated = min(updated, now)
     # Only decides when a PyPI probe is due: unusable means "never measured".
-    measured = _sample(values.get("measured"), now, allow_zero=True) or 0.0
+    # A stamp past the clock is not capped to "just now" like ``updated``,
+    # which would make it look fresh after the clock was set back.
+    measured = _sample(values.get("measured"), math.inf, allow_zero=True) or 0.0
+    if measured > now:
+        measured = 0.0
     samples = values.get("samples", 0)
     if isinstance(samples, bool) or not isinstance(samples, (int, float)):
         raise TypeError("samples is not a number")

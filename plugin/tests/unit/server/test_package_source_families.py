@@ -377,3 +377,19 @@ async def test_a_probe_that_cannot_start_still_selects_from_known_statistics(mon
     stale = sources.time.time() - sources.PYPI_PROBE_FRESH_SECONDS - 60
     sources._record(sources.RouteObservation("pypi-aliyun", latency=0.01), stale)
     assert await sources.select_pypi_index_url(sources.DownloadPreferences()) == "https://mirrors.aliyun.com/pypi/simple"
+
+
+async def test_a_saved_measurement_from_before_the_clock_was_set_back_is_probed_again(index, monkeypatch):
+    now = [1_000_000.0]
+    patch_module_clock(monkeypatch, sources, time=lambda: now[0])
+    await sources.select_pypi_index_url(sources.DownloadPreferences())
+    assert len(index.requests) == 5
+    # Restart with the clock an hour behind the saved measurements.
+    now[0] -= 3600
+    sources._routes.clear()
+    monkeypatch.setattr(sources, "_loaded", False)
+    monkeypatch.setattr(sources, "_last_pypi_probe", None)
+    sources._ensure_loaded()
+    assert all(sources._routes[key].measured == 0.0 for key in PYPI_IDS)
+    await sources.select_pypi_index_url(sources.DownloadPreferences())
+    assert len(index.requests) == 10
