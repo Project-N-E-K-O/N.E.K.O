@@ -448,11 +448,18 @@ class TestMartLLMResolution:
         assert cfg['ASSIST_API_KEY_MARTLLM'] == martllm_key
         assert cfg['OPENROUTER_API_KEY'] == martllm_key
         assert cfg['AGENT_MODEL_API_KEY'] == martllm_key
-        for task in ('conversation', 'summary', 'correction', 'emotion', 'vision', 'agent'):
+        for task, model in {
+            'conversation': 'google/gemini-3.1-flash-lite',
+            'summary': 'deepseek/deepseek-v4-flash',
+            'correction': 'deepseek/deepseek-v4-flash',
+            'emotion': 'google/gemini-2.5-flash-lite',
+            'vision': 'google/gemini-3.1-flash-lite',
+            'agent': 'google/gemini-3-flash-preview',
+        }.items():
             resolved = config_manager.get_model_api_config(task)
             assert resolved['api_key'] == martllm_key, task
             assert resolved['base_url'] == 'https://api.martllm.com/v1', task
-            assert resolved['model'] == 'openai/gpt-5.4-mini', task
+            assert resolved['model'] == model, task
             assert resolved['provider_type'] == 'openai_compatible', task
 
 

@@ -30,7 +30,7 @@
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
     // 新增 MartLLM 辅助 API 服务商名称（八语言），刷新客户端缓存。
-    const LOCALE_VERSION = '2026-11-12-martllm-assist-provider-main-merge';
+    const LOCALE_VERSION = '2026-11-28-martllm-assist-provider';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

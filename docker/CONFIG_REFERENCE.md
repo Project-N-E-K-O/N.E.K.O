@@ -193,7 +193,7 @@ json 里的字段名是小写（如 `openrouter_url`、`agent_model`），对应
 | requesty | google/gemini-3.8-flash | https://router.requesty.ai/v1 |
 | opper | gpt-5.4-mini | https://api.opper.ai/v3/compat |
 | atlascloud | google/gemini-3-flash-preview | https://api.atlascloud.ai/v1 |
-| martllm | openai/gpt-5.4-mini | https://api.martllm.com/v1 |
+| martllm | google/gemini-3-flash-preview | https://api.martllm.com/v1 |
 
 #### 自定义 Agent 模型
 

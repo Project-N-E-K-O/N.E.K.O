@@ -265,12 +265,12 @@ DEFAULT_ASSIST_API_PROFILES = {
     },
     'martllm': {
         'OPENROUTER_URL': "https://api.martllm.com/v1",
-        'CONVERSATION_MODEL': "openai/gpt-5.4-mini",
-        'SUMMARY_MODEL': "openai/gpt-5.4-mini",
-        'CORRECTION_MODEL': "openai/gpt-5.4-mini",
-        'EMOTION_MODEL': "openai/gpt-5.4-mini",
-        'VISION_MODEL': "openai/gpt-5.4-mini",
-        'AGENT_MODEL': "openai/gpt-5.4-mini",
+        'CONVERSATION_MODEL': "google/gemini-3.1-flash-lite",
+        'SUMMARY_MODEL': "deepseek/deepseek-v4-flash",
+        'CORRECTION_MODEL': "deepseek/deepseek-v4-flash",
+        'EMOTION_MODEL': "google/gemini-2.5-flash-lite",
+        'VISION_MODEL': "google/gemini-3.1-flash-lite",
+        'AGENT_MODEL': "google/gemini-3-flash-preview",
     },
     'vllm_omni': {
         'OPENROUTER_URL': "ws://localhost:8091/v1",
