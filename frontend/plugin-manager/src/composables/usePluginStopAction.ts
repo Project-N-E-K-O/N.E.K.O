@@ -1,4 +1,4 @@
-import { inject, ref } from 'vue'
+import { inject, reactive } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { usePluginStore } from '@/stores/plugin'
@@ -17,6 +17,11 @@ export function showActionError(error: unknown, fallbackMessage: string) {
   ElMessage.error(formatHttpError(error) || fallbackMessage)
 }
 
+// Shared by every stop button of the page: one confirmation and one request
+// per plugin, whichever button was clicked first.
+const inFlight = new Map<string, Promise<void>>()
+const stoppingIds = reactive(new Set<string>())
+
 /** Stopping a plugin from the detail page: confirm, stop, refresh hosted panels. */
 export function usePluginStopAction() {
   const { t } = useI18n()
@@ -25,21 +30,34 @@ export function usePluginStopAction() {
     PLUGIN_DETAIL_REFRESH_HOSTED_PANELS_KEY,
     null,
   )
-  const stopping = ref(false)
 
-  async function stop(pluginId: string) {
+  async function run(pluginId: string) {
     try {
       await ElMessageBox.confirm(t('messages.confirmStop'), t('common.confirm'), { type: 'warning' })
-      stopping.value = true
+      stoppingIds.add(pluginId)
       await store.stop(pluginId)
       void refreshHostedPanels?.().catch(() => {})
       ElMessage.success(t('messages.pluginStopped'))
     } catch (error) {
       if (error !== 'cancel') showActionError(error, t('messages.stopFailed'))
     } finally {
-      stopping.value = false
+      stoppingIds.delete(pluginId)
+      inFlight.delete(pluginId)
     }
   }
 
-  return { stopping, stop }
+  function stop(pluginId: string): Promise<void> {
+    const current = inFlight.get(pluginId)
+    if (current) return current
+    const next = run(pluginId)
+    inFlight.set(pluginId, next)
+    return next
+  }
+
+  /** True while the stop request runs (not while the confirmation is open). */
+  function isStopping(pluginId: string) {
+    return stoppingIds.has(pluginId)
+  }
+
+  return { stop, isStopping }
 }

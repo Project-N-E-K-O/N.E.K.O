@@ -24,7 +24,7 @@
         <el-button
           v-if="running"
           class="perm-summary__stop"
-          :loading="stopAction.stopping.value"
+          :loading="stopAction.isStopping(pluginId)"
           data-test="stop-plugin"
           @click="stopAction.stop(pluginId)"
         >
@@ -226,7 +226,7 @@
           <div v-if="showSpots" class="perm-spots" data-test="blind-spots">
             <div class="perm-spots__title">
               <strong v-if="spotFiles.length">⚠ {{ t('pluginConsent.tab.blindSpots.title', { n: spotFiles.length }) }}</strong>
-              <strong v-else data-test="blind-spots-none">{{ t('pluginConsent.tab.blindSpots.none') }}</strong>
+              <strong v-else-if="panel.analysis.status === 'completed'" data-test="blind-spots-none">{{ t('pluginConsent.tab.blindSpots.none') }}</strong>
               <span v-if="spotFiles.length" class="perm-muted">{{ t('pluginConsent.tab.blindSpots.subtitle') }}</span>
             </div>
             <ul class="perm-spots__list">
@@ -400,6 +400,11 @@ function stopPolling() {
 }
 
 async function load() {
+  if (saving > 0) {
+    // Not even sent: its answer could arrive after the save and predate it.
+    reloadAfterSave = true
+    return
+  }
   const seq = ++loadSeq
   stopPolling()
   loading.value = true
@@ -411,13 +416,8 @@ async function load() {
       optional(getPendingPermissions()),
     ])
     // A later load (or a save) owns the view now.
+    // A later load owns the view now; a save that started meanwhile asked for a new one.
     if (seq !== loadSeq || unmounted) return
-    if (saving > 0) {
-      // Its request may have reached the server before the save: not trusted,
-      // and not lost either (e.g. a consent change that asked for it).
-      reloadAfterSave = true
-      return
-    }
     // A refresh that fails keeps what is shown: only the first load can fail the tab.
     if (validPanel(nextPanel)) {
       panel.value = nextPanel
@@ -426,9 +426,11 @@ async function load() {
       failedPolls++
     }
     if (validCatalog(nextCatalog)) catalog.value = nextCatalog
-    if (validHistory(nextAudit)) audit.value = nextAudit
+    // Without a current answer, nothing is claimed about unused time.
+    audit.value = validHistory(nextAudit) ? nextAudit : null
     if (validPending(nextPending)) pending.value = nextPending
-    if (panel.value && scanPending(panel.value)) {
+    // Follow a running scan; retry a failed refresh too, waiting longer each time.
+    if (panel.value && (scanPending(panel.value) || failedPolls > 0)) {
       pollTimer = setTimeout(load, Math.min(SCAN_POLL_MS * 2 ** failedPolls, MAX_POLL_MS))
     }
   } finally {
@@ -592,6 +594,8 @@ function toggleAll() {
 async function save(row: PanelRow, run: () => Promise<PermissionPanel>) {
   busy.value = row.permission
   // A load still on its way, or one a timer starts now, would put the old answer back.
+  // A load on its way is dropped below; it was asked for, so it runs again after the save.
+  if (loading.value) reloadAfterSave = true
   loadSeq++
   saving++
   stopPolling()
@@ -609,7 +613,8 @@ async function save(row: PanelRow, run: () => Promise<PermissionPanel>) {
       optional(getPermissionAuditHistory(props.pluginId)),
     ])
     if (validPending(nextPending)) pending.value = nextPending
-    if (validHistory(nextAudit)) audit.value = nextAudit
+    // Without a current answer, nothing is claimed about unused time.
+    audit.value = validHistory(nextAudit) ? nextAudit : null
   } catch (error) {
     ElMessage.error(t(decisionErrorKey(error)))
   } finally {

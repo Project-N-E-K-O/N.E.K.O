@@ -457,6 +457,16 @@ describe('PluginPermissions tab', () => {
     expect(q(root, 'blind-spots-none')).toBeNull()
   })
 
+  it('shows the unscanned files after a partial scan without saying there are no blind spots', async () => {
+    serve(panel({
+      analysis: { ...panel().analysis, status: 'partial' },
+      blind_spots: { files: [], counted: 0, not_analyzed_files: 3 },
+    }))
+    const root = await mount()
+    expect(q(root, 'blind-spots')!.textContent).toContain('pluginConsent.tab.blindSpots.notAnalyzed {"n":3}')
+    expect(q(root, 'blind-spots-none')).toBeNull()
+  })
+
   it('takes back an approval of the disclosure-only item found by the scan', async () => {
     const pushRow = (state: 'granted' | 'undecided') =>
       row({ permission: PUSH, tier: 'medium', enforced: false, declared: null, reconcile: 'undeclared', state })
@@ -557,13 +567,61 @@ describe('PluginPermissions tab', () => {
     await flush()
     q(root, 'banner-changed')!.click()
     await flush()
-    expect(api.getPermissionPanel).toHaveBeenCalledTimes(2)
+    // Not sent during the save: its answer could arrive later and predate it.
+    expect(api.getPermissionPanel).toHaveBeenCalledTimes(1)
     // The consent change granted it; the save answered with an older view.
     api.getPermissionPanel.mockResolvedValue(panel({ rows: [row({ state: 'granted', legacy_any: true })] }))
     finishSave(panel({ rows: [row({ state: 'undecided', condition: null })] }))
     await flush()
-    expect(api.getPermissionPanel).toHaveBeenCalledTimes(3)
+    expect(api.getPermissionPanel).toHaveBeenCalledTimes(2)
     expect(q(root, 'legacy')).not.toBeNull()
+  })
+
+  it('loads again after a save that started while a load was on its way', async () => {
+    serve(panel({ rows: [row({ state: 'undecided', condition: null })] }))
+    const root = await mount()
+    let finishLoad: (value: PermissionPanel) => void = () => {}
+    api.getPermissionPanel.mockImplementationOnce(() => new Promise((resolve) => { finishLoad = resolve }))
+    q(root, 'banner-changed')!.click()
+    await flush()
+    api.decidePermission.mockResolvedValue(panel({ rows: [row({ state: 'granted' })] }))
+    q(root, `switch-${NET}`)!.dispatchEvent(new Event('change'))
+    await flush()
+    finishLoad(panel({ rows: [row({ state: 'undecided', condition: null })] }))
+    await flush()
+    // The dropped load ran again after the save, and the old answer was not shown.
+    expect(api.getPermissionPanel).toHaveBeenCalledTimes(3)
+  })
+
+  it('stops claiming unused time when the last-use history cannot be read again', async () => {
+    serve(panel({ rows: [row({ state: 'undecided', condition: null })] }))
+    const root = await mount()
+    expect(q(root, `usage-${NET}`)!.querySelector('[data-test="unused30d"]')).not.toBeNull()
+    api.getPermissionAuditHistory.mockRejectedValue(new Error('offline'))
+    q(root, 'banner-changed')!.click()
+    await flush()
+    expect(q(root, `usage-${NET}`)).toBeNull()
+  })
+
+  it('retries a failed refresh after the scan finished', async () => {
+    vi.useFakeTimers()
+    try {
+      serve(panel())
+      const root = await mount()
+      api.getPermissionPanel.mockRejectedValueOnce(new Error('offline'))
+      q(root, 'banner-changed')!.click()
+      await flush()
+      expect(api.getPermissionPanel).toHaveBeenCalledTimes(2)
+      expect(q(root, `row-${NET}`)).not.toBeNull()
+      await vi.advanceTimersByTimeAsync(10000)
+      await flush()
+      expect(api.getPermissionPanel).toHaveBeenCalledTimes(3)
+      // Back to normal: no more polling for a finished scan.
+      await vi.advanceTimersByTimeAsync(60000)
+      expect(api.getPermissionPanel).toHaveBeenCalledTimes(3)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('says when the scan failed and does not claim there are no blind spots', async () => {

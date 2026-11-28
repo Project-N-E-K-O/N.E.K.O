@@ -190,7 +190,7 @@ async function handleStart() {
 }
 
 const stopAction = usePluginStopAction()
-const busy = computed(() => loading.value || stopAction.stopping.value)
+const busy = computed(() => loading.value || stopAction.isStopping(props.pluginId))
 function handleStop() {
   return stopAction.stop(props.pluginId)
 }
