@@ -316,6 +316,9 @@ jobs:
     if: always() && github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      # Read the PR's current head, to tell a superseded run from one that timed out.
+      pull-requests: read
     steps:
       - name: Check related test results
         env:
@@ -323,8 +326,32 @@ jobs:
           SHARD_RESULT: ${{ needs.unit-pytest-related-shard.result }}
           MODE: ${{ needs.select-related.outputs.mode }}
           COUNT: ${{ needs.select-related.outputs.count }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          RUN_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           echo "selection: $SELECT_RESULT (mode=$MODE, files=$COUNT); shards: $SHARD_RESULT"
+          # A job result of ``cancelled`` covers three cases: a newer push superseded this run
+          # (``cancel-in-progress`` above), someone cancelled it by hand, or a job ran past its
+          # ``timeout-minutes`` (GitHub reports a job timeout as cancelled, not failed). All of them
+          # stay red, since this is a required check and a skipped one would count as passed. Only
+          # the first is "look at the newer run", so the PR's current head tells them apart.
+          if [ "$SELECT_RESULT" = "cancelled" ] || [ "$SHARD_RESULT" = "cancelled" ]; then
+            # On an HTTP error gh still prints the error body to stdout: keep only a SHA.
+            current_head="$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq .head.sha 2>/dev/null || true)"
+            if ! printf '%s' "$current_head" | grep -Eqx '[0-9a-f]{40}'; then
+              current_head=""
+            fi
+            if [ -n "$current_head" ] && [ "$current_head" != "$RUN_HEAD_SHA" ]; then
+              echo "::error::This run was cancelled before the related tests finished: the PR has moved on to ${current_head:0:12} since (a newer push supersedes this run). The run for that commit is the one that counts."
+            elif [ -n "$current_head" ]; then
+              echo "::error::This run, for the PR's latest commit, was cancelled before the related tests finished: a job ran past its timeout-minutes or the run was cancelled by hand. The cancelled job's log shows where it stopped."
+            else
+              echo "::error::This run was cancelled before the related tests finished: superseded by a newer push, cancelled by hand, or a job ran past its timeout-minutes (the PR's current head could not be read to tell which)."
+            fi
+            exit 1
+          fi
           if [ "$SELECT_RESULT" != "success" ]; then
             echo "::error::Selecting related tests failed."
             exit 1

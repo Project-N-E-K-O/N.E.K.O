@@ -65,8 +65,17 @@ def _state(group: str) -> tuple[bool, str]:
     return True, ""
 
 
-# group -> the commission (the team's) that occupies it right now.
-_in_use: Dict[str, str] = {}
+# group -> active team commission id(s) occupying it right now.
+# Exclusive groups hold one id; shared groups (browser) may hold several concurrently.
+_in_use: Dict[str, Any] = {}
+
+
+def _as_list(raw: Any) -> list[str]:
+    if isinstance(raw, str):
+        return [raw] if raw else []
+    if isinstance(raw, list):
+        return [item for item in raw if isinstance(item, str) and item]
+    return []
 
 
 def _on_browser_window(window: Optional[Dict[str, Any]]) -> None:
@@ -76,8 +85,7 @@ def _on_browser_window(window: Optional[Dict[str, Any]]) -> None:
     ``started`` event went out, so that event cannot say where the window is.
     """
     del window
-    commission_id = _in_use.get(BUILTIN_GROUP_BROWSER)
-    if commission_id:
+    for commission_id in occupants(BUILTIN_GROUP_BROWSER):
         _send_activity(BUILTIN_GROUP_BROWSER, "started", commission_id)
 
 
@@ -121,9 +129,15 @@ def _own_ports() -> set[int]:
 provider = BuiltinToolProvider(state=_state, on_browser_window=_on_browser_window, own_ports=_own_ports)
 
 
+def occupants(group: str) -> list[str]:
+    """Return every commission occupying a group right now."""
+    return _as_list(_in_use.get(group))
+
+
 def occupant(group: str) -> Optional[str]:
-    """Return the commission that occupies a group right now, or None."""
-    return _in_use.get(group)
+    """Return the first commission that occupies a group right now, or None."""
+    active = occupants(group)
+    return active[0] if active else None
 
 
 def _count(group: str) -> None:
@@ -157,12 +171,28 @@ def on_builtin_activity(group: str, state: str, commission_id: str) -> None:
 
     Runs on the event loop and must not block: the event is sent from a task.
     """
+    active = _as_list(_in_use.get(group))
     if state == "started":
-        _in_use[group] = commission_id
+        if group == BUILTIN_GROUP_BROWSER:
+            if commission_id not in active:
+                active.append(commission_id)
+            _in_use[group] = active
+        else:
+            _in_use[group] = [commission_id]
         _count(group)
-    elif _in_use.get(group) == commission_id:
-        del _in_use[group]
+        _send_activity(group, state, commission_id)
+        return
+    was_latest = bool(active and active[-1] == commission_id)
+    active = [item for item in active if item != commission_id]
+    if active:
+        _in_use[group] = active
+    else:
+        _in_use.pop(group, None)
     _send_activity(group, state, commission_id)
+    if group == BUILTIN_GROUP_BROWSER and was_latest and active:
+        # Re-announce a remaining active occupant so single-slot consumers
+        # (such as the desktop overlay banner) keep tracking the browser.
+        _send_activity(group, "started", active[-1])
 
 
 def _send_activity(group: str, state: str, commission_id: str) -> None:

@@ -619,6 +619,7 @@ class ForksBesideMixin:
         """Let go of a commission's place in a copy it is not carried on in after all, and queue it for the session itself again."""
         # Its place and the copy are let go of.
         self._sessions.pop(commission_id, None)
+        self._starting_workdirs.pop(commission_id, None)
         if self._held_by.get(copy.id) == commission_id:
             del self._held_by[copy.id]
         self._session_of[commission_id] = main

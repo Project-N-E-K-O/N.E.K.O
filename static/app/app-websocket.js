@@ -3045,6 +3045,45 @@
         // ---- onopen ----
         S.socket.onopen = function () {
             if (S.socket !== _thisSocket) return;
+            // Discard cached builtin activity from any previous connection so a task whose
+            // `ended` event was missed while disconnected cannot be resurrected after reconnect,
+            // then restore any currently active occupations from the backend snapshot without
+            // overwriting fresher live WebSocket events.
+            window._agentBuiltinActivity = {};
+            window._agentBuiltinActivities = Object.create(null);
+            window._agentBuiltinActivitySeen = Object.create(null);
+            window._agentBuiltinActivityEpoch = (window._agentBuiltinActivityEpoch || 0) + 1;
+            var builtinActivityEpoch = window._agentBuiltinActivityEpoch;
+            if (typeof fetch === 'function') {
+                fetch('/api/agent/builtin/activity')
+                    .then(function (r) { return r && r.ok ? r.json() : null; })
+                    .then(function (payload) {
+                        if (S.socket !== _thisSocket || window._agentBuiltinActivityEpoch !== builtinActivityEpoch) return;
+                        if (!payload || !Array.isArray(payload.activity)) return;
+                        var seen = window._agentBuiltinActivitySeen || Object.create(null);
+                        payload.activity.forEach(function (item) {
+                            if (!item || !item.group || item.state !== 'started') return;
+                            if (seen[item.group]) return;
+                            if (item.commission_id != null && seen[item.group + '\0' + String(item.commission_id)]) return;
+                            if (!window._agentBuiltinActivity) window._agentBuiltinActivity = {};
+                            if (!window._agentBuiltinActivities) window._agentBuiltinActivities = Object.create(null);
+                            if (item.group === 'browser') {
+                                var groupMap = window._agentBuiltinActivities[item.group];
+                                if (!groupMap) {
+                                    groupMap = Object.create(null);
+                                    window._agentBuiltinActivities[item.group] = groupMap;
+                                }
+                                if (item.commission_id != null) {
+                                    groupMap[item.commission_id] = item;
+                                }
+                            }
+                            if (!window._agentBuiltinActivity[item.group]) {
+                                window._agentBuiltinActivity[item.group] = item;
+                            }
+                        });
+                    })
+                    .catch(function () { });
+            }
             // 连接断开期间挂起的问话不会补发：连上时读一次现在还在等的。
             if (window.NekoPowerAsk) { try { window.NekoPowerAsk.sync(); } catch (_) {} }
             // session_ended_by_server latches suppressAssistantStreamUntilNextSession
@@ -5256,8 +5295,45 @@
                     try {
                         var activity = response.activity || {};
                         if (!window._agentBuiltinActivity) window._agentBuiltinActivity = {};
+                        if (!window._agentBuiltinActivities) window._agentBuiltinActivities = Object.create(null);
+                        if (!window._agentBuiltinActivitySeen) window._agentBuiltinActivitySeen = Object.create(null);
                         if (activity.group) {
-                            if (activity.state === 'started') {
+                            if (activity.commission_id != null) {
+                                window._agentBuiltinActivitySeen[activity.group + '\0' + String(activity.commission_id)] = true;
+                            } else {
+                                window._agentBuiltinActivitySeen[activity.group] = true;
+                            }
+                            if (activity.group === 'browser') {
+                                var groupActivities = window._agentBuiltinActivities[activity.group];
+                                if (!groupActivities) {
+                                    groupActivities = Object.create(null);
+                                    window._agentBuiltinActivities[activity.group] = groupActivities;
+                                }
+                                if (activity.state === 'started') {
+                                    if (activity.commission_id != null) {
+                                        groupActivities[activity.commission_id] = activity;
+                                    }
+                                    window._agentBuiltinActivity[activity.group] = activity;
+                                } else {
+                                    if (activity.commission_id != null) {
+                                        delete groupActivities[activity.commission_id];
+                                    } else {
+                                        groupActivities = Object.create(null);
+                                        window._agentBuiltinActivities[activity.group] = groupActivities;
+                                    }
+                                    var remainingIds = Object.keys(groupActivities);
+                                    if (remainingIds.length > 0) {
+                                        window._agentBuiltinActivity[activity.group] = groupActivities[remainingIds[remainingIds.length - 1]];
+                                    } else {
+                                        delete window._agentBuiltinActivities[activity.group];
+                                        var keptBrowserActivity = window._agentBuiltinActivity[activity.group];
+                                        if (!keptBrowserActivity || activity.commission_id == null
+                                            || keptBrowserActivity.commission_id === activity.commission_id) {
+                                            delete window._agentBuiltinActivity[activity.group];
+                                        }
+                                    }
+                                }
+                            } else if (activity.state === 'started') {
                                 window._agentBuiltinActivity[activity.group] = activity;
                             } else {
                                 // 上一个任务的「结束」可能比下一个任务的「开始」晚到：
@@ -6430,6 +6506,10 @@
                 console.log('[WS] stale onclose skipped (socket already replaced)');
                 return;
             }
+            window._agentBuiltinActivity = {};
+            window._agentBuiltinActivities = Object.create(null);
+            window._agentBuiltinActivitySeen = Object.create(null);
+            window._agentBuiltinActivityEpoch = (window._agentBuiltinActivityEpoch || 0) + 1;
             console.log(window.t('console.websocketClosed'));
             if (window.nekoVoiceCaptureReadiness) window.nekoVoiceCaptureReadiness.disconnected();
             removeExternalAsrPreview();

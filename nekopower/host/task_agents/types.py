@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
@@ -242,6 +243,17 @@ class _SessionAction:
         if not self.active():
             self.record.status = "denied"
             raise RuntimeError(DENIED_BY_SETTINGS)
+
+
+@dataclass(slots=True)
+class _WorkdirHold:
+    """Active working-directory cleanup hold with its own veto flag and delete lock."""
+
+    key: str
+    aliases: tuple[str, ...]
+    event: asyncio.Event
+    lock: threading.Lock = field(default_factory=threading.Lock)
+    vetoed: bool = False
 
 
 @dataclass(slots=True)

@@ -50,6 +50,11 @@ logger = get_module_logger(__name__, "Main")
 _OPENAI_SDK_MAX_CONNECTIONS = 1000
 _OPENAI_SDK_MAX_KEEPALIVE_CONNECTIONS = 100
 
+# Explicit per-sentence HTTP timeout aligned with sibling HTTP TTS workers
+# (cogtts / doubao / minimax / qwen_token_plan), overriding the OpenAI SDK's
+# 600s read/write/pool defaults.
+OPENAI_TTS_HTTP_TIMEOUT = httpx.Timeout(connect=10.0, read=60.0, write=10.0, pool=10.0)
+
 def _openai_auth_client_kwargs(client_type, audio_api_key):
     """Build SDK credentials for authenticated and auth-free endpoints."""
     client_kwargs = {"api_key": audio_api_key or ""}
@@ -162,6 +167,12 @@ def openai_tts_worker(
         else:
             http_client = http_client_type()
         client_kwargs["http_client"] = install_stale_connection_retry(http_client)
+        client_kwargs["timeout"] = OPENAI_TTS_HTTP_TIMEOUT
+        # Align with sibling raw-httpx TTS workers (cogtts / doubao / minimax /
+        # qwen_token_plan): stale-connection drops are retried once below, while
+        # 429/5xx surface promptly to the TTS error/fallback path rather than
+        # stalling live speech playback across multiple SDK backoff retries.
+        client_kwargs["max_retries"] = 0
         client = AsyncOpenAI(**client_kwargs)
         # Derive vendor extensions and the log host from the URL the SDK will
         # actually call: without ``base_url`` the SDK honors ``OPENAI_BASE_URL``.

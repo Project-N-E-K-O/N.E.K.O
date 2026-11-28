@@ -255,6 +255,10 @@ class HostPaths:
         """Return where what the user set about landing is kept (``landing_settings.py``)."""
         return self.root() / "landing.json"
 
+    def storage_json(self) -> Path:
+        """Return where the user's disk cleanup settings are kept (``storage.py``)."""
+        return self.root() / "storage.json"
+
     def dsh(self) -> Path:
         """Return where dsh is installed, for a user who downloaded it (``nekopower.dsh.install``).
 

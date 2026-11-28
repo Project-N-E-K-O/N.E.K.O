@@ -1740,6 +1740,43 @@ async def on_shutdown():
         except Exception as e:
             logger.debug(f"external_http_client 清理失败: {e}", exc_info=True)
 
+        # Close pooled LLM and decision httpx clients owned by this loop
+        # unless a merged-mode host owns the shared loop and closes them after
+        # Main, Memory, and Agent have all stopped.
+        try:
+            from utils.http.pool_utils import is_loop_pool_cleanup_deferred
+
+            defer_pool_cleanup = is_loop_pool_cleanup_deferred()
+        except Exception:
+            defer_pool_cleanup = False
+
+        if not defer_pool_cleanup:
+            try:
+                from utils.llm_client.warm_pool import close_warm_chat_llms
+
+                shutdown_cancellation = await _run_shutdown_step(
+                    close_warm_chat_llms,
+                    what="llm_warm_pool 清理",
+                    deadline_monotonic=time.monotonic() + 2.0,
+                    pending_cancellation=shutdown_cancellation,
+                    cancellation_budget=cancellation_budget,
+                )
+            except Exception as e:
+                logger.debug(f"llm_warm_pool 清理失败: {e}", exc_info=True)
+
+            try:
+                from utils.decision_client.adapters import aclose_decision_http_clients
+
+                shutdown_cancellation = await _run_shutdown_step(
+                    aclose_decision_http_clients,
+                    what="decision_http_client 清理",
+                    deadline_monotonic=time.monotonic() + 2.0,
+                    pending_cancellation=shutdown_cancellation,
+                    cancellation_budget=cancellation_budget,
+                )
+            except Exception as e:
+                logger.debug(f"decision_http_client 清理失败: {e}", exc_info=True)
+
         if shutdown_cancellation is not None:
             raise shutdown_cancellation
 

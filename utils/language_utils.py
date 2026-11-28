@@ -2097,10 +2097,13 @@ class TranslationService:
                     return cached[1]
 
                 from config import TRANSLATION_OUTPUT_MAX_TOKENS
+                from utils.http.pool_utils import DEFAULT_HTTP_KEEPALIVE_EXPIRY_SECONDS
                 client = await create_chat_llm_async(
                     config['model'], config['base_url'], config['api_key'],
                     max_completion_tokens=TRANSLATION_OUTPUT_MAX_TOKENS,
                     timeout=30.0,
+                    max_retries=1,
+                    keepalive_expiry=DEFAULT_HTTP_KEEPALIVE_EXPIRY_SECONDS,
                     provider_type=config.get('provider_type'),
                 )
                 self._llm_client = (route, client)

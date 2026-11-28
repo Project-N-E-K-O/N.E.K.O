@@ -25,6 +25,7 @@ from __future__ import annotations
 import ast
 import importlib
 import sys
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
@@ -70,8 +71,96 @@ def _call_has_absent_opt_out(call: ast.Call) -> bool:
     return False
 
 
-def _harvest_facade_patch_targets(tests_root: Path) -> tuple[dict[str, set[str]], int]:
-    """AST-harvest every attribute tests patch on ``nekopower.host.task_agents``."""
+def _calls_with_params(tree: ast.AST) -> Iterator[tuple[ast.Call, frozenset[str]]]:
+    """Every call in ``tree``, with the parameter names of the functions (and lambdas) it lies in.
+
+    A parameter (a pytest fixture such as ``host``) shadows a module alias of the same name:
+    ``host.task_agents`` is then the fixture's manager, not the facade module. An import of that
+    name in the function's own body (``from nekopower import host``) binds it to the module again
+    from where it stands on (by source position: a patch before the import still patches the
+    fixture), so a call after it is not taken as shadowed.
+    """
+    # The shadowed names, each with the source position from which an import binds it back (None: never).
+    Shadows = dict[str, "tuple[int, int] | None"]
+
+    def imported_in(body: list[ast.stmt]) -> dict[str, tuple[int, int]]:
+        """Names bound by imports in ``body`` (not in what is nested in it), with where each is first bound."""
+        bound: dict[str, tuple[int, int]] = {}
+        stack: list[ast.AST] = list(body)
+        while stack:
+            node = stack.pop()
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)):
+                continue
+            names: list[str] = []
+            if isinstance(node, ast.Import):
+                names = [alias.asname or alias.name.split(".")[0] for alias in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                names = [alias.asname or alias.name for alias in node.names]
+            for name in names:
+                # Bound once the import statement has run: from its end on.
+                at = (node.end_lineno or node.lineno, node.end_col_offset or 0)
+                bound[name] = min(bound.get(name, at), at)
+            stack.extend(ast.iter_child_nodes(node))
+        return bound
+
+    def shadowed_at(call: ast.Call, shadows: Shadows) -> frozenset[str]:
+        here = (call.lineno, call.col_offset)
+        return frozenset(name for name, after in shadows.items() if after is None or here < after)
+
+    def visit(node: ast.AST, params: Shadows) -> Iterator[tuple[ast.Call, frozenset[str]]]:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            args = node.args
+            names = {
+                arg.arg
+                for arg in (
+                    *args.posonlyargs,
+                    *args.args,
+                    *args.kwonlyargs,
+                    *([args.vararg] if args.vararg else []),
+                    *([args.kwarg] if args.kwarg else []),
+                )
+            }
+            # Decorators and defaults are evaluated where the function is defined.
+            outside = [
+                *getattr(node, "decorator_list", []),
+                *args.defaults,
+                *(default for default in args.kw_defaults if default is not None),
+            ]
+            for expr in outside:
+                yield from visit(expr, params)
+            body = node.body if isinstance(node.body, list) else [node.body]
+            imports = imported_in(body)
+            inner: Shadows = dict(params)
+            for name in names:
+                inner[name] = imports.get(name)
+            for name, at in imports.items():
+                if name in inner and name not in names:
+                    earlier = inner[name]
+                    inner[name] = at if earlier is None else min(earlier, at)
+            for stmt in body:
+                yield from visit(stmt, inner)
+            return
+        if isinstance(node, ast.Call):
+            yield node, shadowed_at(node, params)
+        for child in ast.iter_child_nodes(node):
+            yield from visit(child, params)
+
+    yield from visit(tree, {})
+
+
+def _facade_has(attr: str) -> bool:
+    return hasattr(importlib.import_module(FACADE_MODULE_PATH), attr)
+
+
+def _harvest_facade_patch_targets(
+    tests_root: Path, *, present: Callable[[str], bool] = _facade_has
+) -> tuple[dict[str, set[str]], int]:
+    """AST-harvest every attribute tests patch on ``nekopower.host.task_agents``.
+
+    A patch that may create its attribute (``raising=False`` / ``create=True``) is left out only
+    when the facade really has no such attribute (``present``): one that replaces an existing
+    attribute must reach its consumers like any other.
+    """
     targets: dict[str, set[str]] = {}
     scanned = 0
     for path in sorted(tests_root.rglob("*.py")):
@@ -117,11 +206,15 @@ def _harvest_facade_patch_targets(tests_root: Path) -> tuple[dict[str, set[str]]
                             if isinstance(target, ast.Name):
                                 ta_aliases.add(target.id)
 
-        def _is_facade_expr(expr: ast.AST) -> bool:
-            if isinstance(expr, ast.Name) and expr.id in ta_aliases:
+        def _is_facade_expr(expr: ast.AST, params: frozenset[str]) -> bool:
+            if isinstance(expr, ast.Name) and expr.id in ta_aliases and expr.id not in params:
                 return True
             if isinstance(expr, ast.Attribute) and expr.attr == "task_agents":
-                if isinstance(expr.value, ast.Name) and expr.value.id in host_aliases:
+                if (
+                    isinstance(expr.value, ast.Name)
+                    and expr.value.id in host_aliases
+                    and expr.value.id not in params
+                ):
                     return True
                 if isinstance(expr.value, ast.Attribute) and ast.unparse(expr.value) == "nekopower.host":
                     return True
@@ -139,13 +232,15 @@ def _harvest_facade_patch_targets(tests_root: Path) -> tuple[dict[str, set[str]]
             return False
 
         rel = path.relative_to(tests_root).as_posix()
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call):
-                continue
+        for node, params in _calls_with_params(tree):
             if not _is_patch_call(node):
                 continue
-            if _call_has_absent_opt_out(node):
-                continue
+            may_create = _call_has_absent_opt_out(node)
+
+            def _note(attr: str, call: ast.Call = node, opt_out: bool = may_create) -> None:
+                if opt_out and not present(attr):
+                    return
+                targets.setdefault(attr, set()).add(f"{rel}:{call.lineno}")
 
             # String form: patch("nekopower.host.task_agents.<attr>", ...) / setattr("nekopower.host.task_agents.<attr>", ...)
             str_candidates: list[ast.AST] = []
@@ -163,20 +258,20 @@ def _harvest_facade_patch_targets(tests_root: Path) -> tuple[dict[str, set[str]]
                     rest = cand.value[len(FACADE_MODULE_PATH) + 1 :]
                     attr = rest.split(".", 1)[0]
                     if attr:
-                        targets.setdefault(attr, set()).add(f"{rel}:{node.lineno}")
+                        _note(attr)
 
             # Object form: monkeypatch.setattr(ta_mod, "<attr>", ...) / patch.object(ta_mod, "<attr>", ...)
             obj_target: ast.AST | None = node.args[0] if node.args else None
             for kw in node.keywords:
                 if kw.arg == "target":
                     obj_target = kw.value
-            if obj_target is not None and _is_facade_expr(obj_target):
+            if obj_target is not None and _is_facade_expr(obj_target, params):
                 attr_node: ast.AST | None = node.args[1] if len(node.args) >= 2 else None
                 for kw in node.keywords:
                     if kw.arg in ("name", "attribute"):
                         attr_node = kw.value
                 if isinstance(attr_node, ast.Constant) and isinstance(attr_node.value, str) and attr_node.value:
-                    targets.setdefault(attr_node.value, set()).add(f"{rel}:{node.lineno}")
+                    _note(attr_node.value)
 
     return targets, scanned
 
@@ -376,7 +471,9 @@ def test_patch_routing_contract_across_task_agents_package() -> None:
     checked_modules: set[str] = set()
     for py_path in sorted(PKG_DIR.glob("*.py")):
         stem = py_path.stem
-        if stem == "__init__" or stem in OWNER_SUBMODULES:
+        # ``types`` too: its helpers call one another by their bare names (``_begun_in`` calls
+        # ``_in_dsh``), so a patch on the facade of one that another calls would not reach it.
+        if stem == "__init__":
             continue
         checked_modules.add(stem)
         tree = _parse_file(py_path)
@@ -388,7 +485,7 @@ def test_patch_routing_contract_across_task_agents_package() -> None:
             )
         )
 
-    assert checked_modules == EXPECTED_MIXIN_MODULES | {"manager"}
+    assert checked_modules == EXPECTED_MIXIN_MODULES | OWNER_SUBMODULES | {"manager"}
     assert violations == [], "\n".join(violations)
 
 
@@ -485,6 +582,63 @@ def test_harvester_recognizes_aliased_mock_patch_without_matching_plain_calls(tm
     assert scanned == 2
     assert "_CAUGHT_UP_SECONDS" in targets
     assert "_NOT_PATCHED" not in targets
+
+
+def test_harvester_keeps_may_create_patches_of_attributes_the_facade_has(tmp_path: Path) -> None:
+    """Self-test: ``raising=False`` / ``create=True`` is left out only for an attribute the facade lacks."""
+    (tmp_path / "test_opt_out.py").write_text(
+        "from nekopower.host import task_agents\n"
+        "def test_x(monkeypatch):\n"
+        '    monkeypatch.setattr(task_agents, "_EXISTING", 1, raising=False)\n'
+        '    monkeypatch.setattr(task_agents, "_ABSENT", 1, raising=False)\n'
+        '    monkeypatch.setattr("nekopower.host.task_agents._EXISTING_TOO", 1, raising=False)\n',
+        encoding="utf-8",
+    )
+    targets, _scanned = _harvest_facade_patch_targets(
+        tmp_path, present=lambda attr: attr in {"_EXISTING", "_EXISTING_TOO"}
+    )
+    assert set(targets) == {"_EXISTING", "_EXISTING_TOO"}
+
+
+def test_harvester_does_not_take_a_fixture_named_like_the_host_module_for_it(tmp_path: Path) -> None:
+    """Self-test: a ``host`` fixture shadows ``from nekopower import host``; its ``task_agents`` is a manager."""
+    (tmp_path / "test_fixture.py").write_text(
+        "from nekopower import host\n"
+        "def test_fixture(host, monkeypatch):\n"
+        '    monkeypatch.setattr(host.task_agents, "_choose_runtime", None)\n'
+        "def test_module(monkeypatch):\n"
+        '    monkeypatch.setattr(host.task_agents, "_CAUGHT_UP_SECONDS", 0)\n'
+        "def test_lambda(monkeypatch):\n"
+        '    (lambda host: monkeypatch.setattr(host.task_agents, "_IN_LAMBDA", 0))(None)\n'
+        "def test_imported_again(host, monkeypatch):\n"
+        "    from nekopower import host\n"
+        '    monkeypatch.setattr(host.task_agents, "_IMPORTED_AGAIN", 0)\n'
+        "def test_imported_in_a_nested_function_only(host, monkeypatch):\n"
+        "    def inner():\n"
+        "        from nekopower import host\n"
+        "        return host\n"
+        '    monkeypatch.setattr(host.task_agents, "_STILL_THE_FIXTURE", 0)\n'
+        "def test_patched_before_the_import(host, monkeypatch):\n"
+        '    monkeypatch.setattr(host.task_agents, "_BEFORE_THE_IMPORT", 0, raising=False)\n'
+        "    from nekopower import host\n"
+        '    monkeypatch.setattr(host.task_agents, "_AFTER_THE_IMPORT", 0)\n',
+        encoding="utf-8",
+    )
+    targets, _scanned = _harvest_facade_patch_targets(tmp_path, present=lambda attr: True)
+    # A fixture parameter shadows the module; an import of it in the function's own body binds it
+    # back from there on (a patch before it is still the fixture's), and one in a nested function does not.
+    assert set(targets) == {"_CAUGHT_UP_SECONDS", "_IMPORTED_AGAIN", "_AFTER_THE_IMPORT"}
+
+
+def test_patch_routing_guard_covers_the_owner_module_helpers() -> None:
+    """Self-test: a helper of ``types`` that calls a patched one by its bare name is caught."""
+    source = (
+        "def _in_dsh(session_dir): return False\n"
+        "def _begun_in(session, session_dir): return 'dsh' if _in_dsh(session_dir) else None\n"
+    )
+    tree = ast.parse(source, filename="<synthetic types>")
+    found = _check_patch_routing_in_tree(tree, filename="<synthetic types>", patched_symbols={"_in_dsh"})
+    assert found and all("bare global read" in msg for msg in found)
 
 
 def test_package_layout_mixins_disjoint_and_facade_shape() -> None:
@@ -702,19 +856,13 @@ async def test_facade_monkeypatch_reaches_split_consumers_at_runtime(
     )
     monkeypatch.setattr(asyncio, "wait", real_wait)
 
-    # 4. _lies_in in MessagingMixin._rule_on_other_session (late-bound via facade)
-    def sentinel_lies_in(*_args):
-        return True
-
-    monkeypatch.setattr(facade, "_lies_in", sentinel_lies_in)
-    assert sys.modules[f"{FACADE_MODULE_PATH}.messaging"]._task_agents_facade._lies_in is sentinel_lies_in
-
-    # 5. _begun_in in manager.py (late-bound via facade)
-    def sentinel_begun(*_args):
-        return "sentinel-runtime"
-
-    monkeypatch.setattr(facade, "_begun_in", sentinel_begun)
-    assert sys.modules[f"{FACADE_MODULE_PATH}.manager"]._task_agents_facade._begun_in is sentinel_begun
+    # 4/5. _lies_in (MessagingMixin) and _begun_in (manager) are read deep inside large methods.
+    # What is checked here is that those modules bind the facade module itself (not ``types`` or a
+    # copy); that the read sites go through it is the AST guard's (test_patch_routing_contract_...),
+    # and the patches reach them end to end in test_host_session_messages (``_lies_in``) and
+    # test_host_role_models (``_begun_in``).
+    for stem in ("messaging", "manager"):
+        assert sys.modules[f"{FACADE_MODULE_PATH}.{stem}"]._task_agents_facade is facade
 
     # 6. _SHUTDOWN_START_WAIT_SECONDS in BillingUsageMixin._settle_usage
     settle_timeouts: list[float | None] = []

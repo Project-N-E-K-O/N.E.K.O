@@ -166,6 +166,7 @@ from .models import (
     _LineNotAdded,
     _LeftAside,
     _NotMade,
+    _WorkdirClearing,
     Layer,
     _LineToPut,
 )  # noqa: F401

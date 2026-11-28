@@ -947,6 +947,7 @@ class LLMClientProvider:
             return self._client
 
     async def _create_client(self) -> Any:
+        from utils.http.pool_utils import DEFAULT_HTTP_KEEPALIVE_EXPIRY_SECONDS
         from utils.llm_client import create_chat_llm_async
 
         config = self._config
@@ -962,6 +963,7 @@ class LLMClientProvider:
             max_completion_tokens=config.max_output_tokens,
             timeout=config.request_timeout_seconds,
             max_retries=config.max_retries,
+            keepalive_expiry=DEFAULT_HTTP_KEEPALIVE_EXPIRY_SECONDS,
             provider_type=config.provider_type,
             streaming=True,
             **extra,

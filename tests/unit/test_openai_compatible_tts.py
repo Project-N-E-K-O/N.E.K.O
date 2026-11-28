@@ -1410,6 +1410,11 @@ def _sdk_kwargs(fake_client):
     assert (limits.max_connections, limits.max_keepalive_connections) == (1000, 100)
     # A request on a connection the server already dropped is retried once.
     assert getattr(http_client, "stale_retry_installed", False)
+    # Explicit bounded timeout and zero SDK retries (stale-retry handles dead sockets).
+    timeout = kwargs.pop("timeout")
+    max_retries = kwargs.pop("max_retries")
+    assert timeout == httpx.Timeout(connect=10.0, read=60.0, write=10.0, pool=10.0)
+    assert max_retries == 0
     return kwargs
 
 

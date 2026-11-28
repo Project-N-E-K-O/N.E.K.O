@@ -20,10 +20,10 @@ const zhCnLocaleSource = fs.readFileSync(
   path.join(repoRoot, 'static', 'locales/zh-CN.json'),
   'utf8'
 );
-const launcherSpecSource = fs.readFileSync(
-  path.join(repoRoot, 'specs', 'launcher.spec'),
+const desktopWorkflowSources = ['build-desktop.yml', 'build-desktop-linux.yml'].map((name) => fs.readFileSync(
+  path.join(repoRoot, '.github', 'workflows', name),
   'utf8'
-);
+));
 const localeCodes = ['en', 'es', 'ja', 'ko', 'pt', 'ru', 'zh-CN', 'zh-TW'];
 const localeSources = Object.fromEntries(localeCodes.map((code) => [
   code,
@@ -130,7 +130,9 @@ test('Day1 system tray intro modal combines the tray location and menu guidance'
     /box-shadow/
   );
   assert.match(yuiGuideCssSource, /@media \(max-width: 620px\)/);
-  assert.match(launcherSpecSource, /add_data\('static', 'static'\)/);
+  for (const workflowSource of desktopWorkflowSources) {
+    assert.match(workflowSource, /--include-data-dir=static=static/);
+  }
 
   const zhCn = JSON.parse(zhCnLocaleSource);
   assert.equal(zhCn.tutorial.systray.location.title, '📍 托盘图标位置');

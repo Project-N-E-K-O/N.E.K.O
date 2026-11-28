@@ -1,18 +1,7 @@
 from pathlib import Path
-import re
 
 
 ROOT = Path(__file__).resolve().parents[4]
-
-
-def test_pyinstaller_bundles_voice_turn_assets():
-    spec = (ROOT / "specs" / "launcher.spec").read_text(encoding="utf-8")
-    assert spec.count("'main_logic/asr_client/endpointing/models'") == 2
-    assert "voice_turn_assets_present" in spec
-    assert re.search(
-        r"pkg == ['\"]onnxruntime['\"] and voice_turn_assets_present",
-        spec,
-    )
 
 
 def test_nuitka_workflows_prepare_bundle_and_verify_voice_turn_assets():
