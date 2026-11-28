@@ -9,7 +9,7 @@ const injectedA = 'data:image/png;base64,cHJpb3I=';
 const wrong = 'data:image/png;base64,d3Jvbmc=';
 const queue = [];
 const windows = [];
-function fixture(route, type) {
+function fixture(route, type, options = {}) {
     const modelKey = type === 'vrm' ? 'vrm:/Shared.vrm' : 'live2d:/Shared.model3.json';
     const listeners = new Map();
     const store = new Map();
@@ -17,7 +17,8 @@ function fixture(route, type) {
     const requests = [];
     const commits = [];
     const received = [];
-    const timers = new Set();
+    const timers = new Map();
+    let characterReads = 0;
     const window = {
         location: { pathname: route },
         lanlan_config: { lanlan_name: 'A', switch_revision: 10, model_type: type },
@@ -28,6 +29,7 @@ function fixture(route, type) {
         document: {},
         invalidatePendingMusicSearch() {},
         connectWebSocket() {},
+        unlockAchievement: options.unlockAchievement,
         requestAnimationFrame(fn) { fn(); },
         addEventListener(type, fn) {
             if (!listeners.has(type)) listeners.set(type, []);
@@ -48,6 +50,7 @@ function fixture(route, type) {
             getDataUrl() { return ''; }
         }
     };
+    const firstCharacterRead = options.beforeFirstCharacterRead;
     const ctx = vm.createContext({
         window,
         document: { readyState: 'loading', body: { classList: { add() {} } }, getElementById: () => null, querySelectorAll: () => [], addEventListener() {} },
@@ -55,7 +58,7 @@ function fixture(route, type) {
         Event: class { constructor(type) { this.type = type; } },
         CustomEvent: class { constructor(type, {detail} = {}) { Object.assign(this, {type, detail}); } },
         WebSocket: { OPEN: 1, CLOSED: 3, CLOSING: 2 },
-        setTimeout(fn, delay) { if (delay === 100) queueMicrotask(fn); timers.add(fn); return fn; },
+        setTimeout(fn, delay) { if (delay === 100) queueMicrotask(fn); timers.set(fn, delay); return fn; },
         clearTimeout(fn) { timers.delete(fn); },
         clearInterval() {},
         cancelAnimationFrame() {},
@@ -67,6 +70,7 @@ function fixture(route, type) {
         },
         fetch: async (url, options) => {
             if (options?.method === 'POST') requests.push(url);
+            if (url === '/api/characters' && window.appState.isSwitchingCatgirl && ++characterReads === 1) await firstCharacterRead?.();
             return {ok: true, json: async () => ({'猫娘': {A: {model_type: type}, B: {model_type: type}, C: {model_type: type}}})};
         },
     });
@@ -89,7 +93,12 @@ function fixture(route, type) {
     window.appChatAvatar.init();
     const dataUrl = () => window.appChatAvatar.getModelAvatarDataUrl();
     const event = (data) => i.handleNekoBroadcastMessage({data});
-    const result = {window, dataUrl, event, store, writes, commits, modelKey, requests, received};
+    const runWatchdog = () => {
+        const callbacks = [...timers].filter(([, delay]) => delay === 45000);
+        assert.equal(callbacks.length, 1);
+        callbacks[0][0]();
+    };
+    const result = {window, dataUrl, event, store, writes, commits, modelKey, requests, received, runWatchdog};
     windows.push(result);
     return result;
 }
@@ -200,3 +209,74 @@ test('a different owner model key cannot satisfy same-model recovery using the f
     await follower.event({action:'avatar_updated',lanlan_name:'B',dataUrl:portraitA,modelType:'vrm'});
     assert.equal(follower.dataUrl(),portraitA);
 });
+
+function hold() {
+    let release;
+    const promise = new Promise(resolve => { release = resolve; });
+    return {promise, release};
+}
+const settleSwitch = () => new Promise(resolve => setImmediate(resolve));
+const queueSwitch = (w, name, prior, revision) => w.event({
+    action: 'catgirl_switched', new_catgirl: name, old_catgirl: prior, switch_revision: revision,
+});
+const committedRevisions = w => w.received.filter(e => e.type === 'neko:avatar-scope-committed')
+    .map(e => e.detail.revision);
+
+for (const [route, type] of [['/chat', 'vrm'], ['/chat_full', 'live2d']]) {
+    for (const watchdog of [false, true]) {
+        test(route+' replays a newer same-name pending avatar scope on '+(watchdog ? 'watchdog' : 'finally'), async () => {
+            windows.length = 0; queue.length = 0;
+            const firstConfig = hold(), firstAchievement = hold();
+            let achievements = 0;
+            const owner = fixture('/', type);
+            const follower = fixture(route, type, {
+                beforeFirstCharacterRead: () => firstConfig.promise,
+                unlockAchievement: watchdog ? () => ++achievements === 1 ? firstAchievement.promise : undefined : undefined,
+            });
+            await follower.event({action:'avatar_updated',lanlan_name:'A',dataUrl:injectedA,modelType:type});
+            assert.equal(follower.dataUrl(), injectedA);
+            await queueSwitch(follower, 'B', 'A', 11);
+            assert.equal(follower.window.appState.isSwitchingCatgirl, true);
+            await queueSwitch(follower, 'C', 'B', 12);
+            await queueSwitch(follower, 'B', 'C', 13);
+            assert.equal(follower.window.appState._pendingCatgirlSwitch.switchRevision, 13);
+            assert.equal(follower.window.lanlan_config.switch_revision, 13);
+            firstConfig.release();
+            await settleSwitch();
+            if (watchdog) {
+                assert.deepEqual(follower.commits, ['B'], 'B/11 started, reached its commit, and is still in the tail');
+                assert.deepEqual(committedRevisions(follower), [], 'B/11 cannot authorize the current B/13 scope');
+                follower.runWatchdog();
+                await settleSwitch();
+                firstAchievement.release();
+                await settleSwitch();
+            }
+            ownerCompletes(owner, 'B', 13, type);
+            await flush();
+            assert.equal(follower.dataUrl(), portraitA, 'the first usable portrait must belong to latest B/13');
+            assert.deepEqual(committedRevisions(follower), [13]);
+            assert.deepEqual(follower.commits, ['B', 'B'], 'play only current B/11 then latest B/13, never superseded C/12');
+            assert.deepEqual(follower.writes, []);
+            assert.equal(owner.store.has('neko_avatar:B'), false);
+        });
+    }
+}
+
+for (const repeat of [0, 11]) {
+    test('an in-flight same-name duplicate with revision '+repeat+' does not replay', async () => {
+        windows.length = 0; queue.length = 0;
+        const firstConfig = hold(), type = 'vrm';
+        const owner = fixture('/', type);
+        const follower = fixture('/chat', type, {beforeFirstCharacterRead: () => firstConfig.promise});
+        await follower.event({action:'avatar_updated',lanlan_name:'A',dataUrl:injectedA,modelType:type});
+        await queueSwitch(follower, 'B', 'A', 11);
+        await queueSwitch(follower, 'B', 'A', repeat);
+        firstConfig.release();
+        await settleSwitch();
+        ownerCompletes(owner, 'B', 11, type);
+        await flush();
+        assert.equal(follower.dataUrl(), portraitA);
+        assert.deepEqual(committedRevisions(follower), [11]);
+        assert.deepEqual(follower.commits, ['B']);
+    });
+}

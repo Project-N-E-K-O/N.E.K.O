@@ -505,6 +505,11 @@
             && !!(window.lanlan_config && window.lanlan_config.lanlan_name === newCatgirl);
         console.log('[猫娘切换] 设置 isSwitchingCatgirl = true');
 
+        // A same-name receipt can carry a newer committed avatar scope.
+        const isPendingTargetAlreadyApplied = (pending, didCommit) => didCommit
+            && pending?.newCatgirl === newCatgirl
+            && (pending.switchRevision || 0) <= switchRevision;
+
         // Watchdog: 切换路径上有大量没有 timeout 兜底的 await（rAF 循环、wasm reset、模型加载、
         // fetch /api/characters 等）。任何一处永挂都会让 finally 永不执行、isSwitchingCatgirl
         // 永卡 true，后续 broadcast 触发的切换全在前面 isSwitchingCatgirl 早退分支被吞掉，
@@ -688,10 +693,7 @@
                 S._currentSwitchAttemptId = null;
                 const pendingSwitch = S._pendingCatgirlSwitch;
                 S._pendingCatgirlSwitch = null;
-                const pendingAlreadySatisfied = !!(
-                    switchAlreadyCompleted
-                    && pendingSwitch?.newCatgirl === newCatgirl
-                );
+                const pendingAlreadySatisfied = isPendingTargetAlreadyApplied(pendingSwitch, switchAlreadyCompleted);
                 if (pendingSwitch?.newCatgirl && !pendingAlreadySatisfied) {
                     Promise.resolve().then(() => handleCatgirlSwitch(
                         pendingSwitch.newCatgirl,
@@ -2263,10 +2265,7 @@
                 S._currentSwitchAttemptId = null;
                 const pendingSwitch = S._pendingCatgirlSwitch;
                 S._pendingCatgirlSwitch = null;
-                const pendingAlreadySatisfied = !!(
-                    switchHasCommitted
-                    && pendingSwitch?.newCatgirl === newCatgirl
-                );
+                const pendingAlreadySatisfied = isPendingTargetAlreadyApplied(pendingSwitch, switchHasCommitted);
                 if (pendingSwitch?.newCatgirl && !pendingAlreadySatisfied) {
                     // A failed attempt may roll the name back to the pending target after
                     // model cleanup. Keep forceReload unless this attempt already committed it.
