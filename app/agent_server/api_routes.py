@@ -123,6 +123,11 @@ _USER_PLUGIN_REGISTRY_CHECK_INTERVAL_S = 0.75
 _USER_PLUGIN_REGISTRY_CHECK_TIMEOUT_S = 8.0
 _USER_PLUGIN_REGISTRY_CHECK_MAX_DURATION_S = 12.0
 _USER_PLUGIN_EMPTY_CONFIRMATIONS = 3
+# What the task that brings the plugins up answers when it is not the one to say (``_bg_plugin_enable``):
+# a newer toggle took its generation over, or the plugin server did not answer in time. A task agent that
+# asked for the plugins reads these (``nekopower_mount``): the first is followed to the newer task.
+PLUGIN_ENABLE_SUPERSEDED = "plugin state changed while starting"
+PLUGIN_ENABLE_UNAVAILABLE = "the plugin server did not respond in time"
 
 
 async def _check_user_plugin_registry_readiness() -> Dict[str, Any]:
@@ -247,21 +252,43 @@ async def set_agent_flags(payload: Dict[str, Any]):
     # past intents through this same function with ``_persist_intent=False``
     # so the replay doesn't re-write what it's reading.
     persist_intent = bool((payload or {}).get("_persist_intent", True))
+    # ``_still_valid`` (an in-process callable, never part of a request body): the user's
+    # answer to a task agent's request may stop standing while the checks below are
+    # awaited. A switch is not written once it no longer stands; nothing is switched off
+    # for it either (the switch was off when the request came).
+    still_valid = (payload or {}).get("_still_valid")
+
+    def _approval_stands() -> bool:
+        return not callable(still_valid) or bool(still_valid())
+
+    if callable(still_valid) and not _approval_stands():
+        # Already stale at the door: nothing is touched, no later toggle is overtaken by it.
+        return {"success": True, "agent_flags": _agent_flags_snapshot()}
     # Agent API gate: if any agent sub-feature is being enabled, gate must pass.
     gate = _check_agent_api_gate()
     changed = False
     old_flags = dict(Modules.agent_flags)
     old_analyzer_enabled = bool(Modules.analyzer_enabled)
     browser_use_close_reason: Optional[str] = None
+    # A request that turns something on for a task agent (``_still_valid`` given) does not
+    # take a place in the order of the switch's settings until it writes the switch: one
+    # that fell meanwhile must not overtake a toggle the user made while it waited. A later
+    # setting still overtakes it, as ever.
+    conditional = callable(still_valid)
+    conditional_bf = conditional and bf is True
+    conditional_cf = conditional and cf is True
+    conditional_uf = conditional and uf is True
     browser_use_lifecycle_seq = Modules.browser_use_lifecycle_seq
-    if isinstance(bf, bool):
+    bumped_bf = isinstance(bf, bool) and not conditional_bf
+    if bumped_bf:
         Modules.browser_use_lifecycle_seq += 1
         browser_use_lifecycle_seq = Modules.browser_use_lifecycle_seq
     user_plugin_lifecycle_seq = Modules.user_plugin_lifecycle_seq
-    if isinstance(cf, bool):
+    bumped_cf = isinstance(cf, bool) and not conditional_cf
+    if bumped_cf:
         Modules.computer_use_switch_seq += 1
     computer_use_switch_seq = Modules.computer_use_switch_seq
-    if isinstance(uf, bool):
+    if isinstance(uf, bool) and not conditional_uf:
         Modules.user_plugin_lifecycle_seq += 1
         user_plugin_lifecycle_seq = Modules.user_plugin_lifecycle_seq
     # Agent LLM gate fail (endpoint/key not configured) blocks **only** the
@@ -274,10 +301,10 @@ async def set_agent_flags(payload: Dict[str, Any]):
     # nullifying them, then fall through to the per-flag handling so uf still
     # processes normally.
     if gate.get("ready") is not True and any(x is True for x in (cf, bf)):
-        if not isinstance(bf, bool) and old_flags.get("browser_use_enabled", False):
+        if not bumped_bf and old_flags.get("browser_use_enabled", False):
             Modules.browser_use_lifecycle_seq += 1
             browser_use_lifecycle_seq = Modules.browser_use_lifecycle_seq
-        if not isinstance(cf, bool):
+        if not bumped_cf:
             Modules.computer_use_switch_seq += 1
             computer_use_switch_seq = Modules.computer_use_switch_seq
         _put_switch_off("computer_use_enabled")
@@ -309,6 +336,12 @@ async def set_agent_flags(payload: Dict[str, Any]):
                 # The switch was set anew while this one waited for the
                 # check: that later setting stands.
                 logger.info("[Agent] Computer Use enable request overtaken by a later one; left as it is")
+            elif not _approval_stands():
+                # Looked at with nothing awaited between it and the write below.
+                logger.info("[Agent] Computer Use enable skipped: the approval no longer stands")
+            elif conditional_cf and Modules.agent_flags.get("computer_use_enabled", False):
+                # Turned on meanwhile by someone else (the user at the panel): left as it is.
+                logger.info("[Agent] Computer Use already on while a conditional request waited; left as it is")
             elif failed is not None:
                 _put_switch_off("computer_use_enabled")
                 Modules.notification = json.dumps({"code": "AGENT_CU_ENABLE_FAILED", "details": {"error": str(failed)}})
@@ -323,6 +356,9 @@ async def set_agent_flags(payload: Dict[str, Any]):
                     current = _capability_latest_answer("computer_use")
                     ready, reason = bool(current.get("ready")), current.get("reason") or "unknown"
                 if ready:
+                    if conditional_cf:
+                        # Takes its place in the order now, as the write is made.
+                        Modules.computer_use_switch_seq += 1
                     Modules.agent_flags["computer_use_enabled"] = True
                 else:
                     _put_switch_off("computer_use_enabled")
@@ -342,6 +378,12 @@ async def set_agent_flags(payload: Dict[str, Any]):
                 # The switch was set anew while this one looked for a
                 # browser: that later setting stands.
                 logger.info("[Agent] Browser Use enable request overtaken by a later one; left as it is")
+            elif not _approval_stands():
+                # Looked at with nothing awaited between it and the write below.
+                logger.info("[Agent] Browser Use enable skipped: the approval no longer stands")
+            elif conditional_bf and Modules.agent_flags.get("browser_use_enabled", False):
+                # Turned on meanwhile by someone else (the user at the panel): left as it is.
+                logger.info("[Agent] Browser Use already on while a conditional request waited; left as it is")
             else:
                 ready, reason = dependency_ready, dependency_error
                 if not _set_capability("browser_use", ready, reason, started=started):
@@ -350,6 +392,11 @@ async def set_agent_flags(payload: Dict[str, Any]):
                     current = _capability_latest_answer("browser_use")
                     ready, reason = bool(current.get("ready")), current.get("reason") or "unknown"
                 if ready:
+                    if conditional_bf:
+                        # Takes its place in the order now, as the write is made (a close that
+                        # was meant for an earlier setting then finds it is not its own).
+                        Modules.browser_use_lifecycle_seq += 1
+                        browser_use_lifecycle_seq = Modules.browser_use_lifecycle_seq
                     Modules.agent_flags["browser_use_enabled"] = True
                 else:
                     _put_switch_off("browser_use_enabled")
@@ -374,11 +421,16 @@ async def set_agent_flags(payload: Dict[str, Any]):
         )
 
     if isinstance(uf, bool):
-        if uf:  # Attempting to enable UserPlugin — non-blocking (like CUA)
+        if uf and not _approval_stands():
+            logger.info("[Agent] UserPlugin enable skipped: the approval no longer stands")
+        elif uf:  # Attempting to enable UserPlugin — non-blocking (like CUA)
+            if conditional_uf:
+                Modules.user_plugin_lifecycle_seq += 1
+                user_plugin_lifecycle_seq = Modules.user_plugin_lifecycle_seq
             Modules.agent_flags["user_plugin_enabled"] = True
             Modules.notification = json.dumps({"code": "AGENT_UP_ENABLED_CHECKING"})
 
-            async def _bg_plugin_enable():
+            async def _bg_plugin_enable() -> tuple[bool, str]:
                 _ln = lanlan_name
 
                 def _owns_generation() -> bool:
@@ -398,24 +450,24 @@ async def set_agent_flags(payload: Dict[str, Any]):
                         logger.info(
                             "[Agent] UserPlugin enable deferred until the master switch is ON"
                         )
-                        return
+                        return False, "NekoPower is switched off"
 
                     started = await _ensure_plugin_lifecycle_started(
                         should_start=_may_start_generation
                     )
                     if not _owns_generation():
-                        return
+                        return False, PLUGIN_ENABLE_SUPERSEDED
                     if not Modules.analyzer_enabled:
-                        return
+                        return False, "NekoPower is switched off"
                     if not started:
                         _put_switch_off("user_plugin_enabled")
                         Modules.notification = json.dumps({"code": "AGENT_PLUGIN_SERVER_ERROR"})
                         logger.warning("[Agent] Cannot enable UserPlugin: lifecycle startup failed")
-                        return
+                        return False, "the plugin server failed to start"
 
                     registry = await _check_user_plugin_registry_readiness()
                     if not _owns_generation():
-                        return
+                        return False, PLUGIN_ENABLE_SUPERSEDED
 
                     registry_status = registry.get("status")
                     if registry_status == "empty":
@@ -427,12 +479,14 @@ async def set_agent_flags(payload: Dict[str, Any]):
                             registry.get("empty_responses", 0),
                         )
                         await _ensure_plugin_lifecycle_stopped(should_stop=_owns_generation)
+                        return False, "no plugins are installed or enabled"
                     elif registry_status == "ready":
                         _set_capability("user_plugin", True, "")
                         logger.info(
                             "[Agent] UserPlugin lifecycle ready (%d plugins)",
                             registry.get("plugin_count", 0),
                         )
+                        return True, ""
                     else:
                         # A slow or temporarily unreachable registry is not an
                         # authoritative empty registry.  Preserve the user's ON
@@ -447,20 +501,30 @@ async def set_agent_flags(payload: Dict[str, Any]):
                             registry.get("empty_responses", 0),
                             registry.get("last_error", "unknown"),
                         )
+                        return False, PLUGIN_ENABLE_UNAVAILABLE
                 except Exception as exc:
                     if _owns_generation():
                         _put_switch_off("user_plugin_enabled")
                         Modules.notification = json.dumps({"code": "AGENT_PLUGIN_SERVER_ERROR"})
                         logger.error("[Agent] Background plugin enable failed: %s", exc)
+                    return False, "starting the plugin server failed"
                 finally:
                     if _owns_generation():
                         _bump_state_revision()
                         await _emit_agent_status_update(lanlan_name=_ln)
 
             _bg = asyncio.create_task(_bg_plugin_enable())
+            Modules.user_plugin_enable_task = _bg
+            # Handed to whoever asked for it before anything is awaited again: the global may be
+            # another task by the time this call returns (a task agent that asked for the plugins
+            # waits for the one its own call made).
+            on_plugin_task = (payload or {}).get("_on_plugin_task")
+            if callable(on_plugin_task):
+                on_plugin_task(_bg)
             Modules._persistent_tasks.add(_bg)
             _bg.add_done_callback(Modules._persistent_tasks.discard)
         else:  # Disabling UserPlugin — non-blocking
+            Modules.user_plugin_enable_task = None
             _put_switch_off("user_plugin_enabled")
             _set_capability("user_plugin", True, "")
 

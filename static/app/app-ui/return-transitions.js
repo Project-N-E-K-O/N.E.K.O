@@ -26,8 +26,63 @@
     let idleReturnBallDesktopDragStateFrame = 0;
     let idleReturnBallDesktopDragStatePending = null;
     I.pendingPngtuberReturnConfig = null;
+    I.NEKO_MODEL_FORM_PREPARE_TIMEOUT_MS = 3000;
+    I.modelReturnEnterSequence = 0;
+
+    I.shouldAnimateModelCatTransition = function shouldAnimateModelCatTransition() {
+        const bridge = window.nekoPetPowerSave;
+        try {
+            return !(bridge && typeof bridge.isEnabled === 'function' && bridge.isEnabled()
+                && typeof bridge.prepareFormChange === 'function');
+        } catch (_) {
+            return true;
+        }
+    };
+
+    I.prepareModelCatForm = async function prepareModelCatForm(target) {
+        if (I.shouldAnimateModelCatTransition()) return;
+        let timeoutId = null;
+        try {
+            await Promise.race([
+                window.nekoPetPowerSave.prepareFormChange(target),
+                new Promise(resolve => {
+                    timeoutId = setTimeout(() => {
+                        console.warn('[App] prepare model/cat window timed out:', target);
+                        resolve(false);
+                    }, I.NEKO_MODEL_FORM_PREPARE_TIMEOUT_MS);
+                })
+            ]);
+        } catch (error) {
+            console.warn('[App] prepare model/cat window failed:', error);
+        } finally {
+            if (timeoutId !== null) clearTimeout(timeoutId);
+        }
+    };
+
+    I.ensureModelReturnFormReady = async function ensureModelReturnFormReady(sequence) {
+        if (I.shouldAnimateModelCatTransition()) return;
+        // 显示入口可能提前返回；已经完成的准备不能因为 promise 已清理而重发。
+        if (!window._nekoModelReturnEnterPromise && I.modelReturnEnterSequence === sequence) {
+            const containerId = ['pngtuber-container', 'mmd-container', 'vrm-container', 'live2d-container']
+                .find(id => {
+                    const container = document.getElementById(id);
+                    if (!isModelContainerActive(id) || container.classList.contains('minimized')
+                        || container.style.visibility === 'hidden') return false;
+                    const style = typeof window.getComputedStyle === 'function' ? window.getComputedStyle(container) : null;
+                    return !style || (style.display !== 'none' && style.visibility !== 'hidden');
+                });
+            if (containerId) {
+                I.playModelReturnEnter(document.getElementById(containerId), null);
+            } else {
+                await I.prepareModelCatForm('model');
+            }
+        }
+        if (window._nekoModelReturnEnterPromise) await window._nekoModelReturnEnterPromise;
+    };
 
     function resolveModelReturnEnter(reason) {
+        const container = window._nekoModelReturnEnterContainer;
+        if (container && typeof container.removeAttribute === 'function') container.removeAttribute('data-neko-model-form-pending');
         const resolve = window._nekoModelReturnEnterResolve;
         window._nekoModelReturnEnterResolve = null;
         window._nekoModelReturnEnterPromise = null;
@@ -44,11 +99,19 @@
             clearTimeout(window._nekoModelReturnEnterTimer);
             window._nekoModelReturnEnterTimer = null;
         }
+        const container = window._nekoModelReturnEnterContainer;
+        if (container && typeof container.getAttribute === 'function'
+            && container.getAttribute('data-neko-model-form-pending') === 'true') {
+            container.style.removeProperty('opacity');
+            container.style.removeProperty('transition');
+            container.style.removeProperty('transform');
+        }
         resolveModelReturnEnter(reason);
     };
 
     function startModelReturnEnterWait(container) {
         resolveModelReturnEnter('replaced');
+        I.modelReturnEnterSequence += 1;
         let resolveWait = null;
         const promise = new Promise(resolve => {
             resolveWait = resolve;
@@ -665,6 +728,14 @@
 
     I.playModelGoodbyeExit = function playModelGoodbyeExit(container, rect) {
         if (!container) return;
+        if (!I.shouldAnimateModelCatTransition()) {
+            container.style.transition = 'none';
+            container.style.opacity = '0';
+            container.style.visibility = 'hidden';
+            container.style.transform = 'none';
+            container.classList.add('minimized');
+            return;
+        }
         if (container.getAttribute('data-neko-model-goodbye-exiting') === 'true') {
             applyModelGoodbyeVisualFade(container, { restart: false });
             return;
@@ -689,7 +760,32 @@
     }
 
     I.playModelReturnEnter = function playModelReturnEnter(container, rect) {
-        if (!container || !rect) return false;
+        if (!container) return false;
+        if (!I.shouldAnimateModelCatTransition()) {
+            I.cancelModelReturnEnter('replaced');
+            const enterPromise = startModelReturnEnterWait(container);
+            container.style.transition = 'none';
+            container.style.opacity = '0';
+            container.style.transform = 'none';
+            container.setAttribute('data-neko-model-form-pending', 'true');
+            I.prepareModelCatForm('model').then(() => {
+                if (window._nekoModelReturnEnterPromise !== enterPromise) return;
+                if (container.isConnected) {
+                    // 教程保活等清理可能移除内联 transition；揭示前重新禁止淡入。
+                    container.style.transition = 'none';
+                    container.style.removeProperty('opacity');
+                }
+                resolveModelReturnEnter('power-save');
+                if (container.isConnected) {
+                    // 先提交无动画的最终样式，再交还 hover/锁定淡化等既有 CSS。
+                    void container.offsetWidth;
+                    container.style.removeProperty('transition');
+                    container.style.removeProperty('transform');
+                }
+            });
+            return true;
+        }
+        if (!rect) return false;
         setModelExitTransformOrigin(container, rect);
         I.cancelModelReturnEnter('replaced');
         const enterPromise = startModelReturnEnterWait(container);
@@ -906,6 +1002,30 @@
             return Promise.resolve({
                 blocked: true,
                 direction: I.nekoModelCatTransitionActive ? I.nekoModelCatTransitionActive.direction : direction
+            });
+        }
+        if (!I.shouldAnimateModelCatTransition()) {
+            if (container && direction === 'cat-to-model') {
+                container.style.transition = 'none';
+                container.style.opacity = '0';
+                container.style.visibility = 'hidden';
+                container.style.pointerEvents = 'none';
+            }
+            const ready = direction === 'model-to-cat' ? I.prepareModelCatForm('cat') : Promise.resolve();
+            return ready.then(() => {
+                if (isNekoModelCatTransitionTokenCurrent(token) && onBeforeOverlayCleanup) {
+                    try { onBeforeOverlayCleanup(); } catch (error) {
+                        console.warn('[App] model/cat transition cleanup failed:', error);
+                    }
+                }
+                return { completed: true, direction, animationSkipped: true };
+            }).finally(() => {
+                if (container && direction === 'cat-to-model' && isNekoModelCatTransitionTokenCurrent(token)) {
+                    // 等统一 hide/reveal 恢复可见性，避免透明子按钮仍可点击或拖拽。
+                    container.style.removeProperty('opacity');
+                    container.style.removeProperty('transition');
+                }
+                I.releaseNekoModelCatTransition(token);
             });
         }
         const rect = normalizeNekoTransitionRect(anchorRect, container, coverRect);
@@ -1367,6 +1487,10 @@
         container.style.opacity = '0';
         container.style.transform = 'translate3d(0, 8px, 0) scale(0.94)';
         container.style.transition = 'opacity 325ms cubic-bezier(0.22, 1, 0.36, 1), transform 400ms cubic-bezier(0.22, 1, 0.36, 1)';
+        if (!I.shouldAnimateModelCatTransition()) {
+            container.style.transition = 'none';
+            container.style.transform = 'none';
+        }
         container.style.willChange = 'opacity, transform';
 
         void container.offsetWidth;

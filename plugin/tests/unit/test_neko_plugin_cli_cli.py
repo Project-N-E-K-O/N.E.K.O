@@ -6,6 +6,7 @@ import os
 import shlex
 import shutil
 import subprocess
+import sys
 import zipfile
 from pathlib import Path, PureWindowsPath
 
@@ -123,41 +124,67 @@ def _append_raw_install_declaration(plugin_dir: Path, declaration: str) -> None:
     )
 
 
-def test_cli_runtime_install_is_disabled_without_writing_plugin_directories(
+@pytest.mark.parametrize(
+    ("runner", "tampered", "extra_args"),
+    [
+        # In-process entry point with an intact package and a conflict policy.
+        ("main", False, ["--on-conflict", "fail"]),
+        # A tampered payload is refused before it is read (no hash error).
+        ("main", True, []),
+        # `python -m plugin.neko_plugin_cli` cannot bypass the refusal either.
+        ("subprocess", False, []),
+    ],
+    ids=["intact", "tampered-payload", "python-m-subprocess"],
+)
+def test_cli_runtime_install_is_refused_without_writing_plugin_directories(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
+    runner: str,
+    tampered: bool,
+    extra_args: list[str],
 ) -> None:
     plugin_dir = _make_plugin_dir(tmp_path)
     target_dir = tmp_path / "target"
     plugins_root = tmp_path / "plugins"
     profiles_root = tmp_path / "profiles"
 
-    exit_code = neko_plugin_cli.main(
-        ["build", str(plugin_dir), "-t", str(target_dir)]
-    )
-    assert exit_code == 0
+    assert neko_plugin_cli.main(["build", str(plugin_dir), "-t", str(target_dir)]) == 0
     package_path = target_dir / "cli_demo.neko-plugin"
     assert package_path.is_file()
+    if tampered:
+        _tamper_package(package_path, "payload/profiles/default.toml")
+    capsys.readouterr()
 
-    install_exit = neko_plugin_cli.main(
-        [
-            "install",
-            str(package_path),
-            "--plugins-root",
-            str(plugins_root),
-            "--profiles-root",
-            str(profiles_root),
-            "--on-conflict",
-            "fail",
-        ]
-    )
-    assert install_exit == 2
+    install_args = [
+        "install",
+        str(package_path),
+        "--plugins-root",
+        str(plugins_root),
+        "--profiles-root",
+        str(profiles_root),
+        *extra_args,
+    ]
+    if runner == "subprocess":
+        completed = subprocess.run(
+            [sys.executable, "-m", "plugin.neko_plugin_cli", *install_args],
+            cwd=Path(__file__).resolve().parents[3],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        exit_code, stderr = completed.returncode, completed.stderr
+    else:
+        exit_code = neko_plugin_cli.main(install_args)
+        stderr = capsys.readouterr().err
+
+    assert exit_code == 2
+    assert "Plugin Center" in stderr
+    assert "does not write plugin runtime directories" in stderr
+    assert "payload hash mismatch" not in stderr
+    # The built package is left alone; nothing is unpacked.
+    assert package_path.is_file()
     assert not plugins_root.exists()
     assert not profiles_root.exists()
-
-    captured = capsys.readouterr()
-    assert "Plugin Center" in captured.err
-    assert "does not write plugin runtime directories" in captured.err
 
 
 def test_cli_build_profile_prefers_config_example_over_legacy_manifest_config(tmp_path: Path) -> None:
@@ -181,34 +208,6 @@ def test_cli_build_profile_prefers_config_example_over_legacy_manifest_config(tm
     assert "auto_start = true" in profile
     assert 'token = "portable-default"' in profile
     assert 'token = "demo"' not in profile
-
-
-def test_cli_runtime_install_is_disabled_before_reading_package_payload(
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    plugin_dir = _make_plugin_dir(tmp_path)
-    package_path = tmp_path / "cli_demo.neko-plugin"
-    neko_plugin_cli.main(["build", str(plugin_dir), "-o", str(package_path)])
-    _tamper_package(package_path, "payload/profiles/default.toml")
-
-    exit_code = neko_plugin_cli.main(
-        [
-            "install",
-            str(package_path),
-            "--plugins-root",
-            str(tmp_path / "plugins"),
-            "--profiles-root",
-            str(tmp_path / "profiles"),
-        ]
-    )
-
-    assert exit_code == 2
-    captured = capsys.readouterr()
-    assert "Plugin Center" in captured.err
-    assert "payload hash mismatch" not in captured.err
-    assert not (tmp_path / "plugins").exists()
-    assert not (tmp_path / "profiles").exists()
 
 
 def test_cli_build_bundle_reports_package_shape(
@@ -722,44 +721,25 @@ def test_validate_plugin_dir_rejects_empty_or_padded_install_text(
     assert any(level == "error" and field in message for level, message in issues)
 
 
-@pytest.mark.parametrize("ui_i18n_dir", ["../outside", "/absolute/i18n"])
-def test_validate_plugin_dir_rejects_install_i18n_escape(
+@pytest.mark.parametrize(
+    "ui_i18n_dir",
+    ["../outside", "/absolute/i18n", "missing-i18n", "linked-i18n"],
+    ids=["parent-escape", "absolute", "missing-directory", "symlink-escape"],
+)
+def test_validate_plugin_dir_rejects_invalid_install_i18n_dir(
     tmp_path: Path,
     ui_i18n_dir: str,
 ) -> None:
     plugin_dir = _make_plugin_dir(tmp_path)
+    if ui_i18n_dir == "linked-i18n":
+        # A directory inside the plugin that links outside of it.
+        outside = tmp_path / "outside-i18n"
+        outside.mkdir()
+        try:
+            (plugin_dir / ui_i18n_dir).symlink_to(outside, target_is_directory=True)
+        except OSError as exc:
+            pytest.skip(f"directory symlinks unavailable: {exc}")
     _append_install_declaration(plugin_dir, ui_i18n_dir=ui_i18n_dir)
-
-    issues = validate_plugin_dir(plugin_dir)
-
-    assert any(
-        level == "error" and "ui_i18n_dir" in message
-        for level, message in issues
-    )
-
-
-def test_validate_plugin_dir_rejects_missing_install_i18n_directory(tmp_path: Path) -> None:
-    plugin_dir = _make_plugin_dir(tmp_path)
-    _append_install_declaration(plugin_dir, ui_i18n_dir="missing-i18n")
-
-    issues = validate_plugin_dir(plugin_dir)
-
-    assert any(
-        level == "error" and "ui_i18n_dir" in message
-        for level, message in issues
-    )
-
-
-def test_validate_plugin_dir_rejects_install_i18n_symlink_escape(tmp_path: Path) -> None:
-    plugin_dir = _make_plugin_dir(tmp_path)
-    outside = tmp_path / "outside-i18n"
-    outside.mkdir()
-    link = plugin_dir / "linked-i18n"
-    try:
-        link.symlink_to(outside, target_is_directory=True)
-    except OSError as exc:
-        pytest.skip(f"directory symlinks unavailable: {exc}")
-    _append_install_declaration(plugin_dir, ui_i18n_dir="linked-i18n")
 
     issues = validate_plugin_dir(plugin_dir)
 
@@ -785,50 +765,34 @@ def test_validate_plugin_dir_rejects_invalid_install_timeout(
     )
 
 
-def test_validate_plugin_dir_reports_invalid_config_example_without_crashing(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("config_example", "expected_error"),
+    [
+        # Unparseable TOML is reported, not raised.
+        ("[plugin_runtime\n", "config.example.toml could not be read"),
+        (
+            '[plugin]\nid = "hijack"\n\n[plugin_runtime]\nenabled = true\n',
+            "config.example.toml must not contain [plugin]",
+        ),
+        (
+            "[plugin_runtime]\nenabled = true\ntimeout = 0\n",
+            "[plugin_runtime].timeout must be > 0",
+        ),
+    ],
+    ids=["invalid-toml", "plugin-identity", "runtime-field"],
+)
+def test_validate_plugin_dir_reports_config_example_errors(
+    tmp_path: Path,
+    config_example: str,
+    expected_error: str,
+) -> None:
     plugin_dir = _make_plugin_dir(tmp_path)
-    (plugin_dir / "config.example.toml").write_text("[plugin_runtime\n", encoding="utf-8")
+    (plugin_dir / "config.example.toml").write_text(config_example, encoding="utf-8")
 
     issues = validate_plugin_dir(plugin_dir)
 
     assert any(
-        level == "error" and "config.example.toml could not be read" in message
-        for level, message in issues
-    )
-
-
-def test_validate_plugin_dir_rejects_plugin_identity_in_config_example(tmp_path: Path) -> None:
-    plugin_dir = _make_plugin_dir(tmp_path)
-    (plugin_dir / "config.example.toml").write_text(
-        "[plugin]\n"
-        'id = "hijack"\n'
-        "\n"
-        "[plugin_runtime]\n"
-        "enabled = true\n",
-        encoding="utf-8",
-    )
-
-    issues = validate_plugin_dir(plugin_dir)
-
-    assert any(
-        level == "error" and "config.example.toml must not contain [plugin]" in message
-        for level, message in issues
-    )
-
-
-def test_validate_plugin_dir_checks_runtime_fields_in_config_example(tmp_path: Path) -> None:
-    plugin_dir = _make_plugin_dir(tmp_path)
-    (plugin_dir / "config.example.toml").write_text(
-        "[plugin_runtime]\n"
-        "enabled = true\n"
-        "timeout = 0\n",
-        encoding="utf-8",
-    )
-
-    issues = validate_plugin_dir(plugin_dir)
-
-    assert any(
-        level == "error" and "[plugin_runtime].timeout must be > 0" in message
+        level == "error" and expected_error in message
         for level, message in issues
     )
 
@@ -872,31 +836,16 @@ def test_validate_plugin_dir_accepts_previous_plugin_ids(tmp_path: Path) -> None
     assert not any("previous_ids is not a recognized" in message for _level, message in issues)
 
 
-def test_validate_plugin_dir_accepts_declared_plugin_entries(tmp_path: Path) -> None:
-    plugin_dir = _make_plugin_dir(tmp_path)
-    _append_raw_install_declaration(
-        plugin_dir,
+@pytest.mark.parametrize(
+    "declaration",
+    [
         """
         [[plugin.entries]]
         id = "self_check"
         name = "Self Check"
         description = "Return plugin version and readiness"
         """,
-    )
-
-    issues = validate_plugin_dir(plugin_dir)
-
-    assert not any("[plugin].entries is not a recognized" in message for _level, message in issues)
-    assert not any(
-        "[plugin].entries" in message and "is not a recognized" in message
-        for _level, message in issues
-    )
-
-
-def test_validate_plugin_dir_accepts_entry_contract_and_display_fields(tmp_path: Path) -> None:
-    plugin_dir = _make_plugin_dir(tmp_path)
-    _append_raw_install_declaration(
-        plugin_dir,
+        # Contract and display fields are recognized too.
         """
         [[plugin.entries]]
         id = "self_check"
@@ -906,7 +855,12 @@ def test_validate_plugin_dir_accepts_entry_contract_and_display_fields(tmp_path:
         timeout = 30
         auto_start = true
         """,
-    )
+    ],
+    ids=["basic", "contract-and-display-fields"],
+)
+def test_validate_plugin_dir_accepts_declared_plugin_entries(tmp_path: Path, declaration: str) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path)
+    _append_raw_install_declaration(plugin_dir, declaration)
 
     issues = validate_plugin_dir(plugin_dir)
 

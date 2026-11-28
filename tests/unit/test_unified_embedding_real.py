@@ -9,7 +9,8 @@ from pathlib import Path
 import pytest
 
 from app.memory_server.knowledge_routes import _SharedEmbedder
-from knowledge.service import KnowledgeService
+# Manual batches use the real indexer; model lifetime and task draining stay on the service.
+from services.knowledge.service import KnowledgeService
 from memory.embeddings import EmbeddingService
 from utils.knowledge_package import validate_package
 
@@ -68,7 +69,7 @@ async def test_real_encoder_cold_import_backfill_and_vector_reuse(tmp_path, monk
         await _terminal(library, await library.commit_source(source["preview_id"], source["sha256"]))
         pack = (await library.list_packs())[0]
         assert pack["enabled"] is False and not pack["auto_context"]
-        assert await library._index_round() == 0
+        assert await library._indexer._index_round() == 0
         with closing(sqlite3.connect(library._store.database_path)) as database:
             assert database.execute("SELECT MAX(attempts) FROM chunks").fetchone()[0] == 0
         assert not calls and encoder._session is None
@@ -76,7 +77,7 @@ async def test_real_encoder_cold_import_backfill_and_vector_reuse(tmp_path, monk
         # Only this explicit test warmup loads the owner's model, as memory's
         # startup worker would. Neither knowledge import nor query loads it.
         assert await encoder.request_load()
-        await library._index_round()
+        await library._indexer._index_round()
         rows = library._store.vectors_for_pack(pack["pack_id"], encoder.model_id())
         assert rows and len(rows) == pack["chunks_total"]
         assert all(size <= 1024 for size in await asyncio.to_thread(
@@ -93,7 +94,7 @@ async def test_real_encoder_cold_import_backfill_and_vector_reuse(tmp_path, monk
         await _manual_backfill(installed)
         await _terminal(installed, await installed.import_pack(archive))
         assert len(installed._store.vectors_for_pack(pack["pack_id"], encoder.model_id())) == len(rows)
-        assert await installed._index_round() == 0
+        assert await installed._indexer._index_round() == 0
         assert len(calls) == before_export  # No re-encoding during either operation.
         await installed.set_pack_enabled(pack["pack_id"], True)
         native_count = len(calls)

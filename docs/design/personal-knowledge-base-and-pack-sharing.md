@@ -18,19 +18,26 @@
 
 | 位置 | 职责 |
 | --- | --- |
-| `knowledge/importing/documents.py` | 有上限的 TXT/Markdown/DOCX/PDF 解析、位置与隐私保护 |
-| `knowledge/importing/sources.py` | 原件、不可变全文版本、预览和历史；不存向量 |
-| `knowledge/importing/projection.py` | 当前文档版本投影为严格 schema-v1 pack，写入 `doc:` / `ver:` 标签 |
-| `knowledge/service.py` / `store.py` / `registry.py` | 既有任务、SQLite FTS/向量、注册表与查询；不增加第二套 Store |
-| `knowledge/archive.py` | 用已计算向量导出通用 v2、读取成品种子向量；不调用模型 |
+| `services/knowledge/importing/documents.py` | 有上限的 TXT/Markdown/DOCX/PDF 解析、位置与隐私保护 |
+| `services/knowledge/importing/sources.py` | 原件、不可变全文版本、预览和历史；不存向量 |
+| `services/knowledge/importing/projection.py` | 当前文档版本投影为严格 schema-v1 pack，写入 `doc:` / `ver:` 标签 |
+| `services/knowledge/importing/commit_policy.py` | 由已核验正文、任务、旧登记和服务提供的时间构造下一条登记记录；无 IO、预算或锁所有权 |
+| `services/knowledge/service.py` / `store.py` / `registry.py` | 运行时、导入/来源/移除事务、SQLite FTS/向量及注册表；服务统一拥有锁、容量、查询嵌入任务、向量快照发布、导出首次入队及任务生命周期，不增加第二套 Store |
+| `services/knowledge/querying.py` / `indexing.py` / `exports.py` | 分别编排查询与自动参考、后台索引与快照、成品导出；显式复用同一个服务所有者，不复制共享状态 |
+| `services/knowledge/jobs.py` / `pack_files.py` | 共享任务记录与后台结果消费、有界文件读取和历史副本；不接管调度、锁或保留策略 |
+| `services/knowledge/archive.py` | 用已计算向量导出通用 v2、读取成品种子向量；不调用模型 |
 | `utils/knowledge_package.py` | 纯标准库包规范、规格、ZIP 安全与数值检查；市场逐字同步 |
 | `memory/_embeddings/spec.py` / `resources.py` | 纯函数：按需计算模型指纹与无截断 token 计数；不加载 ONNX，不在模型加载路径上 |
 | `utils/embedding_contract.py` | 无进程依赖的后台延后异常 |
 | `app/memory_server/knowledge_routes.py` | 统一 `/internal/knowledge` 管理接口与共享编码器适配 |
-| `frontend/plugin-manager/src/views/KnowledgeManager.vue` | 来源、启用、文件预览、历史、导出和分享，沿用八语 |
+| `frontend/plugin-manager/src/views/KnowledgeManager.vue` | 跨页签请求去旧、写入刷新、任务确认与单一轮询；来源、启用、文件预览、历史、导出和分享沿用八语 |
+| `frontend/plugin-manager/src/composables/useKnowledgeCatalog.ts` / `useKnowledgeDiagnostics.ts` | 分别持有词条/详情及诊断请求的状态和去旧 gate；页面决定加载、离开页签和卸载，不增加轮询 |
+| `frontend/plugin-manager/src/components/knowledge/Knowledge{Overview,Catalog,EntryDrawer,Packs,Diagnostics}.vue` | 各区域展示、派生显示和样式；通过 props/emits 复用页面状态和动作，既有 PackDrawer/SourceImport 保留来源管理流程 |
 | `plugin/server/routes/knowledge_market.py` / `knowledge_publish.py` | 现有订阅和新增发布；账号凭据不进入 Main 或页面 |
 
-运行资料归 `ConfigManager.knowledge_dir`：
+源码归 `services/knowledge/`，保持轻量父包和独立的 knowledge 分层边界；Memory Server 适配器注入模型，其他服务仍经 HTTP 使用。迁移同步 wheel/sdist、Unix/Windows/Linux 三处 Nuitka 登记及测试导入，不修改共享成品校验器字节。本机未入库的打包脚本也须将旧 include-package 参数同步为 `services.knowledge`。
+
+运行资料仍归 `ConfigManager.knowledge_dir`，不随源码目录迁移：
 
 ```text
 knowledge/
@@ -249,6 +256,8 @@ Main 的本地原生读取保留既有访问方式，未向外部浏览器来源
 知识库较广回归此前 938 项通过，覆盖知识库、解析、Plugin、HTTP 代理、生产 App 读边界及 native 安装；最新导出与启动修复的直接影响集 187 项通过、无跳过，直接 API 和失败重试均验证版本/损坏门禁。跨仓安装使用显式合成产物夹具，不代表真实推理性能。管理器四个知识库 API/组件文件 106 项通过，八语 1682 key 一致，生产前端已重建；appearance 浏览器契约此前 19 项通过。PC 此前完成发布依赖文档和注释收口，直接影响集 58 项通过，完整 unit 的 14 项失败在独立上游 main 副本逐一复现，完整 contract 为 732 通过、56 跳过，未混改无关模块。各集合存在重叠，不能相加当成独立用例数量。
 
 真实模型小样本可用 `NEKO_REAL_EMBEDDING_ROOT` 指向已有只读模型资产根（其下含 profile 目录），再运行 `uv run --no-sync pytest tests/unit/test_unified_embedding_real.py`。跨仓产物通过 `NEKO_UNIFIED_PACKAGE_FIXTURES` 指定临时目录，运行 `plugin/tests/unit/server/test_unified_knowledge_native_roundtrip.py`；远端市场传输是受控夹具，Main、Memory、任务与 SQLite 使用真实实现。市场配对浏览器 19 项及生产构建通过，共享包校验按 NEKO 提交精确同步；三仓统一沿各自 PR 收取 review 和 CI 结果，不以本地通过代替线上部署。
+
+可重复的跨进程验收与 10/100 条规模测量入口见 [原生验收与性能基线](/contributing/knowledge-validation)：只需已有只读模型，自动生成新 ZIP 和市场合同夹具，分别验证作者、上传安装、索引恢复及 Plugin→Main→Memory 安装。规模测量保留生产批次/暂停，通过 JUnit 输出分阶段时延、查询样本和进程 RSS；不将本机小样本视作大库、低配或完整桌面验收。
 
 此前 CI 故障按真实阶段区分：导入取消测试改为等待准入 owner 完成，避免仅看到内存 job 就断言持久化结束；管理器 boot 契约使用实际 `Knowledge base` 名称。NEKO 串行集成当时在 495 项测试通过后，因上游 CAM++ 声纹资产变化而下载校验失败（固定 28,281,164 字节，当时源为 28,281,165 字节且 SHA 不同），未修改固定摘要或放松校验。PC 当时的 review job 因 Actions 账单/额度未启动，无测试步骤。本轮只处理 review，没有重新验收这两项外部条件，不能据此声明当前 CI 已全绿。
 

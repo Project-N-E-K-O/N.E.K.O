@@ -284,7 +284,7 @@
     }
 
     // --- showLive2d ---
-    I.showLive2d = function showLive2d() {
+    I.showLive2d = function showLive2d(options = {}) {
         console.log('[App] showLive2d函数被调用');
 
         if ((window.lanlan_config?.model_type || '').toLowerCase() === 'pngtuber') {
@@ -460,7 +460,7 @@
         }
 
         container.style.transition = '';
-        if (modelReturnEnterRect) {
+        if (modelReturnEnterRect || (options.prepareModelForm === true && !I.shouldAnimateModelCatTransition())) {
             I.playModelReturnEnter(container, modelReturnEnterRect);
         }
 
@@ -746,7 +746,7 @@
                     console.log('[showCurrentModel] 保持当前已加载的模型');
                     return;
                 }
-                I.showLive2d();
+                I.showLive2d(options);
                 return;
             }
 
@@ -761,7 +761,7 @@
                     console.log('[showCurrentModel] 保持当前已加载的模型');
                     return;
                 }
-                I.showLive2d();
+                I.showLive2d(options);
                 return;
             }
 
@@ -846,7 +846,7 @@
 
                     void vrmContainer.offsetWidth;
                     vrmContainer.style.transition = '';
-                    if (modelReturnEnterRect) {
+                    if (modelReturnEnterRect || (options.prepareModelForm === true && !I.shouldAnimateModelCatTransition())) {
                         I.playModelReturnEnter(vrmContainer, modelReturnEnterRect);
                     }
 
@@ -987,7 +987,7 @@
                 if (mmdContainer) {
                     I.prepareModelReturnContainer(mmdContainer, modelReturnEnterRect, { clearPointerEvents: true });
                     mmdContainer.style.transition = '';
-                    if (modelReturnEnterRect) {
+                    if (modelReturnEnterRect || (options.prepareModelForm === true && !I.shouldAnimateModelCatTransition())) {
                         I.playModelReturnEnter(mmdContainer, modelReturnEnterRect);
                     }
                 }
@@ -1104,7 +1104,7 @@
                 const modelReturnEnterRect = pngtuberContainer ? I.consumeModelReturnEnterRect() : null;
                 if (pngtuberContainer) {
                     I.prepareModelReturnContainer(pngtuberContainer, modelReturnEnterRect, { clearPointerEvents: true });
-                    if (modelReturnEnterRect) {
+                    if (modelReturnEnterRect || (options.prepareModelForm === true && !I.shouldAnimateModelCatTransition())) {
                         I.playModelReturnEnter(pngtuberContainer, modelReturnEnterRect);
                     } else {
                         // 无回归动画时清掉 prepare 留下的内联 opacity/transition（有动画时由
@@ -1144,7 +1144,7 @@
                 I.ensureActiveModelOverlayControls('pngtuber');
             } else {
                 // 显示 Live2D 模型
-                I.showLive2d();
+                I.showLive2d(options);
 
                 // 确保VRM隐藏
                 const vrmContainer = document.getElementById('vrm-container');
@@ -1192,7 +1192,7 @@
                 console.log('[showCurrentModel] 保持当前已加载的模型');
                 return;
             }
-            I.showLive2d();
+            I.showLive2d(options);
         }
     }
 

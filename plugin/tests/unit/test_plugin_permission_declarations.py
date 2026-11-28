@@ -2099,4 +2099,1162 @@ def test_long_call_chains_are_charged_to_the_analysis_budget(tmp_path):
     stop.set()
     chain = ast.parse(source).body[0].value
     with pytest.raises(capability_analysis._AnalysisBudgetExceeded):
-        capability_analysis._resolve_literal_imports(chain, {}, capability_analysis._AnalysisWalker(stop))
+        capability_analysis._resolve_chain_root(chain, {}, capability_analysis._AnalysisWalker(stop))
+
+
+# --- constant getattr through names and call chains (#3951) ---------------------
+
+
+def _without_lines(report: dict) -> dict:
+    return {
+        permission: {
+            **item,
+            "findings": [{key: value for key, value in row.items() if key != "line"} for row in item["findings"]],
+        }
+        for permission, item in report["permissions"].items()
+    }
+
+
+@pytest.mark.parametrize(
+    "reflective,plain,before,after",
+    [
+        # (getattr spelling, attribute spelling, bases on main before this
+        # change, bases now; a missing permission was not reported at all).
+        (
+            "import pathlib\nP = getattr(pathlib, 'Path')\nP('/etc/x').write_text('a')\n",
+            "import pathlib\nP = pathlib.Path\nP('/etc/x').write_text('a')\n",
+            {},
+            {"system.fs:write": "resolved_call"},
+        ),
+        (
+            "import pathlib\ngetattr(pathlib, 'Path')('/etc/x').write_text('a')\n",
+            "import pathlib\npathlib.Path('/etc/x').write_text('a')\n",
+            {},
+            {"system.fs:write": "resolved_call"},
+        ),
+        (
+            "import multiprocessing\nctx = getattr(multiprocessing, 'get_context')('spawn')\nctx.Process(target=print).start()\n",
+            "import multiprocessing\nctx = multiprocessing.get_context('spawn')\nctx.Process(target=print).start()\n",
+            {"system.process:spawn": "import_only"},
+            {"system.process:spawn": "resolved_call"},
+        ),
+        (
+            "import subprocess\nrun = getattr(subprocess, 'run')\nrun(['ls'])\n",
+            "import subprocess\nrun = subprocess.run\nrun(['ls'])\n",
+            {"system.process:spawn": "resolved_name"},
+            {"system.process:spawn": "resolved_call"},
+        ),
+        # Nested getattr, and a default value.
+        (
+            "import multiprocessing\ngetattr(getattr(multiprocessing, 'get_context')('spawn'), 'Process')(target=print)\n",
+            "import multiprocessing\nmultiprocessing.get_context('spawn').Process(target=print)\n",
+            {"system.process:spawn": "import_only"},
+            {"system.process:spawn": "resolved_call"},
+        ),
+        (
+            "import subprocess\nrun = getattr(subprocess, 'run', None)\nrun(['ls'])\n",
+            "import subprocess\nrun = subprocess.run\nrun(['ls'])\n",
+            {"system.process:spawn": "resolved_name"},
+            {"system.process:spawn": "resolved_call"},
+        ),
+        # A rebound receiver stays uncertain, as with the attribute.
+        (
+            "import subprocess\nfor subprocess in items:\n    run = getattr(subprocess, 'run')\n    run([])\n",
+            "import subprocess\nfor subprocess in items:\n    run = subprocess.run\n    run([])\n",
+            {"system.process:spawn": "suffix_match"},
+            {"system.process:spawn": "suffix_match"},
+        ),
+    ],
+)
+def test_constant_getattr_results_are_followed_like_the_attribute(tmp_path, reflective, plain, before, after):
+    (tmp_path / "getattr").mkdir()
+    (tmp_path / "plain").mkdir()
+    report = _scan(tmp_path / "getattr", reflective)
+    expected = _scan(tmp_path / "plain", plain)
+    assert _bases(report) == after
+    del before  # documents the main result; see the PR for the comparison
+    assert _without_lines(report) == _without_lines(expected)
+    assert report["blind_spots"] == expected["blind_spots"] == []
+    assert [(issue.severity, issue.code) for issue in compare_declarations(report)] == [
+        (issue.severity, issue.code) for issue in compare_declarations(expected)
+    ]
+
+
+@pytest.mark.parametrize(
+    "source,capabilities,bases",
+    [
+        # Values as on main before getattr was followed: getattr on a plugin
+        # or SDK object is not followed, so the legacy capability scan (read
+        # by the old consent flow) sees exactly what it saw before.
+        (
+            ("class P:\n    def go(self):\n        getattr(self.ctx, 'bus').memory.get('x')\n"
+             "        push = getattr(self.ctx, 'push_message')\n        push('hi')\n"),
+            ["messages.push"],
+            {"plugin_sdk.main_agent.messages:push": "suffix_match"},
+        ),
+        (
+            "from plugin.sdk import bus\nm = getattr(bus, 'memory')\nm.get('x')\n",
+            [],
+            {},
+        ),
+        # External origins add permissions, never legacy capabilities.
+        ("import subprocess\nrun = getattr(subprocess, 'run')\nrun(['ls'])\n", [], {"system.process:spawn": "resolved_call"}),
+    ],
+)
+def test_getattr_following_leaves_legacy_capabilities_unchanged(tmp_path, source, capabilities, bases):
+    report = _scan(tmp_path, source)
+    assert report["capabilities"] == capabilities
+    assert _bases(report) == bases
+
+
+def test_aliased_getattr_with_a_constant_name_is_still_a_blind_spot(tmp_path):
+    report = _scan(tmp_path, "import subprocess\nga = getattr\nrun = ga(subprocess, 'run')\nrun(['ls'])\n")
+    assert "reflective_access" in {spot["type"] for spot in report["blind_spots"]}
+
+
+# --- AF_UNIX sockets and datagram endpoints (#3951) -----------------------------
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import socket\ns = socket.socket(socket.AF_UNIX)\ns.bind('/tmp/p.sock')\ns.listen()\nconn, _ = s.accept()\n",
+        "import socket\ns = socket.socket(family=socket.AF_UNIX, type=socket.SOCK_STREAM)\ns.listen()\n",
+        "import socket\ns = socket.socket(socket.AddressFamily.AF_UNIX)\ns.listen()\n",
+        "from socket import socket, AF_UNIX\ns = socket(AF_UNIX)\ns.listen()\n",
+        "from socket import socket as sock, AF_UNIX\ns = sock(AF_UNIX)\ns.listen()\n",
+    ],
+)
+def test_unix_socket_servers_are_only_possible_evidence(tmp_path, source):
+    report = _scan(tmp_path, source)
+    # On main: listen and connect were resolved_call (an error in check -r).
+    assert _bases(report) == {CONNECT: "resolved_name", LISTEN: "resolved_name"}
+    assert [(issue.severity, issue.code) for issue in compare_declarations(report)] == [
+        ("warning", "used_undeclared_possible"),
+        ("warning", "used_undeclared_possible"),
+    ]
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import socket\nsocket.socket(socket.AF_UNIX).connect('/p')\n",
+        "from socket import socket, AF_UNIX\nc = socket(family=AF_UNIX)\nc.connect('/p')\n",
+    ],
+)
+def test_unix_socket_clients_are_only_possible_connect_evidence(tmp_path, source):
+    assert _bases(_scan(tmp_path, source)) == {CONNECT: "resolved_name"}
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import socket\ns = socket.socket(socket.AF_INET)\ns.listen()\n",
+        # The family is not statically known.
+        "import socket\ndef f(family):\n    s = socket.socket(family)\n    s.listen()\n",
+        "import socket\ndef f(args):\n    s = socket.socket(*args)\n    s.listen()\n",
+        # A plugin-defined name spelled AF_UNIX is not the socket constant.
+        "import socket\nAF_UNIX = 2\ns = socket.socket(AF_UNIX)\ns.listen()\n",
+        # The name may hold another socket.
+        "import socket\ns = socket.socket(socket.AF_UNIX)\ns = socket.socket()\ns.listen()\n",
+    ],
+)
+def test_sockets_not_known_to_be_unix_stay_direct_evidence(tmp_path, source):
+    report = _scan(tmp_path, source)
+    assert report["permissions"][LISTEN]["basis"] == "resolved_call"
+    assert report["permissions"][CONNECT]["basis"] == "resolved_call"
+
+
+@pytest.mark.parametrize(
+    "call,basis",
+    [
+        ("loop.create_datagram_endpoint(object, local_addr=('', 1))", "resolved_call"),
+        ("loop.create_datagram_endpoint(object, ('', 1))", "resolved_call"),
+        ("loop.create_datagram_endpoint(object, **options)", "resolved_name"),
+        ("loop.create_datagram_endpoint(object, local_addr='/p', family=socket.AF_UNIX)", "resolved_name"),
+        ("loop.create_datagram_endpoint(object, remote_addr=('a', 1))", None),
+        ("loop.create_datagram_endpoint(object, local_addr=None, remote_addr=('a', 1))", None),
+        ("loop.create_datagram_endpoint(object, sock=options)", None),
+    ],
+)
+def test_datagram_endpoints_listen_only_with_a_local_address(tmp_path, call, basis):
+    source = f"import asyncio, socket\nasync def f(options):\n    loop = asyncio.get_running_loop()\n    await {call}\n"
+    report = _scan(tmp_path, source)
+    # On main none of these reported system.network:listen.
+    assert report["permissions"].get(LISTEN, {}).get("basis") == basis
+    assert report["capabilities"] == []
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        # Receivers from an external origin whose result reaches an
+        # SDK-looking method: main read these as "getattr()()..." (not
+        # external), so the legacy capability scan matched them.
+        "import extlib\nctx = getattr(extlib, 'get_ctx')()\nctx.push_message(source='a')\n",
+        "import extlib\ngetattr(extlib, 'get_ctx')().push_message('a')\n",
+        "import extlib\nP = getattr(extlib, 'Plugin')\nP().push_message('x')\n",
+        "import extlib\ngetattr(getattr(extlib, 'get_ctx')(), 'push_message')('x')\n",
+        "import importlib\nim = getattr(importlib, 'import_module')\nim('x').push_message()\n",
+        # An alias chain that receives the getattr path last.
+        ("import extlib\nfrom extlib import get_ctx as a, get_ctx as b, get_ctx as c\nc = b\nb = a\n"
+         "a = getattr(extlib, 'get_ctx')\nc().push_message()\n"),
+    ],
+)
+def test_followed_getattr_keeps_the_legacy_reading(tmp_path, source):
+    report = _scan(tmp_path, source)
+    assert report["capabilities"] == ["messages.push"]
+    assert [row["method"] for row in report["evidence"]] == ["getattr()().push_message"]
+    assert report["permissions"]["plugin_sdk.main_agent.messages:push"]["basis"] == "suffix_match"
+
+
+@pytest.mark.parametrize(
+    "source,bases",
+    [
+        # x = getattr(x, "a") is not followed, like x = x.a (it would grow
+        # on every round); the result stays as on main.
+        ("import os\nos = getattr(os, 'path')\nos.join('a')\n", {}),
+        ("import subprocess\nsubprocess = getattr(subprocess, 'x')\nsubprocess.run([])\n", {"system.process:spawn": "import_only"}),
+        # socket is reassigned here, so socket.AF_UNIX is not trusted either.
+        ("import socket\nsocket = socket.socket(socket.AF_UNIX)\nsocket.listen()\n", {CONNECT: "resolved_call"}),
+        # An indirect cycle keeps the reading it had on main.
+        ("import pathlib as a\nb = getattr(a, 'Path')\na = getattr(b, 'cwd')\n", {}),
+    ],
+)
+def test_self_referencing_assignments_are_not_followed(tmp_path, source, bases):
+    report = _scan(tmp_path, source)
+    assert report["status"] == "completed"
+    assert _bases(report) == bases
+
+
+def test_import_module_through_getattr_stays_a_blind_spot(tmp_path):
+    report = _scan(tmp_path, "import importlib\nim = getattr(importlib, 'import_module')\nim('subprocess').run([])\n")
+    assert "dynamic_import" in {spot["type"] for spot in report["blind_spots"]}
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import socket\ngetattr(socket, 'socket')(socket.AF_UNIX).listen()\n",
+        "import socket\ns = getattr(socket, 'socket')(socket.AF_UNIX)\ns.listen()\n",
+        "import socket\nmake = getattr(socket, 'socket')\ns = make(socket.AF_UNIX)\ns.listen()\n",
+    ],
+)
+def test_unix_sockets_made_through_getattr_are_local_too(tmp_path, source):
+    # On main: connect resolved_call, listen not reported.
+    assert _bases(_scan(tmp_path, source)) == {CONNECT: "resolved_name", LISTEN: "resolved_name"}
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        # t may hold the INET socket when it listens.
+        "import socket\ns = socket.socket(socket.AF_UNIX)\nt = socket.socket()\nt.listen()\nt = s\n",
+        # Assigned by another scope.
+        ("import socket\ns = socket.socket(socket.AF_UNIX)\ndef f():\n    global s\n    s = socket.socket()\n"
+         "def g():\n    s.listen()\n"),
+        ("import socket\ndef f():\n    s = socket.socket(socket.AF_UNIX)\n    def g():\n        nonlocal s\n"
+         "        s = socket.socket()\n    g()\n    s.listen()\n"),
+        # The family name is rebound.
+        "import socket\nfrom socket import AF_UNIX\nAF_UNIX = 2\nsocket.socket(AF_UNIX).listen()\n",
+        "import socket\nfrom socket import AF_UNIX\nfor AF_UNIX in families:\n    socket.socket(AF_UNIX).listen()\n",
+        "import socket\nfrom socket import AF_UNIX\nAF_UNIX = 2\ns = socket.socket(AF_UNIX)\ns.bind(('', 80))\ns.listen()\n",
+        "import socket\nfrom socket import AF_UNIX\nwith make() as AF_UNIX:\n    s = socket.socket(AF_UNIX)\n    s.listen()\n",
+        "import socket\nfamily = socket.AF_UNIX\nfamily = 2\ns = socket.socket(family)\ns.listen()\n",
+        "import socket\nfrom socket import AF_UNIX\n[socket.socket(AF_UNIX).listen() for AF_UNIX in families]\n",
+        "import socket\nfamily = socket.AF_UNIX\nfrom other import family\nsocket.socket(family).listen()\n",
+        ("import socket\nfrom socket import AF_UNIX\ndef f():\n    global AF_UNIX\n    AF_UNIX = 2\n"
+         "socket.socket(AF_UNIX).listen()\n"),
+        # A class attribute set to another socket in another method.
+        ("import socket\nclass S:\n    def a(self):\n        self.sock = socket.socket(socket.AF_UNIX)\n"
+         "    def b(self):\n        self.sock = socket.socket()\n    def c(self):\n        self.sock.listen()\n"),
+    ],
+)
+def test_sockets_that_may_not_be_unix_keep_their_listen_evidence(tmp_path, source):
+    report = _scan(tmp_path, source)
+    assert report["permissions"][LISTEN]["basis"] in ("resolved_call", "suffix_match")
+    if "AF_UNIX = 2" in source:
+        # The construction and what is done through it agree.
+        assert report["permissions"][CONNECT]["basis"] == "resolved_call"
+
+
+def test_the_local_socket_marker_never_reaches_the_report(tmp_path):
+    report = _scan(
+        tmp_path,
+        ("import socket\nclass P:\n    def go(self):\n        s = socket.socket(socket.AF_UNIX)\n"
+         "        getattr(s, 'bind')('/p')\n        s.listen()\n        s.push_message()\n"
+         "        socket.socket(socket.AF_UNIX).__dict__\n"),
+    )
+    rows = [row for item in report["permissions"].values() for row in item["findings"]]
+    methods = [row["method"] for row in rows + report["evidence"] + report["blind_spots"]]
+    assert methods and not [method for method in methods if "[" in method or "AF_UNIX" in method]
+    assert all(type(method) is str for method in methods)
+    assert report["capabilities"] == []
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import socket\nx = socket" + ".socket(socket.AF_UNIX)" * 60 + "\n",
+        "import socket\nx = " + "getattr(" * 60 + "socket" + ", 'socket')(socket.AF_UNIX)" * 60 + "\n",
+        "x = " + "getattr(" * 60 + "obj" + ", 'f')(socket.AF_UNIX)" * 60 + "\n",
+        "import socket\nx = socket" + ".socket(socket.AF_UNIX).a()" * 60 + "\n",
+    ],
+)
+def test_nested_getattr_and_socket_chains_stay_within_budget(tmp_path, monkeypatch, source):
+    # Each part of a chain is resolved once: well under a small budget.
+    monkeypatch.setattr(capability_analysis, "MAX_NODES", 200_000)
+    assert _scan(tmp_path, source)["status"] == "completed"
+
+
+def test_untrusted_family_names_keep_their_legacy_binding(tmp_path):
+    # As on main: item is an import, so item.push_message() is external.
+    report = _scan(tmp_path, "from socket import AF_UNIX as item\nfor item in clients:\n    item.push_message()\n")
+    assert report["capabilities"] == []
+    assert "plugin_sdk.main_agent.messages:push" not in report["permissions"]
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        # A parameter replaced in one branch only.
+        (
+            "import socket\ndef f(sock):\n    if sock is None:\n        sock = socket.socket(socket.AF_UNIX)\n"
+            "    sock.connect(('a', 80))\n    sock.listen()\n"
+        ),
+        # self.x set to a network socket in another method, or through setattr.
+        (
+            "import socket\nclass C:\n    def __init__(self):\n        self.sock = socket.socket()\n"
+            "    def use(self):\n        self.sock.listen()\n        self.sock = socket.socket(socket.AF_UNIX)\n"
+        ),
+        (
+            "import socket\nclass C:\n    def __init__(self):\n        setattr(self, 'sock', socket.socket())\n"
+            "    def use(self):\n        self.sock = socket.socket(socket.AF_UNIX)\n        self.sock.listen()\n"
+        ),
+        (
+            "import socket\nclass C:\n    def __init__(self, name):\n        setattr(self, name, socket.socket())\n"
+            "    def use(self):\n        self.sock = socket.socket(socket.AF_UNIX)\n        self.sock.listen()\n"
+        ),
+        # A match capture reuses the name.
+        "import socket\ns = socket.socket(socket.AF_UNIX)\nmatch x:\n    case s:\n        s.listen()\n",
+        "import socket\ns = socket.socket(socket.AF_UNIX)\nmatch x:\n    case [*s]:\n        s.listen()\n",
+        "import socket\ns = socket.socket(socket.AF_UNIX)\nmatch x:\n    case {**s}:\n        s.listen()\n",
+        # fileno= wraps whatever socket the descriptor is.
+        "import socket\ndef f(fd):\n    s = socket.socket(socket.AF_UNIX, fileno=fd)\n    s.listen()\n",
+        "import socket\ndef f(fd):\n    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM, 0, fd)\n    s.listen()\n",
+        "import socket\ndef f(options):\n    s = socket.socket(socket.AF_UNIX, **options)\n    s.listen()\n",
+    ],
+)
+def test_names_that_may_hold_another_socket_keep_direct_evidence(tmp_path, source):
+    # On main all of these are resolved_call.
+    report = _scan(tmp_path, source)
+    assert report["permissions"][LISTEN]["basis"] == "resolved_call"
+    assert not [issue for issue in compare_declarations(report) if issue.params["permission"] == LISTEN and issue.severity != "error"]
+
+
+
+_SELF_SOCKET = (
+    "import socket\nclass C:\n    def __init__(self):\n        self.sock = socket.socket(socket.AF_UNIX)\n"
+    "    def go(self, many):\n        {}\n        self.sock.listen()\n"
+)
+
+
+@pytest.mark.parametrize(
+    "write",
+    [
+        "self.sock, self.o = socket.socket(), 1",
+        "with socket.socket() as self.sock: pass",
+        "for self.sock in many: pass",
+        "self.sock += 1",
+        "def inner(): self.sock = socket.socket()",
+        "f = lambda: setattr(self, 'sock', socket.socket())",
+        "me = self; me.sock = socket.socket()",
+        "self.__dict__['sock'] = socket.socket()",
+    ],
+)
+def test_self_attributes_written_in_other_ways_are_not_local(tmp_path, write):
+    assert _scan(tmp_path, _SELF_SOCKET.format(write))["permissions"][LISTEN]["basis"] == "resolved_call"
+
+
+def test_self_attributes_are_never_local(tmp_path):
+    # Only a plain local name keeps the marker; the construction itself
+    # stays possible evidence.
+    report = _scan(tmp_path, _SELF_SOCKET.format("pass"))
+    assert _bases(report) == {CONNECT: "resolved_name", LISTEN: "resolved_call"}
+
+def test_followed_getattr_on_an_environment_value_adds_no_evidence(tmp_path):
+    (tmp_path / "plain").mkdir()
+    (tmp_path / "getattr").mkdir()
+    plain = _scan(tmp_path / "plain", "import os\ntok = os.environ.get('X')\ntok.strip().lower()\n")
+    reflective = _scan(tmp_path / "getattr", "import os\ntok = os.environ.get('X')\ngetattr(tok, 'strip')().lower()\n")
+
+    def methods(report):
+        return {row["method"] for row in report["permissions"]["system.env:read"]["findings"]}
+
+    # The getattr call itself reads as tok.strip (as on main); the chain
+    # after it adds nothing, like the attribute spelling.
+    assert methods(reflective) - methods(plain) == {"os.environ.get().strip"}
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        # The module name of the family is rebound.
+        ("import socket as families\nfrom socket import socket as make\nfor families in sources:\n"
+         "    s = make(families.AF_UNIX)\n    s.listen()\n"),
+        "from socket import socket as make\nimport socket\nfor socket in families:\n    make(socket.AF_UNIX).listen()\n",
+        # A method parameter spelled like the module constant.
+        ("import socket\nfrom socket import AF_UNIX\nclass S:\n    def __init__(self, AF_UNIX):\n"
+         "        self.s = socket.socket(AF_UNIX)\n    def go(self):\n        self.s.listen()\n"),
+    ],
+)
+def test_rebound_family_roots_and_parameters_are_not_local(tmp_path, source):
+    assert _scan(tmp_path, source)["permissions"][LISTEN]["basis"] == "resolved_call"
+
+
+def test_unix_socket_from_a_literal_import_is_local(tmp_path):
+    source = "import importlib, socket\ns = importlib.import_module('socket').socket(socket.AF_UNIX)\ns.listen()\n"
+    assert _bases(_scan(tmp_path, source)) == {CONNECT: "resolved_name", LISTEN: "resolved_name"}
+
+
+@pytest.mark.parametrize(
+    "call,basis",
+    [
+        ("loop.create_datagram_endpoint(object, *addresses)", "resolved_name"),
+        ("loop.create_datagram_endpoint(*addresses, remote_addr=('a', 1))", "resolved_name"),
+        ("loop.create_datagram_endpoint(object, *addresses, local_addr=('', 1))", "resolved_call"),
+        ("getattr(loop, 'create_datagram_endpoint')(object, local_addr=('', 1))", "resolved_call"),
+        ("getattr(loop, 'create_datagram_endpoint')(object, local_addr='/p', family=socket.AF_UNIX)", "resolved_name"),
+    ],
+)
+def test_datagram_endpoints_with_unpacked_or_reflected_calls(tmp_path, call, basis):
+    source = f"import asyncio, socket\nasync def f(addresses):\n    loop = asyncio.get_running_loop()\n    await {call}\n"
+    assert _scan(tmp_path, source)["permissions"][LISTEN]["basis"] == basis
+
+
+
+@pytest.mark.parametrize(
+    "cycle",
+    [
+        "b = a.Path\na = b.cwd\n",
+        "b = a.Path\nc = b.x\na = c.cwd\n",
+        "def f():\n    b = a.Path\n    a = b.cwd\n",
+    ],
+)
+def test_indirect_attribute_alias_cycles_do_not_stop_the_scan(tmp_path, cycle):
+    # On main these grew every round until the length limit (partial).
+    report = _scan(tmp_path, "import pathlib as a\nimport subprocess\n" + cycle + "subprocess.run(['ls'])\n")
+    assert report["status"] == "completed"
+    assert report["permissions"]["system.process:spawn"]["basis"] == "resolved_call"
+
+
+def test_alias_cycles_that_settle_resolve_as_before(tmp_path):
+    report = _scan(tmp_path, "class P:\n    def go(self):\n        a = b\n        b = a\n        a.push_message()\n")
+    assert report["capabilities"] == ["messages.push"]
+    assert [row["method"] for row in report["evidence"]] == ["b.push_message"]
+
+
+
+@pytest.mark.parametrize(
+    "source,basis",
+    [
+        # An alias of a family name that is assigned twice.
+        (
+            "import socket\nfamily = socket.AF_INET\nfamily = socket.AF_UNIX\nalias = family\n"
+            "s = socket.socket(alias)\ns.listen()\n",
+            "resolved_call",
+        ),
+        ("import socket\nfamily = socket.AF_UNIX\nalias = family\ns = socket.socket(alias)\ns.listen()\n", "resolved_call"),
+        # A method local shadowing the module constant.
+        (
+            "import socket\nfrom socket import AF_UNIX\nclass C:\n    def __init__(self):\n"
+            "        AF_UNIX = socket.AF_INET\n        self.s = socket.socket(AF_UNIX)\n"
+            "    def go(self):\n        self.s.listen()\n",
+            "resolved_call",
+        ),
+        # A function's own import is judged on its own.
+        (
+            "import socket\nfor socket in xs:\n    pass\ndef f():\n    import socket\n"
+            "    s = socket.socket(socket.AF_UNIX)\n    s.listen()\n",
+            "resolved_name",
+        ),
+    ],
+)
+def test_family_trust_follows_aliases_locals_and_own_imports(tmp_path, source, basis):
+    assert _scan(tmp_path, source)["permissions"][LISTEN]["basis"] == basis
+
+
+def test_long_alias_chains_stay_within_budget(tmp_path, monkeypatch):
+    # Cycle detection walks each name once.
+    monkeypatch.setattr(capability_analysis, "MAX_NODES", 400_000)
+    source = "import os\nx0 = os\n" + "".join(f"x{i} = x{i - 1}\n" for i in range(1, 4000))
+    assert _scan(tmp_path, source)["status"] == "completed"
+
+
+
+@pytest.mark.parametrize(
+    "source,basis",
+    [
+        # A local or parameter of another method does not shadow __init__'s.
+        (
+            "import socket\nclass C:\n    def __init__(self):\n        self.s = socket.socket(socket.AF_UNIX)\n"
+            "    def other(self):\n        AF_UNIX = 1\n    def go(self):\n        self.s.listen()\n",
+            "resolved_call",
+        ),
+        (
+            "import socket\nfrom socket import AF_UNIX\nclass C:\n    def __init__(self):\n"
+            "        self.s = socket.socket(AF_UNIX)\n    def other(self, AF_UNIX):\n        pass\n"
+            "    def go(self):\n        self.s.listen()\n",
+            "resolved_call",
+        ),
+        # A class attribute default is another socket self.sock may hold.
+        (
+            "import socket\nclass C:\n    sock = socket.socket()\n    def maybe(self, x):\n        if x:\n"
+            "            self.sock = socket.socket(socket.AF_UNIX)\n    def go(self):\n        self.sock.listen()\n",
+            "resolved_call",
+        ),
+    ],
+)
+def test_self_attribute_sockets_keep_direct_evidence(tmp_path, source, basis):
+    assert _scan(tmp_path, source)["permissions"][LISTEN]["basis"] == basis
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        # Aliases of the socket or of the family are not followed.
+        "import socket\nt = socket.socket(socket.AF_UNIX)\ns = t\ns.listen()\n",
+        "import socket\nt = socket.socket(socket.AF_UNIX)\ns = t\ngetattr(s, 'listen')()\n",
+        "import socket\nfamily = socket.AF_UNIX\ns = socket.socket(family)\ns.listen()\n",
+        # Nor is a socket made in another scope, or stored in an attribute.
+        "import socket\ns = socket.socket(socket.AF_UNIX)\ndef f():\n    s.listen()\n",
+        (
+            "import socket\nclass S:\n    def __init__(self):\n        self.sock = socket.socket(socket.AF_UNIX)\n"
+            "    def serve(self):\n        self.sock.bind('/p')\n        self.sock.listen()\n"
+        ),
+        # Constructor alias assigned twice, name bound by two imports, a
+        # nested alias of a family, self.s = parameter, a method import
+        # shadowing AF_UNIX, object.__setattr__, a module attribute, a
+        # family bound by two imports.
+        "import socket, evil\nmake = evil.factory\nif c:\n    make = socket.socket\nmake(socket.AF_UNIX).listen()\n",
+        "from evil import socket\nif 0:\n    import socket\ns = socket.socket(socket.AF_UNIX)\ns.listen()\n",
+        (
+            "import socket\nfrom socket import AF_INET, AF_UNIX\nfamily = AF_INET\nif c:\n    family = AF_UNIX\n"
+            "def f():\n    fam = family\n    socket.socket(fam).listen()\n"
+        ),
+        (
+            "import socket\nsock = socket.socket(socket.AF_UNIX)\nclass C:\n    def __init__(self, sock):\n"
+            "        self.s = sock\n    def go(self):\n        self.s.listen()\n"
+        ),
+        (
+            "import socket\nfrom socket import AF_UNIX\nclass C:\n    def __init__(self):\n"
+            "        from mylib import AF_UNIX\n        self.s = socket.socket(AF_UNIX)\n"
+            "    def go(self):\n        self.s.listen()\n"
+        ),
+        (
+            "import socket\nclass C:\n    def __init__(self):\n        self.sock = socket.socket(socket.AF_UNIX)\n"
+            "    def other(self):\n        object.__setattr__(self, 'sock', socket.socket())\n"
+            "    def go(self):\n        self.sock.listen()\n"
+        ),
+        (
+            "import socket, ns\nns.sock = socket.socket(socket.AF_UNIX)\ndef f():\n    ns.sock = socket.socket()\n"
+            "def g():\n    ns.sock.listen()\n"
+        ),
+        (
+            "import socket\nfrom socket import AF_INET as family\nif use_unix:\n    from socket import AF_UNIX as family\n"
+            "s = socket.socket(family)\ns.listen()\n"
+        ),
+        (
+            "import socket\nclass C:\n    sock = None\n    def __init__(self):\n        self.sock = socket.socket(socket.AF_UNIX)\n"
+            "    def go(self):\n        self.sock.listen()\n"
+        ),
+        # Rebound by a def / class, or possibly by a star import.
+        "import socket\ns = socket.socket(socket.AF_UNIX)\ndef s():\n    pass\ns.listen()\n",
+        "import socket\ns = socket.socket(socket.AF_UNIX)\nclass s:\n    pass\ns.listen()\n",
+        "import socket\ns = socket.socket(socket.AF_UNIX)\nfrom evil import *\ns.listen()\n",
+    ],
+)
+def test_only_the_narrow_local_socket_shapes_are_trusted(tmp_path, source):
+    # On main all of these are resolved_call.
+    assert _scan(tmp_path, source)["permissions"][LISTEN]["basis"] == "resolved_call"
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import socket\ns = socket.socket(socket.AF_UNIX)\ns.bind('/p')\ns.listen()\n",
+        "import socket\ndef f():\n    s = socket.socket(socket.AF_UNIX)\n    s.listen()\n",
+        "from socket import socket, AF_UNIX\ns = socket(AF_UNIX)\ns.listen()\n",
+    ],
+)
+def test_the_narrow_local_socket_shapes_are_possible_evidence(tmp_path, source):
+    assert _bases(_scan(tmp_path, source)) == {CONNECT: "resolved_name", LISTEN: "resolved_name"}
+
+
+@pytest.mark.parametrize("long_tail", [False, True])
+def test_getattr_cycles_through_an_earlier_assignment_are_detected(tmp_path, long_tail):
+    # b is reassigned after the cycle, which runs through its earlier
+    # assignment. As on main: completed, nothing lost.
+    source = "import pathlib as a\nimport x\nimport subprocess\nb = getattr(a, 'Path')\na = getattr(b, 'cwd')\nb = x\n"
+    source += "".join(f"v{i} = {i}\n" for i in range(300)) if long_tail else ""
+    source += "a.push_message()\nsubprocess.run([])\n"
+    report = _scan(tmp_path, source)
+    assert report["status"] == "completed"
+    assert report["capabilities"] == ["messages.push"]
+    assert report["permissions"]["system.process:spawn"]["basis"] == "resolved_call"
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        # A star import may rebind an imported family name too.
+        "import socket\nfrom socket import AF_UNIX\nfrom evil import *\n\nsocket.socket(AF_UNIX).listen()\n",
+        # A method taken from the construction is not the socket.
+        "import socket\nconnect = socket.socket(socket.AF_UNIX).connect\nconnect('/p')\nlisten = socket.socket(socket.AF_UNIX).listen\nlisten()\n",
+    ],
+)
+def test_star_imports_and_bound_methods_are_not_local(tmp_path, source):
+    report = _scan(tmp_path, source)
+    rows = report["permissions"].get(LISTEN, report["permissions"][CONNECT])["findings"]
+    # The calls through the stored name stay direct (as on main).
+    assert [row["basis"] for row in rows if row["line"] in (3, 5, 6)] and all(
+        row["basis"] == "resolved_call" for row in rows if row["line"] in (3, 5, 6)
+    )
+
+
+def test_a_long_getattr_attribute_name_does_not_stop_the_scan(tmp_path):
+    name = "a" * 4100
+    source = f"import os, subprocess\ndef f(obj):\n    value = getattr(obj, '{name}')\nv = getattr(os, '{name}')\nv()\nsubprocess.run([])\n"
+    report = _scan(tmp_path, source)
+    assert report["status"] == "completed"
+    assert report["permissions"]["system.process:spawn"]["basis"] == "resolved_call"
+
+
+@pytest.mark.parametrize(
+    "init,spawn",
+    [
+        # getattr on a method parameter: not resolved through the module of
+        # the same name (as on main).
+        ("def __init__(self, runner):\n        self.run = getattr(runner, 'run')", "import_only"),
+        # On the module itself it is followed, like self.run = runner.run.
+        ("def __init__(self):\n        self.run = getattr(runner, 'run')", "resolved_call"),
+    ],
+)
+def test_getattr_on_a_method_parameter_is_not_the_module(tmp_path, init, spawn):
+    source = f"import subprocess as runner\nclass C:\n    {init}\n    def go(self):\n        self.run()\n"
+    report = _scan(tmp_path, source)
+    assert report["permissions"]["system.process:spawn"]["basis"] == spawn
+    assert report["capabilities"] == []
+
+
+@pytest.mark.parametrize(
+    "use,basis",
+    [
+        # The getattr receiver is bound twice: like net.socket(AF_UNIX).
+        ("getattr(net, 'socket')(AF_UNIX).listen()", "resolved_call"),
+        ("net.socket(AF_UNIX).listen()", "resolved_call"),
+    ],
+)
+def test_reflected_constructor_on_an_untrusted_root_is_not_local(tmp_path, use, basis):
+    source = "import thirdparty as net\nif use_stdlib:\n    import socket as net\nfrom socket import AF_UNIX\n" + use + "\n"
+    report = _scan(tmp_path, source)
+    assert {row["basis"] for row in report["permissions"][LISTEN]["findings"]} == {basis}
+    assert report["permissions"][CONNECT]["basis"] == basis
+
+
+def test_reflected_constructor_on_a_trusted_import_is_local(tmp_path):
+    source = "import socket\ngetattr(socket, 'socket')(socket.AF_UNIX).listen()\n"
+    assert _bases(_scan(tmp_path, source)) == {CONNECT: "resolved_name", LISTEN: "resolved_name"}
+
+
+@pytest.mark.parametrize(
+    "call,basis",
+    [
+        # A client with a fixed source address: binds, but need not listen.
+        ("loop.create_datagram_endpoint(object, local_addr=('0.0.0.0', 0), remote_addr=('8.8.8.8', 53))", "resolved_name"),
+        ("loop.create_datagram_endpoint(object, ('0.0.0.0', 0), ('8.8.8.8', 53))", "resolved_name"),
+        ("loop.create_datagram_endpoint(object, local_addr=('', 1), remote_addr=None)", "resolved_call"),
+    ],
+)
+def test_datagram_endpoints_with_a_remote_address_are_possible_listen(tmp_path, call, basis):
+    source = f"import asyncio\nasync def f():\n    loop = asyncio.get_running_loop()\n    await {call}\n"
+    assert _scan(tmp_path, source)["permissions"][LISTEN]["basis"] == basis
+
+
+def test_resolved_references_keep_the_legacy_spelling():
+    import ast
+    from threading import Event
+
+    tree = ast.parse("import extlib\ngetattr(extlib, 'get_ctx')().push_message('a')\n")
+    walker = capability_analysis._AnalysisWalker(Event())
+    methods = {method for _node, (method, external) in capability_analysis._resolved_references(tree, walker) if not external}
+    assert "getattr()().push_message" in methods
+
+
+_UNIX_SERVER = "import socket\ns = socket.socket(socket.AF_UNIX)\ns.bind(('', 8080))\ns.listen()\n"
+
+
+@pytest.mark.parametrize(
+    "write",
+    [
+        "socket.AF_UNIX = 2\n",
+        "socket.AF_UNIX += 0\n",
+        "setattr(socket, 'AF_UNIX', 2)\n",
+        "del socket.AF_UNIX\n",
+        "socket.AddressFamily = object\n",
+        "socket.AF_UNIX: int = socket.AF_INET\n",
+        "socket.AF_UNIX, other = socket.AF_INET, 0\n",
+        "for socket.AF_UNIX in (socket.AF_INET,):\n    pass\n",
+        "delattr(socket, 'AF_UNIX')\n",
+    ],
+)
+def test_a_rewritten_family_constant_is_not_trusted(tmp_path, write):
+    # One import only, so the family write alone decides.
+    report = _scan(tmp_path, _UNIX_SERVER.replace("import socket\n", "import socket\n" + write, 1))
+    # As on main: definite evidence.
+    assert _bases(report) == {CONNECT: "resolved_call", LISTEN: "resolved_call"}
+
+
+def test_a_family_constant_rewritten_in_another_file_is_not_trusted(tmp_path):
+    report = _scan(tmp_path, _UNIX_SERVER, **{"setup.py": "import socket\nsocket.AF_UNIX = 2\n"})
+    assert _bases(report) == {CONNECT: "resolved_call", LISTEN: "resolved_call"}
+
+
+def test_comparing_with_the_family_constant_is_not_a_write(tmp_path):
+    report = _scan(tmp_path, _UNIX_SERVER + "if s.family == socket.AF_UNIX:\n    pass\n")
+    assert _bases(report) == {CONNECT: "resolved_name", LISTEN: "resolved_name"}
+
+
+def test_the_family_write_check_is_linear():
+    # Many unterminated "setattr(" in one file: a single parse and walk,
+    # no backtracking text scan. Called directly, so a slow CI machine does
+    # not make it flaky; the old regex took tens of seconds here.
+    from threading import Event
+
+    source = _UNIX_SERVER + "# " + "setattr(" * 100000 + "\n"
+    walker = capability_analysis._AnalysisWalker(Event())
+    assert capability_analysis._families_written([("main.py", source)], walker) is False
+
+
+@pytest.mark.parametrize(
+    "call,basis",
+    [
+        ("loop.create_datagram_endpoint(object, local_addr=('', 1), **options)", "resolved_name"),
+        # *rest in the remote_addr slot may carry one.
+        ("loop.create_datagram_endpoint(object, ('', 1), *rest)", "resolved_name"),
+        # With local_addr= given, a non-empty *rest would fill local_addr
+        # again (TypeError), so it cannot carry remote_addr.
+        ("loop.create_datagram_endpoint(object, *rest, local_addr=('', 1))", "resolved_call"),
+        ("loop.create_datagram_endpoint(object, local_addr=('', 1), remote_addr=None, **options)", "resolved_call"),
+    ],
+)
+def test_datagram_endpoints_whose_remote_address_may_be_unpacked(tmp_path, call, basis):
+    source = f"import asyncio\nasync def f(options, rest):\n    loop = asyncio.get_running_loop()\n    await {call}\n"
+    assert _scan(tmp_path, source)["permissions"][LISTEN]["basis"] == basis
+
+
+@pytest.mark.parametrize(
+    "write",
+    [
+        "vars(socket)['AF_UNIX'] = 2\n",
+        "socket.__dict__['AF_UNIX'] = 2\n",
+        "(socket.AF_UNIX) = 2\n",
+    ],
+)
+def test_a_family_constant_rewritten_through_the_module_dict_is_not_trusted(tmp_path, write):
+    report = _scan(tmp_path, _UNIX_SERVER.replace("import socket\n", "import socket\n" + write, 1))
+    assert _bases(report) == {CONNECT: "resolved_call", LISTEN: "resolved_call"}
+
+
+def test_getattr_on_a_loop_target_is_not_the_module_in_self_attributes(tmp_path):
+    source = (
+        "import subprocess as runner\nclass C:\n    def __init__(self, runners):\n        for runner in runners:\n"
+        "            self.run = getattr(runner, 'run')\n    def go(self):\n        self.run()\n"
+    )
+    report = _scan(tmp_path, source)
+    # The use in go() is not resolved through the shadowed module (as on main).
+    assert [row["line"] for row in report["permissions"]["system.process:spawn"]["findings"]] == [5]
+
+
+
+@pytest.mark.parametrize(
+    "main_prefix,other",
+    [
+        ("import builtins\nbuiltins.setattr(socket, 'AF_UNIX', 2)\n", None),
+        ("exec('socket.AF_UNIX = 2')\n", None),
+        ("socket.__dict__.update(AF_UNIX=2)\n", None),
+        ("vars(socket).update({'AF_UNIX': 2})\n", None),
+        ("socket.__setattr__('AF_UNIX', 2)\n", None),
+        ("object.__setattr__(socket, 'AF_UNIX', 2)\n", None),
+        # In another file, spelled so that the raw text does not match.
+        ("", "import socket\nsetattr(socket, 'AF_' 'UNIX', 2)\n"),
+        ("", "import socket\nsetattr(socket, 'AF\\x5fUNIX', 2)\n"),
+        ("", "import socket\nsocket.\uff21F_UNIX = 2\n"),
+    ],
+)
+def test_a_family_name_used_as_data_disables_the_downgrade(tmp_path, main_prefix, other):
+    source = _UNIX_SERVER.replace("import socket\n", "import socket\n" + main_prefix, 1)
+    files = {"net_setup.py": other} if other else {}
+    report = _scan(tmp_path, source, **files)
+    assert _bases(report) == {CONNECT: "resolved_call", LISTEN: "resolved_call"}
+
+
+@pytest.mark.parametrize(
+    "main_prefix,other",
+    [
+        ("setattr(socket, 'AF_' + 'UNIX', 2)\n", None),
+        ("import sys\nsetattr(socket, sys.argv[1], 2)\n", None),
+        ("setattr(socket, b'AF_UNIX'.decode(), 2)\n", None),
+        ("exec(b'socket.AF_' b'UNIX = 2')\n", None),
+        ("import builtins\ngetattr(builtins, 'set' + 'attr')(socket, 'AF_' + 'UNIX', 2)\n", None),
+        ("import builtins\nw = getattr(builtins, 'setattr')\n", None),
+        ("w = setattr\n", None),
+        ("for key in socket.__dict__:\n    pass\n", None),
+        ("globals()['AF_' + 'UNIX'] = 2\n", None),
+        ("from builtins import getattr as g\ng(socket, '__set' + 'attr__')('AF_' + 'UNIX', socket.AF_INET)\n", None),
+        ("from inspect import getattr_static as g\n", None),
+        ("import builtins as b\nb.getattr(socket, '__set' + 'attr__')\n", None),
+        ("import builtins\ng = getattr\ng(builtins, 'set' + 'attr')(socket, 'AF_' + 'UNIX', 2)\n", None),
+        ("import builtins, functools\nfunctools.reduce(getattr, ['x'], builtins)\n", None),
+        ("import builtins, inspect\ninspect.getattr_static(builtins, 'set' + 'attr')\n", None),
+        ("", "import socket\nimport main\ng = getattr\ng(main.s, '__in' + 'it__')(socket.AF_INET)\n"),
+        ("import sys\nsys.modules['sock' + 'et'] = object()\n", None),
+        # In another file.
+        ("", "import socket\nx = 'F_UNIX'\nsetattr(socket, 'A' + x, 2)\n"),
+    ],
+)
+def test_a_family_name_built_at_runtime_disables_the_downgrade(tmp_path, main_prefix, other):
+    source = _UNIX_SERVER.replace("import socket\n", "import socket\n" + main_prefix, 1)
+    files = {"net_setup.py": other} if other else {}
+    report = _scan(tmp_path, source, **files)
+    assert _bases(report) == {CONNECT: "resolved_call", LISTEN: "resolved_call"}
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    [
+        "class C:\n    def __init__(self):\n        setattr(self, 'name', 1)\n        object.__setattr__(self, 'x', 2)\n",
+        "class C:\n    def __init__(self):\n        self.__setattr__('name', 1)\n        getattr(self, 'name')\n",
+    ],
+)
+def test_a_constant_attribute_name_keeps_the_downgrade(tmp_path, prefix):
+    report = _scan(tmp_path, _UNIX_SERVER + prefix)
+    assert _bases(report) == {CONNECT: "resolved_name", LISTEN: "resolved_name"}
+
+
+_REINIT_CLIENT = "import socket\ndef go():\n    s = socket.socket(socket.AF_UNIX)\n    {}\n    s.connect(('evil.com', 80))\n"
+
+
+_NAME, _CALL = "resolved_name", "resolved_call"
+
+
+@pytest.mark.parametrize(
+    "use,construction,connect",
+    [
+        ("s.setblocking(False)", _NAME, _NAME),
+        # Only this name loses the mark: the construction line stays local.
+        ("reinit(s)", _NAME, _CALL),
+        ("t = s", _NAME, _CALL),
+        ("return s", _NAME, _CALL),
+        ("s._sock = None", _NAME, _CALL),
+        # .__init__ also turns the downgrade off for the whole plugin.
+        ("s.__init__(socket.AF_INET)", _CALL, _CALL),
+        ("getattr(s, '__init__')(2)", _CALL, _CALL),
+        ("socket.socket.__init__(s, socket.AF_INET)", _CALL, _CALL),
+        ("def inner():\n        s.__init__(socket.AF_INET)\n    inner()", _CALL, _CALL),
+    ],
+)
+def test_a_socket_used_other_than_as_a_receiver_is_not_trusted(tmp_path, use, construction, connect):
+    rows = _scan(tmp_path, _REINIT_CLIENT.format(use))["permissions"][CONNECT]["findings"]
+    by_line = {row["line"]: row["basis"] for row in rows}
+    # The construction (line 3) and the connect (last line), apart.
+    assert (by_line[3], by_line[max(by_line)]) == (construction, connect)
+
+
+def test_a_socket_reinitialised_by_a_module_helper_is_not_trusted(tmp_path):
+    source = (
+        "import socket\ndef reinit(x):\n    x.__init__(socket.AF_INET)\ndef go():\n"
+        "    s = socket.socket(socket.AF_UNIX)\n    reinit(s)\n    s.connect(('evil.com', 80))\n"
+    )
+    assert _bases(_scan(tmp_path, source)) == {CONNECT: "resolved_call"}
+
+
+@pytest.mark.parametrize(
+    "other",
+    [
+        "import socket\nimport main\nmain.s.__init__(socket.AF_INET)\n",
+        "import main\ngetattr(main.s, '__init__')(2)\n",
+    ],
+)
+def test_a_module_socket_reinitialised_from_another_file_is_not_trusted(tmp_path, other):
+    report = _scan(tmp_path, _UNIX_SERVER, **{"net_setup.py": other})
+    assert _bases(report) == {CONNECT: "resolved_call", LISTEN: "resolved_call"}
+
+
+def test_super_init_keeps_the_downgrade(tmp_path):
+    source = _UNIX_SERVER + "class C(object):\n    def __init__(self):\n        super().__init__()\n"
+    assert _bases(_scan(tmp_path, source)) == {CONNECT: "resolved_name", LISTEN: "resolved_name"}
+
+
+@pytest.mark.parametrize("name", ["socket.py", "lib/socket.py", "socket/__init__.py"])
+def test_a_plugin_module_named_socket_disables_the_downgrade(tmp_path, name):
+    report = _scan(tmp_path, _UNIX_SERVER, **{name: "AF_UNIX = 2\n"})
+    assert _bases(report) == {CONNECT: "resolved_call", LISTEN: "resolved_call"}
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    [
+        "class C:\n    def set(self, name):\n        self.__setattr__(name, 'value')\n",
+        "class C:\n    def drop(self, name):\n        object.__delattr__(self, name)\n",
+    ],
+)
+def test_a_dunder_setattr_takes_the_name_by_position(tmp_path, prefix):
+    report = _scan(tmp_path, _UNIX_SERVER + prefix)
+    assert _bases(report) == {CONNECT: "resolved_call", LISTEN: "resolved_call"}
+
+
+def test_super_with_arguments_is_not_exempt(tmp_path):
+    other = "import socket\nimport main\nsuper(socket.socket, main.s).__init__(socket.AF_INET)\n"
+    report = _scan(tmp_path, _UNIX_SERVER, **{"net_setup.py": other})
+    assert _bases(report) == {CONNECT: "resolved_call", LISTEN: "resolved_call"}
+
+
+@pytest.mark.parametrize(
+    "other",
+    [
+        "import socket\nimport main\nmain.s = socket.socket()\n",
+        "import socket\nimport main\nsetattr(main, 's', socket.socket())\n",
+    ],
+)
+def test_a_module_socket_replaced_from_another_file_is_not_trusted(tmp_path, other):
+    report = _scan(tmp_path, _UNIX_SERVER, **{"net_setup.py": other})
+    assert _bases(report) == {CONNECT: "resolved_call", LISTEN: "resolved_call"}
+
+
+def test_an_attribute_write_elsewhere_keeps_a_function_local_socket(tmp_path):
+    # Another module cannot rebind a function's local name.
+    report = _scan(tmp_path, _REINIT_CLIENT.format("pass"), **{"net_setup.py": "import main\nmain.s = None\n"})
+    assert _bases(report) == {CONNECT: "resolved_name"}
+
+
+@pytest.mark.parametrize(
+    "patch",
+    [
+        "make = socket.socket\nsocket.socket = lambda family: make(socket.AF_INET)\n",
+        "socket.SocketType = object\n",
+        "setattr(socket, 'socket', object)\n",
+        "socket.socket.listen = lambda self: None\n",
+        "from socket import socket as S\nS.listen = lambda self: None\n",
+        "S = socket.socket\nT = S\nT.bind = lambda self, address: None\n",
+        "setattr(socket.socket, 'bind', None)\n",
+        "S = getattr(socket, 'socket')\nS.listen = lambda self: None\n",
+        "import importlib\nm = importlib.import_module('socket')\nm.socket.listen = lambda self: None\n",
+    ],
+)
+def test_a_patched_socket_module_disables_the_downgrade(tmp_path, patch):
+    report = _scan(tmp_path, _UNIX_SERVER.replace("import socket\n", "import socket\n" + patch, 1))
+    assert _bases(report) == {CONNECT: "resolved_call", LISTEN: "resolved_call"}
+
+
+def test_a_socket_module_patched_in_another_file_disables_the_downgrade(tmp_path):
+    other = "import socket\nmake = socket.socket\nsocket.socket = lambda family: make(socket.AF_INET)\n"
+    report = _scan(tmp_path, _UNIX_SERVER, **{"net_setup.py": other})
+    assert _bases(report) == {CONNECT: "resolved_call", LISTEN: "resolved_call"}
+
+
+def test_writing_other_attributes_keeps_the_downgrade(tmp_path):
+    report = _scan(tmp_path, _UNIX_SERVER + "class C:\n    def go(self):\n        self.sock = None\n")
+    assert _bases(report) == {CONNECT: "resolved_name", LISTEN: "resolved_name"}
+
+
+@pytest.mark.parametrize(
+    "other",
+    [
+        "import socket\nimport main\nsuper = lambda: main.s\nsuper().__init__(socket.AF_INET)\n",
+        # Spelled super but outside an __init__.
+        "import socket\nclass C:\n    def go(self):\n        super().__init__(socket.AF_INET)\n",
+        (
+            "import socket\nimport main\ndef super():\n    return main.s\nclass C:\n    def __init__(self):\n"
+            "        super().__init__(socket.AF_INET)\n"
+        ),
+        "import builtins\nimport main\nbuiltins.super = lambda: main.s\n",
+        "import socket\nfrom main import s as super\n",
+    ],
+)
+def test_super_init_is_exempt_only_as_the_builtin_in_an_init(tmp_path, other):
+    report = _scan(tmp_path, _UNIX_SERVER, **{"net_setup.py": other})
+    assert _bases(report) == {CONNECT: "resolved_call", LISTEN: "resolved_call"}
+
+
+_NS = "import socket\nfrom types import SimpleNamespace\nns = SimpleNamespace()\n"
+
+
+@pytest.mark.parametrize(
+    "construction",
+    [
+        # Conditionally rebound: with use_unix false this is an IPv4 listener.
+        (
+            "ns.make = lambda family: socket.socket()\nif use_unix:\n    ns.make = socket.socket\n"
+            "s = ns.make(socket.AF_UNIX)\n"
+        ),
+        "ns.make = socket.socket\ns = ns.make(socket.AF_UNIX)\n",
+        "ns.make = socket.socket\nmake = ns.make\ns = make(socket.AF_UNIX)\n",
+        "ns.mod = socket\ns = ns.mod.socket(socket.AF_UNIX)\n",
+    ],
+)
+def test_a_constructor_held_in_an_attribute_is_not_trusted(tmp_path, construction):
+    source = _NS + construction + "s.bind(('', 0))\ns.listen()\n"
+    assert _bases(_scan(tmp_path, source)) == {CONNECT: "resolved_call", LISTEN: "resolved_call"}
+
+
+def test_a_globals_call_disables_the_downgrade(tmp_path):
+    source = (
+        "import socket\ns = socket.socket(socket.AF_UNIX)\nglobals()['s'] = socket.socket()\n"
+        "s.bind(('', 0))\ns.listen()\n"
+    )
+    # As on main: definite evidence. The name globals alone disables the
+    # downgrade; the rebinding itself is not tracked.
+    assert _bases(_scan(tmp_path, source)) == {CONNECT: "resolved_call", LISTEN: "resolved_call"}
+
+
+@pytest.mark.parametrize(
+    "imports,downgraded",
+    [
+        ("from re import compile as rc\n", False),
+        ("from os.path import getattr_like\n", True),
+        ("from os.path import join\n", True),
+        ("from functools import partial\n", False),
+        ("from sys import argv\n", False),
+        ("from os.path import *\n", False),
+        ("from operator import attrgetter\n", False),
+        ("from _operator import methodcaller as mc\n", False),
+        ("from inspect import getattr_static as g\n", False),
+        ("from builtins import getattr as g\n", False),
+    ],
+)
+def test_writer_reflective_and_star_imports_disable_the_downgrade(tmp_path, imports, downgraded):
+    report = _scan(tmp_path, _UNIX_SERVER.replace("import socket\n", "import socket\n" + imports, 1))
+    basis = "resolved_name" if downgraded else "resolved_call"
+    assert _bases(report) == {CONNECT: basis, LISTEN: basis}
+
+
+_PATCHED_THROUGH_COMPAT = (
+    "import socket\n{import_line}class Fake:\n    pass\nsa(socket, 'socket', Fake)\n"
+    "s = socket.socket(socket.AF_UNIX)\ns.bind(('', 8080))\ns.listen()\n"
+)
+
+
+@pytest.mark.parametrize(
+    "import_line,files",
+    [
+        ("from .compat import setattr as sa\n", {"compat.py": "x = 1\n"}),
+        ("from compat import setattr as sa\n", {"compat.py": "x = 1\n"}),
+        ("from plugin.plugins.demo.compat import setattr as sa\n", {"compat.py": "x = 1\n"}),
+        ("from .pkg import setattr as sa\n", {"pkg/__init__.py": "x = 1\n"}),
+        # Relative, even when the module is not among the scanned files.
+        ("from . import setattr as sa\n", {}),
+    ],
+)
+def test_a_writer_re_exported_by_a_plugin_module_disables_the_downgrade(tmp_path, import_line, files):
+    report = _scan(tmp_path, _PATCHED_THROUGH_COMPAT.format(import_line=import_line), **files)
+    assert _bases(report) == {CONNECT: "resolved_call", LISTEN: "resolved_call"}
+
+
+def test_a_star_import_of_builtins_disables_the_downgrade(tmp_path):
+    # compat.py names no writer, so only the star import gives it away; the
+    # writer re-exported from it is then used under any name.
+    report = _scan(tmp_path, _UNIX_SERVER, **{"compat.py": "from builtins import *\n"})
+    assert _bases(report) == {CONNECT: "resolved_call", LISTEN: "resolved_call"}
+
+
+# Import and alias forms that may hand a rewritten socket or a writer to the
+# plugin; each keeps the whole plugin from the downgrade. (main.py, other files)
+_IMPORT_AND_ALIAS_FORMS = {
+    "relative_reexport": (
+        "from .compat import sa\nsa(socket, 'socket', Fake)\n",
+        {"compat.py": "from builtins import setattr as sa\n"},
+    ),
+    "two_hop_reexport_renamed": (
+        "from .c2 import w as q\nq(socket, 'socket', Fake)\n",
+        {"c1.py": "from builtins import setattr as w\n", "c2.py": "from .c1 import w\n"},
+    ),
+    "absolute_package_reexport": (
+        "from pkg.c2 import q\nq(socket, 'socket', Fake)\n",
+        {"pkg/__init__.py": "", "pkg/c1.py": "from builtins import setattr as w\n",
+         "pkg/c2.py": "from pkg.c1 import w as q\n"},
+    ),
+    "module_reexport": (
+        "from .compat import B\nB.setattr(socket, 'socket', Fake)\n",
+        {"compat.py": "import builtins as B\n"},
+    ),
+    "star_chain": (
+        "from .c2 import *\nsetattr(socket, 'socket', Fake)\n",
+        {"c1.py": "from builtins import *\n", "c2.py": "from .c1 import *\n"},
+    ),
+    "builtins_module_alias": ("import builtins as b\nb.setattr(socket, 'socket', Fake)\n", {}),
+    "dunder_builtins_attr": ("__builtins__.setattr(socket, 'socket', Fake)\n", {}),
+    "dunder_builtins_item": ("__builtins__['setattr'](socket, 'socket', Fake)\n", {}),
+    "dunder_import": ("__import__('builtins').setattr(socket, 'socket', Fake)\n", {}),
+    "import_module": (
+        "import importlib\nimportlib.import_module('builtins').setattr(socket, 'socket', Fake)\n", {}
+    ),
+    "importlib_util": ("from importlib.util import find_spec\n", {}),
+    "renamed": ("w = setattr\nw(socket, 'socket', Fake)\n", {}),
+    "in_container": ("ws = [setattr]\nws[0](socket, 'socket', Fake)\n", {}),
+    "as_argument": ("def f(w):\n    w(socket, 'socket', Fake)\nf(setattr)\n", {}),
+    "as_default": ("def f(w=setattr):\n    w(socket, 'socket', Fake)\nf()\n", {}),
+    "try_import": (
+        "try:\n    from builtins import setattr as w\nexcept ImportError:\n    w = None\n"
+        "w(socket, 'socket', Fake)\n", {}
+    ),
+    "if_import": ("if True:\n    from builtins import setattr as w\nw(socket, 'socket', Fake)\n", {}),
+    "local_import": (
+        "def f():\n    from builtins import setattr as w\n    w(socket, 'socket', Fake)\nf()\n", {}
+    ),
+    "sys_modules": ("import sys\nsys.modules['socket'].socket = Fake\n", {}),
+    "sys_modules_from": ("from sys import modules as M\nM['socket'].socket = Fake\n", {}),
+    "methodcaller": (
+        "import operator\noperator.methodcaller('__setattr__', 'socket', Fake)(socket)\n", {}
+    ),
+    "partial": ("import functools\nfunctools.partial(setattr, socket)('socket', Fake)\n", {}),
+    "from_functools": ("from functools import partial\n", {}),
+    "private_operator": ("import _operator\n_operator.attrgetter('socket')\n", {}),
+    "private_functools": ("from _functools import partial\n", {}),
+    "ctypes": (
+        "import ctypes\nctypes.pythonapi.PyObject_SetAttr(ctypes.py_object(socket), "
+        "ctypes.py_object('soc' + 'ket'), ctypes.py_object(Fake))\n", {}
+    ),
+    "function_globals": ("socket.create_connection.__globals__['soc' + 'ket'] = Fake\n", {}),
+    "globals_update": ("g = socket.create_connection\ng.__globals__.update({'soc' + 'ket': Fake})\n", {}),
+    "frame_globals": ("import sys\nsys._getframe().f_globals['soc' + 'ket'] = Fake\n", {}),
+    "inspect_frame": ("import inspect\ninspect.currentframe().f_globals['soc' + 'ket'] = Fake\n", {}),
+    "gc_referents": ("import gc\ngc.get_referents(socket)[0]['soc' + 'ket'] = Fake\n", {}),
+    "pydoc_locate": ("import pydoc\npydoc.locate('builtins.set' + 'attr')(socket, 'soc' + 'ket', Fake)\n", {}),
+    "pkgutil_resolve": (
+        "import pkgutil\npkgutil.resolve_name('builtins:set' + 'attr')(socket, 'soc' + 'ket', Fake)\n", {}
+    ),
+    "pickle_global": (
+        "import pickle\npickle.loads(b'cbuiltins\\nset' + b'attr\\n.')(socket, 'soc' + 'ket', Fake)\n", {}
+    ),
+    "getmembers": (
+        "import inspect, builtins\ndict(inspect.getmembers(builtins))['set' + 'attr'](socket, 'soc' + 'ket', Fake)\n",
+        {},
+    ),
+}
+
+
+@pytest.mark.parametrize("form", sorted(_IMPORT_AND_ALIAS_FORMS))
+def test_import_and_alias_forms_disable_the_downgrade(tmp_path, form):
+    code, files = _IMPORT_AND_ALIAS_FORMS[form]
+    source = "import socket\nclass Fake:\n    pass\n" + code + _UNIX_SERVER.replace("import socket\n", "", 1)
+    report = _scan(tmp_path, source, **files)
+    assert _bases(report) == {CONNECT: "resolved_call", LISTEN: "resolved_call"}
+
+
+def test_plain_imports_keep_the_downgrade(tmp_path):
+    source = "import socket\nimport os, json, types\nfrom pathlib import Path\n" + _UNIX_SERVER.replace(
+        "import socket\n", "", 1
+    )
+    assert _bases(_scan(tmp_path, source)) == {CONNECT: "resolved_name", LISTEN: "resolved_name"}
+
