@@ -20,7 +20,6 @@ from urllib.parse import urlparse
 
 from plugin.logging_config import get_logger
 from plugin.server.infrastructure.package_download import package_http_client, run_file_operation
-from plugin.utils.http_imports import ensure_httpx
 from utils.file_utils import atomic_write_json, read_json_tolerating_replace
 
 logger = get_logger("server.infrastructure.package_sources")
@@ -136,10 +135,6 @@ PYPI_FAMILY = SourceFamily(
     rewrite="rebase",
 )
 SOURCE_FAMILIES = (GITHUB_FAMILY, PYPI_FAMILY)
-# Kept for callers of the GitHub-only table this module started with.
-_MIRRORS = GITHUB_FAMILY.mirrors
-_MIRROR_IDS = frozenset(source_id for source_id, _ in _MIRRORS)
-_RETIRED_MIRROR_IDS = GITHUB_FAMILY.retired_ids
 
 
 def _retired_route_ids() -> frozenset[str]:
@@ -169,9 +164,6 @@ class DownloadPreferences:
 
     def specified_for(self, family: SourceFamily) -> str:
         return self.specified_pypi_source_id if family is PYPI_FAMILY else self.specified_source_id
-
-
-_DEFAULT_MIRROR_ID = GITHUB_FAMILY.default_mirror_id
 
 
 def preferences_path() -> Path:
@@ -646,7 +638,6 @@ async def refresh_pypi_routes() -> None:
 
 
 async def _probe_pypi_routes() -> list[RouteObservation]:
-    httpx = await ensure_httpx()
     client = await package_http_client()
     marker = f"{PYPI_PROBE_PROJECT}-".encode()
 
