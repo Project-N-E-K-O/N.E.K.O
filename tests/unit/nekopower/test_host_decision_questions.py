@@ -291,6 +291,11 @@ def test_families_asks_a_judge_of_the_older_form_with_the_messages_only():
     async def any_kw(messages, **kw):
         return None
 
+    async def named_alike(candidates):
+        return None
+
     assert not families._takes_candidates(old)
+    # One parameter that is only named alike: the call with both does not bind.
+    assert not families._takes_candidates(named_alike)
     assert families._takes_candidates(new) and families._takes_candidates(any_kw)
     assert families._takes_candidates(LexicalDecisionModel(_LLM()).belongs_counted)

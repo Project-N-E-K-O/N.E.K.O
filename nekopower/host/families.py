@@ -60,10 +60,12 @@ logger = logging.getLogger(__name__)
 def _takes_candidates(judge: Any) -> bool:
     """Whether a judge can be told how many candidates the request shows."""
     try:
-        params = inspect.signature(judge).parameters.values()
+        # The whole call must bind: a judge whose one parameter happens to be
+        # called "candidates" is still asked with the messages only.
+        inspect.signature(judge).bind([], candidates=0)
     except (TypeError, ValueError):
         return False
-    return any(p.name == "candidates" or p.kind is inspect.Parameter.VAR_KEYWORD for p in params)
+    return True
 
 
 # Asked with the request and how many candidates it shows (``candidates=``);
