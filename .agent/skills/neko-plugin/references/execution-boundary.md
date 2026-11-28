@@ -169,7 +169,7 @@ Shared vocabulary for plugin work.
 
 ### Plugin Boundary
 
-The write boundary for creating or changing a plugin: `<plugin_dir>` (the plugin directory holding `plugin.toml`, which in a source checkout is a folder under the checkout's built-in plugin root) is the only default editable workspace. Reading docs, tests, indexes, and skills outside this directory is encouraged when it helps the agent follow the plugin contract.
+The write boundary for creating or changing a plugin: `<plugin_dir>` (the plugin directory holding `plugin.toml`; by default in a source checkout, a folder under the checkout's built-in plugin root, or the exact directory given to `init --output`) is the only default editable workspace. Reading docs, tests, indexes, and skills outside this directory is encouraged when it helps the agent follow the plugin contract.
 
 ### Read Context
 
@@ -177,7 +177,7 @@ The project materials an agent may inspect to understand plugin contracts and ex
 
 ### Write Workspace
 
-The files an agent may edit by default for a plugin task. For normal plugin authoring, this is only `<plugin_dir>` (the folder holding `plugin.toml`, under the built-in plugin root in a source checkout).
+The files an agent may edit by default for a plugin task. For normal plugin authoring, this is only `<plugin_dir>` (the folder holding `plugin.toml`; by default under the built-in plugin root in a source checkout, or the exact directory given to `init --output`).
 
 ### Platform Layer
 
