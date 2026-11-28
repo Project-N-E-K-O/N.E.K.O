@@ -579,6 +579,10 @@ class _HostCapabilityEnabler:
             if starting is not None and starting.exception() is not None:
                 return False, "starting the plugin server failed"
             outcome = finished(starting)
+            if outcome == (True, "") and can_follow:
+                # A newer start took over while this one finished (its status update was awaited): follow it too.
+                starting = replacement
+                continue
             if isinstance(outcome, tuple) and len(outcome) == 2 and not outcome[0]:
                 reason = str(outcome[1] or "the plugin server did not come up")
                 if reason == PLUGIN_ENABLE_SUPERSEDED and can_follow:

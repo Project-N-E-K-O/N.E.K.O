@@ -1603,19 +1603,20 @@ class CapabilityGateway:
                     except Exception as exc:  # noqa: BLE001 - the task agent is told and decides how to go on
                         logger.exception("turning on %s failed", target.canonical)
                         done, why = False, type(exc).__name__
+                if cleared.still_valid is not None and not cleared.still_valid():
+                    # The answer stopped standing while ``enable`` ran: the switch was not written for it, or
+                    # was turned on meanwhile by someone else (left as it is, not turned off). Nothing is
+                    # recorded as turned on for the task agent and no free call is lent.
+                    forbidden_now = await self._permissions.forbidden(target.permission)
+                    reason = DENIED_BY_SETTINGS if forbidden_now else "approval_stale"
+                    await self._ledger.append_event(
+                        commission.id,
+                        "capability_denied",
+                        {"capability": f"host:enable:{target.canonical}", "reason": reason},
+                    )
+                    record.status, record.reason = "denied", "settings" if forbidden_now else "stale_approval"
+                    return _text(DENIED_BY_SETTINGS if forbidden_now else _APPROVAL_STALE, error=True)
                 if not done:
-                    if cleared.still_valid is not None and not cleared.still_valid():
-                        # The switch was not written because the answer stopped standing while it waited
-                        # on the checks of this computer (``CapabilityEnabler.enable``): not a failure of the computer.
-                        forbidden_now = await self._permissions.forbidden(target.permission)
-                        reason = DENIED_BY_SETTINGS if forbidden_now else "approval_stale"
-                        await self._ledger.append_event(
-                            commission.id,
-                            "capability_denied",
-                            {"capability": f"host:enable:{target.canonical}", "reason": reason},
-                        )
-                        record.status, record.reason = "denied", "settings" if forbidden_now else "stale_approval"
-                        return _text(DENIED_BY_SETTINGS if forbidden_now else _APPROVAL_STALE, error=True)
                     record.status = "failed"
                     if (
                         target.builtin_group is None
