@@ -586,6 +586,54 @@ async def test_zero_debounce_busy_retry_has_backoff(tmp_path: Path, monkeypatch)
     assert service._pending["demo"] >= before + module._BUSY_RETRY_SECONDS
 
 
+async def test_project_lease_busy_defers_and_retries_after_release(tmp_path: Path, monkeypatch) -> None:
+    # A build or dependency sync holding the project's lease rejects the
+    # reload with a 409 domain error; the watcher's signature has already
+    # moved on, so the reload must stay pending and run once it is released.
+    leased = {"value": True}
+    reloads = []
+
+    class LeasedLifecycle:
+        async def reload_plugin(self, plugin_id, **kwargs):
+            reloads.append(plugin_id)
+            if leased["value"]:
+                raise ServerDomainError(
+                    code="PLUGIN_OPERATION_BUSY", message="project busy", status_code=409
+                )
+            return {"success": True}
+
+    events = []
+    monkeypatch.setattr(module, "emit_lifecycle_event", events.append)
+    service = _make_service(tmp_path, LeasedLifecycle(), monkeypatch)
+    target = module._WatchTarget("demo", tmp_path / "demo")
+    service._pending["demo"] = 0.0
+    before = time.monotonic()
+    await service._reload_target(target)
+    assert service._pending["demo"] >= before + module._BUSY_RETRY_SECONDS
+    assert all(event["type"] != "plugin_hot_reload_failed" for event in events)
+
+    leased["value"] = False
+    await service._reload_target(target)
+    assert reloads == ["demo", "demo"]
+    assert "demo" not in service._pending
+    assert all(event["type"] != "plugin_hot_reload_failed" for event in events)
+
+
+async def test_other_domain_errors_still_fail_the_hot_reload(tmp_path: Path, monkeypatch) -> None:
+    class FailingLifecycle:
+        async def reload_plugin(self, *args, **kwargs):
+            raise ServerDomainError(code="PLUGIN_START_FAILED", message="bad", status_code=500)
+
+    events = []
+    monkeypatch.setattr(module, "emit_lifecycle_event", events.append)
+    service = _make_service(tmp_path, FailingLifecycle(), monkeypatch)
+    service._pending["demo"] = 0.0
+    await service._reload_target(module._WatchTarget("demo", tmp_path / "demo"))
+    assert "demo" not in service._pending
+    assert events[-1]["type"] == "plugin_hot_reload_failed"
+    assert events[-1]["reason"] == "PLUGIN_START_FAILED"
+
+
 async def test_runtime_failure_recovers_without_persisting_intent(tmp_path: Path, monkeypatch) -> None:
     from plugin.server.application.plugins import lifecycle_service as lifecycle
 
