@@ -578,7 +578,8 @@ async def select_pypi_index_url(preferences: DownloadPreferences | None = None) 
 
 
 def _pypi_probe_due(now: float) -> bool:
-    if _last_pypi_probe is not None and now - _last_pypi_probe < PYPI_PROBE_RETRY_SECONDS:
+    # A clock that went backwards past the last probe does not hold it off.
+    if _last_pypi_probe is not None and 0 <= now - _last_pypi_probe < PYPI_PROBE_RETRY_SECONDS:
         return False
     _ensure_loaded()
     # Only a route that answered counts: a probe that failed everywhere
@@ -604,7 +605,10 @@ async def refresh_pypi_routes() -> None:
             return
         generation = route_generation()
         observations = await _probe_pypi_routes()
-        _last_pypi_probe = time.time()
+        # A reset during the probe drops its observations below; it must not
+        # count as a probe either, or the next caller would skip probing.
+        if generation == route_generation():
+            _last_pypi_probe = time.time()
         await commit_route_observations(observations, generation)
 
 

@@ -248,6 +248,16 @@ async def test_a_probe_that_failed_everywhere_waits_for_the_retry_interval(index
     assert len(index.requests) == 10
 
 
+async def test_a_clock_set_back_does_not_hold_off_probing(index, monkeypatch):
+    now = [1_000_000.0]
+    patch_module_clock(monkeypatch, sources, time=lambda: now[0])
+    index.fail = set(PYPI_IDS)
+    await sources.select_pypi_index_url(sources.DownloadPreferences())
+    now[0] -= 3600
+    await sources.select_pypi_index_url(sources.DownloadPreferences())
+    assert len(index.requests) == 10
+
+
 async def test_a_reset_forgets_pypi_measurements_and_probes_again(index):
     await sources.select_pypi_index_url(sources.DownloadPreferences())
     await sources.reset_transfer_history()
@@ -290,3 +300,8 @@ async def test_a_probe_from_before_a_reset_is_dropped(index, monkeypatch):
     monkeypatch.setattr(sources, "_probe_pypi_routes", reset_during_probe)
     await sources.select_pypi_index_url(sources.DownloadPreferences())
     assert not any(key in sources._routes for key in PYPI_IDS)
+    assert sources._last_pypi_probe is None
+    monkeypatch.setattr(sources, "_probe_pypi_routes", probe)
+    await sources.select_pypi_index_url(sources.DownloadPreferences())
+    assert len(index.requests) == 10, "the next caller probes again"
+    assert all(sources._routes[key].samples == 1 for key in PYPI_IDS)
