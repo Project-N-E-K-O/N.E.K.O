@@ -301,6 +301,7 @@ def test_full_cloudsave_chain_runtime_snapshot_steam_cloud_and_manual_apply():
         assert remote_meta_v2["manifest_fingerprint"] == manifest_b["fingerprint"]
 
 
+@contextlib.contextmanager
 def _isolate_main_limited_mode(main_server):
     """Restore main_server's limited-mode globals after a test drives on_startup().
 
@@ -309,10 +310,9 @@ def _isolate_main_limited_mode(main_server):
     limited mode makes every later request through the real ``main_server.app``
     in the same pytest worker answer 409.
     """
-    stack = contextlib.ExitStack()
-    stack.enter_context(patch.object(main_server, "_main_runtime_limited_mode_enabled", False))
-    stack.enter_context(patch.object(main_server, "_main_runtime_limited_mode_reason", ""))
-    return stack
+    with patch.object(main_server, "_main_runtime_limited_mode_enabled", False), \
+         patch.object(main_server, "_main_runtime_limited_mode_reason", ""):
+        yield
 
 
 @pytest.mark.unit
@@ -827,10 +827,6 @@ async def test_main_server_startup_stays_limited_when_storage_barrier_is_blockin
     from main_routers import shared_state
 
     sentinel_templates = object()
-    limited_mode_before = (
-        main_server._main_runtime_limited_mode_enabled,
-        main_server._main_runtime_limited_mode_reason,
-    )
 
     with _isolate_main_limited_mode(main_server), \
          patch.dict(shared_state._state, {"templates": shared_state._UNSET}), \
@@ -850,7 +846,7 @@ async def test_main_server_startup_stays_limited_when_storage_barrier_is_blockin
     assert (
         main_server._main_runtime_limited_mode_enabled,
         main_server._main_runtime_limited_mode_reason,
-    ) == limited_mode_before
+    ) == (False, "")
 
     mock_ensure_runtime.assert_not_awaited()
     mock_start_workers.assert_not_called()
