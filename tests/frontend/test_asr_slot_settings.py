@@ -70,7 +70,8 @@ def test_asr_slot_real_page_round_trip(mock_page, running_server):
     assert mock_page.locator("#asrModelApiKey").is_disabled()
     assert mock_page.evaluate("validateAsrSlotSettings()") is None
 
-    # The card pairs with image generation and opens full width.
+    # The card follows realtime voice and TTS, sits left of the advanced agent
+    # card, and opens full width.
     mock_page.evaluate("""() => {
         document.getElementById('custom-api-options').style.display = 'block';
         document.getElementById('custom-api-container').style.display = 'grid';
@@ -78,10 +79,10 @@ def test_asr_slot_real_page_round_trip(mock_page, running_server):
     mock_page.set_viewport_size({"width": 1280, "height": 1000})
     bounds = mock_page.evaluate("""() => {
         const box = type => document.getElementById(type + '-model-content').parentElement.getBoundingClientRect();
-        const a = box('image'), b = box('asr');
-        return {sameRow: Math.abs(a.top - b.top) < 1, ordered: a.left < b.left};
+        const a = box('asr'), b = box('agent-advanced'), tts = box('tts');
+        return {sameRow: Math.abs(a.top - b.top) < 1, ordered: a.left < b.left, belowTts: a.top > tts.top};
     }""")
-    assert bounds == {"sameRow": True, "ordered": True}
+    assert bounds == {"sameRow": True, "ordered": True, "belowTts": True}
     mock_page.evaluate("toggleModelConfig('asr')")
     mock_page.wait_for_function("""() => {
         const outer = document.getElementById('custom-api-container').getBoundingClientRect();

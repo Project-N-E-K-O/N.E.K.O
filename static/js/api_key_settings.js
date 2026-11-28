@@ -4901,12 +4901,12 @@ const MODEL_CONFIG_ROW_PAIRS = Object.freeze({
     decision: 'recognition',
     omni: 'tts',
     tts: 'omni',
-    'agent-advanced': 'agent',
-    agent: 'agent-advanced',
-    'agent-small': 'game',
-    game: 'agent-small',
-    image: 'asr',
-    asr: 'image',
+    asr: 'agent-advanced',
+    'agent-advanced': 'asr',
+    agent: 'agent-small',
+    'agent-small': 'agent',
+    game: 'image',
+    image: 'game',
 });
 
 function finishModelConfigCollapse(content, pairedContent, transitionId) {
