@@ -184,6 +184,7 @@ export default {
     autoContextHint: 'Quando ativado, no chat de texto (incluindo voz transcrita) este pacote é consultado automaticamente quando a conversa toca no seu conteúdo, sem que o modelo precise procurar.',
     remove: 'Remover',
     removeConfirm: 'Remover o pacote de dados {name}? Suas {count} entradas serão excluídas.',
+    removeBrokenConfirm: 'Remover o pacote de dados indisponível {name}? As entradas preservadas serão removidas da base de conhecimento. Os documentos originais e o histórico de versões serão mantidos.',
     removed: '{name} removido',
     brokenTag: 'Temporariamente indisponível',
     brokenHint: 'Este pacote de dados está temporariamente indisponível. Verifique o arquivo original e a capacidade da base de conhecimento e importe-o novamente.',

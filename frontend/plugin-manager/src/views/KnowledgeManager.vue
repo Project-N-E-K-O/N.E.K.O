@@ -558,8 +558,12 @@ function setPackAuto(row: KnowledgePack, enabled: boolean) {
 
 function removePack(row: KnowledgePack) {
   return mutatePack(row, async () => {
+    // Broken rows report usable entries as zero, not their retained contents.
+    // Warn about removing that content without claiming the pack is empty.
     await ElMessageBox.confirm(
-      t('knowledge.removeConfirm', { name: row.source?.name || row.pack_id, count: row.entries ?? 0 }),
+      t(row.broken ? 'knowledge.removeBrokenConfirm' : 'knowledge.removeConfirm', {
+        name: row.source?.name || row.pack_id, count: row.entries ?? 0,
+      }),
       t('common.warning'),
       { type: 'warning', confirmButtonText: t('knowledge.remove'), cancelButtonText: t('common.cancel') },
     )

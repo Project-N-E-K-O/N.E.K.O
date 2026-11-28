@@ -184,6 +184,7 @@ export default {
     autoContextHint: 'Si está activado, en el chat de texto (incluida la voz transcrita) este paquete se consulta automáticamente cuando la conversación toca su contenido, sin que el modelo tenga que buscarlo.',
     remove: 'Quitar',
     removeConfirm: '¿Quitar el paquete de datos {name}? Se eliminarán sus {count} entradas.',
+    removeBrokenConfirm: '¿Quitar el paquete de datos no disponible {name}? Sus entradas conservadas se quitarán de la base de conocimiento. Se conservarán los documentos originales y el historial de versiones.',
     removed: '{name} quitado',
     brokenTag: 'No disponible temporalmente',
     brokenHint: 'Este paquete de datos no está disponible temporalmente. Comprueba el archivo original y la capacidad de la base de conocimientos y vuelve a importarlo.',

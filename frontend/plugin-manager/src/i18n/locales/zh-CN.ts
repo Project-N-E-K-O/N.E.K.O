@@ -184,6 +184,7 @@ export default {
     autoContextHint: '开启后，文字聊天（含语音转文字）聊到这个包里的内容时，会自动参考它，不用模型自己去查。',
     remove: '移除',
     removeConfirm: '确定移除数据包 {name} 吗？其中 {count} 条词条将被删除。',
+    removeBrokenConfirm: '确定移除暂不可用的数据包 {name} 吗？其中保留的词条将从知识库移除，原始文档和版本历史仍会保留。',
     removed: '已移除 {name}',
     brokenTag: '暂不可用',
     brokenHint: '数据包暂不可用，请检查原文件和知识库容量后重新导入。',

@@ -184,6 +184,7 @@ export default {
     autoContextHint: 'When on, text chats (including transcribed voice) draw on this pack automatically when the conversation touches its content, without the model having to look it up.',
     remove: 'Remove',
     removeConfirm: 'Remove data pack {name}? Its {count} entries will be deleted.',
+    removeBrokenConfirm: 'Remove unavailable data pack {name}? Its retained entries will be removed from the knowledge base. Original documents and version history are kept.',
     removed: '{name} removed',
     brokenTag: 'Temporarily unavailable',
     brokenHint: 'This data pack is temporarily unavailable. Check the original file and knowledge base capacity, then import it again.',

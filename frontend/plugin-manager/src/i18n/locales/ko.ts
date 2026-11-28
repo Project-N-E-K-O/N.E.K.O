@@ -184,6 +184,7 @@ export default {
     autoContextHint: '켜면 텍스트 채팅(음성 받아쓰기 포함)에서 이 팩의 내용이 나오면 모델이 직접 찾지 않아도 자동으로 참고합니다.',
     remove: '제거',
     removeConfirm: '데이터 팩 {name}을(를) 제거할까요? 항목 {count}개가 삭제됩니다.',
+    removeBrokenConfirm: '현재 사용할 수 없는 데이터 팩 {name}을(를) 제거할까요? 보관된 항목이 지식 베이스에서 제거됩니다. 원본 문서와 버전 기록은 유지됩니다.',
     removed: '{name}을(를) 제거했습니다',
     brokenTag: '일시적으로 사용 불가',
     brokenHint: '이 데이터 팩을 일시적으로 사용할 수 없습니다. 원본 파일과 지식 베이스 용량을 확인한 후 다시 가져오세요.',

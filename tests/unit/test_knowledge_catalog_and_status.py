@@ -27,6 +27,41 @@ from tests.knowledge_fixtures import (
 pytestmark = pytest.mark.unit
 
 
+async def test_status_keeps_broken_flags_with_the_counts_captured_before_repair(tmp_path, monkeypatch):
+    """Repair during retained-source loading cannot mix two pack projections."""
+    service = await _started(tmp_path)
+    captured, repaired = asyncio.Event(), asyncio.Event()
+    pending = None
+    try:
+        await _import(service, _pack())
+        service._broken_packs = ("demo-memes",)
+        original_thread = service._thread
+
+        async def pause_retained_sources(function, *args, **kwargs):
+            if function == service._sources.retained_packs:
+                captured.set()
+                await repaired.wait()
+            return await original_thread(function, *args, **kwargs)
+
+        monkeypatch.setattr(service, "_thread", pause_retained_sources)
+        pending = asyncio.create_task(service.status())
+        await asyncio.wait_for(captured.wait(), 5)
+        # Use the actual repair path while the old list projection is pending.
+        await _import(service, _pack())
+        assert "demo-memes" not in service._broken_packs
+        repaired.set()
+        old = await asyncio.wait_for(pending, 5)
+        assert old["entries"] == old["chunks_total"] == 0
+        assert old["broken_packs"] == ["demo-memes"]
+        fresh = await service.status()
+        assert fresh["broken_packs"] == [] and fresh["entries"] > 0
+    finally:
+        repaired.set()
+        if pending is not None:
+            await asyncio.gather(pending, return_exceptions=True)
+        await service.stop()
+
+
 async def test_catalog_search_filters_pack_before_pagination(tmp_path):
     service = await _started(tmp_path)
     try:

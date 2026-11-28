@@ -2917,7 +2917,9 @@ class KnowledgeService:
                 "chunks_ready": chunks_ready,
                 "chunks_failed": sum(p["chunks_failed"] for p in vector_packs),
                 "indexed_percent": round(chunks_ready * 100 / chunks_total, 1) if chunks_total else 0.0,
-                "broken_packs": list(self._broken_packs),
+                # Retained-source loading can yield to a repair; flags and
+                # counts must describe the same captured pack projection.
+                "broken_packs": [p["pack_id"] for p in packs if p["broken"]],
                 # The largest packs only: this is an overview, not a pack list.
                 "sources": [
                     {"pack_id": p["pack_id"], "name": p["source"]["name"], "entries": p["entries"]}

@@ -184,6 +184,7 @@ export default {
     autoContextHint: '開啟後，文字聊天（含語音轉文字）聊到這個包裡的內容時，會自動參考它，不用模型自己去查。',
     remove: '移除',
     removeConfirm: '確定移除資料包 {name} 嗎？其中 {count} 筆詞條將被刪除。',
+    removeBrokenConfirm: '確定移除暫不可用的資料包 {name} 嗎？其中保留的詞條將從知識庫移除，原始文件和版本歷史仍會保留。',
     removed: '已移除 {name}',
     brokenTag: '暫時無法使用',
     brokenHint: '資料包暫時無法使用，請檢查原始檔案和知識庫容量後重新匯入。',
