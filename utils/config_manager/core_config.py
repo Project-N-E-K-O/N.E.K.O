@@ -1584,6 +1584,9 @@ class CoreConfigMixin:
                 candidates = self._provider_url_candidates(
                     named_profile, 'OPENROUTER_URL', 'OPENROUTER_URLS'
                 )
+                if prefix == 'decision' and named_profile.get('DECISION_URL'):
+                    # The provider's own decision route (e.g. Requesty /v1/systemone).
+                    candidates = [*candidates, str(named_profile['DECISION_URL'])]
                 if not slot_url or not any(same_endpoint(slot_url, c) for c in candidates):
                     return ''
                 return str(named_profile.get(profile_key)
@@ -1835,6 +1838,10 @@ class CoreConfigMixin:
                             if isinstance(_profile, dict)
                             else []
                         )
+                        # The decision slot may point at the provider's own decision
+                        # route (e.g. Requesty's /v1/systemone): that is its endpoint too.
+                        if prefix == 'decision' and isinstance(_profile, dict) and _profile.get('DECISION_URL'):
+                            _candidates = [*_candidates, str(_profile['DECISION_URL'])]
                         # Reuse utils.http.url.same_endpoint for origin matching rather than reinventing it:
                         # vision-slot credential inheritance already refined it over six rounds (trailing slashes / path case /
                         # userinfo / malformed ports / default ports / malformed IPv6). A local
@@ -2389,7 +2396,7 @@ class CoreConfigMixin:
                 profile_protocol=profile_protocol,
                 profile_model=profile_model,
             )
-            # Workspace-only native endpoints (Bailian decision-model-preview): the
+            # Workspace-only native endpoints (Bailian decision-model): the
             # profile carries a host template filled with the user's saved
             # workspace API Host. It applies only while the slot still targets the
             # profile's own service; a hand-entered URL (custom provider or

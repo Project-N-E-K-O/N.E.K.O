@@ -279,7 +279,7 @@ def _usage_int(usage: Mapping[str, Any], *names: str) -> int:
 
 
 class SystemOneAdapter(DecisionAdapter):
-    """TypeSafe System One protocol (DashScope ``decision-model-preview`` & OpenRouter Decisions).
+    """TypeSafe System One protocol (DashScope ``decision-model`` & OpenRouter Decisions).
 
     Wire format (Bailian decision model API reference): every question carries
     ``type`` / ``instructions`` / ``criteria``. ``score`` criteria is the

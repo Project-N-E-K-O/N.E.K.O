@@ -94,6 +94,12 @@ logger = logging.getLogger(__name__)
 # stuff the LLM prompt with more text than it can rank reliably.
 from config import RECALL_COARSE_OVERSAMPLE as COARSE_OVERSAMPLE  # noqa: E402
 
+# Native decision rerank (owner decision D18): candidates per single-choice
+# question (each with its own "none"), and the weight of the coarse rank added
+# to a candidate's score, highest for the first candidate down to 0 for the last.
+RECALL_DECISION_GROUP_SIZE = 16
+RECALL_DECISION_COARSE_PRIOR = 0.1
+
 
 class MemoryRecallReranker:
     """Stateless apart from the embedding service handle. Construct
@@ -594,6 +600,94 @@ class MemoryRecallReranker:
 
     # ── phase 3: LLM rerank ──────────────────────────────────────────
 
+    async def _native_group_rank(
+        self,
+        cand_entries: list[tuple[str, str]],
+        id_to_obs: dict[str, dict],
+        query_text: str,
+        *,
+        budget: int,
+        decision_config: dict,
+        config_manager,
+    ) -> list[dict] | None:
+        """Rank the candidates with one native decision request, or ``None`` on a miss.
+
+        A candidate scores its choice probability against its group's "none",
+        p / (p + p_none), plus a small prior for its coarse rank; ties keep the
+        coarse order. Question and option keys are generated (``g0``, ``m0``...)
+        so every native API accepts them whatever the candidate IDs hold.
+        """
+        from config import DECISION_STATE_MAX_TOKENS, RECALL_PER_CANDIDATE_MAX_TOKENS
+        from config.prompts.prompts_memory import (
+            RECALL_DECISION_GROUP_INSTRUCTIONS,
+            RECALL_DECISION_NONE,
+            RECALL_DECISION_STATE_HEADER,
+        )
+        from utils.decision_client import ChoiceQuestion, ask_site_questions
+        from utils.decision_client.routing import SITE_MEMORY_RECALL
+        from utils.tokenize import count_tokens, truncate_to_tokens
+
+        if not cand_entries:
+            return None
+        query_budget = max(256, DECISION_STATE_MAX_TOKENS // 4)
+        state = RECALL_DECISION_STATE_HEADER + truncate_to_tokens(query_text, query_budget)
+        # The options of all groups together stay within DECISION_STATE_MAX_TOKENS,
+        # as the old per-candidate state did; candidates past it keep their
+        # coarse place behind the asked ones.
+        options: list[str] = []
+        used = 0
+        for cid, _line in cand_entries:
+            option = truncate_to_tokens(id_to_obs[cid].get('text', '') or '', RECALL_PER_CANDIDATE_MAX_TOKENS)
+            cost = count_tokens(option) + 1
+            if options and used + cost > DECISION_STATE_MAX_TOKENS:
+                break
+            options.append(option)
+            used += cost
+        questions: dict = {}
+        for start in range(0, len(options), RECALL_DECISION_GROUP_SIZE):
+            criteria: dict[str, str] = {}
+            for i in range(start, min(start + RECALL_DECISION_GROUP_SIZE, len(options))):
+                criteria[f"m{i}"] = options[i]
+            criteria["none"] = RECALL_DECISION_NONE
+            questions[f"g{start // RECALL_DECISION_GROUP_SIZE}"] = ChoiceQuestion(
+                instructions=RECALL_DECISION_GROUP_INSTRUCTIONS, criteria=criteria,
+            )
+        answers = await ask_site_questions(
+            SITE_MEMORY_RECALL,
+            state=state,
+            questions=questions,
+            chat_config=None,
+            decision_config=decision_config,
+            config_manager=config_manager,
+            rehost=False,
+            timeout=2.0,
+            call_type="memory_recall_rerank",
+        )
+        if not answers:
+            return None
+        score: dict[str, float] = {}
+        for answer in answers.values():
+            probs: dict[str, float] = {}
+            for key, value in (getattr(answer, 'probabilities', None) or {}).items():
+                try:
+                    probs[key] = float(value)
+                except (TypeError, ValueError):
+                    continue
+            if not probs:
+                # No probabilities to rank by: let the chat rerank order them.
+                return None
+            p_none = probs.get("none", 0.0)
+            for key, p in probs.items():
+                if key != "none":
+                    score[key] = p / (p + p_none) if (p + p_none) > 0 else 0.0
+        n = len(cand_entries)
+        scored = [
+            (score.get(f"m{i}", 0.0) + RECALL_DECISION_COARSE_PRIOR * (1.0 - i / max(1, n - 1)), i, cid)
+            for i, (cid, _line) in enumerate(cand_entries)
+        ]
+        scored.sort(key=lambda item: (-item[0], item[1]))
+        return [id_to_obs[cid] for _score, _i, cid in scored[:budget]]
+
     async def _fine_rank(
         self,
         candidates: list[dict],
@@ -623,11 +717,10 @@ class MemoryRecallReranker:
         # The id-keyed indirection prevents the LLM from inventing
         # ids that aren't in the candidate set.
         from config import (
-            DECISION_STATE_MAX_TOKENS,
             RECALL_PER_CANDIDATE_MAX_TOKENS,
             RECALL_CANDIDATES_TOTAL_MAX_TOKENS,
         )
-        from utils.tokenize import count_tokens, truncate_to_tokens
+        from utils.tokenize import truncate_to_tokens
         cand_lines = []
         cand_entries: list[tuple[str, str]] = []
         id_to_obs: dict[str, dict] = {}
@@ -664,160 +757,30 @@ class MemoryRecallReranker:
         except Exception:
             decision_config = None
 
-        from utils.decision_client import (
-            DecisionClient,
-            ScoreQuestion,
-            get_decision_adapter,
-            is_native_decision_protocol,
-        )
+        # Fast path: one decision request on a native zero-output Decisions API
+        # (owner decision D18): the candidates in coarse order, 16 to a single-choice
+        # question with a "none" option each, all questions in one request. Falls
+        # through to the `recognition` chat rerank below on any error or cooldown.
+        from utils.decision_client.routing import SITE_MEMORY_RECALL, native_decision_usable
 
-        # Fast path: native zero-output Decisions API (e.g. Qwen decision-model-preview,
-        # Gemini gemini-decision-1, OpenAI gpt-6-luna, OpenRouter Decisions). Evaluates
-        # bounded candidates in one parallel forward pass (~150-250ms, 0 output tokens)
-        # and falls through to the `emotion` chat-LLM rerank path on any error or cooldown.
-        if (
-            isinstance(decision_config, dict)
-            and is_native_decision_protocol(decision_config.get('decision_protocol'))
-            and decision_config.get('model')
-        ):
+        if native_decision_usable(decision_config, SITE_MEMORY_RECALL):
             try:
-                # Cap the native query portion so state_header never consumes the
-                # entire DECISION_STATE_MAX_TOKENS budget; emotion chat fallback
-                # continues to use the original query_text.
-                native_query_budget = max(256, DECISION_STATE_MAX_TOKENS // 4)
-                native_query_text = truncate_to_tokens(query_text, native_query_budget)
-                state_header = f"Query:\n{native_query_text}\n\nCandidates:\n"
-                header_tokens = count_tokens(state_header)
-                avail_tokens = max(
-                    1,
-                    DECISION_STATE_MAX_TOKENS - header_tokens - 64,
+                # Outer cap a little above the decision call's own 2.0 s, so a
+                # transient timeout reliably reaches the client's cooldown cache;
+                # upstream's ~5 s query_memory budget still has room for the chat.
+                ranked_native = await asyncio.wait_for(
+                    self._native_group_rank(
+                        cand_entries,
+                        id_to_obs,
+                        query_text,
+                        budget=budget,
+                        decision_config=decision_config,
+                        config_manager=config_manager,
+                    ),
+                    timeout=2.2,
                 )
-                native_lines: list[str] = []
-                native_candidate_ids: list[str] = []
-                used_tokens = 0
-                for cid, line in cand_entries:
-                    line_tokens = count_tokens(line) + 1
-                    if used_tokens + line_tokens > avail_tokens:
-                        if not native_lines:
-                            native_lines.append(truncate_to_tokens(line, avail_tokens))
-                            native_candidate_ids.append(cid)
-                        break
-                    native_lines.append(line)
-                    native_candidate_ids.append(cid)
-                    used_tokens += line_tokens
-
-                # The native endpoint answers at most 16 questions per request (one
-                # question per candidate here). Split into batches of that size and
-                # send them concurrently; each batch's state carries only its own
-                # candidate lines, so the total input stays the packed budget above
-                # plus one query header per extra batch.
-                # Protocols without a documented cap keep a single request.
-                per_request_cap = getattr(
-                    get_decision_adapter(decision_config.get('decision_protocol')),
-                    'MAX_QUESTIONS_PER_REQUEST',
-                    None,
-                )
-                batch_size = max(1, per_request_cap or len(native_candidate_ids))
-                line_by_cid = dict(zip(native_candidate_ids, native_lines))
-                batches = [
-                    native_candidate_ids[i:i + batch_size]
-                    for i in range(0, len(native_candidate_ids), batch_size)
-                ]
-                dec_client = DecisionClient(config_manager=config_manager)
-                # Question IDs go on the wire as c0, c1, ...: candidate IDs may hold
-                # dots, which Gemini's decision API refuses (400 on every request,
-                # observed 2026-11-26); IDs must match [A-Za-z0-9_-]{1,64}.
-                qid_by_cid = {cid: f"c{idx}" for idx, cid in enumerate(native_candidate_ids)}
-
-                async def _batch_call(batch_ids: list[str]):
-                    batch_state = state_header + "\n".join(line_by_cid[cid] for cid in batch_ids)
-                    batch_questions = {
-                        qid_by_cid[cid]: ScoreQuestion(
-                            instructions=(
-                                f"Rate how relevant memory candidate [{cid}] is for answering or "
-                                "supporting the Query above. Higher evidence score in parentheses "
-                                "indicates stronger user confirmation."
-                            ),
-                            levels=(
-                                "irrelevant",
-                                "weakly_relevant",
-                                "relevant",
-                                "highly_relevant",
-                            ),
-                        )
-                        for cid in batch_ids
-                    }
-                    batch_resp = await dec_client.decide(
-                        state=batch_state,
-                        questions=batch_questions,
-                        config=decision_config,
-                        timeout=2.0,
-                        allow_fallback=False,
-                        respect_cooldown=True,
-                        call_type="memory_recall_rerank",
-                    )
-                    # A batch with no usable score (e.g. every question refused)
-                    # fails the whole pass right away, like a single unsplit request
-                    # would; raising here lets the sibling batches be cancelled now
-                    # instead of after they finish.
-                    wire_answers = batch_resp.answers or {}
-                    batch_answers = {
-                        cid: wire_answers[qid_by_cid[cid]]
-                        for cid in batch_ids
-                        if wire_answers.get(qid_by_cid[cid]) is not None
-                    }
-                    if not any(
-                        batch_answers[cid].score_norm is not None
-                        for cid in batch_answers
-                    ):
-                        raise RuntimeError("native decision batch returned no valid scores")
-                    return batch_answers
-
-                # Keep native decision total latency tightly capped (2.0s; typical
-                # native latency is ~150-250ms) so upstream's ~5s query_memory budget
-                # still leaves room for the emotion chat fallback on timeout. Outer
-                # wait_for (2.2s) gives DecisionClient's inner 2.0s timeout priority
-                # so transient timeouts reliably trigger the 60s cooldown cache.
-                # Batches run concurrently, so the cap is unchanged; any failed batch
-                # fails the whole native pass (no half-native, half-coarse order) and
-                # the batches still in flight are cancelled instead of left running.
-                batch_tasks = [asyncio.ensure_future(_batch_call(batch_ids)) for batch_ids in batches]
-                try:
-                    batch_responses = await asyncio.wait_for(asyncio.gather(*batch_tasks), timeout=2.2)
-                finally:
-                    pending_batches = [task for task in batch_tasks if not task.done()]
-                    for task in pending_batches:
-                        task.cancel()
-                    if pending_batches:
-                        await asyncio.gather(*pending_batches, return_exceptions=True)
-                native_answers: dict = {}
-                for batch_answers in batch_responses:
-                    native_answers.update(batch_answers)
-                if native_answers:
-                    scored_rows: list[tuple[float, int, str]] = []
-                    for idx, cid in enumerate(native_candidate_ids):
-                        ans = native_answers.get(cid)
-                        if ans is not None and ans.score_norm is not None:
-                            scored_rows.append((float(ans.score_norm), idx, cid))
-                    if scored_rows:
-                        scored_rows.sort(key=lambda item: (-item[0], item[1]))
-                        ranked_native: list[dict] = []
-                        seen_native: set[str] = set()
-                        for _score, _idx, cid in scored_rows:
-                            ranked_native.append(id_to_obs[cid])
-                            seen_native.add(cid)
-                            if len(ranked_native) >= budget:
-                                break
-                        if len(ranked_native) < budget:
-                            for c in candidates:
-                                cid = c.get('id') or c.get('raw_id')
-                                if cid in seen_native or not cid:
-                                    continue
-                                ranked_native.append(c)
-                                seen_native.add(cid)
-                                if len(ranked_native) >= budget:
-                                    break
-                        return ranked_native
+                if ranked_native:
+                    return ranked_native
             except Exception as exc:
                 logger.warning(
                     "[MemoryRecall] native decision rerank failed (%s); falling back to emotion chat LLM",
