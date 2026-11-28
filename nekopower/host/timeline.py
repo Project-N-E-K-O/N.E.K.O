@@ -92,6 +92,7 @@ TIMELINE_KINDS: tuple[str, ...] = (
     "not_landed",  # it was not merged, and waits in the worktree for the user to decide
     "landing_held",  # it waits there for the user's word, the settings saying to ask first
     "tree_discarded",  # the user discarded a worktree with what it held
+    "tree_expired",  # an old worktree was automatically removed during upkeep
     "tree_kept",  # the user sees to a worktree personally
     "team_formed",  # the leader of a project started a team for a commission
     "inspected",  # an inspector looked at what a task agent changed before it was merged
@@ -136,6 +137,7 @@ _EVENT_TYPES: tuple[str, ...] = (
     "not_landed",
     "landing_held",
     "tree_discarded",
+    "tree_expired",
     "tree_kept",
     "team_formed",
     "inspected",
@@ -475,6 +477,15 @@ def _event_entry(
     elif kind in ("tree_discarded", "tree_kept"):
         text, peer = _text(payload.get("path")), dict(_USER)
         detail = {"tree": _text(payload.get("tree")), "path": text}
+    elif kind == "tree_expired":
+        text = _text(payload.get("path"))
+        detail = {
+            "tree": _text(payload.get("tree")),
+            "path": text,
+            "state": _text(payload.get("state")),
+            "removed": payload.get("removed") is not False,
+            "outcome": _text(payload.get("outcome")) or "removed",
+        }
     elif kind == "team_formed":
         members = [item for item in payload.get("members") or [] if isinstance(item, dict)]
         detail = {

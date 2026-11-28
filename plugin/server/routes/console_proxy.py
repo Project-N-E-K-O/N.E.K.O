@@ -82,6 +82,9 @@ def _remote() -> bool:
 _SLOW = {
     "space/pick-directory": httpx.Timeout(135.0, connect=3.0),
     "familiars/draft": httpx.Timeout(60.0, connect=3.0),
+    "storage/work-dirs/clean": httpx.Timeout(120.0, connect=3.0),
+    "storage/worktrees/clean": httpx.Timeout(120.0, connect=3.0),
+    "storage/transcripts/clean": httpx.Timeout(120.0, connect=3.0),
 }
 
 

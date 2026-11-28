@@ -847,7 +847,14 @@ async def test_market_proxy_through_the_real_app_drops_content_encoding(monkeypa
     # Content-Encoding header back on the already-decompressed body.
     import gzip
 
+    from app import main_server
     from app.main_server import app as main_app
+
+    # The storage limited-mode guard is module state that a startup test on the
+    # same worker may leave on (409 storage_startup_blocked); this test is about
+    # the proxy, so it runs as after a completed startup.
+    monkeypatch.setattr(main_server, "_runtime_startup_init_completed", True)
+    monkeypatch.setattr(main_server, "_main_runtime_limited_mode_enabled", False)
 
     real_client = httpx.AsyncClient
     body = b'{"ok":true}'

@@ -544,6 +544,14 @@ class _NotMade(SpaceError):
     """A change tidying asked for is not made; the message says why (``TaskAgentSpace.tidy_entries``)."""
 
 
+class _WorkdirClearing(Exception):
+    """Raised inside a space write before restoring or binding a project whose workdir is being cleaned."""
+
+    def __init__(self, workdir: str) -> None:
+        super().__init__(workdir)
+        self.workdir = workdir
+
+
 @dataclass(frozen=True, slots=True)
 class Layer:
     """The entries of one layer (the space as a whole, or one project), as tidying reads them.

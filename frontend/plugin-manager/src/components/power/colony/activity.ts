@@ -66,6 +66,8 @@ export function sceneAt(entries: TimelineEntry[], index: number, base: SceneStan
   const cats = new Map<string, SceneCat>()
   // The commission each session is at, by session.
   const atWork = new Map<string, string | null>()
+  // Which worktree (and its commission) a session is currently drawn as waiting/resolving over.
+  const pendingTree = new Map<string, { tree: string; commissionId: string | null }>()
   // How they stood where the entries begin, when that is not the beginning of the record.
   for (const standing of base) {
     if (!LOOKS_AT_START.has(standing.look)) continue
@@ -74,16 +76,24 @@ export function sceneAt(entries: TimelineEntry[], index: number, base: SceneStan
   }
   const busyWithAnother = (entry: TimelineEntry) =>
     Boolean(entry.session_id) && atWork.has(entry.session_id as string) && atWork.get(entry.session_id as string) !== entry.commission_id
+  const waitingOnAnotherCommission = (entry: TimelineEntry) => {
+    const waiting = entry.session_id ? pendingTree.get(entry.session_id) : undefined
+    return Boolean(waiting?.commissionId && entry.commission_id && waiting.commissionId !== entry.commission_id)
+  }
   const last = Math.min(index, entries.length - 1)
   for (let at = 0; at <= last; at++) {
     const entry = entries[at]
     const id = entry.session_id
+    const entryTree = typeof entry.detail?.tree === 'string' ? entry.detail.tree : ''
     switch (entry.kind) {
       case 'filed': put(cats, id); break
       case 'queued': put(cats, id, busyWithAnother(entry) ? undefined : 'queued'); break
       case 'started':
         put(cats, id, 'working')
-        if (id) atWork.set(id, entry.commission_id)
+        if (id) {
+          atWork.set(id, entry.commission_id)
+          pendingTree.delete(id)
+        }
         break
       // Of one at another commission, what waits for it is asked about: it is still at its own.
       case 'asked_user': put(cats, id, busyWithAnother(entry) ? undefined : 'waiting_user'); break
@@ -94,31 +104,76 @@ export function sceneAt(entries: TimelineEntry[], index: number, base: SceneStan
         break
       }
       case 'resting': put(cats, id, 'resting'); break
-      case 'rest_over': put(cats, id, 'idle'); break
+      case 'rest_over': put(cats, id, 'idle'); if (id) pendingTree.delete(id); break
       case 'ended':
         if (busyWithAnother(entry)) break
-        atRest(cats, entry)
         if (id) atWork.delete(id)
+        if (waitingOnAnotherCommission(entry)) break
+        atRest(cats, entry)
+        if (id) {
+          const look = cats.get(id)?.look
+          if (look !== 'held' && look !== 'unlanded') pendingTree.delete(id)
+        }
         break
       // What a familiar changed in a worktree of its own: merged where it clashed, left for the user.
-      case 'landing_conflict': put(cats, id, busyWithAnother(entry) ? undefined : 'resolving'); break
-      case 'not_landed': put(cats, id, busyWithAnother(entry) ? undefined : 'unlanded'); break
-      case 'landing_held': put(cats, id, busyWithAnother(entry) ? undefined : 'held'); break
-      // The user decided on it, maybe long after: of one at another commission by then, that one says how it stands.
-      case 'landed': case 'tree_discarded': case 'tree_kept':
+      case 'landing_conflict':
         if (!busyWithAnother(entry)) {
+          put(cats, id, 'resolving')
+          if (id) {
+            if (entryTree || entry.commission_id) pendingTree.set(id, { tree: entryTree, commissionId: entry.commission_id })
+            else pendingTree.delete(id)
+          }
+        }
+        break
+      case 'not_landed':
+        if (!busyWithAnother(entry)) {
+          put(cats, id, 'unlanded')
+          if (id) {
+            if (entryTree || entry.commission_id) pendingTree.set(id, { tree: entryTree, commissionId: entry.commission_id })
+            else pendingTree.delete(id)
+          }
+        }
+        break
+      case 'landing_held':
+        if (!busyWithAnother(entry)) {
+          put(cats, id, 'held')
+          if (id) {
+            if (entryTree || entry.commission_id) pendingTree.set(id, { tree: entryTree, commissionId: entry.commission_id })
+            else pendingTree.delete(id)
+          }
+        }
+        break
+      // The user decided on it, or it expired, maybe long after: of one at another commission by then, that one says how it stands.
+      case 'landed': case 'tree_discarded': case 'tree_kept': case 'tree_expired':
+        if (!busyWithAnother(entry)) {
+          const waiting = id ? pendingTree.get(id) : undefined
+          if (waiting?.tree && entryTree && waiting.tree !== entryTree) break
+          if (waiting?.commissionId && entry.commission_id && waiting.commissionId !== entry.commission_id) break
           const cat = put(cats, id)
           if (cat && ['resolving', 'held', 'unlanded'].includes(cat.look)) cat.look = atWork.has(id ?? '') ? 'working' : 'idle'
+          if (id) pendingTree.delete(id)
         }
         break
       // A member of a team, or another one a familiar started, ends so.
       case 'child_returned':
         if (busyWithAnother(entry)) break
+        if (id) atWork.delete(id)
+        if (waitingOnAnotherCommission(entry)) break
         atRest(cats, entry)
         // Its commission is over: what is decided on its worktree later leaves it at rest.
-        if (id) atWork.delete(id)
+        if (id) {
+          const look = cats.get(id)?.look
+          if (look !== 'held' && look !== 'unlanded') pendingTree.delete(id)
+        }
         break
-      case 'ask_answered': atRest(cats, entry); break
+      case 'ask_answered':
+        if (waitingOnAnotherCommission(entry)) break
+        atRest(cats, entry)
+        if (id) {
+          const look = cats.get(id)?.look
+          if (look !== 'held' && look !== 'unlanded') pendingTree.delete(id)
+        }
+        break
       case 'child_started':
         put(cats, id)
         // The one it started is there from now on.
