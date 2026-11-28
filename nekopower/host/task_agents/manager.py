@@ -26,6 +26,7 @@ import contextlib
 import dataclasses
 import json
 import sqlite3
+import threading
 import uuid
 from collections import deque
 from collections.abc import Awaitable, Callable, Iterable
@@ -74,6 +75,7 @@ from .types import (
     ForkRefused,
     LedgerLessonSink,
     _SessionAction,
+    _WorkdirHold,
     _Beside,
     _Session,
     _carried_on,
@@ -274,6 +276,14 @@ class TaskAgentManager(
         # (``hold_files``); a commission is started in one of them once that
         # is done.
         self._clearing: dict[str, asyncio.Event] = {}
+        self._clearing_drops_transcript: set[str] = set()
+        # Working directories currently being removed (``hold_workdir``), and
+        # working directories already claimed by starting/running commissions
+        # so directory cleanup and ``_start`` cannot overlap on the same path.
+        self._clearing_workdirs: dict[str, _WorkdirHold] = {}
+        self._clearing_workdirs_snapshot: tuple[_WorkdirHold, ...] = ()
+        self._clearing_veto_lock = threading.Lock()
+        self._starting_workdirs: dict[str, tuple[str, ...]] = {}
         # Commissions whose next start has its first model request counted
         # already: counted before they were woken, so that one whose quota
         # is used up is left to rest instead of failing on the way up.
@@ -328,6 +338,7 @@ class TaskAgentManager(
         # Idle sessions that are to be summed up, each with the timer that
         # says when; those being summed up right now, each with its task.
         self._idle_timers: dict[str, asyncio.TimerHandle] = {}
+        self._idle_schedule_gen: dict[str, int] = {}
         self._compacting: dict[str, asyncio.Task[Any]] = {}
         # How many times in a row the host asked a session to sum itself up
         # and got no whole summary (``TASK_AGENT_IDLE_COMPACT_MAX_FAILURES``).
@@ -1587,16 +1598,38 @@ class TaskAgentManager(
             )
             from nekopower.runtime.protocol import GatewaySpec
 
-            def prepare() -> tuple[str, str, str | None]:
-                # In here: where the session is kept, and which runtime holds
-                # what was said in it, is told by what is on the disk.
-                session_dir = self._session_dir_of(place)
-                session_dir.mkdir(parents=True, exist_ok=True)
-                workdir = self._workdir_of(place, session_dir)
-                workdir.mkdir(parents=True, exist_ok=True)
-                return str(session_dir), str(workdir), _task_agents_facade._begun_in(place, session_dir)
+            async def prepare_place(target_place: Any) -> tuple[str, str, str | None] | None:
+                def resolve_paths() -> tuple[Any, Any, tuple[str, ...]]:
+                    session_dir = self._session_dir_of(target_place)
+                    workdir_path = self._workdir_of(target_place, session_dir)
+                    return session_dir, workdir_path, self._path_aliases(workdir_path)
 
-            session_path, workdir, begun_in = await asyncio.to_thread(prepare)
+                while True:
+                    session_dir_path, workdir_path, workdir_aliases = await asyncio.to_thread(resolve_paths)
+                    if self._closed or self._sessions.get(commission_id) is not session:
+                        return None
+                    if not await self._claim_workdir_for_start(
+                        commission_id, workdir_path, aliases=workdir_aliases
+                    ):
+                        continue
+                    break
+
+                def _mkdir_and_probe() -> tuple[str, str, str | None]:
+                    # In here: where the session is kept, and which runtime holds
+                    # what was said in it, is told by what is on the disk.
+                    session_dir_path.mkdir(parents=True, exist_ok=True)
+                    workdir_path.mkdir(parents=True, exist_ok=True)
+                    return str(session_dir_path), str(workdir_path), _task_agents_facade._begun_in(target_place, session_dir_path)
+
+                from utils.asyncio_executor import to_thread_through_cancellation
+
+                return await to_thread_through_cancellation(_mkdir_and_probe)
+
+            prepared = await prepare_place(place)
+            if prepared is None:
+                self._starting_workdirs.pop(commission_id, None)
+                return False
+            session_path, workdir, begun_in = prepared
             # Where its session works; the commission itself may be worked on
             # in a git worktree of that directory, made now or found again
             # (``tree_work.py``). The session keeps the directory it has on
@@ -1734,7 +1767,11 @@ class TaskAgentManager(
                 place = dataclasses.replace(
                     kept, workdir=kept.workdir, project=kept.project or commission.project
                 )
-                session_path, workdir, begun_in = await asyncio.to_thread(prepare)
+                prepared = await prepare_place(place)
+                if prepared is None:
+                    self._starting_workdirs.pop(commission_id, None)
+                    return False
+                session_path, workdir, begun_in = prepared
                 home = workdir
                 commission = await self._ledger.update(commission.id, workdir=workdir) or commission
             # (A session of one commission may have been made a project's member since it
@@ -2459,6 +2496,7 @@ class TaskAgentManager(
         """
         self._cancel_control_calls(commission_id)
         session = self._sessions.pop(commission_id, None)
+        self._starting_workdirs.pop(commission_id, None)
         if session is not None:
             self._close_answer_receipts(session)
         self._candidates.pop(commission_id, None)
@@ -2631,6 +2669,7 @@ class TaskAgentManager(
             if session is not None:
                 self._close_answer_receipts(session)
             self._sessions.pop(commission_id, None)
+            self._starting_workdirs.pop(commission_id, None)
             if (
                 session is not None
                 and session.session_id

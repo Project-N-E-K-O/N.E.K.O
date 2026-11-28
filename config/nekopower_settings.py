@@ -1406,8 +1406,39 @@ SPACE_PROJECT_IDLE_SECONDS = 30 * 24 * 3600.0
 
 SPACE_TRANSCRIPT_KEPT_SECONDS = 30 * 24 * 3600.0
 """How long after a commission ended what was said in its session
-(``transcript.jsonl`` and ``outputs/``) is kept. Its working directory is
-never removed, nor are its review and the entries made from it."""
+(``transcript.jsonl`` and ``outputs/``) is kept. Its review and the entries
+made from it are kept permanently; its working directory has its own
+retention setting (``SPACE_WORK_DIR_KEPT_DAYS``)."""
+
+SPACE_WORK_DIR_KEPT_DAYS = 30
+"""Default days after a session was last active (and its files last changed)
+before its host-owned ``work/`` directory is automatically removed during
+background upkeep. Configurable by the user in ``storage.json``."""
+
+SPACE_WORKTREE_KEPT_DAYS = 14
+"""Default days after a left-over git worktree (``held``, ``unlanded`` or
+``kept``) was last updated (and its files last changed) before it is
+automatically removed during background upkeep. Configurable in ``storage.json``."""
+
+STORAGE_RETENTION_MIN_DAYS = 1
+STORAGE_RETENTION_MAX_DAYS = 365
+"""Bounds for user-configured retention days in ``storage.json``."""
+
+STORAGE_SCAN_BUDGET_SECONDS = 3.0
+"""Total wall-clock budget for measuring directory sizes in ``GET /console/storage``."""
+
+STORAGE_ITEM_BUDGET_SECONDS = 0.25
+"""Per-directory measurement budget when scanning many work directories or worktrees,
+so a single huge folder does not starve the remaining items."""
+
+STORAGE_AUTO_CLEAN_SCAN_SECONDS = 30.0
+"""Per-directory freshness scan budget during background upkeep (``reap_work_dirs``
+and ``reap_worktrees``). Runs off the request path so large folders such as
+``node_modules`` or ``.venv`` can be scanned completely before automatic cleanup."""
+
+STORAGE_MAX_ITEMS = 200
+"""Most items returned per cleanable section (worktrees, working directories) in
+``GET /console/storage``; additional items are counted in ``more``."""
 
 SPACE_UPKEEP_INTERVAL_SECONDS = 6 * 3600.0
 """Least time between two rounds of tidying the space (archiving idle
@@ -2012,11 +2043,11 @@ DSH_CLOSE_SECONDS = 15.0
 """How long a dsh process gets to exit after it was told to before it is
 killed; closing a session waits this long too."""
 
-DSH_MODEL_RETRIES = 2
+DSH_MODEL_RETRIES = 1
 """How often dsh repeats a model request that failed in a way worth
 repeating; the built-in runtime's ``ModelConfig.max_retries``."""
 
-DSH_FORWARD_CONNECT_SECONDS = 30.0
+DSH_FORWARD_CONNECT_SECONDS = 15.0
 """How long the model endpoint gets to accept a forwarded request. How long
 it may take to send the next piece of its answer is the session's
 ``ModelConfig.request_timeout_seconds``."""

@@ -385,9 +385,18 @@ def verify(repo, policy_path=None):
     if (repo / merge_head).exists() and git(repo, "diff", "--name-only"):
         raise ValueError("Stage all tracked changes before verifying a pending merge.")
     if policy_path is None:
-        policy_path = repo / "local-desktop-ui/regression.json"
+        policy_path = repo / "scripts/local_maintenance/regression.json"
         if not policy_path.is_file():
-            policy_path = repo / "local-desktop-ui/regression.example.json"
+            legacy_path = repo / "local-desktop-ui/regression.json"
+            if legacy_path.is_file():
+                print(
+                    "Using legacy regression policy at local-desktop-ui/regression.json; "
+                    "move it to scripts/local_maintenance/regression.json.",
+                    flush=True,
+                )
+                policy_path = legacy_path
+            else:
+                policy_path = repo / "scripts/local_maintenance/regression.example.json"
     suites = verification_suites(repo, policy_path)
     report = state_dir(repo) / (
         "verify-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
