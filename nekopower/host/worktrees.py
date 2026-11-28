@@ -1918,12 +1918,12 @@ class WorktreeManager:
 
     @classmethod
     def _normalize_push_target(cls, push_url: str, remote_name: str, root: Path | None = None) -> str:
-        """Return a stable push-endpoint identifier for ``push_url`` preserving ports, path case, and SSH path form."""
+        """Return a stable push-endpoint identifier for ``push_url`` preserving ports, path case, and SSH user/path form."""
         raw = push_url.strip()
         if not raw:
             return f"remote:{remote_name}"
         # SCP-like SSH syntax: git@host:owner/repo.git (relative to SSH user home unless path starts with `/`).
-        scp = re.match(r"^(?:([^@/\s]+)@)?([A-Za-z0-9._-]+):(/?[^/\s]+(?:/[^/\s]+)*?)(?:\.git)?/?$", raw)
+        scp = re.match(r"^(?:([^:@/\s]+)@)?([A-Za-z0-9._-]+):(/?[^/\s]+(?:/[^/\s]+)*?)(?:\.git)?/?$", raw)
         if scp:
             user, host, repo_path = scp.group(1) or "", scp.group(2), scp.group(3)
             if not (len(host) == 1 and host.isalpha()):
@@ -1931,27 +1931,30 @@ class WorktreeManager:
                 norm_path = repo_path.rstrip("/")
                 if norm_host == "github.com":
                     return f"remote-repo:github.com/{norm_path.lstrip('/').lower()}"
-                if norm_path.startswith("/"):
-                    return f"remote-repo:ssh:{norm_host}/{norm_path.lstrip('/')}"
                 user_part = f"{user}@" if user else ""
+                if norm_path.startswith("/"):
+                    return f"remote-repo:ssh:{user_part}{norm_host}/{norm_path.lstrip('/')}"
                 return f"remote-repo:scp:{user_part}{norm_host}:{norm_path}"
-        # Standard URL syntax: http(s):// or ssh:// (keep non-default ports, scheme, and non-GitHub path case distinct).
+        # Standard URL syntax: http(s):// or ssh:// (keep non-default ports, scheme, SSH user, and non-GitHub path case distinct).
         url_match = re.match(
-            r"^(https?|ssh)://(?:[^@/\s]+@)?([A-Za-z0-9._-]+)(?::(\d+))?/([^/\s]+(?:/[^/\s]+)*?)(?:\.git)?/?$",
+            r"^(https?|ssh)://(?:([^@/\s]+)@)?([A-Za-z0-9._-]+)(?::(\d+))?/([^/\s]+(?:/[^/\s]+)*?)(?:\.git)?/?$",
             raw,
         )
         if url_match:
             scheme = url_match.group(1).lower()
-            norm_host = url_match.group(2).lower()
-            port = url_match.group(3)
-            norm_path = url_match.group(4).rstrip("/")
+            userinfo = url_match.group(2) or ""
+            norm_host = url_match.group(3).lower()
+            port = url_match.group(4)
+            norm_path = url_match.group(5).rstrip("/")
             default_ports = {"http": "80", "https": "443", "ssh": "22"}
             has_custom_port = bool(port and port != default_ports[scheme])
             if norm_host == "github.com" and not has_custom_port:
                 return f"remote-repo:github.com/{norm_path.lower()}"
+            ssh_user = userinfo.split(":", 1)[0] if scheme == "ssh" and userinfo else ""
+            user_part = f"{ssh_user}@" if ssh_user else ""
             if has_custom_port:
-                return f"remote-repo:{scheme}:{norm_host}:{port}/{norm_path}"
-            return f"remote-repo:{scheme}:{norm_host}/{norm_path}"
+                return f"remote-repo:{scheme}:{user_part}{norm_host}:{port}/{norm_path}"
+            return f"remote-repo:{scheme}:{user_part}{norm_host}/{norm_path}"
         if re.match(r"^[A-Za-z][A-Za-z0-9+.-]*://", raw) or re.match(r"^[^@/\s]+@[^:/\s]+:", raw):
             return raw.rstrip("/")
         if root is not None and not os.path.isabs(raw):
@@ -2488,8 +2491,16 @@ class WorktreeManager:
                 ):
                     owns_remote_branch = True
                     pushed_targets[push_target] = existing_tip
+                    recovered_same_target = (
+                        same_branch_prior
+                        and bool(push_target)
+                        and (
+                            str(delivery.get("push_target") or "") == push_target
+                            if delivery.get("push_target")
+                            else delivery.get("remote") == remote_name
+                        )
+                    )
                     delivery = {
-                        **delivery,
                         "branch": target_branch,
                         "commit": existing_tip,
                         "remote": remote_name,
@@ -2497,6 +2508,21 @@ class WorktreeManager:
                         "pushed": True,
                         "pushed_commit": existing_tip,
                         "pushed_targets": dict(pushed_targets),
+                        "base_branch": str(
+                            base_branch or (delivery.get("base_branch") if recovered_same_target else "") or ""
+                        ),
+                        "pr_pending": (
+                            True
+                            if delivery.get("pending_pr")
+                            else (bool(delivery.get("pr_pending")) if recovered_same_target else False)
+                        ),
+                        "pr_url": str(delivery.get("pr_url") or "") if recovered_same_target else "",
+                        "pr_number": delivery.get("pr_number") if recovered_same_target else None,
+                        "prs": (
+                            dict(delivery.get("prs") or {})
+                            if same_branch_prior and isinstance(delivery.get("prs"), dict)
+                            else {}
+                        ),
                     }
                 else:
                     return MergeResult(

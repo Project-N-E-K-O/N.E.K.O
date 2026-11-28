@@ -2833,23 +2833,48 @@ async def test_round15_coderabbit_copy_followup_fixes(tmp_path: Path, monkeypatc
     await mgr.remove(wt_ub)
 
 
-async def test_round16_greptile_and_coderabbit_followup_fixes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Verify conflict relocation avoids merged_parents, SSH scp/url distinction, recovered ownership persistence, and PR revalidation on unchanged/cancel."""
-    mgr = WorktreeManager()
-
-    # 1. _normalize_push_target distinguishes SCP-relative vs URL-absolute SSH paths on non-GitHub hosts
-    # while preserving GitHub equivalence.
+def test_normalize_push_target_ssh_user_and_path_form() -> None:
+    """Verify _normalize_push_target keeps SSH user and path form distinct on non-GitHub hosts."""
+    # Relative SCP vs absolute SCP / ssh:// on non-GitHub hosts.
     assert WorktreeManager._normalize_push_target("git@forge.example:team/repo.git", "origin") != (
         WorktreeManager._normalize_push_target("ssh://git@forge.example/team/repo.git", "origin")
     )
     assert WorktreeManager._normalize_push_target("git@forge.example:/team/repo.git", "origin") == (
         WorktreeManager._normalize_push_target("ssh://git@forge.example/team/repo.git", "origin")
     )
+    assert WorktreeManager._normalize_push_target("git@forge.example:/team/repo.git", "origin") == (
+        WorktreeManager._normalize_push_target("ssh://git@forge.example:22/team/repo.git", "origin")
+    )
+    # Different SSH users on the same non-GitHub host produce distinct keys across SCP, ssh://, and custom ports.
+    assert WorktreeManager._normalize_push_target("alice@forge.example:/team/repo.git", "origin") != (
+        WorktreeManager._normalize_push_target("bob@forge.example:/team/repo.git", "origin")
+    )
+    assert WorktreeManager._normalize_push_target("ssh://alice@forge.example/team/repo.git", "origin") != (
+        WorktreeManager._normalize_push_target("ssh://bob@forge.example/team/repo.git", "origin")
+    )
+    assert WorktreeManager._normalize_push_target("ssh://alice@forge.example:2222/team/repo.git", "origin") != (
+        WorktreeManager._normalize_push_target("ssh://bob@forge.example:2222/team/repo.git", "origin")
+    )
+    assert WorktreeManager._normalize_push_target("alice@forge.example:/team/repo.git", "origin") == (
+        WorktreeManager._normalize_push_target("ssh://alice@forge.example/team/repo.git", "origin")
+    )
+    # Password part in ssh://user:pass@host is stripped while preserving the SSH user.
+    norm_with_pw = WorktreeManager._normalize_push_target("ssh://alice:secret@forge.example/team/repo.git", "origin")
+    assert "secret" not in norm_with_pw
+    assert norm_with_pw == WorktreeManager._normalize_push_target("alice@forge.example:/team/repo.git", "origin")
+    # Relative SCP keeps user distinct as well.
+    assert WorktreeManager._normalize_push_target("alice@forge.example:team/repo.git", "origin") != (
+        WorktreeManager._normalize_push_target("bob@forge.example:team/repo.git", "origin")
+    )
+    # GitHub URLs still collapse to a single canonical repository key on default ports.
     assert WorktreeManager._normalize_push_target("git@github.com:Org/Repo.git", "origin") == (
         WorktreeManager._normalize_push_target("ssh://git@github.com/org/repo.git", "origin")
     )
 
-    # 2. File-vs-dir relocation skips candidate names needed as parent dirs by merged files.
+
+async def test_copy_conflict_relocation_avoids_merged_parents(tmp_path: Path) -> None:
+    """Verify file-vs-dir conflict relocation skips names needed as parent directories by merged files."""
+    mgr = WorktreeManager()
     proj = tmp_path / "reloc_parent_proj"
     _write(proj / "d" / "a", "base-a\n")
     wt_c = await mgr.create(proj, tmp_path / "copies" / "rp1")
@@ -2865,12 +2890,12 @@ async def test_round16_greptile_and_coderabbit_followup_fixes(tmp_path: Path, mo
     assert (wt_c.path / "d.nekopower-conflict.2").read_text(encoding="utf-8") == "copy-file-d\n"
     await mgr.remove(wt_c)
 
-    if REAL_GIT_TOO_OLD:
-        return
 
-    # 3. Cancelling find_pr after pushing new edits when the cached PR is closed preserves pr_pending;
-    # and closing a PR then retrying with NO further edits still revalidates via find_pr and opens a new PR.
-    local, bare, _other = _make_repo_with_remote(tmp_path / "cancel_find_pr")
+@pytest.mark.skipif(REAL_GIT_TOO_OLD, reason="git missing or below minimum version")
+async def test_pr_revalidation_on_unchanged_and_cancelled_lookup(tmp_path: Path) -> None:
+    """Verify closed cached PRs revalidate on unchanged retries and preserve pr_pending if find_pr is cancelled."""
+    mgr = WorktreeManager()
+    local, _bare, _other = _make_repo_with_remote(tmp_path / "cancel_find_pr")
     wt = await mgr.create(local, tmp_path / "wt" / "cfp1", RemoteDefaultBranch(fetch=False))
     _write(wt.path / "a.txt", "v1\nline2\nline3\nline4\nline5\n")
     state: dict[str, Any] = {"open": None, "cancel_find": False, "created": []}
@@ -2917,17 +2942,46 @@ async def test_round16_greptile_and_coderabbit_followup_fixes(tmp_path: Path, mo
     assert await mgr.has_pending_delivery(wt) is False
     await mgr.remove(wt)
 
-    # 4. Push A succeeds on remote then cancels; user edits to B and push B cancels BEFORE remote receives B:
-    # persisted recovered ownership of A lets the next retry push B cleanly instead of rejecting A as foreign.
-    wt_ab = await mgr.create(local, tmp_path / "wt" / "ab_cancel", RemoteDefaultBranch(fetch=False))
-    _write(wt_ab.path / "a.txt", "commit-A\nline2\nline3\nline4\nline5\n")
+
+@pytest.mark.skipif(REAL_GIT_TOO_OLD, reason="git missing or below minimum version")
+async def test_recovered_ownership_persists_across_cancel_and_clears_old_branch_prs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verify recovered remote ownership survives a second cancel without inheriting an earlier branch's PR record."""
+    mgr = WorktreeManager()
+    local, bare, _other = _make_repo_with_remote(tmp_path / "recover_branch_pr")
+    wt = await mgr.create(local, tmp_path / "wt" / "ab_cancel", RemoteDefaultBranch(fetch=False))
+    created_prs: list[tuple[str, PRInfo]] = []
+
+    async def create_only_cb(req: PRRequest) -> PRInfo:
+        num = 800 + len(created_prs) + 1
+        info = PRInfo(url=f"https://github.com/org/repo/pull/{num}", number=num)
+        created_prs.append((req.branch, info))
+        return info
+
+    # First deliver feat/old with a PR (create_pr-only strategy so cached PR metadata would be reused if leaked).
+    _write(wt.path / "old.txt", "old-branch\n")
+    old_res = await mgr.merge_back(
+        wt,
+        PullRequest(
+            title="Old PR",
+            branch="feat/old",
+            remote="origin",
+            base_branch="main",
+            create_pr=create_only_cb,
+        ),
+    )
+    assert old_res.status == "landed" and old_res.pr_number == 801
+
+    # Switch to feat/new: push A succeeds on remote then cancels; edit to B and cancel push B BEFORE remote gets B.
+    _write(wt.path / "a.txt", "commit-A\nline2\nline3\nline4\nline5\n")
     orig_git = mgr._git
     phase = {"step": "cancel_after_A"}
 
     async def scripted_git(cwd: Path, *args: str, **kwargs: Any) -> Any:
         if args and args[0] == "push":
             if phase["step"] == "cancel_after_A":
-                res = await orig_git(cwd, *args, **kwargs)
+                await orig_git(cwd, *args, **kwargs)
                 phase["step"] = "cancel_before_B"
                 raise asyncio.CancelledError
             if phase["step"] == "cancel_before_B":
@@ -2938,16 +2992,69 @@ async def test_round16_greptile_and_coderabbit_followup_fixes(tmp_path: Path, mo
     with monkeypatch.context() as mp:
         mp.setattr(mgr, "_git", scripted_git)
         with pytest.raises(asyncio.CancelledError):
-            await mgr.merge_back(wt_ab, BranchCommit(branch="feat/ab-recover", remote="origin", message="A"))
-        oid_a = _git(bare, "rev-parse", "refs/heads/feat/ab-recover").strip()
+            await mgr.merge_back(wt, BranchCommit(branch="feat/new", remote="origin", message="A"))
+        oid_a = _git(bare, "rev-parse", "refs/heads/feat/new").strip()
         assert oid_a != ""
-        _write(wt_ab.path / "b.txt", "commit-B\n")
+        _write(wt.path / "b.txt", "commit-B\n")
         with pytest.raises(asyncio.CancelledError):
-            await mgr.merge_back(wt_ab, BranchCommit(branch="feat/ab-recover", remote="origin", message="B"))
-        assert _git(bare, "rev-parse", "refs/heads/feat/ab-recover").strip() == oid_a
-    # Retry with normal git: remote is still at A while local/pending is B; must succeed and advance bare to B.
-    final_ab = await mgr.merge_back(wt_ab, BranchCommit(branch="feat/ab-recover", remote="origin", message="B retry"))
+            await mgr.merge_back(wt, BranchCommit(branch="feat/new", remote="origin", message="B"))
+        assert _git(bare, "rev-parse", "refs/heads/feat/new").strip() == oid_a
+
+    # Retry with normal git: remote is still at A while local/pending is B; must advance bare to B.
+    final_ab = await mgr.merge_back(wt, BranchCommit(branch="feat/new", remote="origin", message="B retry"))
     assert final_ab.status == "landed", final_ab.detail
-    assert _git(bare, "rev-parse", "refs/heads/feat/ab-recover").strip() == final_ab.commit
+    assert _git(bare, "rev-parse", "refs/heads/feat/new").strip() == final_ab.commit
     assert final_ab.commit != oid_a
-    await mgr.remove(wt_ab)
+
+    # Now deliver feat/new with create_pr-only: must open a new PR (#802) instead of reusing feat/old's #801.
+    new_pr = await mgr.merge_back(
+        wt,
+        PullRequest(
+            title="New PR",
+            branch="feat/new",
+            remote="origin",
+            base_branch="main",
+            create_pr=create_only_cb,
+        ),
+    )
+    assert new_pr.status == "landed", new_pr.detail
+    assert new_pr.pr_number == 802 and new_pr.pr_url != old_res.pr_url
+    assert [branch for branch, _ in created_prs] == ["feat/old", "feat/new"]
+
+    # Same-branch recovery onto a second remote preserves feat/new's own PR record for origin.
+    bare2 = tmp_path / "recover_branch_pr_bare2.git"
+    _git(tmp_path, "init", "--bare", "-b", "main", str(bare2))
+    _git(local, "remote", "add", "mirror", str(bare2))
+    _git(local, "push", "mirror", "main")
+    phase2 = {"step": "cancel_after_mirror"}
+
+    async def scripted_mirror(cwd: Path, *args: str, **kwargs: Any) -> Any:
+        if args and args[0] == "push" and phase2["step"] == "cancel_after_mirror":
+            await orig_git(cwd, *args, **kwargs)
+            phase2["step"] = "done"
+            raise asyncio.CancelledError
+        return await orig_git(cwd, *args, **kwargs)
+
+    _write(wt.path / "c.txt", "mirror-A\n")
+    with monkeypatch.context() as mp:
+        mp.setattr(mgr, "_git", scripted_mirror)
+        with pytest.raises(asyncio.CancelledError):
+            await mgr.merge_back(wt, BranchCommit(branch="feat/new", remote="mirror", message="mirror A"))
+    _write(wt.path / "d.txt", "mirror-B\n")
+    mirror_b = await mgr.merge_back(wt, BranchCommit(branch="feat/new", remote="mirror", message="mirror B"))
+    assert mirror_b.status == "landed", mirror_b.detail
+
+    # Switching back to origin for feat/new with create_pr-only still reuses feat/new's PR #802.
+    reused_origin = await mgr.merge_back(
+        wt,
+        PullRequest(
+            title="New PR",
+            branch="feat/new",
+            remote="origin",
+            base_branch="main",
+            create_pr=create_only_cb,
+        ),
+    )
+    assert reused_origin.status == "landed", reused_origin.detail
+    assert reused_origin.pr_number == 802 and len(created_prs) == 2
+    await mgr.remove(wt)
