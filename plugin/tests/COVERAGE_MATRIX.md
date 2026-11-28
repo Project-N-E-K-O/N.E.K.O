@@ -61,5 +61,4 @@ This matrix tracks `plugin/` test scope for SDK + server config scenarios.
 
 ```bash
 uv run pytest -c plugin/tests/pytest.ini plugin/tests/unit plugin/tests/integration -q
-uv run pytest -c plugin/tests/pytest.ini plugin/tests/e2e --run-plugin-e2e -q
 ```

@@ -472,6 +472,19 @@ describe('the model of each kind of familiar', () => {
     expect(document.querySelector('[data-preset="scout"]')?.textContent).toContain(words.roles.advice.scout)
   })
 
+  it('names the advanced familiar model as the default of a kind that goes by it', async () => {
+    const view = roles()
+    view.presets.push({
+      preset: 'planner', label: '', source: 'builtin', valid: true, setting: null, default: 'advanced', can_inherit: true,
+      in_effect: { follows: null, slot: null, model: 'advanced-model', agent: false, free: false, fallback: null },
+    })
+    api.getRoleModels.mockResolvedValue(view)
+    await mount(RoleModelsTab)
+    expect(options('planner')[0]).toEqual(['', words.roles.default.replace('{what}', words.roles.advancedModel)])
+    expect(options('boss')[0]).toEqual(['', words.roles.default.replace('{what}', words.roles.agentModel)])
+    expect(document.querySelector('[data-effect="planner"]')?.textContent).toContain('advanced-model')
+  })
+
   it('sets what was chosen and shows what the host then says; a choice that is refused goes back', async () => {
     api.getRoleModels.mockResolvedValue(roles())
     await mount(RoleModelsTab)

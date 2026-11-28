@@ -577,6 +577,7 @@ const messages: PowerMessages = {
     default: 'По умолчанию ({what})',
     inherit: 'Модель того, кто его отправил',
     agentModel: 'модель фамильяров',
+    advancedModel: 'продвинутая модель фамильяров',
     free: 'бесплатно',
     noModel: 'нет модели',
     slotEmpty: 'модель не указана',

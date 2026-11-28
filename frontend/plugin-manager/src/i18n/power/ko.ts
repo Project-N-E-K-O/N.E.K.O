@@ -577,6 +577,7 @@ const messages: PowerMessages = {
     default: '기본값({what})',
     inherit: '보낸 사역마의 모델 따르기',
     agentModel: '사역마 모델',
+    advancedModel: '사역마 모델·고급',
     free: '무료',
     noModel: '모델 없음',
     slotEmpty: '모델 미입력',

@@ -622,8 +622,9 @@ class NekoPowerHost:
         ``templates(None)`` lists them; never a copy's, which has no
         setting) is ``{"preset", "label", "source", "valid", "setting",
         "default", "can_inherit", "in_effect"}``: ``setting`` is a slot's
-        id, ``"inherit"`` or None (its default); ``default`` is ``"agent"``
-        or ``"inherit"``, as its template says; ``can_inherit`` whether it
+        id, ``"inherit"`` or None (its default); ``default`` is ``"agent"``,
+        ``"advanced"`` (the advanced task agent model of the main app) or
+        ``"inherit"``, as its template says; ``can_inherit`` whether it
         can be set to the model of the session that starts it;
         ``in_effect`` is what a new session of it is sent to now
         (``RoleModels.describe``), with why its setting could not be used.

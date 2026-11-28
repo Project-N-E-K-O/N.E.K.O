@@ -18,10 +18,10 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
-import knowledge.service as service_module
+import services.knowledge.service as service_module
 from app.memory_server import knowledge_routes
-from knowledge.registry import REGISTRY_FILE, KnowledgeRegistryError, load_registry
-from knowledge.subscriptions import (
+from services.knowledge.registry import REGISTRY_FILE, KnowledgeRegistryError, load_registry
+from services.knowledge.subscriptions import (
     KnowledgeSubscription,
     SubscriptionError,
     identity_conflict,
@@ -374,7 +374,7 @@ def test_plugin_server_copies_of_the_subscription_rules_agree():
     """The plugin server does not import ``knowledge``; its copies must not drift."""
     import re
 
-    from knowledge import models, subscriptions
+    from services.knowledge import models, subscriptions
     from plugin.server.routes import knowledge_market as km
     from utils.knowledge_package import DEFAULT_LIMITS
 

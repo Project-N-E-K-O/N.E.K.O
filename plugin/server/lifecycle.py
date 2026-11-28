@@ -590,8 +590,10 @@ class ServerLifecycleService:
         from plugin.server.application.plugins import call_audit
         call_audit.reopen()
         # From here on every use is audited (last use / unused for 30 days).
-        from plugin.server.application.plugins.permission_usage import record_coverage_start
+        from plugin.server.application.plugins.permission_usage import record_coverage_start, start_summary_saver
         record_coverage_start()
+        # Keeps last uses past audit rotation and lost entries (usage_summary.json).
+        start_summary_saver()
         # Load the master switch's host setting before anything asks for it;
         # checks only ever read the cached value.
         from plugin.server.infrastructure.permission_switch import switch_store
@@ -1057,6 +1059,13 @@ class ServerLifecycleService:
                 logger.warning("plugin call audit flush did not finish before shutdown")
         except Exception as exc:
             logger.warning("plugin call audit flush failed: error_type={}", type(exc).__name__)
+        try:
+            from plugin.server.application.plugins.permission_usage import stop_summary_saver
+
+            # After the audit is closed, so what it could not write counts as lost.
+            await asyncio.wait_for(asyncio.to_thread(stop_summary_saver), timeout=2.0)
+        except Exception as exc:
+            logger.warning("permission usage summary save failed: error_type={}", type(exc).__name__)
         try:
             await asyncio.wait_for(asyncio.to_thread(state.close_plugin_resources), timeout=0.5)
         except asyncio.TimeoutError:

@@ -671,7 +671,7 @@ export interface RoleModelPreset {
   valid: boolean
   /** The id of a slot, "inherit", or null for its default. */
   setting: string | null
-  default: 'agent' | 'inherit' | (string & {})
+  default: 'agent' | 'advanced' | 'inherit' | (string & {})
   can_inherit: boolean
   in_effect: RoleModelInEffect
 }

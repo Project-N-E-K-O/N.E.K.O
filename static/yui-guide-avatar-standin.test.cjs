@@ -1043,7 +1043,7 @@ test('Live2D corner peek does not self-cancel its return fade after stand-in tok
 
 test('Live2D visibility recovery preserves opacity while avatar corner peek is active', () => {
     const showLive2dSource = modelDisplaySource
-        .split('I.showLive2d = function showLive2d() {')[1]
+        .split('I.showLive2d = function showLive2d(')[1]
         .split('I.mod.showLive2d = I.showLive2d;')[0];
     const wakeupRevealSource = wakeupSource
         .split('function revealPreparedTutorialLive2D(reason) {')[1]

@@ -4730,7 +4730,6 @@
             "connecting": "喵能力服务器连接中...",
             "ready": "喵能力服务器就绪",
             "enabled": "喵能力已开启",
-            "noCapability": "再打开下面至少一项，喵能力才会替你办事",
             "disabled": "喵能力已关闭",
             "disabledError": "喵能力已关闭（部分清理失败）",
             "enableFailed": "开启失败",
