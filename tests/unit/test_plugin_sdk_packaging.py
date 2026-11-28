@@ -6,10 +6,17 @@ import pkgutil
 import sys
 from pathlib import Path
 
+import pytest
+import yaml
+
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOWS = ROOT / ".github" / "workflows"
-BUILD_WORKFLOWS = ("build-desktop.yml", "build-desktop-linux.yml")
+NUITKA_STEPS = (
+    ("build-desktop.yml", "Build with Nuitka (Unix)"),
+    ("build-desktop.yml", "Build with Nuitka (Windows)"),
+    ("build-desktop-linux.yml", "Build with Nuitka"),
+)
 REMOVED_ROOT_SDK_MODULES = (
     "plugin.sdk.base",
     "plugin.sdk.decorators",
@@ -18,6 +25,9 @@ REMOVED_ROOT_SDK_MODULES = (
     "plugin.sdk.version",
     "plugin.sdk.extension",
 )
+
+_BASH_APPEND = 'NUITKA_OPTS="$NUITKA_OPTS '
+_CMD_APPEND = "set NUITKA_OPTS=%NUITKA_OPTS% "
 
 
 def _ensure_project_root_first() -> None:
@@ -42,8 +52,26 @@ def _sdk_module_names() -> list[str]:
     return sorted(module_names)
 
 
-def _workflow(name: str) -> str:
-    return (WORKFLOWS / name).read_text(encoding="utf-8")
+def _nuitka_script(workflow: str, step_name: str) -> str:
+    jobs = yaml.safe_load((WORKFLOWS / workflow).read_text(encoding="utf-8"))["jobs"]
+    steps = [step for step in jobs["build-python"]["steps"] if step.get("name") == step_name]
+    assert len(steps) == 1, f"{workflow}: step {step_name!r} not found exactly once"
+    return steps[0]["run"]
+
+
+def _nuitka_flags(script: str, *, unconditional_only: bool) -> list[str]:
+    """Flags appended to NUITKA_OPTS; lines inside if blocks count only when asked for."""
+    flags: list[str] = []
+    for line in script.splitlines():
+        candidate = line if unconditional_only else line.strip()
+        if candidate.startswith(_BASH_APPEND) and candidate.endswith('"'):
+            flags.extend(candidate[len(_BASH_APPEND) : -1].split())
+        elif candidate.startswith(_CMD_APPEND):
+            flags.extend(candidate[len(_CMD_APPEND) :].split())
+        elif not unconditional_only and _CMD_APPEND in candidate:
+            # cmd one-liners: `if exist "x" set NUITKA_OPTS=%NUITKA_OPTS% --flag`
+            flags.extend(candidate.split(_CMD_APPEND, 1)[1].split())
+    return flags
 
 
 def test_current_sdk_modules_are_importable() -> None:
@@ -65,25 +93,33 @@ def test_package_scan_finds_complete_sdk_tree() -> None:
     assert sorted(scanned) == _sdk_module_names()
 
 
-def test_nuitka_workflows_compile_the_plugin_package_without_removed_sdk_modules() -> None:
-    for name in BUILD_WORKFLOWS:
-        workflow = _workflow(name)
-        assert "--include-package=plugin" in workflow, name
-        for removed_module in REMOVED_ROOT_SDK_MODULES:
-            assert f"--include-package={removed_module}" not in workflow, (name, removed_module)
-            assert f"--include-module={removed_module}" not in workflow, (name, removed_module)
+@pytest.mark.parametrize(("workflow", "step_name"), NUITKA_STEPS)
+def test_nuitka_workflows_compile_the_plugin_package_without_removed_sdk_modules(
+    workflow: str, step_name: str
+) -> None:
+    script = _nuitka_script(workflow, step_name)
+    always = _nuitka_flags(script, unconditional_only=True)
+    all_flags = _nuitka_flags(script, unconditional_only=False)
+    assert "--include-package=plugin" in always, (workflow, step_name)
+    for removed_module in REMOVED_ROOT_SDK_MODULES:
+        assert f"--include-package={removed_module}" not in all_flags, (workflow, removed_module)
+        assert f"--include-module={removed_module}" not in all_flags, (workflow, removed_module)
 
 
 def test_windows_nuitka_build_uses_project_root_icon() -> None:
-    workflow = _workflow("build-desktop.yml")
+    script = _nuitka_script("build-desktop.yml", "Build with Nuitka (Windows)")
+    always = _nuitka_flags(script, unconditional_only=True)
 
-    assert "--windows-icon-from-ico=assets/icon.ico" in workflow
+    assert "--windows-icon-from-ico=assets/icon.ico" in always
     assert (ROOT / "assets" / "icon.ico").is_file()
 
 
-def test_nuitka_workflows_compile_main_logic_with_the_omni_state_proxy() -> None:
-    for name in BUILD_WORKFLOWS:
-        assert "--include-package=main_logic" in _workflow(name), name
+@pytest.mark.parametrize(("workflow", "step_name"), NUITKA_STEPS)
+def test_nuitka_workflows_compile_main_logic_with_the_omni_state_proxy(
+    workflow: str, step_name: str
+) -> None:
+    always = _nuitka_flags(_nuitka_script(workflow, step_name), unconditional_only=True)
+    assert "--include-package=main_logic" in always, (workflow, step_name)
     assert (ROOT / "main_logic" / "_module_state_proxy.py").is_file()
 
 
