@@ -12,6 +12,7 @@ import {
   weekUses,
 } from './privacyPage'
 import { covered, detail, ENV, item, MEMORY, NET, overview, plugin, PUSH, SPAWN } from './privacyPage.fixtures'
+import { row } from './permissionTab.fixtures'
 
 const NOW = new Date('2026-11-28T12:00:00Z')
 
@@ -54,6 +55,9 @@ describe('weekUses', () => {
   it('shows nothing when uses are not recorded or there were none', () => {
     expect(weekUses(item({ uses_7d: 0 }), covered, NOW)).toBeNull()
     expect(weekUses(item({ uses_7d: 5, usage_tracked: false }), covered, NOW)).toBeNull()
+  })
+  it('is always a lower bound for system uses, which the plugin process may lose', () => {
+    expect(weekUses(item({ permission: NET, uses_7d: 12 }), covered, NOW)).toEqual({ count: 12, atLeast: true })
   })
   it('is exact with 7 days of history, a lower bound with less or none', () => {
     expect(weekUses(item({ uses_7d: 12 }), covered, NOW)).toEqual({ count: 12, atLeast: false })
@@ -139,10 +143,13 @@ describe('pluginLines', () => {
 
 describe('switchRequest', () => {
   it('grants with the kept condition, refuses otherwise, clears what cannot be refused', () => {
-    expect(switchRequest({ permission: MEMORY, condition: 'anytime' }, true)).toEqual({ kind: 'decide', state: 'granted', condition: 'anytime' })
-    expect(switchRequest({ permission: MEMORY, condition: null }, true)).toEqual({ kind: 'decide', state: 'granted', condition: 'in_use' })
-    expect(switchRequest({ permission: MEMORY, condition: 'anytime' }, false)).toEqual({ kind: 'decide', state: 'denied', condition: 'in_use' })
-    expect(switchRequest({ permission: PUSH, condition: 'in_use' }, false)).toEqual({ kind: 'clear' })
+    // Granting saves what the permission tab saves for the same row.
+    const required = row({ permission: MEMORY, state: 'undecided', condition: null, anytime_allowed: true, declared: { level: 'require', reason: null, background: true, background_reason: null, hosts: [] } })
+    expect(switchRequest({ permission: MEMORY }, true, required)).toEqual({ kind: 'decide', state: 'granted', condition: 'anytime' })
+    const optional = row({ permission: MEMORY, state: 'denied', condition: null, anytime_allowed: true, declared: { level: 'ask', reason: null, background: true, background_reason: null, hosts: [] } })
+    expect(switchRequest({ permission: MEMORY }, true, optional)).toEqual({ kind: 'decide', state: 'granted', condition: 'in_use' })
+    expect(switchRequest({ permission: MEMORY }, false)).toEqual({ kind: 'decide', state: 'denied', condition: 'in_use' })
+    expect(switchRequest({ permission: PUSH }, false)).toEqual({ kind: 'clear' })
   })
 })
 
@@ -165,5 +172,7 @@ describe('validOverview / validGroupDetail', () => {
     expect(validOverview(null)).toBe(false)
     expect(validGroupDetail(detail())).toBe(true)
     expect(validGroupDetail({ group: 'memory', plugins: [] })).toBe(false)
+    expect(validGroupDetail({ group: 'memory', plugins: [], recent: [], incomplete: [] })).toBe(false)
+    expect(validGroupDetail(detail({ history: { since: null, covers_30d: false, last_use_since: null, last_use_covers_30d: false } }))).toBe(true)
   })
 })

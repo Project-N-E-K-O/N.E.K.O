@@ -192,7 +192,7 @@ const messages: PluginConsentMessages = {
     subtitle: "依你的資料和電腦資源看：哪些外掛能用、最近誰用過",
     loading: "正在讀取隱私總覽…",
     loadFailed: "隱私總覽暫時讀不到。",
-    checksDisabled: "權限檢查已關閉：外掛拿到的權限不受限制，所有使用仍會記錄。",
+    checksDisabled: "權限檢查已關閉：外掛拿到的權限不受限制，能記錄使用情況的權限仍會照常記錄。",
     incomplete: "有 {n} 個外掛的聲明暫時讀不到，下面的數字可能不完整。",
     pending: {
       label: "待你處理：",

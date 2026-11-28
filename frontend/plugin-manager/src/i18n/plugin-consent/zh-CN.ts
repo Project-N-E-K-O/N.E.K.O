@@ -192,7 +192,7 @@ const messages: PluginConsentMessages = {
     subtitle: "按你的数据和电脑资源看：哪些插件能用、最近谁用过",
     loading: "正在读取隐私总览…",
     loadFailed: "隐私总览暂时读不到。",
-    checksDisabled: "权限检查已关闭：插件拿到的权限不受限制，所有使用仍会记录。",
+    checksDisabled: "权限检查已关闭：插件拿到的权限不受限制，能记录使用情况的权限仍会照常记录。",
     incomplete: "有 {n} 个插件的声明暂时读不到，下面的数字可能不完整。",
     pending: {
       label: "待你处理：",

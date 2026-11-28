@@ -193,7 +193,7 @@ const messages: PluginConsentMessages = {
     subtitle: "Pelos seus dados e recursos do computador: quais plugins podem usá-los e quem os usou recentemente",
     loading: "Carregando o resumo de privacidade…",
     loadFailed: "Não é possível ler o resumo de privacidade agora.",
-    checksDisabled: "As verificações de permissão estão desligadas: as permissões não limitam os plugins. Todos os usos continuam sendo registrados.",
+    checksDisabled: "As verificações de permissão estão desligadas: as permissões não limitam os plugins. Os usos das permissões que podem ser registradas continuam sendo registrados.",
     incomplete: "Não é possível ler agora as declarações de {n} plugin(s); os números abaixo podem estar incompletos.",
     pending: {
       label: "Aguardando você: ",

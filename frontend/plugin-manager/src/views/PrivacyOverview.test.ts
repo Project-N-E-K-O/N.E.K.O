@@ -6,11 +6,13 @@ import { ElMessage } from 'element-plus'
 import PrivacyOverview from './PrivacyOverview.vue'
 import type { PrivacyGroupDetail, PrivacyOverview as Overview } from '@/api/pluginPermissions'
 import { detail, ENV, item, MEMORY, NET, overview, plugin, PUSH, SPAWN } from '@/utils/privacyPage.fixtures'
+import { panel, row } from '@/utils/permissionTab.fixtures'
 
 const api = vi.hoisted(() => ({
   getPrivacyOverview: vi.fn(),
   getPrivacyGroup: vi.fn(),
   getPermissionCatalog: vi.fn(),
+  getPermissionPanel: vi.fn(),
   decidePermission: vi.fn(),
   clearPermission: vi.fn(),
 }))
@@ -286,6 +288,33 @@ describe('PrivacyOverview: detail', () => {
     expect(q(root, `plugin-weather-${MEMORY}`)!.textContent).toContain('pluginConsent.privacy.detail.weekAtLeast {"n":3}')
   })
 
+  it('names the permission from the lines when the catalog cannot be read', async () => {
+    serve(overview({ groups: [{ group: 'process_env', tier: 'high', plugins: 1, latest: null, partial_block: false }] }), {
+      process_env: detail({ group: 'process_env', partial_block: false, plugins: [plugin({ items: [item({ permission: SPAWN }), item({ permission: ENV })] })] }),
+    })
+    api.getPermissionCatalog.mockRejectedValue(new Error('down'))
+    const root = await mount()
+    expect(q(root, `plugin-weather-${SPAWN}`)!.textContent).toContain('pluginConsent.capabilities.system_process_spawn.title')
+    expect(q(root, `plugin-weather-${ENV}`)!.textContent).toContain('pluginConsent.capabilities.system_env_read.title')
+  })
+
+  it('drops the rows of a group that is gone after a reload', async () => {
+    serve(overview(), { memory: detail() })
+    const root = await mount()
+    expect(q(root, `plugin-weather-${MEMORY}`)).not.toBeNull()
+    let release: (value: unknown) => void = () => {}
+    api.getPrivacyGroup.mockImplementation(() => new Promise((resolve) => { release = resolve }))
+    api.getPrivacyOverview.mockResolvedValue(overview({ groups: overview().groups.filter((g) => g.group !== 'memory') }))
+    api.decidePermission.mockResolvedValue({})
+    ;(q(root, `switch-weather-${MEMORY}`) as HTMLInputElement).dispatchEvent(new Event('change'))
+    await flush()
+    // The overview now opens "conversations"; memory's rows are not shown under it.
+    expect(q(root, `plugin-weather-${MEMORY}`)).toBeNull()
+    release(detail({ group: 'conversations', plugins: [] }))
+    await flush()
+    expect(q(root, 'detail-empty')).not.toBeNull()
+  })
+
   it('names the permission when a group has more than one', async () => {
     serve(overview({ groups: [{ group: 'process_env', tier: 'high', plugins: 1, latest: null, partial_block: false }] }), {
       process_env: detail({ group: 'process_env', partial_block: false, plugins: [plugin({ items: [item({ permission: SPAWN })] })] }),
@@ -296,21 +325,51 @@ describe('PrivacyOverview: detail', () => {
 })
 
 describe('PrivacyOverview: switch', () => {
-  it('refuses, grants with the kept condition, and reloads', async () => {
+  it('refuses and reloads', async () => {
     serve(overview(), { memory: detail({ plugins: [plugin({ items: [item({ condition: 'anytime' })] })] }) })
     api.decidePermission.mockResolvedValue({})
     const root = await mount()
-    const input = () => q(root, `switch-weather-${MEMORY}`) as HTMLInputElement
-    input().dispatchEvent(new Event('change'))
+    ;(q(root, `switch-weather-${MEMORY}`) as HTMLInputElement).dispatchEvent(new Event('change'))
     await flush()
     expect(api.decidePermission).toHaveBeenCalledWith('weather', MEMORY, 'denied', 'in_use')
+    expect(api.getPermissionPanel).not.toHaveBeenCalled()
     expect(api.getPrivacyOverview).toHaveBeenCalledTimes(2)
+  })
 
-    serve(overview(), { memory: detail({ plugins: [plugin({ items: [item({ state: 'denied', condition: null })] })] }) })
-    const denied = await mount()
-    ;(q(denied, `switch-weather-${MEMORY}`) as HTMLInputElement).dispatchEvent(new Event('change'))
+  it('grants with the condition the permission tab would save', async () => {
+    serve(overview(), { memory: detail({ plugins: [plugin({ items: [item({ state: 'undecided', condition: null })] })] }) })
+    api.decidePermission.mockResolvedValue({})
+    const required = row({ permission: MEMORY, state: 'undecided', condition: null, anytime_allowed: true, declared: { level: 'require', reason: null, background: true, background_reason: null, hosts: [] } })
+    api.getPermissionPanel.mockResolvedValue(panel({ rows: [required] }))
+    const root = await mount()
+    ;(q(root, `switch-weather-${MEMORY}`) as HTMLInputElement).dispatchEvent(new Event('change'))
     await flush()
-    expect(api.decidePermission).toHaveBeenLastCalledWith('weather', MEMORY, 'granted', 'in_use')
+    expect(api.getPermissionPanel).toHaveBeenCalledWith('weather')
+    expect(api.decidePermission).toHaveBeenCalledWith('weather', MEMORY, 'granted', 'anytime')
+  })
+
+  it('does not grant when the plugin panel cannot be read', async () => {
+    serve(overview(), { memory: detail({ plugins: [plugin({ items: [item({ state: 'denied', condition: null })] })] }) })
+    api.getPermissionPanel.mockRejectedValue(new Error('down'))
+    const root = await mount()
+    ;(q(root, `switch-weather-${MEMORY}`) as HTMLInputElement).dispatchEvent(new Event('change'))
+    await flush()
+    expect(api.decidePermission).not.toHaveBeenCalled()
+    expect(ElMessage.error).toHaveBeenCalledWith('pluginConsent.saveFailed')
+  })
+
+  it('keeps the switches locked until the saved state is read back', async () => {
+    serve(overview(), { memory: detail() })
+    api.decidePermission.mockResolvedValue({})
+    const root = await mount()
+    let release: (value: unknown) => void = () => {}
+    api.getPrivacyOverview.mockImplementationOnce(() => new Promise((resolve) => { release = resolve }))
+    ;(q(root, `switch-weather-${MEMORY}`) as HTMLInputElement).dispatchEvent(new Event('change'))
+    await flush()
+    expect((q(root, `switch-weather-${MEMORY}`) as HTMLInputElement).disabled).toBe(true)
+    release(overview())
+    await flush()
+    expect((q(root, `switch-weather-${MEMORY}`) as HTMLInputElement).disabled).toBe(false)
   })
 
   it('returns what cannot be refused to undecided', async () => {

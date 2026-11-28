@@ -193,7 +193,7 @@ const messages: PluginConsentMessages = {
     subtitle: "내 데이터와 컴퓨터 자원별로: 어떤 플러그인이 쓸 수 있는지, 최근 누가 썼는지",
     loading: "개인정보 개요를 읽는 중…",
     loadFailed: "개인정보 개요를 지금은 읽을 수 없습니다.",
-    checksDisabled: "권한 검사가 꺼져 있습니다: 플러그인은 권한의 제한을 받지 않습니다. 모든 사용은 계속 기록됩니다.",
+    checksDisabled: "권한 검사가 꺼져 있습니다: 플러그인은 권한의 제한을 받지 않습니다. 기록할 수 있는 권한의 사용은 계속 기록됩니다.",
     incomplete: "플러그인 {n}개의 선언을 지금은 읽을 수 없어 아래 숫자가 불완전할 수 있습니다.",
     pending: {
       label: "처리 대기: ",

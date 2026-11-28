@@ -177,6 +177,7 @@ import {
   clearPermission,
   decidePermission,
   getPermissionCatalog,
+  getPermissionPanel,
   getPrivacyGroup,
   getPrivacyOverview,
   type PermissionCatalog,
@@ -193,6 +194,7 @@ import {
   formatUseDate,
   formatUseTime,
   validCatalog,
+  validPanel,
 } from '@/utils/permissionTab'
 import {
   ORIGIN_KINDS,
@@ -234,7 +236,10 @@ const selectedTier = computed(() => selectedInfo.value?.tier ?? null)
 const selectedPartial = computed(() => selectedInfo.value?.partial_block ?? false)
 const lines = computed(() => (detail.value ? pluginLines(detail.value) : []))
 const names = computed(() => pluginNames(detail.value))
-const multiPermission = computed(() => groupPermissions(selected.value).length > 1)
+// From the catalog, or from the lines themselves when it could not be read.
+const multiPermission = computed(
+  () => groupPermissions(selected.value).length > 1 || new Set(lines.value.map((line) => line.permission)).size > 1,
+)
 const recent = computed(() => (detail.value ? recentUses(detail.value, onlyWouldBlock.value) : []))
 const recentEmptyText = computed(() => {
   if (onlyWouldBlock.value && detail.value?.recent.length) return t('pluginConsent.privacy.recent.emptyFiltered')
@@ -267,6 +272,8 @@ async function load() {
   catalog.value = nextCatalog
   // A failed reload keeps what is shown; only a first load shows the retry.
   if (next || !overview.value) overview.value = next
+  // The shown group may be gone: never leave another group's rows under its title.
+  if (detail.value && detail.value.group !== selected.value) clearDetail()
   if (selected.value) await loadDetail(selected.value)
 }
 
@@ -280,11 +287,15 @@ async function loadDetail(group: string) {
   detailLoading.value = false
 }
 
+function clearDetail() {
+  detail.value = null
+  onlyWouldBlock.value = false
+}
+
 function select(group: string) {
   if (group === selected.value) return
   chosen.value = group
-  detail.value = null
-  onlyWouldBlock.value = false
+  clearDetail()
   void loadDetail(group)
 }
 
@@ -355,19 +366,31 @@ function useText(use: PrivacyUse) {
   return parts.join(' · ')
 }
 
+/** The plugin's permission tab row: granting takes its condition from it. */
+async function panelRow(line: PluginLine) {
+  const panel = await getPermissionPanel(line.pluginId)
+  if (!validPanel(panel)) throw new Error('panel')
+  const row = panel.rows.find((item) => item.permission === line.permission)
+  if (!row) throw new Error('row')
+  return row
+}
+
 async function toggle(line: PluginLine, on: boolean) {
   if (busy.value) return
   busy.value = line.key
-  const request = switchRequest(line, on)
   try {
-    if (request.kind === 'clear') await clearPermission(line.pluginId, line.permission)
-    else await decidePermission(line.pluginId, line.permission, request.state, request.condition)
-  } catch (error) {
-    ElMessage.error(t(decisionErrorKey(error)))
+    try {
+      const request = switchRequest(line, on, on ? await panelRow(line) : undefined)
+      if (request.kind === 'clear') await clearPermission(line.pluginId, line.permission)
+      else await decidePermission(line.pluginId, line.permission, request.state, request.condition)
+    } catch (error) {
+      ElMessage.error(t(decisionErrorKey(error)))
+    }
+    // Switches stay locked until the saved state is read back.
+    await load()
   } finally {
     busy.value = null
   }
-  await load()
 }
 
 onMounted(() => {

@@ -195,7 +195,7 @@ const messages = {
     subtitle: "By your data and computer resources: which plugins can use them, who used them lately",
     loading: "Loading the privacy overview…",
     loadFailed: "The privacy overview cannot be read right now.",
-    checksDisabled: "Permission checks are off: plugins are not limited by their permissions. Every use is still recorded.",
+    checksDisabled: "Permission checks are off: plugins are not limited by their permissions. Uses of permissions that can be recorded are still recorded.",
     incomplete: "{n} plugin(s)' declarations cannot be read right now; the numbers below may be incomplete.",
     pending: {
       label: "Needs you: ",

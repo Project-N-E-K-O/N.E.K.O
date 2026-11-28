@@ -7,6 +7,7 @@
  * said: where it gives no answer, nothing is shown.
  */
 import type {
+  PanelRow,
   PermissionState,
   PermissionCondition,
   PrivacyGroupDetail,
@@ -17,7 +18,7 @@ import type {
   RiskTier,
   UsageHistory,
 } from '@/api/pluginPermissions'
-import { LISTED_TIERS, NOT_REFUSABLE, usageLine, type UsageLine } from '@/utils/permissionTab'
+import { grantCondition, LISTED_TIERS, NOT_REFUSABLE, usageLine, type UsageLine } from '@/utils/permissionTab'
 
 /** Kinds of personal data: their count reads "N plugins can read". */
 export const PERSONAL_GROUPS = new Set(['memory', 'conversations'])
@@ -84,7 +85,10 @@ const WEEK_MS = 7 * 24 * 60 * 60 * 1000
 
 /**
  * Uses in the last 7 days. Nothing when uses are not recorded or there were
- * none; "at least" while the complete history is shorter than 7 days.
+ * none; "at least" while the complete history is shorter than 7 days, and
+ * always for system uses: the plugin process reports those and may lose
+ * some without the history start moving, and this page has no per-plugin
+ * loss time.
  */
 export function weekUses(
   item: PrivacyGroupItem,
@@ -92,6 +96,7 @@ export function weekUses(
   now: Date = new Date(),
 ): { count: number; atLeast: boolean } | null {
   if (!item.usage_tracked || !(item.uses_7d > 0)) return null
+  if (item.permission.startsWith('system.')) return { count: item.uses_7d, atLeast: true }
   const since = history?.since ? new Date(history.since) : null
   const complete = since !== null && !Number.isNaN(since.getTime()) && now.getTime() - since.getTime() >= WEEK_MS
   return { count: item.uses_7d, atLeast: !complete }
@@ -137,12 +142,18 @@ export function pluginLines(detail: PrivacyGroupDetail, now: Date = new Date()):
   return lines
 }
 
-/** What switching a line on or off asks the server for. */
+/**
+ * What switching a line on or off asks the server for. Granting takes its
+ * condition from the plugin's permission tab row (``grantCondition``), so
+ * both pages save the same thing; the privacy data does not carry the
+ * declaration it depends on.
+ */
 export function switchRequest(
-  line: Pick<PluginLine, 'permission' | 'condition'>,
+  line: Pick<PluginLine, 'permission'>,
   on: boolean,
+  row?: PanelRow,
 ): { kind: 'decide'; state: 'granted' | 'denied'; condition: PermissionCondition } | { kind: 'clear' } {
-  if (on) return { kind: 'decide', state: 'granted', condition: line.condition ?? 'in_use' }
+  if (on) return { kind: 'decide', state: 'granted', condition: row ? grantCondition(row) : 'in_use' }
   if (NOT_REFUSABLE.has(line.permission)) return { kind: 'clear' }
   return { kind: 'decide', state: 'denied', condition: 'in_use' }
 }
@@ -174,6 +185,6 @@ export function validOverview(value: unknown): value is PrivacyOverview {
     && isObject(value.pending) && Array.isArray(value.incomplete)
 }
 export function validGroupDetail(value: unknown): value is PrivacyGroupDetail {
-  return isObject(value) && typeof value.group === 'string' && Array.isArray(value.plugins)
+  return isObject(value) && typeof value.group === 'string' && isObject(value.history) && Array.isArray(value.plugins)
     && Array.isArray(value.recent) && Array.isArray(value.incomplete)
 }
