@@ -75,6 +75,7 @@ from .types import (
     ForkRefused,
     LedgerLessonSink,
     _SessionAction,
+    _WorkdirHold,
     _Beside,
     _Session,
     _carried_on,
@@ -279,10 +280,9 @@ class TaskAgentManager(
         # Working directories currently being removed (``hold_workdir``), and
         # working directories already claimed by starting/running commissions
         # so directory cleanup and ``_start`` cannot overlap on the same path.
-        self._clearing_workdirs: dict[str, tuple[tuple[str, ...], asyncio.Event]] = {}
-        self._clearing_workdirs_snapshot: tuple[str, ...] = ()
+        self._clearing_workdirs: dict[str, _WorkdirHold] = {}
+        self._clearing_workdirs_snapshot: tuple[_WorkdirHold, ...] = ()
         self._clearing_veto_lock = threading.Lock()
-        self._clearing_workdirs_vetoed: set[str] = set()
         self._starting_workdirs: dict[str, tuple[str, ...]] = {}
         # Commissions whose next start has its first model request counted
         # already: counted before they were woken, so that one whose quota
@@ -1599,15 +1599,18 @@ class TaskAgentManager(
             from nekopower.runtime.protocol import GatewaySpec
 
             async def prepare_place(target_place: Any) -> tuple[str, str, str | None] | None:
-                def resolve_paths() -> tuple[Any, Any]:
+                def resolve_paths() -> tuple[Any, Any, tuple[str, ...]]:
                     session_dir = self._session_dir_of(target_place)
-                    return session_dir, self._workdir_of(target_place, session_dir)
+                    workdir_path = self._workdir_of(target_place, session_dir)
+                    return session_dir, workdir_path, self._path_aliases(workdir_path)
 
                 while True:
-                    session_dir_path, workdir_path = await asyncio.to_thread(resolve_paths)
+                    session_dir_path, workdir_path, workdir_aliases = await asyncio.to_thread(resolve_paths)
                     if self._closed or self._sessions.get(commission_id) is not session:
                         return None
-                    if not await self._claim_workdir_for_start(commission_id, workdir_path):
+                    if not await self._claim_workdir_for_start(
+                        commission_id, workdir_path, aliases=workdir_aliases
+                    ):
                         continue
                     break
 

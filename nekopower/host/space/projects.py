@@ -438,16 +438,16 @@ class ProjectsMixin:
             # A project of the name is there already: that one is used, and
             # the archived one stays where it is.
             return self._project_from(target)
-        disk_data, readable = self._project_data(source)
+        if self._any_workdir_clearing is not None:
+            clearing_any = self._any_workdir_clearing()
+            if clearing_any is not None:
+                raise _WorkdirClearing(clearing_any)
+        disk_data, _readable = self._project_data(source)
         disk_workdir = (
             str(disk_data["workdir"])
             if isinstance(disk_data, dict) and isinstance(disk_data.get("workdir"), str) and disk_data["workdir"]
             else None
         )
-        if not readable and self._any_workdir_clearing is not None:
-            clearing_any = self._any_workdir_clearing()
-            if clearing_any is not None:
-                raise _WorkdirClearing(clearing_any)
         for candidate in (project.workdir, disk_workdir):
             if candidate and self._workdir_clearing is not None and self._workdir_clearing(candidate):
                 raise _WorkdirClearing(candidate)
@@ -456,20 +456,29 @@ class ProjectsMixin:
         try:
             # As its file has it now, not as it was listed a while ago.
             current, _known = self._project_to_change(target)
-        except OSError:
+        except (OSError, ValueError, TypeError, OverflowError) as exc:
+            is_io_err = isinstance(exc, OSError)
             clearing_any = self._any_workdir_clearing() if self._any_workdir_clearing is not None else None
-            if clearing_any is not None:
+            if clearing_any is not None or not is_io_err:
                 try:
                     _space_facade._move(target, source)
                 except OSError:
                     if self._veto_workdir_clear is not None:
                         self._veto_workdir_clear(None)
+                    if not is_io_err:
+                        logger.warning(
+                            "the file of a project brought back is invalid and could not be moved back; vetoing active cleanup",
+                            exc_info=True,
+                        )
+                        raise exc from None
                     logger.warning(
                         "the file of a project brought back cannot be read while cleanup is active and could not be moved back; vetoing active cleanup",
                         exc_info=True,
                     )
                 else:
-                    raise _WorkdirClearing(clearing_any)
+                    if not is_io_err:
+                        raise
+                    raise _WorkdirClearing(clearing_any) from None
             else:
                 # Its record cannot be read: it is back, and its file as it was.
                 logger.warning("the file of a project brought back cannot be read; it is left as it is")

@@ -22,6 +22,8 @@ from __future__ import annotations
 
 import asyncio
 import os
+import threading
+from collections.abc import Callable
 from typing import Any
 
 from nekopower.host.ledger import Commission, Session
@@ -33,6 +35,7 @@ from .types import (
     _STILL_WORKING,
     _Session,
     _Found,
+    _WorkdirHold,
     _has_transcript,
     _has_files,
 )
@@ -628,7 +631,7 @@ class DelegationMixin:
         raw = str(workdir)
         lex = os.path.normcase(os.path.normpath(raw))
         try:
-            real = os.path.normcase(os.path.realpath(raw))
+            real = os.path.normcase(os.path.normpath(os.path.realpath(raw)))
         except OSError:
             return (lex,)
         return (lex,) if real == lex else (lex, real)
@@ -649,54 +652,63 @@ class DelegationMixin:
         """Claim a working directory for removal. Returns the hold key, or None if overlapping work is active."""
         aliases = self._path_aliases(workdir)
         key = aliases[0]
-        for held_aliases, _event in self._clearing_workdirs.values():
-            if self._aliases_overlap_any(aliases, held_aliases):
+        for hold in self._clearing_workdirs.values():
+            if self._aliases_overlap_any(aliases, hold.aliases):
                 return None
         for active in self._starting_workdirs.values():
             active_aliases = active if isinstance(active, tuple) else (active,)
             if self._aliases_overlap_any(aliases, active_aliases):
                 return None
+        hold = _WorkdirHold(key=key, aliases=aliases, event=asyncio.Event())
         with self._clearing_veto_lock:
-            for alias in aliases:
-                self._clearing_workdirs_vetoed.discard(alias)
-        self._clearing_workdirs[key] = (aliases, asyncio.Event())
-        self._clearing_workdirs_snapshot = tuple(
-            alias for entry_aliases, _ in self._clearing_workdirs.values() for alias in entry_aliases
-        )
+            self._clearing_workdirs[key] = hold
+            self._clearing_workdirs_snapshot = tuple(self._clearing_workdirs.values())
         return key
 
     def release_workdir(self, key: str) -> None:
         """Release a working-directory hold claimed via ``hold_workdir``."""
-        removed = self._clearing_workdirs.pop(key, None)
-        self._clearing_workdirs_snapshot = tuple(
-            alias for entry_aliases, _ in self._clearing_workdirs.values() for alias in entry_aliases
-        )
+        with self._clearing_veto_lock:
+            removed = self._clearing_workdirs.pop(key, None)
+            self._clearing_workdirs_snapshot = tuple(self._clearing_workdirs.values())
         if removed is not None:
-            aliases, ev = removed
-            with self._clearing_veto_lock:
-                for alias in aliases:
-                    self._clearing_workdirs_vetoed.discard(alias)
-            ev.set()
+            removed.event.set()
 
     def any_workdir_clearing(self) -> str | None:
         """Thread-safely return one currently held workdir path if any cleanup is active, else None."""
         snapshot = self._clearing_workdirs_snapshot
-        return snapshot[0] if snapshot else None
+        return snapshot[0].key if snapshot else None
+
+    def workdir_hold_guard(self, key: str) -> tuple[threading.Lock, Callable[[], bool]] | None:
+        """Return ``(op_lock, is_vetoed)`` bound to the active hold instance ``key``."""
+        hold = self._clearing_workdirs.get(key)
+        if hold is None:
+            return None
+        return hold.lock, (lambda: hold.vetoed)
 
     def veto_workdir_clear(self, workdir: Any | None = None) -> None:
-        """Thread-safely veto active workdir cleanup matching ``workdir`` (or all active holds when None)."""
-        targets = self._clearing_workdirs_snapshot if workdir is None else self._path_aliases(workdir)
-        if not targets:
-            return
+        """Thread-safely veto active workdir holds overlapping ``workdir`` (or all active holds when None)."""
+        aliases = None if workdir is None else self._path_aliases(workdir)
         with self._clearing_veto_lock:
-            self._clearing_workdirs_vetoed.update(targets)
+            holds = self._clearing_workdirs_snapshot
+        for hold in holds:
+            if aliases is None or self._aliases_overlap_any(aliases, hold.aliases):
+                with hold.lock:
+                    hold.vetoed = True
 
     def is_workdir_clear_vetoed(self, workdir: Any) -> bool:
-        """Thread-safely return whether cleanup of ``workdir`` has been vetoed."""
+        """Thread-safely return whether an active workdir hold for ``workdir`` has been vetoed."""
+        snapshot = self._clearing_workdirs_snapshot
+        if not snapshot:
+            return False
+        if isinstance(workdir, str):
+            for hold in snapshot:
+                if hold.key == workdir:
+                    return hold.vetoed
+        vetoed_holds = [hold for hold in snapshot if hold.vetoed]
+        if not vetoed_holds:
+            return False
         aliases = self._path_aliases(workdir)
-        with self._clearing_veto_lock:
-            vetoed = tuple(self._clearing_workdirs_vetoed)
-        return bool(vetoed) and self._aliases_overlap_any(aliases, vetoed)
+        return any(self._aliases_overlap_any(aliases, hold.aliases) for hold in vetoed_holds)
 
     def is_workdir_clearing(self, workdir: Any) -> bool:
         """Thread-safely report whether an overlapping directory is currently held for removal."""
@@ -704,7 +716,7 @@ class DelegationMixin:
         if not snapshot:
             return False
         aliases = self._path_aliases(workdir)
-        return self._aliases_overlap_any(aliases, snapshot)
+        return any(self._aliases_overlap_any(aliases, hold.aliases) for hold in snapshot)
 
     async def wait_workdir_clear(self, workdir: Any) -> None:
         """Wait until no cleanup holds a directory overlapping ``workdir``."""
@@ -712,9 +724,9 @@ class DelegationMixin:
         while True:
             ev = next(
                 (
-                    event
-                    for held_aliases, event in self._clearing_workdirs.values()
-                    if self._aliases_overlap_any(aliases, held_aliases)
+                    hold.event
+                    for hold in self._clearing_workdirs.values()
+                    if self._aliases_overlap_any(aliases, hold.aliases)
                 ),
                 None,
             )
@@ -722,21 +734,27 @@ class DelegationMixin:
                 return
             await ev.wait()
 
-    async def _claim_workdir_for_start(self, commission_id: str, workdir: Any) -> bool:
+    async def _claim_workdir_for_start(
+        self,
+        commission_id: str,
+        workdir: Any,
+        *,
+        aliases: tuple[str, ...] | None = None,
+    ) -> bool:
         """Claim ``workdir`` for a starting commission, waiting if an overlapping directory is being cleared."""
-        aliases = await asyncio.to_thread(self._path_aliases, workdir)
+        resolved = aliases if aliases is not None else await asyncio.to_thread(self._path_aliases, workdir)
         ev = next(
             (
-                event
-                for held_aliases, event in self._clearing_workdirs.values()
-                if self._aliases_overlap_any(aliases, held_aliases)
+                hold.event
+                for hold in self._clearing_workdirs.values()
+                if self._aliases_overlap_any(resolved, hold.aliases)
             ),
             None,
         )
         if ev is not None:
             await ev.wait()
             return False
-        self._starting_workdirs[commission_id] = aliases
+        self._starting_workdirs[commission_id] = resolved
         return True
 
     def hold_session(self, commission_id: str) -> bool:

@@ -3849,6 +3849,9 @@ async def test_round19_review_fixes(tmp_path: Path, monkeypatch: pytest.MonkeyPa
         revive_task: asyncio.Task[Any] | None = None
         try:
             with monkeypatch.context() as mp:
+                # Bypass the pre-move global clearing gate so this test exercises the defense-in-depth
+                # post-move workdir check and rollback when project.json mutates right before _move().
+                mp.setattr(host.space, "_any_workdir_clearing", lambda: None)
                 mp.setattr(space_facade, "_move", mutate_then_move)
                 revive_task = asyncio.create_task(host.space.open_project("raceproj"))
                 await asyncio.wait_for(rolled_back.wait(), timeout=2.0)
@@ -4193,8 +4196,16 @@ async def test_round21_review_fixes(tmp_path: Path, monkeypatch: pytest.MonkeyPa
             assert hold_k is not None
             try:
                 assert host.task_agents.is_workdir_clearing(real_wt) is True
+                entered_wait = asyncio.Event()
+
+                class _SignalWaitEvent(asyncio.Event):
+                    async def wait(self) -> bool:
+                        entered_wait.set()
+                        return await super().wait()
+
+                host.task_agents._clearing_workdirs[hold_k].event = _SignalWaitEvent()
                 claim_task = asyncio.create_task(host.task_agents._claim_workdir_for_start("c-alias", real_wt))
-                await asyncio.sleep(0.03)
+                await asyncio.wait_for(entered_wait.wait(), timeout=2.0)
                 assert not claim_task.done()
                 host.task_agents.release_workdir(hold_k)
                 assert await asyncio.wait_for(claim_task, timeout=2.0) is False
@@ -4272,15 +4283,24 @@ async def test_round21_review_fixes(tmp_path: Path, monkeypatch: pytest.MonkeyPa
                 raise OSError("post-move unreadable")
             return orig_to_change(directory)
 
-        # Simulate cleanup holding wd_dir1 while _restore hits post-move OSError + rollback OSError.
+        # Simulate cleanup holding wd_dir1 while _restore bypasses pre-move wait (testing the
+        # defense-in-depth post-move OSError + rollback OSError veto branch).
         orig_busy = host.storage._busy_workdirs
+        orig_any_clearing = host.space._any_workdir_clearing
         injected_a = [False]
 
         async def busy_then_restore_a(*args: Any, **kwargs: Any) -> Any:
             res = await orig_busy(*args, **kwargs)
             if not injected_a[0]:
                 injected_a[0] = True
+                any_calls = [0]
+
+                def any_clearing_after_move() -> str | None:
+                    any_calls[0] += 1
+                    return None if any_calls[0] == 1 else (orig_any_clearing() if orig_any_clearing else None)
+
                 with monkeypatch.context() as mp2:
+                    mp2.setattr(host.space, "_any_workdir_clearing", any_clearing_after_move)
                     mp2.setattr(space_facade, "_move", fail_read_and_rollback_move)
                     mp2.setattr(host.space, "_project_to_change", fail_to_change)
                     with pytest.raises(OSError, match="post-move unreadable"):
@@ -4332,6 +4352,7 @@ async def test_round21_review_fixes(tmp_path: Path, monkeypatch: pytest.MonkeyPa
             if not injected_b[0]:
                 injected_b[0] = True
                 with monkeypatch.context() as mp2:
+                    mp2.setattr(host.space, "_any_workdir_clearing", lambda: None)
                     mp2.setattr(space_facade, "_move", mutate_and_fail_rollback)
                     mp2.setattr(host.space, "_put_project", fail_put)
                     with pytest.raises(OSError, match="put failed"):
@@ -4344,5 +4365,409 @@ async def test_round21_review_fixes(tmp_path: Path, monkeypatch: pytest.MonkeyPa
         assert clean_b["cleaned"] == []
         assert clean_b["failed"] == [{"id": f"session:vetop/{wd_s2.id}", "code": "in_use"}]
         assert (wd_dir2 / "keep2.txt").read_text(encoding="utf-8") == "must-keep-2"
+    finally:
+        await host.shutdown()
+
+
+async def test_round22_review_fixes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Verify Round 22 fixes: per-hold veto isolation & zero realpath in veto checks, op_lock
+    mutual exclusion in remove_dir_safely, pre-move _restore() wait & OverflowError rollback/veto,
+    overview() O(N+M) alias pre-resolution, prepare_place() shutdown re-check, and tree_work
+    reconcile stale-row re-read / forget_gone reappeared / pre-drop re-check.
+    """
+    import asyncio
+    import json
+    import threading
+
+    from nekopower.host import space as space_facade
+    from nekopower.host import storage as storage_mod
+    from nekopower.host.worktrees import WorktreeError
+
+    host = make_host(tmp_path)
+    try:
+        # 1. Per-hold veto isolation (subpath veto does not leak to a later hold) and zero realpath on veto check.
+        managed = tmp_path / "managed_work"
+        sub = managed / "sub"
+        sub.mkdir(parents=True)
+        hold1 = host.task_agents.hold_workdir(managed)
+        assert hold1 is not None
+        guard1 = host.task_agents.workdir_hold_guard(hold1)
+        assert guard1 is not None
+        _lock1, check1 = guard1
+        assert check1() is False
+        host.task_agents.veto_workdir_clear(sub)
+
+        realpath_calls = [0]
+        orig_realpath = os.path.realpath
+
+        def counting_realpath(p: Any) -> str:
+            realpath_calls[0] += 1
+            return orig_realpath(p)
+
+        with monkeypatch.context() as mp:
+            mp.setattr(os.path, "realpath", counting_realpath)
+            assert check1() is True
+            assert host.task_agents.is_workdir_clear_vetoed(hold1) is True
+        assert realpath_calls[0] == 0
+
+        host.task_agents.release_workdir(hold1)
+        hold2 = host.task_agents.hold_workdir(managed)
+        assert hold2 is not None
+        try:
+            guard2 = host.task_agents.workdir_hold_guard(hold2)
+            assert guard2 is not None
+            assert guard2[1]() is False
+            assert host.task_agents.is_workdir_clear_vetoed(managed) is False
+        finally:
+            host.task_agents.release_workdir(hold2)
+
+        # 2. Mutual exclusion between remove_dir_safely() unlink and veto_workdir_clear():
+        #    pause remove_dir_safely right after its loop-level should_abort() check (before unlink),
+        #    publish veto_workdir_clear(), and confirm the file is NOT deleted.
+        race_root = tmp_path / "race_root"
+        race_dir = race_root / "work"
+        race_dir.mkdir(parents=True)
+        protected_file = race_dir / "keep.txt"
+        protected_file.write_text("must-survive", encoding="utf-8")
+
+        race_hold = host.task_agents.hold_workdir(race_dir)
+        assert race_hold is not None
+        try:
+            op_lock, veto_check = host.task_agents.workdir_hold_guard(race_hold)  # type: ignore[misc]
+            check_count = [0]
+            paused_after_check = threading.Event()
+            resume_delete = threading.Event()
+
+            def pausing_should_abort() -> bool:
+                res = veto_check()
+                check_count[0] += 1
+                # Calls: 1=pre-loop, 2=while-top, 3=for-entry (right before entry.stat & op_lock unlink).
+                if check_count[0] == 3 and not res:
+                    paused_after_check.set()
+                    resume_delete.wait(timeout=5.0)
+                return res
+
+            result_box: list[tuple[bool, int]] = []
+
+            def run_rm() -> None:
+                result_box.append(
+                    storage_mod.remove_dir_safely(
+                        race_dir, race_root, should_abort=pausing_should_abort, op_lock=op_lock
+                    )
+                )
+
+            worker = threading.Thread(target=run_rm)
+            worker.start()
+            assert paused_after_check.wait(timeout=5.0)
+            host.task_agents.veto_workdir_clear(race_dir)
+            resume_delete.set()
+            worker.join(timeout=5.0)
+            assert not worker.is_alive()
+            assert result_box == [(False, 0)]
+            assert protected_file.read_text(encoding="utf-8") == "must-survive"
+        finally:
+            host.task_agents.release_workdir(race_hold)
+
+        # 3. _restore():
+        #    (a) With normal wiring, _restore() waits BEFORE _move(source, target) while any workdir hold is active.
+        await host.space.touch_project("waitp", workdir=str(tmp_path / "wait_other"), count=False)
+        assert await host.space.archive_project("waitp") is not None
+        gate_dir = tmp_path / "gate_work"
+        gate_dir.mkdir()
+        gate_hold = host.task_agents.hold_workdir(gate_dir)
+        assert gate_hold is not None
+        try:
+            moved_during_hold = [False]
+            orig_move = space_facade._move
+
+            def watch_move(src: Path, dst: Path) -> None:
+                if dst.name == "waitp" and host.task_agents.any_workdir_clearing() is not None:
+                    moved_during_hold[0] = True
+                orig_move(src, dst)
+
+            entered_restore_wait = asyncio.Event()
+
+            class _RestoreWaitEvent(asyncio.Event):
+                async def wait(self) -> bool:
+                    entered_restore_wait.set()
+                    return await super().wait()
+
+            host.task_agents._clearing_workdirs[gate_hold].event = _RestoreWaitEvent()
+            with monkeypatch.context() as mp:
+                mp.setattr(space_facade, "_move", watch_move)
+                restore_task = asyncio.create_task(host.space.open_project("waitp"))
+                await asyncio.wait_for(entered_restore_wait.wait(), timeout=2.0)
+                assert not host.paths.space().project_dir("waitp").exists()
+                host.task_agents.release_workdir(gate_hold)
+                restored_p = await asyncio.wait_for(restore_task, timeout=2.0)
+            assert restored_p is not None and restored_p.name == "waitp"
+            assert moved_during_hold[0] is False
+        finally:
+            host.task_agents.release_workdir(gate_hold)
+
+        #    (b) Post-move OverflowError (commissions: 1e400) rolls back cleanly (not activated);
+        #        if rollback also raises OSError, vetoes active cleanup before raising OverflowError.
+        await host.space.touch_project("ovfp", workdir=str(tmp_path / "ovf_other"), count=False)
+        assert await host.space.archive_project("ovfp") is not None
+        orig_move2 = space_facade._move
+
+        def inject_overflow_on_move(src: Path, dst: Path) -> None:
+            orig_move2(src, dst)
+            if dst.name == "ovfp" and dst.parent.name == "projects":
+                (dst / "project.json").write_text(
+                    '{"name": "ovfp", "commissions": ' + ("9" * 401) + "}",
+                    encoding="utf-8",
+                )
+
+        with monkeypatch.context() as mp:
+            mp.setattr(space_facade, "_move", inject_overflow_on_move)
+            with pytest.raises(OverflowError):
+                await host.space.open_project("ovfp")
+        assert not host.paths.space().project_dir("ovfp").exists()
+        # Remove the rolled-back corrupt archive so subsequent _archived_of() scans can proceed.
+        import shutil as _shutil
+
+        for year_dir in host.paths.space().archive_dir().iterdir():
+            ovfp_arch = year_dir / "ovfp"
+            if ovfp_arch.exists():
+                _shutil.rmtree(ovfp_arch)
+
+        # Re-archive cleanly and force BOTH OverflowError AND rollback OSError while a hold is active.
+        await host.space.touch_project("ovfvetop", workdir=str(tmp_path / "ovf_other2"), count=False)
+        assert await host.space.archive_project("ovfvetop") is not None
+        ovf_work = tmp_path / "ovf_work"
+        ovf_work.mkdir()
+        ovf_hold = host.task_agents.hold_workdir(ovf_work)
+        assert ovf_hold is not None
+        try:
+            def inject_overflow_and_fail_rollback(src: Path, dst: Path) -> None:
+                if src.name == "ovfvetop" and src.parent.name == "projects":
+                    raise OSError("rollback blocked")
+                orig_move2(src, dst)
+                if dst.name == "ovfvetop" and dst.parent.name == "projects":
+                    (dst / "project.json").write_text(
+                        '{"name": "ovfvetop", "commissions": ' + ("9" * 401) + "}",
+                        encoding="utf-8",
+                    )
+
+            with monkeypatch.context() as mp:
+                mp.setattr(host.space, "_any_workdir_clearing", lambda: None)
+                mp.setattr(space_facade, "_move", inject_overflow_and_fail_rollback)
+                with pytest.raises(OverflowError):
+                    await host.space.open_project("ovfvetop")
+            assert host.task_agents.is_workdir_clear_vetoed(ovf_hold) is True
+        finally:
+            host.task_agents.release_workdir(ovf_hold)
+        ovfvetop_dir = host.paths.space().project_dir("ovfvetop")
+        if ovfvetop_dir.exists():
+            _shutil.rmtree(ovfvetop_dir)
+
+        # 4. overview() pre-resolves active reference aliases once (O(N+M) realpath, not O(N*M)).
+        for i in range(6):
+            s_ov = await host.ledger.create_session(name=f"ov-s-{i}", lanlan_name="Lan", project="ovproj")
+            w_ov = host.paths.work_dir(s_ov.id, "ovproj")
+            w_ov.mkdir(parents=True)
+            await host.ledger.update_session(s_ov.id, status="idle", workdir=str(w_ov))
+        for j in range(5):
+            active_s = await host.ledger.create_session(
+                name=f"ov-act-{j}", lanlan_name="Lan", project="ovproj", workdir=str(tmp_path / f"act_{j}")
+            )
+            await host.ledger.update_session(active_s.id, status="running")
+
+        ov_realpath_calls = [0]
+
+        def count_ov_realpath(p: Any) -> str:
+            ov_realpath_calls[0] += 1
+            return orig_realpath(p)
+
+        with monkeypatch.context() as mp:
+            mp.setattr(os.path, "realpath", count_ov_realpath)
+            ov_data = await host.storage_overview()
+        assert "categories" in ov_data
+        # Linear bound: well below O(N*M) pairwise comparisons (would exceed 100+ calls).
+        assert ov_realpath_calls[0] < 40
+
+        # 4.5. prepare_place() re-checks _closed after _path_aliases() resolution before claiming workdir or mkdir.
+        from types import SimpleNamespace
+
+        from nekopower.host.task_agents.types import _Session
+
+        shut_s = await host.ledger.create_session(name="shut-s", lanlan_name="Lan", project="shutp")
+        shut_c, _ = await host.ledger.create(
+            dispatch_text="shut-c",
+            title="shut-c",
+            lanlan_name="Lan",
+            source="dispatch",
+            route="task_agent",
+            project="shutp",
+            session_id=shut_s.id,
+        )
+        shut_work = host.paths.work_dir(shut_s.id, "shutp")
+        assert not shut_work.exists()
+        orig_path_aliases = host.task_agents._path_aliases
+        closed_triggered = [False]
+
+        def close_during_aliases(workdir: Any) -> tuple[str, ...]:
+            if os.path.normcase(os.path.normpath(str(workdir))) == os.path.normcase(os.path.normpath(str(shut_work))):
+                closed_triggered[0] = True
+                host.task_agents._closed = True
+            return orig_path_aliases(workdir)
+
+        async def fake_session_model(_kept: Any) -> Any:
+            return SimpleNamespace(
+                config={"model": "test-model", "api_key": "k", "base_url": "http://127.0.0.1:1"},
+                agent=None,
+                ident="test",
+            )
+
+        host.task_agents._sessions[shut_c.id] = _Session(commission_id=shut_c.id, session_id=shut_s.id)
+        try:
+            with monkeypatch.context() as mp:
+                mp.setattr(host.task_agents, "session_model", fake_session_model)
+                mp.setattr(host.task_agents, "_path_aliases", close_during_aliases)
+                started = await host.task_agents._start(shut_c.id)
+        finally:
+            host.task_agents._closed = False
+            host.task_agents._sessions.pop(shut_c.id, None)
+        assert closed_triggered[0] is True
+        assert started is False
+        assert shut_c.id not in host.task_agents._starting_workdirs
+        assert not shut_work.exists()
+
+        # 5. tree_work.py:
+        #    (a) Stale held -> discarding(expired) row re-read after _trees_in_hand keeps row for upkeep.
+        stale_wt = host.paths.worktree_dir("staledsc1")
+        stale_s = await host.ledger.create_session(name="stale-s", lanlan_name="Lan", project="stalep")
+        stale_c, _ = await host.ledger.create(
+            dispatch_text="stale-c",
+            title="stale-c",
+            lanlan_name="Lan",
+            source="dispatch",
+            route="task_agent",
+            project="stalep",
+            session_id=stale_s.id,
+            workdir=str(stale_wt),
+        )
+        await host.ledger.add_tree(
+            id="staledsc1",
+            session_id=stale_s.id,
+            commission_id=stale_c.id,
+            lanlan_name="Lan",
+            project="stalep",
+            project_dir=str(tmp_path),
+            repo_root=str(tmp_path),
+            path=str(stale_wt),
+            workdir=str(stale_wt),
+            token="tok-stale",
+            state="held",
+        )
+        orig_trees = host.ledger.trees
+        flipped = [False]
+
+        async def trees_then_flip(*args: Any, **kwargs: Any) -> Any:
+            rows = await orig_trees(*args, **kwargs)
+            if not flipped[0] and any(r.id == "staledsc1" for r in rows):
+                flipped[0] = True
+                await host.ledger.update_tree("staledsc1", state="discarding", reason="expired")
+            return rows
+
+        with monkeypatch.context() as mp:
+            mp.setattr(host.ledger, "trees", trees_then_flip)
+            rec_stale = await host.task_agents._reconcile_trees_now()
+        assert "staledsc1" in rec_stale["kept"]
+        kept_stale_row = await host.ledger.get_tree("staledsc1")
+        assert kept_stale_row is not None and kept_stale_row.state == "discarding" and kept_stale_row.reason == "expired"
+
+        #    (b) _settle_reconciled_pending_expiry: if forget_gone() raises WorktreeError because the
+        #        directory reappeared on a "removed" marker, keep row, marker, and blocked commission.
+        reap_repo = tmp_path / "reap_repo"
+        (reap_repo / ".git").mkdir(parents=True)
+        reap_wt = host.paths.worktree_dir("reapfg01")
+        reap_s = await host.ledger.create_session(name="reap-s", lanlan_name="Lan", project="reapp")
+        reap_c, _ = await host.ledger.create(
+            dispatch_text="reap-c",
+            title="reap-c",
+            lanlan_name="Lan",
+            source="dispatch",
+            route="task_agent",
+            project="reapp",
+            session_id=reap_s.id,
+            workdir=str(reap_wt),
+        )
+        await host.ledger.transition(reap_c.id, "working")
+        await host.ledger.transition(reap_c.id, "blocked")
+        reap_row = await host.ledger.add_tree(
+            id="reapfg01",
+            session_id=reap_s.id,
+            commission_id=reap_c.id,
+            lanlan_name="Lan",
+            project="reapp",
+            project_dir=str(reap_repo),
+            repo_root=str(reap_repo),
+            path=str(reap_wt),
+            workdir=str(reap_wt),
+            token="tok-reap",
+            state="held",
+        )
+        await host.task_agents._record_pending_expired_tree("reapfg01", "removed", row=reap_row)
+        forget_called = [False]
+
+        async def forget_gone_after_restore(_repo: Any, path: Any, _tid: str) -> None:
+            forget_called[0] = True
+            Path(path).mkdir(parents=True, exist_ok=True)
+            raise WorktreeError("worktree directory exists again")
+
+        with monkeypatch.context() as mp:
+            mp.setattr(host.task_agents.worktrees, "forget_gone", forget_gone_after_restore)
+            rec_reap = await host.task_agents._reconcile_trees_now()
+        assert forget_called[0] is True
+        assert "reapfg01" in rec_reap["kept"]
+        assert (await host.ledger.get_tree("reapfg01")).state == "held"
+        assert (await host.ledger.get(reap_c.id)).status == "blocked"
+        assert "reapfg01" in await host.task_agents._read_pending_expired_trees()
+
+        #    (c) _reconcile_trees_now: if directory reappears while reading pending markers (empty marker),
+        #        do NOT call drop_tree().
+        reap2_wt = host.paths.worktree_dir("reapdrp1")
+        reap2_s = await host.ledger.create_session(name="reap2-s", lanlan_name="Lan", project="reapp2")
+        reap2_c, _ = await host.ledger.create(
+            dispatch_text="reap2-c",
+            title="reap2-c",
+            lanlan_name="Lan",
+            source="dispatch",
+            route="task_agent",
+            project="reapp2",
+            session_id=reap2_s.id,
+            workdir=str(reap2_wt),
+        )
+        await host.ledger.add_tree(
+            id="reapdrp1",
+            session_id=reap2_s.id,
+            commission_id=reap2_c.id,
+            lanlan_name="Lan",
+            project="reapp2",
+            project_dir=str(tmp_path),
+            repo_root=str(tmp_path),
+            path=str(reap2_wt),
+            workdir=str(reap2_wt),
+            token="tok-reap2",
+            state="held",
+        )
+        orig_read_pending = host.task_agents._read_pending_expired_trees
+        reap2_restored = [False]
+
+        async def restore_dir_during_marker_read(*args: Any, **kwargs: Any) -> dict[str, Any]:
+            res = await orig_read_pending(*args, **kwargs)
+            if "reapdrp1" in host.task_agents._trees_in_hand and not reap2_wt.exists():
+                reap2_restored[0] = True
+                reap2_wt.mkdir(parents=True, exist_ok=True)
+            return res
+
+        with monkeypatch.context() as mp:
+            mp.setattr(host.task_agents, "_read_pending_expired_trees", restore_dir_during_marker_read)
+            rec_reap2 = await host.task_agents._reconcile_trees_now()
+        assert reap2_restored[0] is True
+        assert "reapdrp1" in rec_reap2["kept"]
+        assert await host.ledger.get_tree("reapdrp1") is not None
     finally:
         await host.shutdown()

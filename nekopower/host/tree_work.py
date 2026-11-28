@@ -3035,6 +3035,16 @@ class TreeWork:
                 except asyncio.CancelledError:
                     raise
                 except (WorktreeError, OSError) as exc:
+                    if not await self._tree_is_gone(row):
+                        if marker_outcome == "removed":
+                            # The directory reappeared before forget_gone() ran: keep the ledger row,
+                            # pending marker, and blocked commission intact rather than cancelling it.
+                            kept.append(row.id)
+                            return
+                        if marker_outcome == "expiring":
+                            await self._clear_pending_expired_trees((row.id,), expected={row.id: marker})
+                            kept.append(row.id)
+                            return
                     logger.warning(
                         "pending expired worktree %s metadata cleanup deferred: %s", row.id, exc
                     )
@@ -3126,6 +3136,29 @@ class TreeWork:
             # (``_tree_to_work_in``), and finds it as this leaves it.
             self._trees_in_hand.add(row.id)
             try:
+                live_row = await self._ledger.get_tree(row.id)
+                if live_row is None:
+                    continue
+                row = live_row
+                if row.id in self._trees_mine or row.id in self._tree_of.values():
+                    continue
+                if row.state == "discarding":
+                    if row.reason == "expired":
+                        try:
+                            live_marker = (await self._read_pending_expired_trees(raise_on_error=True)).get(row.id)
+                            if live_marker is not None:
+                                if self._marker_matches_row(live_marker, row):
+                                    await self._cancel_expired_commission(row, self._marker_outcome(live_marker))
+                                await self._clear_pending_expired_trees((row.id,), expected={row.id: live_marker})
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception:  # noqa: BLE001 - retry on next restart/upkeep
+                            logger.warning("pending expiry commission settlement failed for %s", row.id, exc_info=True)
+                        kept.append(row.id)
+                        continue
+                    if await self._remove_discarded(row):
+                        removed.append(row.id)
+                    continue
                 handle = await self._handle_of(row)
                 if handle is None and not await self._tree_is_gone(row):
                     # There, and not to be opened this moment (git did not answer): left on record
@@ -3157,6 +3190,9 @@ class TreeWork:
                         continue
                     if live_marker is not None and not self._marker_matches_row(live_marker, row):
                         await self._clear_pending_expired_trees((row.id,), expected={row.id: live_marker})
+                    if not await self._tree_is_gone(row):
+                        kept.append(row.id)
+                        continue
                     self._forget_tree(row)
                     await self._ledger.drop_tree(row.id)
                     removed.append(row.id)

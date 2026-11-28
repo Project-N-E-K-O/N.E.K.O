@@ -50,6 +50,7 @@ import os
 import shutil
 import stat
 import sys
+import threading
 import time
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
@@ -190,10 +191,27 @@ def _path_aliases(path: str | Path | None) -> tuple[str, ...]:
     raw = str(path)
     lex = os.path.normcase(os.path.normpath(raw))
     try:
-        real = os.path.normcase(os.path.realpath(raw))
+        real = os.path.normcase(os.path.normpath(os.path.realpath(raw)))
     except OSError:
         return (lex,)
     return (lex,) if real == lex else (lex, real)
+
+
+def _ancestor_alias_set(paths: Iterable[str | Path | None]) -> frozenset[str]:
+    """Blocking: return normalized lexical/resolved paths and all their ancestor directories."""
+    ancestors: set[str] = set()
+    for item in paths:
+        if not item:
+            continue
+        for alias in _path_aliases(item):
+            cur = alias
+            while cur and cur not in ancestors:
+                ancestors.add(cur)
+                parent = os.path.dirname(cur)
+                if not parent or parent == cur:
+                    break
+                cur = parent
+    return frozenset(ancestors)
 
 
 def _path_is_or_inside(child: str | Path | None, parent: str | Path | None) -> bool:
@@ -318,12 +336,16 @@ def remove_dir_safely(
     allowed_root: Path,
     *,
     should_abort: Callable[[], bool] | None = None,
+    op_lock: threading.Lock | None = None,
 ) -> tuple[bool, int]:
     """Blocking: recursively remove ``target`` inside ``allowed_root`` without following links.
 
     Returns ``(removed, freed_bytes)``. ``removed`` is True when ``target`` no
     longer exists on disk; False when some entry could not be deleted (e.g.
     held open by another process on Windows) or ``should_abort()`` fired.
+    When ``op_lock`` is provided, each destructive unlink/rmdir re-checks
+    ``should_abort()`` and performs the removal under ``op_lock`` so concurrent
+    veto publishers sharing the same lock cannot race with entry deletion.
     Raises ``ValueError`` when ``target`` is a link or lies outside ``allowed_root``.
     """
     safety = _classify_path_safety(target, allowed_root)
@@ -334,6 +356,7 @@ def remove_dir_safely(
     if should_abort is not None and should_abort():
         return False, 0
 
+    lock_cm: Any = op_lock if op_lock is not None else contextlib.nullcontext()
     freed = 0
     failed = False
 
@@ -344,20 +367,23 @@ def remove_dir_safely(
         directory, visited = stack.pop()
         fs_dir = _fs(directory)
         if visited:
-            try:
-                os.rmdir(fs_dir)
-            except FileNotFoundError:
-                # Directory already removed concurrently.
-                pass
-            except OSError:
-                _clear_readonly(fs_dir)
+            with lock_cm:
+                if should_abort is not None and should_abort():
+                    return False, freed
                 try:
                     os.rmdir(fs_dir)
                 except FileNotFoundError:
-                    # Directory disappeared while clearing read-only bit.
+                    # Directory already removed concurrently.
                     pass
                 except OSError:
-                    failed = True
+                    _clear_readonly(fs_dir)
+                    try:
+                        os.rmdir(fs_dir)
+                    except FileNotFoundError:
+                        # Directory disappeared while clearing read-only bit.
+                        pass
+                    except OSError:
+                        failed = True
             continue
         try:
             with os.scandir(fs_dir) as entries:
@@ -384,37 +410,43 @@ def remove_dir_safely(
             if is_link:
                 # Never descend into symlinks or Windows junctions: remove only the link itself,
                 # and never chmod a link (which follows links and mutates external targets).
-                try:
-                    if stat.S_ISDIR(st.st_mode) and not stat.S_ISLNK(st.st_mode):
-                        os.rmdir(fs_child)
-                    else:
-                        os.unlink(fs_child)
-                except FileNotFoundError:
-                    # Link already disappeared concurrently.
-                    pass
-                except OSError:
-                    failed = True
+                with lock_cm:
+                    if should_abort is not None and should_abort():
+                        return False, freed
+                    try:
+                        if stat.S_ISDIR(st.st_mode) and not stat.S_ISLNK(st.st_mode):
+                            os.rmdir(fs_child)
+                        else:
+                            os.unlink(fs_child)
+                    except FileNotFoundError:
+                        # Link already disappeared concurrently.
+                        pass
+                    except OSError:
+                        failed = True
                 continue
             if stat.S_ISDIR(st.st_mode):
                 stack.append((child, False))
             else:
                 size = int(st.st_size)
-                try:
-                    os.unlink(fs_child)
-                    freed += size
-                except FileNotFoundError:
-                    # File already removed concurrently.
-                    pass
-                except OSError:
-                    _clear_readonly(fs_child)
+                with lock_cm:
+                    if should_abort is not None and should_abort():
+                        return False, freed
                     try:
                         os.unlink(fs_child)
                         freed += size
                     except FileNotFoundError:
-                        # File disappeared while clearing read-only bit.
+                        # File already removed concurrently.
                         pass
                     except OSError:
-                        failed = True
+                        _clear_readonly(fs_child)
+                        try:
+                            os.unlink(fs_child)
+                            freed += size
+                        except FileNotFoundError:
+                            # File disappeared while clearing read-only bit.
+                            pass
+                        except OSError:
+                            failed = True
 
     still_there = os.path.lexists(_fs(target))
     return (not still_there and not failed), freed
@@ -1205,6 +1237,9 @@ class StorageManager:
 
         def scan() -> dict[str, Any]:
             deadline = time.monotonic() + STORAGE_SCAN_BUDGET_SECONDS
+            live_ancestors = _ancestor_alias_set(live_workdirs)
+            active_proj_ancestors = _ancestor_alias_set(active_project_workdirs) if projects_readable else frozenset()
+            has_ref_ancestors = bool(live_ancestors or active_proj_ancestors)
 
             def item_deadline() -> float:
                 return min(deadline, time.monotonic() + STORAGE_ITEM_BUDGET_SECONDS)
@@ -1324,13 +1359,13 @@ class StorageManager:
                             stats = measure_dir(child, item_deadline())
                             wt_whole = wt_whole and stats.whole
                             wt_total_bytes += stats.bytes
-                            norm_child = os.path.normcase(os.path.normpath(str(child)))
+                            child_aliases = _path_aliases(child) if has_ref_ancestors else ()
                             busy_orphan = (
                                 name in self._task_agents._trees_mine
                                 or name in self._task_agents._trees_in_hand
                                 or not projects_readable
-                                or any(_path_is_or_inside(wd, norm_child) for wd in live_workdirs)
-                                or any(_path_is_or_inside(pwd, norm_child) for pwd in active_project_workdirs)
+                                or any(a in live_ancestors for a in child_aliases)
+                                or any(a in active_proj_ancestors for a in child_aliases)
                             )
                             can_clean = not busy_orphan
                             if can_clean:
@@ -1522,15 +1557,12 @@ class StorageManager:
                         stats = measure_dir(proj_work, item_deadline())
                         work_dirs_whole = work_dirs_whole and stats.whole
                         work_dirs_bytes += stats.bytes
-                        norm_pw = os.path.normcase(os.path.normpath(str(proj_work)))
-                        in_use = proj_name in busy_projects or any(
-                            _path_is_or_inside(wd, norm_pw) for wd in live_workdirs
-                        )
+                        pw_aliases = _path_aliases(proj_work) if has_ref_ancestors else ()
+                        in_use = proj_name in busy_projects or any(a in live_ancestors for a in pw_aliases)
                         is_archived = proj_record is not None and proj_record.archive_year is not None
                         status_label = "project_archived" if is_archived else "project_active"
                         referenced_proj = not is_archived and (
-                            not projects_readable
-                            or any(_path_is_or_inside(pwd, norm_pw) for pwd in active_project_workdirs)
+                            not projects_readable or any(a in active_proj_ancestors for a in pw_aliases)
                         )
                         can_clean = not in_use and not referenced_proj and projects_readable
                         if can_clean:
@@ -1632,10 +1664,10 @@ class StorageManager:
                                 stats = measure_dir(work_path, item_deadline())
                             work_dirs_whole = work_dirs_whole and stats.whole
                             work_dirs_bytes += stats.bytes
-                            norm_wp = os.path.normcase(os.path.normpath(str(work_path)))
-                            referenced_live = any(_path_is_or_inside(wd, norm_wp) for wd in live_workdirs)
+                            wp_aliases = _path_aliases(work_path) if has_ref_ancestors else ()
+                            referenced_live = any(a in live_ancestors for a in wp_aliases)
                             referenced_proj = not projects_readable or any(
-                                _path_is_or_inside(pwd, norm_wp) for pwd in active_project_workdirs
+                                a in active_proj_ancestors for a in wp_aliases
                             )
                             in_use = session_active or referenced_live or sess_id in busy_fork_sources
                             can_clean = not in_use and not referenced_proj and projects_readable
@@ -2150,17 +2182,29 @@ class StorageManager:
                         return "not_found", 0
                     if safety != "ok":
                         return "unsafe_path", 0
-                    is_vetoed = getattr(self._task_agents, "is_workdir_clear_vetoed", None)
-                    veto_check = (lambda: bool(is_vetoed(target))) if callable(is_vetoed) else None
-                    if veto_check is not None and await asyncio.to_thread(veto_check):
-                        return "in_use", 0
+                    hold_guard = getattr(self._task_agents, "workdir_hold_guard", None)
+                    guard = hold_guard(workdir_hold) if callable(hold_guard) else None
+                    if guard is not None:
+                        op_lock, veto_check = guard
+                        if veto_check():
+                            return "in_use", 0
+                    else:
+                        is_vetoed = getattr(self._task_agents, "is_workdir_clear_vetoed", None)
+                        op_lock = None
+                        veto_check = (lambda: bool(is_vetoed(workdir_hold))) if callable(is_vetoed) else None
+                        if veto_check is not None and await asyncio.to_thread(veto_check):
+                            return "in_use", 0
                     try:
                         removed, freed = await to_thread_through_cancellation(
-                            lambda: remove_dir_safely(target, ta_root, should_abort=veto_check)
+                            lambda: remove_dir_safely(
+                                target, ta_root, should_abort=veto_check, op_lock=op_lock
+                            )
                         )
                     except ValueError:
                         return "unsafe_path", 0
-                    if not removed and veto_check is not None and await asyncio.to_thread(veto_check):
+                    if not removed and veto_check is not None and (
+                        veto_check() if guard is not None else await asyncio.to_thread(veto_check)
+                    ):
                         return "in_use", freed
                     return ("cleaned" if removed else "not_removed"), freed
                 finally:
@@ -2249,8 +2293,14 @@ class StorageManager:
                     ):
                         return "policy_changed", 0
 
-            is_vetoed = getattr(self._task_agents, "is_workdir_clear_vetoed", None)
-            veto_check = (lambda: bool(is_vetoed(target))) if callable(is_vetoed) else None
+            hold_guard = getattr(self._task_agents, "workdir_hold_guard", None)
+            guard = hold_guard(workdir_hold) if callable(hold_guard) else None
+            if guard is not None:
+                op_lock, veto_check = guard
+            else:
+                is_vetoed = getattr(self._task_agents, "is_workdir_clear_vetoed", None)
+                op_lock = None
+                veto_check = (lambda: bool(is_vetoed(workdir_hold))) if callable(is_vetoed) else None
 
             def _verify_and_remove() -> tuple[str, int]:
                 saved_times: list[tuple[str, tuple[int, int], frozenset[str]]] = []
@@ -2276,7 +2326,9 @@ class StorageManager:
                         return "policy_changed", 0
                 if veto_check is not None and veto_check():
                     return "in_use", 0
-                removed, freed = remove_dir_safely(target, ta_root, should_abort=veto_check)
+                removed, freed = remove_dir_safely(
+                    target, ta_root, should_abort=veto_check, op_lock=op_lock
+                )
                 if not removed and saved_times and os.path.lexists(_fs(target)):
                     from nekopower.host.worktrees import _restore_surviving_dir_times
 
