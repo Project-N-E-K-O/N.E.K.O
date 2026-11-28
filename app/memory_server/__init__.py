@@ -35,7 +35,13 @@ state co-located with its consumers):
                             sweep / migrations / slow recheck loops
   - ``refine_loops``      — persona/reflection refine + synthesis loops
   - ``post_turn``         — per-turn signals task + outbox op registration
-  - ``routes``            — session API endpoints + /new_dialog QPS loop
+  - ``routes``            — core session API endpoints, /new_dialog QPS loop,
+                            and re-export facade for the domain route modules:
+                            ``external_import_routes``, ``theater_visit_routes``,
+                            ``scoped_trust_helpers``, ``scoped_history_routes``,
+                            ``scoped_keyed_routes``, ``scoped_keyed_cancel``,
+                            ``scoped_forget_routes``, ``trust_identity_routes``,
+                            and ``browser_routes``
 
 Submodules are imported below in dependency order (endpoints register on
 ``runtime.app`` as ``routes``/``runtime`` import), and the top-level names
