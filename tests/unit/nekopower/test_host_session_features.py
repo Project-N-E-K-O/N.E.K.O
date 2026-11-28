@@ -6229,3 +6229,36 @@ async def test_a_record_that_cannot_be_read_after_its_write_failed_leaves_the_se
         await host.set_project_workdir("Budget app", str(new))
     assert (await host.space.read_project("Budget app"))[1] is False
     assert (await host.ledger.get_session(lan.id)).workdir == str(new)
+
+
+@pytest.mark.parametrize(("preset", "reads_only"), [("scout", True), ("general", False)])
+async def test_the_token_of_the_request_that_sums_an_idle_session_up_calls_nothing_where_its_preset_does_not(
+    hosts, tmp_path, monkeypatch, preset, reads_only
+):
+    _idle_on(monkeypatch, after=30.0)
+    summary = [say("## Current Work\n- the CSV export was looked at"), _used(7_000, 60), finish()]
+    export = ScriptedLLM([*_long_work("export looked at"), summary])
+    host = _host(hosts, tmp_path, _scripts_by_session({"look at the CSV export": export}), task_agent_model=_small_window)
+    member = (await host.open_session("Lan", "Budget app", preset=preset))["session_id"]
+    issued: list[tuple[str, bool]] = []
+    issue = host.gateway.issue
+
+    def issuing(grant: str, **kwargs: Any) -> str:
+        issued.append((grant, bool(kwargs.get("reads_only", False))))
+        return issue(grant, **kwargs)
+
+    host.gateway.issue = issuing
+    manager = host.task_agents
+    first = (await _dispatch(host, "look at the CSV export of the budget app")).commissions[0]
+    await wait_status(host, first.id, "done")
+    await _let_go(host)
+    assert (await host.ledger.get(first.id)).session_id == member
+    await wait_until(lambda: member in manager._idle_timers, what="the timer")
+    monkeypatch.setattr(settings, "TASK_AGENT_IDLE_COMPACT_AFTER_SECONDS", 0.05)
+    await manager._schedule_idle_compact(member)
+
+    await wait_until(lambda: len(export.requests) == 6, what="the request that sums it up")
+    await _idle_work_over(host)
+
+    # As for a commission: not left to the list of its tools to keep it from calling.
+    assert issued == [(first.id, reads_only), (f"session:{member}", reads_only)]

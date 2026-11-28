@@ -262,6 +262,11 @@ describe('how the familiars stood at a moment of what happened', () => {
       .toBe('The boss cat handed this over to Scout')
     expect(say('orchestrated', { peer: { type: 'session', session_id: 'scout', commission_id: null }, detail: { action: 'continue', placed: 'summon_stray' } }))
       .toBe('This went to Scout, not where it was first meant to go')
+    // A familiar that was made another kind: both kinds by the names the page has, a template of the user's by its own.
+    expect(say('duty_changed', { session_id: 'scout', detail: { from: 'scout', to: 'general', by: 'user' } }))
+      .toBe(`Scout was changed from ${words.home.presets.scout} to ${words.home.presets.general}`)
+    expect(say('duty_changed', { session_id: 'scout', detail: { from: 'general', to: 'translator', by: 'user' } }))
+      .toBe(`Scout was changed from ${words.home.presets.general} to translator`)
   })
 
   it('has a line for where a commission was decided to go only when it went elsewhere', () => {

@@ -202,7 +202,7 @@ def test_the_sandbox_is_off_and_every_call_the_host_rules_on_is_asked_about() ->
         "unasked": list(profile.UNASKED_TOOLS),
         "unaskedPrefixes": ["mcp__host__"],
         # The one tool of the host's that may have to wait for the user is asked about all the same.
-        "asked": ["mcp__host__web_search"],
+        "asked": ["mcp__host__web_search", "mcp__host__hand_over", "mcp__host__start_team"],
         **({"deviceViewUrl": "http://127.0.0.1:5000/model/v1/device-tools"} if nekopower_settings.FIRST_TURN_DEVICE_TOOLS else {}),
     }
     # The tools the built-in runtime's gate has a category for are asked about, each of them.

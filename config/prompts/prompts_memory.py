@@ -5953,6 +5953,19 @@ def get_memory_recall_rerank_prompt(lang: str = "zh") -> str:
 memory_recall_rerank_prompt = MEMORY_RECALL_RERANK_PROMPT["zh"]
 
 
+# The same rerank as decision questions on a native decision model (owner
+# decision D18): the new facts as the state, the candidates 16 to a question.
+# English for every language (D9).
+RECALL_DECISION_STATE_HEADER = "New facts just extracted from the recent conversation:\n"
+RECALL_DECISION_GROUP_INSTRUCTIONS = (
+    "Among these memories, which one does a new fact bear on most directly: it confirms, "
+    "contradicts, corrects, outdates or adds detail to it? The user, the AI character and other "
+    "people are different subjects; sharing a keyword is not enough. Pick none if none of these "
+    "is affected."
+)
+RECALL_DECISION_NONE = "none of these memories is affected by the new facts"
+
+
 # =====================================================================
 # ======= Recall-memory tool (function/tool call) =====================
 # =====================================================================

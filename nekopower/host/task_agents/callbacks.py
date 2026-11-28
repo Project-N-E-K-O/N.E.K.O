@@ -503,15 +503,31 @@ class CallbacksMixin:
     async def _rule_on_host_tool(self, session_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         """Rule on a call of one of the host's own tools that a task agent in dsh is about to make.
 
-        Only the dsh runtime asks this, and only about the web search: with
-        plugin entries set to be asked about, the search asks the user, and
-        dsh gives a call less than a minute. So the user is asked now. The
-        call is let through whatever came of it: the search answers it with
-        what was decided here, in the words it refuses a call with in the
-        built-in runtime, and does not ask again.
+        Only the dsh runtime asks this, about the tools that may wait for
+        the user (``profile.ASKED_HOST_TOOLS``): dsh gives a call less than
+        a minute. So the user is asked now. The call is let through
+        whatever came of it: it is answered with what was decided here, in
+        the words the tool refuses a call with in the built-in runtime, and
+        does not ask again.
+
+        The web search asks with plugin entries set to be asked about.
+        ``hand_over`` and ``start_team`` ask before a task agent that
+        changes files is opened: the tool is gone through up to what it
+        asks and no further (``ahead``), and whatever else is wrong with
+        the call, the call says.
         """
         from config.nekopower_settings import GATEWAY_CLEARED_CALL_SECONDS
 
+        if payload.get("tool") in ("hand_over", "start_team") and session_id in self._sessions:
+            commission = await self._ledger.get(session_id)
+            arguments = payload.get("arguments")
+            if commission is not None and commission.session_id:
+                ask = self._cb_hand_over if payload.get("tool") == "hand_over" else self._cb_start_team
+                try:
+                    await ask(commission.session_id, arguments if isinstance(arguments, dict) else {}, ahead=True)
+                except RuntimeError:
+                    # Not a call that goes through, as the call itself is answered.
+                    pass
         if payload.get("tool") == "web_search":
             commission = await self._ledger.get(session_id)
             if commission is not None and session_id in self._sessions:

@@ -325,7 +325,15 @@ function figures(entry: TimelineEntry, t: Translate, te: Exists): Record<string,
   const number = (value: unknown) => (typeof value === 'number' && Number.isFinite(value) ? value : 0)
   const list = (value: unknown): unknown[] => (Array.isArray(value) ? value : [])
   const members = list(detail.members).filter((item): item is { name?: unknown; preset?: unknown } => !!item && typeof item === 'object')
+  // A kind of familiar by the name the page has for it; a template of the user's by its own.
+  const kind = (value: unknown) => {
+    const preset = typeof value === 'string' ? value : ''
+    return preset && te(`power.home.presets.${preset}`) ? t(`power.home.presets.${preset}`) : preset
+  }
   return {
+    // Of a familiar that was made another kind: which it was, and which it is.
+    from: kind(detail.from),
+    to: kind(detail.to),
     files: list(detail.files).length + number(detail.more),
     added: number(detail.lines_added),
     deleted: number(detail.lines_deleted),

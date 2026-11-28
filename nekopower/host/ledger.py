@@ -22,9 +22,9 @@
   a session takes several, one after the other: the session of a project
   takes every commission filed under it. See ``Session``. What the model
   requests of a session used is added up with the session and with the
-  commission worked on in it (``Ledger.add_usage``). A session has a preset
-  and a card (its title, what it takes, a summary), written through
-  ``Ledger.write_card`` alone.
+  commission worked on in it (``Ledger.add_usage``). A session has a preset,
+  changed through ``Ledger.change_preset`` alone, and a card (its title,
+  what it takes, a summary), written through ``Ledger.write_card`` alone.
 * ``events``      - what happened to a commission, in order; the commission
   board replays it.
 * ``outbox``      - reports for the main server. A report is written here
@@ -128,6 +128,16 @@ LIVE_SESSION_STATUSES: frozenset[str] = frozenset({"idle", "running", "waiting",
 # "child": of a task agent that another task agent started. "fork": made
 # from another session by copying what was said in it (``forked_from``).
 SESSION_KINDS: tuple[str, ...] = ("project", "line", "single", "child", "fork")
+# The kinds of session whose preset can be changed after they are made
+# (``Ledger.change_preset``): the ones that last and do work of their own.
+# Not a project's leader (whether a session leads or works is not a matter
+# of its preset), not a task agent another one started (it is over with its
+# part, and what it may do was settled with whoever started it), not a copy
+# (it is opened as the session it was copied from).
+PRESET_CHANGED_KINDS: frozenset[str] = frozenset({"line", "single"})
+# Who changes a preset: the user, a task agent (its own, or as a project's
+# leader), or a rule of the host.
+PRESET_CHANGERS: tuple[str, ...] = ("user", "session", "host")
 # The kinds her commissions of a project are worked on in, one after the other.
 PROJECT_KINDS: tuple[str, ...] = ("project", "line")
 # The preset a session has when whoever makes it names none, by its kind
@@ -189,8 +199,9 @@ HOST_ENDED_REASON = "the host process ended before this finished"
 # woken for have tables of their own, and a commission may rest. 7: a session
 # has a preset and a card. 8: a project has members, and a leader or none.
 # 9: a session has a seat, and the git worktrees task agents work in are on
-# record.)
-_SCHEMA_VERSION = 9
+# record. 10: a session's preset can be changed, and what its conversation
+# was last under is on record.)
+_SCHEMA_VERSION = 10
 # The first version in which the session of kind ``project`` is a project's
 # leader, which hands work out and does none. In a ledger of an earlier one
 # it was the project's one session, which did the work: those are members
@@ -303,7 +314,9 @@ CREATE TABLE IF NOT EXISTS sessions (
     model_free INTEGER NOT NULL DEFAULT 0,
     model_fallback TEXT NOT NULL DEFAULT '',
     model_tier TEXT NOT NULL DEFAULT '',
-    seat TEXT NOT NULL DEFAULT ''
+    seat TEXT NOT NULL DEFAULT '',
+    preset_told TEXT NOT NULL DEFAULT '',
+    model_was TEXT NOT NULL DEFAULT ''
 );
 CREATE UNIQUE INDEX IF NOT EXISTS sessions_by_name ON sessions (lanlan_name, name);
 CREATE INDEX IF NOT EXISTS sessions_by_project ON sessions (lanlan_name, project, kind);
@@ -596,9 +609,10 @@ class Session:
     # How long its conversation was as of its last request, with what every
     # request begins with: what the next one sends, about.
     context_tokens: int = 0
-    # Which preset it was made with (``templates.py``): what it may do and
-    # what it is told of its role. Set when the session is made, by its kind
-    # unless one is named (``PRESET_OF_KIND``), and never changed.
+    # Which preset it has (``templates.py``): what it may do and what it is
+    # told of its role. Set when the session is made, by its kind unless one
+    # is named (``PRESET_OF_KIND``), and changed by ``Ledger.change_preset``
+    # alone, for a member of a project or a session of one commission.
     preset: str = ""
     # Its card, for whoever shows the sessions: a short title (empty until
     # somebody writes one; the name of the preset is shown meanwhile), what
@@ -638,6 +652,26 @@ class Session:
     # that was a session of its own before it became a project's, whose
     # directory stays where it is when the project is given another.
     seat: str = ""
+    # The preset its task agent last knew itself as: what it was first
+    # started under, and after a change the one it was told of. Written by
+    # starts alone, with what the start opened it as, once its task agent
+    # has it (``Ledger.preset_was_told``): where it is not the preset the
+    # session has, the next start tells the task agent of the change
+    # (``TaskAgentManager._start``). What the head of its requests was put
+    # together for is kept with that head, by the runtime
+    # (``SystemSnapshot.head_of``): a start may renew the head and end
+    # before its task agent took a word. "" for a session that was never
+    # started (and one last started by a build that did not keep it).
+    preset_told: str = ""
+    # Where its task agent last ran (a ``model_ident``), while its row says it
+    # is sent elsewhere by something other than a start: a change of its
+    # preset writes the model of the preset it is given, which it has not run
+    # on yet (``Ledger.change_preset``). The next start, which sends it
+    # there, takes this away (``Ledger.model_ran``). Nothing of its
+    # conversation goes to the model on its row before that
+    # (``TaskAgentManager._idle_model``): not by the preset it was told of
+    # alone, which a change and a change back leave as it was. "" otherwise.
+    model_was: str = ""
 
     @property
     def tokens(self) -> int:
@@ -672,6 +706,8 @@ _ADDED_SESSION_COLUMNS: tuple[tuple[str, str], ...] = (
     ("model_fallback", "TEXT NOT NULL DEFAULT ''"),
     ("model_tier", "TEXT NOT NULL DEFAULT ''"),
     ("seat", "TEXT NOT NULL DEFAULT ''"),
+    ("preset_told", "TEXT NOT NULL DEFAULT ''"),
+    ("model_was", "TEXT NOT NULL DEFAULT ''"),
 )
 # The columns that say which model a session's task agent is sent to, other than whether it goes free.
 _MODEL_TEXT_COLUMNS: tuple[str, ...] = ("model_slot", "model_name", "model_ident", "model_fallback", "model_tier")
@@ -679,16 +715,24 @@ _MODEL_TEXT_COLUMNS: tuple[str, ...] = ("model_slot", "model_name", "model_ident
 _CARD_COLUMNS: frozenset[str] = frozenset(CARD_FIELDS) | {f"{name}_by" for name in CARD_FIELDS}
 # Columns ``update_session`` may write. What was used is written by
 # ``add_usage``, and where a copy was made from when it is made. A session's
-# preset is set when it is made and stays; its card is written by
-# ``write_card``, which keeps what the user wrote.
+# preset is written by ``change_preset``, with what goes on record of the
+# change (what its conversation was last under by ``preset_was_told`` as
+# well); its card by ``write_card``, which keeps what the user wrote.
 _SESSION_UPDATABLE: frozenset[str] = (
     frozenset(_SESSION_COLUMNS)
-    - {"id", "lanlan_name", "kind", "created_at", "forked_from", "forked_at", "context_tokens", "preset"}
+    - {
+        "id", "lanlan_name", "kind", "created_at", "forked_from", "forked_at", "context_tokens", "preset",
+        "preset_told", "model_was",
+    }
     - frozenset(_USAGE_COLUMNS)
     - _CARD_COLUMNS
 )
 # How long the name of a preset may be: that of a template (``templates.py``).
 _PRESET_NAME_MAX = 64
+
+
+class SeatChanged(ValueError):
+    """A git worktree is not put on record: the session it was to be made for has another seat by now."""
 
 
 def _card_author(name: str, by: Any) -> str:
@@ -1966,6 +2010,8 @@ class Ledger:
         row.update({name: "" for name in ("preset", *_CARD_COLUMNS, *_MODEL_TEXT_COLUMNS)})
         row["model_free"] = 0
         row["seat"] = ""
+        row["preset_told"] = ""
+        row["model_was"] = ""
         row.update(values)
         if row["seat"] not in SEATS:
             raise ValueError(f"unknown seat of a session {row['seat']!r}")
@@ -2577,12 +2623,18 @@ class Ledger:
         """Whether a project has a git worktree that holds work not landed in its directory yet (``TREE_STATES_PENDING``)."""
         return await self.run(lambda conn: self._trees_pending(conn, project))
 
-    async def add_tree(self, **values: Any) -> Tree:
+    async def add_tree(self, *, seat: str | None = None, **values: Any) -> Tree:
         """Put a git worktree on record and return its row; raises for one whose id is on record already.
 
         ``values`` are columns of ``Tree``; ``id``, ``project_dir``,
         ``path`` and ``workdir`` are needed, the state is ``making``
-        unless one is given.
+        unless one is given. With ``seat``, only for a session that
+        still has that seat (``SeatChanged`` otherwise), looked at in the
+        transaction that writes the row: whoever makes a worktree for a
+        session read its seat a while before, and a session given a
+        preset that cannot change files meanwhile (``change_preset``,
+        which looks for its worktrees in a transaction of its own) is
+        to have none made after that.
         """
         unknown = set(values) - set(_TREE_COLUMNS)
         if unknown:
@@ -2602,6 +2654,11 @@ class Ledger:
             row.update(values)
             if row["state"] not in TREE_STATES:
                 raise ValueError(f"unknown state of a worktree {row['state']!r}")
+            if seat is not None:
+                # (One that is not on record has no seat to have lost.)
+                whose = conn.execute("SELECT seat FROM sessions WHERE id = ?", (row["session_id"],)).fetchone()
+                if whose is not None and whose["seat"] != seat:
+                    raise SeatChanged(f"the session a worktree is made for has no longer the seat {seat!r}")
             row["conflicts"] = json.dumps([str(item) for item in row["conflicts"]], ensure_ascii=False)
             columns = ", ".join(_TREE_COLUMNS)
             marks = ", ".join("?" for _ in _TREE_COLUMNS)
@@ -2686,6 +2743,170 @@ class Ledger:
         return await self.run(
             lambda conn: conn.execute("DELETE FROM worktrees WHERE id = ?", (tree_id,)).rowcount > 0
         )
+
+    async def change_preset(
+        self, session_id: str, preset: str, *, by: str, was: str | None = None, seat: str | None = None,
+        without_trees: bool = False, model: dict[str, Any] | None = None,
+    ) -> tuple[Session | None, str, str | None]:
+        """Change the preset of a session and put the change on record.
+
+        Returns the session, the preset it had, and the commission the
+        change is on record with.
+
+        For a member of a project and a session of one commission
+        (``PRESET_CHANGED_KINDS``): raises ``ValueError("not_changeable")``
+        for any other, and ``ValueError("changed_meanwhile")`` when
+        ``was`` is given and is not the preset it has by now (whoever
+        asks looked at the session a while before, and what it found
+        allowed is of that preset). ``seat`` is written with it when
+        given. ``by`` says who changes it (``PRESET_CHANGERS``). With
+        ``without_trees``, raises ``ValueError("tree_not_landed")`` while
+        a git worktree of the session holds work that is not landed
+        (``TREE_STATES_PENDING``, one that is being made included):
+        looked for in this transaction, so that none is put on record
+        between a look and the write (``add_tree`` with ``seat``).
+
+        What its task agent last knew itself as
+        (``Session.preset_told``) is a start's to write, and is left as
+        it is here: a start that is under way, which read the preset
+        before this, writes what it opened the session as, and the start
+        after it sees that this is another. Only where a session was
+        started before and nothing is on record (a build before this
+        one kept none) is the preset it had put down, so that its task
+        agent is told of the change like any other.
+
+        The change is an event of a commission of the session, as every
+        event is one of a commission: the one its task agent is at, else
+        one that waits for its turn there, else the last one filed in
+        it. A session no commission was ever worked on in has none, and
+        nothing is recorded but the preset: the third value is None then. Looked at and written in one transaction;
+        (None, "", None) for a session that is not on record, and the
+        session as it stands with nothing written when it has the
+        preset already.
+        """
+        if by not in PRESET_CHANGERS:
+            raise ValueError(f"unknown changer of a preset {by!r}")
+        if not isinstance(preset, str) or not preset or preset != preset.strip() or len(preset) > _PRESET_NAME_MAX:
+            raise ValueError(f"a preset is named by a short word, not {preset!r}")
+        if seat is not None and seat not in SEATS:
+            raise ValueError(f"unknown seat of a session {seat!r}")
+        # Which model it is sent to as that preset (the columns ``keep_model`` writes), written
+        # with the preset: whoever reads the row reads the preset and the model of one and the
+        # same, and never the one it was given with the model of the one it had.
+        sent_to = dict(model or {})
+        unknown = set(sent_to) - {*_MODEL_TEXT_COLUMNS, "model_free"}
+        if unknown:
+            raise ValueError(f"not the columns of a session's model: {sorted(unknown)}")
+
+        def work(conn: sqlite3.Connection) -> tuple[Session | None, str, str | None]:
+            current = _session(conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone())
+            if current is None:
+                return None, "", None
+            if current.kind not in PRESET_CHANGED_KINDS:
+                raise ValueError("not_changeable")
+            if was is not None and current.preset != was:
+                raise ValueError("changed_meanwhile")
+            if current.preset == preset:
+                return current, current.preset, None
+            if without_trees:
+                marks = ", ".join("?" for _ in TREE_STATES_PENDING)
+                if conn.execute(
+                    f"SELECT 1 FROM worktrees WHERE session_id = ? AND state IN ({marks}) LIMIT 1",
+                    (session_id, *sorted(TREE_STATES_PENDING)),
+                ).fetchone():
+                    raise ValueError("tree_not_landed")
+            changes: dict[str, Any] = {"preset": preset, **sent_to}
+            if seat is not None:
+                changes["seat"] = seat
+            if not current.preset_told and current.session_dir:
+                # Started before, with nothing on record of what as (by a build that kept none,
+                # or by a start that is under way and has not said yet): as the preset it had.
+                # A start that is under way says what it opened it as, over this.
+                changes["preset_told"] = current.preset
+            if (
+                current.session_dir
+                and current.model_ident
+                and not current.model_was
+                and sent_to.get("model_ident") not in (None, current.model_ident)
+            ):
+                # Its task agent ran where its row says, and the row says another from here on:
+                # where it ran is kept until a start sends it there (``model_ran``). (What is
+                # kept already is where it ran: nothing has started it since.)
+                changes["model_was"] = current.model_ident
+            assignments = ", ".join(f"{name} = ?" for name in changes)
+            conn.execute(f"UPDATE sessions SET {assignments} WHERE id = ?", [*changes.values(), session_id])
+            # The one its task agent is at (at work, or waiting for the user) before one that
+            # waits for its turn, and either before one that is over; the last filed of those.
+            # (One that rests is not what its task agent is at: it holds no session meanwhile.)
+            on = conn.execute(
+                "SELECT id FROM commissions WHERE session_id = ? ORDER BY "
+                "CASE WHEN status = 'waiting_user' OR (status = 'working' AND resting_since IS NULL) THEN 0 "
+                f"WHEN status IN ({_ENDED_MARKS}) THEN 2 ELSE 1 END, created_at DESC, rowid DESC LIMIT 1",
+                (session_id, *sorted(ENDED_STATUSES)),
+            ).fetchone()
+            if on is not None:
+                self._event(
+                    conn, on["id"], "duty_changed", {"session": session_id, "from": current.preset, "to": preset, "by": by}
+                )
+            kept = _session(conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone())
+            return kept, current.preset, on["id"] if on is not None else None
+
+        return await self.run(work)
+
+    async def keep_model(self, session_id: str, preset: str, **columns: Any) -> bool:
+        """Write which model a session is sent to, as it was chosen for ``preset``; returns whether it was written.
+
+        ``columns`` are those that say so (``role_models.Choice.columns``).
+        Only while the session has that preset: whoever chose a model
+        read the preset a while before, and one chosen for a preset the
+        session has no longer is not written over what was settled for
+        the one it has (``change_preset``, and the model settled anew
+        with it). Looked at and written in one statement.
+        """
+        allowed = {*_MODEL_TEXT_COLUMNS, "model_free"}
+        unknown = set(columns) - allowed
+        if unknown or not columns:
+            raise ValueError(f"not the columns of a session's model: {sorted(unknown) or 'none given'}")
+        assignments = ", ".join(f"{name} = ?" for name in columns)
+
+        def work(conn: sqlite3.Connection) -> bool:
+            done = conn.execute(
+                f"UPDATE sessions SET {assignments} WHERE id = ? AND preset = ?", [*columns.values(), session_id, preset]
+            )
+            return done.rowcount > 0
+
+        return await self.run(work)
+
+    async def model_ran(self, session_id: str, ident: str) -> None:
+        """Note that a session's task agent was started on a model just now (``Session.model_was``).
+
+        Where that is the model its row says, nothing is left to keep.
+        Where the row says another by now (its preset was changed while
+        the start was under way), this is where it last ran.
+        """
+
+        def work(conn: sqlite3.Connection) -> None:
+            conn.execute(
+                "UPDATE sessions SET model_was = CASE WHEN model_ident = ? THEN '' ELSE ? END WHERE id = ?",
+                (ident, ident, session_id),
+            )
+
+        await self.run(work)
+
+    async def preset_was_told(self, session_id: str, preset: str) -> None:
+        """Note the preset a session's task agent was started under just now (``Session.preset_told``).
+
+        What the start opened it as, which need not be the preset it has
+        by now: one changed while that start was under way is another,
+        and the next start is told of the change by the two differing.
+        """
+
+        def work(conn: sqlite3.Connection) -> None:
+            conn.execute(
+                "UPDATE sessions SET preset_told = ? WHERE id = ? AND preset_told != ?", (preset, session_id, preset)
+            )
+
+        await self.run(work)
 
     async def write_card(self, session_id: str, *, by: str, **lines: Any) -> tuple[Session | None, tuple[str, ...]]:
         """Write lines of a session's card; returns the session and which lines were written.
