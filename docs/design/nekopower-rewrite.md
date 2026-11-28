@@ -1344,7 +1344,7 @@ Claude Code 和 dsh 也是这个形态：Claude Code 的键鼠、浏览器各是
 
 ### 12.5 落地说明（第 5 个 PR）
 
-代码在 `nekopower/host/space.py`（使魔空间的文件）、`nekopower/host/space_keeper.py`（复盘和整理）、`nekopower/host/paths.py`（`SpacePaths`），接线在 `nekopower/host/task_agents.py` 和 `service.py`；提示词在 `config/prompts/prompts_nekopower_space.py`，上限在 `config/nekopower_settings.py`（`SPACE_*`、`TASK_AGENT_REVIEW_*`）。下面是和 12.1、12.2 节最初的写法不一样、或那里没写到的地方，以这里和代码为准。12.3、12.4 节没有做。
+代码在 `nekopower/host/space.py`（使魔空间的文件）、`nekopower/host/space_keeper.py`（复盘和整理）、`nekopower/host/paths.py`（`SpacePaths`），接线在 `nekopower/host/task_agents/`（使魔空间摘要在 `opening.py`）和 `service.py`；提示词在 `config/prompts/prompts_nekopower_space.py`，上限在 `config/nekopower_settings.py`（`SPACE_*`、`TASK_AGENT_REVIEW_*`）。下面是和 12.1、12.2 节最初的写法不一样、或那里没写到的地方，以这里和代码为准。12.3、12.4 节没有做。
 
 **目录为什么分成两棵**
 
@@ -2816,7 +2816,7 @@ owner 2026-11-21 到 11-22 定了同一个项目里多个会话可以并行：�
 
 **实测**（主仓库的一份克隆，7005 个受管文件，Windows 11、git 2.49、NVMe）：探测 0.4–0.9 秒，拍快照 0.8–2.0 秒，建一份 4.1–6.4 秒、占 602 MB，合回（改 3 个文件、期间项目目录另有改动）2.5–2.9 秒（机器忙时一次 6.6 秒），删一份 0.7–1.0 秒。最初从 `HEAD` 读进临时索引时拍一次快照要 6–10 秒、合回 10–12 秒（7000 个文件都要重算哈希），所以改成复制真索引。
 
-**没做的**：任何接线（台账、`task_agents.py`、会话种类、权限）；支线什么时候开、什么时候合回、合不了怎么办；PR 形式（只留了 `Start` 和 `Landing` 两个口子）；把依赖目录链接进工作副本；非 git 目录。
+**没做的**：任何接线（台账、`task_agents/`、会话种类、权限）；支线什么时候开、什么时候合回、合不了怎么办；PR 形式（只留了 `Start` 和 `Landing` 两个口子）；把依赖目录链接进工作副本；非 git 目录。
 
 ### 17.9 落地说明（时间线和等待关系：给按项目分群的面板读的两个只读方法）
 

@@ -1,13 +1,13 @@
 ---
 name: package-split-contracts
-description: 后端大文件拆成包之后的门面契约：测试打补丁为什么会打不中、哪些符号必须晚绑定读取、盘点 patch 面要用 AST、拆文件时要同步改哪些地方。改 main_logic/core、app/agent_server、app/memory_server、utils/config_manager、main_routers/game_router、utils/cloudsave_runtime，或者要再拆别的大文件之前读。
+description: 后端大文件拆成包之后的门面契约：测试打补丁为什么会打不中、哪些符号必须晚绑定读取、盘点 patch 面要用 AST、拆文件时要同步改哪些地方。改 main_logic/core、app/agent_server、app/memory_server、utils/config_manager、main_routers/game_router、utils/cloudsave_runtime、nekopower/host/task_agents，或者要再拆别的大文件之前读。
 ---
 
 # 大文件拆成包之后的契约
 
-这些原本是单文件的模块已经拆成了包，导入路径不变：`main_logic/core/`、`app/agent_server/`、`app/memory_server/`、`utils/config_manager/`、`main_routers/game_router/`、`utils/cloudsave_runtime/`。共同的做法是「子模块 + `_shared` + `__init__.py` 门面把原来的顶层名字重新导出」。
+这些原本是单文件的模块已经拆成了包，导入路径不变：`main_logic/core/`、`app/agent_server/`、`app/memory_server/`、`utils/config_manager/`、`main_routers/game_router/`、`utils/cloudsave_runtime/`、`nekopower/host/task_agents/`。共同的做法是「子模块 + `_shared` + `__init__.py` 门面把原来的顶层名字重新导出」。
 
-每个包的 `__init__.py` 开头都有一段说明自己的 patch 规则，动哪个包先读哪个包的那一段。`main_logic/core/` 的结构契约由 `scripts/check_core_contracts.py` 在 CI 里强制（脚本头部逐条列了规则）。这里写的是几个包共同的、容易踩的部分。
+每个包的 `__init__.py` 开头都有一段说明自己的 patch 规则，动哪个包先读哪个包的那一段。`main_logic/core/` 的结构契约由 `scripts/check_core_contracts.py` 在 CI 里强制（脚本头部逐条列了规则）；`nekopower/host/task_agents/` 的由 `tests/unit/nekopower/test_task_agents_package_contracts.py` 守着（mixin 形状、方法不重名、门面补丁的读取点都经 `_task_agents_facade` 晚绑定，`types.py` 里 helper 之间的互相调用也在检查范围内）。这里写的是几个包共同的、容易踩的部分。
 
 前端也有同类拆分（一个大 JS 拆成同目录多个经典脚本），规则见 `.agent/skills/frontend-architecture` 的 `references/chat-surfaces.md` 第 3 节和 `references/static-dir-migration.md`。
 
@@ -20,7 +20,7 @@ description: 后端大文件拆成包之后的门面契约：测试打补丁为�
 
 ## 2. 规则
 
-- **被测试 patch 的门面符号，消费点一律晚绑定读取。** `main_logic/core/` 的 mixin 里写 `from main_logic import core as _core_facade`，调用处用 `_core_facade.<attr>`；`app/agent_server/` 里写 `from . import _shared`，用 `_shared.Modules.<attr>`。不要 from-import 这些符号。
+- **被测试 patch 的门面符号，消费点一律晚绑定读取。** `main_logic/core/` 的 mixin 里写 `from main_logic import core as _core_facade`，调用处用 `_core_facade.<attr>`；`app/agent_server/` 里写 `from . import _shared`，用 `_shared.Modules.<attr>`；`nekopower/host/task_agents/` 的 mixin 和 `manager` 用 `_task_agents_facade.<attr>`。不要 from-import 这些符号。
 - **新增一个门面上的 patch 目标时，同时把它的所有读取点改成晚绑定。** 只加测试不改读取点，就是上面说的假绿。
 - **会被整体重新赋值的模块级状态不放到门面上重新导出。** 门面上的名字是导入时的快照，属主一重新赋值就过期。例：`app/memory_server` 的组件单例和初始化标志、`main_logic/core/notices.py` 的 `_prominent_notice_seq`。看到门面上「缺」这些名字不要去补。只被原地修改的容器（队列、锁、字典）按引用导出是安全的。
 - **patch 单例或可重绑状态，打在属主子模块上**，不打门面。例：`app.memory_server.runtime.fact_store`、`app.memory_server.gates` 里的开关。`app/memory_server/__init__.py` 的说明里列了哪些属于这一类。

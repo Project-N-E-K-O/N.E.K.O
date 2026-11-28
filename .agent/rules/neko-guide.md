@@ -163,7 +163,7 @@ NekoPower（喵能力，`nekopower/`）里同一样东西，界面和代码用�
 | `testing-pitfalls` | 跑 pytest、写测试、写源码守卫、做变异验证、说「测试通过」之前 |
 | `local-env-pitfalls` | 在 worktree 里干活、借用别的检出的环境、在 Windows 上写 shell 命令、用脚本批量改文件 |
 | `packaging-pitfalls` | 改 Nuitka 参数、打包和校验脚本、构建工作流、内置资源、依赖、`docs/` 站点 |
-| `package-split-contracts` | 改已经拆成包的后端大文件（`main_logic/core`、`app/memory_server`、`utils/config_manager` 等），或要再拆别的大文件 |
+| `package-split-contracts` | 改已经拆成包的后端大文件（`main_logic/core`、`app/memory_server`、`utils/config_manager`、`nekopower/host/task_agents` 等），或要再拆别的大文件 |
 | `frontend-architecture` | 改 `static/`、`templates/`、`frontend/react-neko-chat/`，或排查「网页正常、桌面端不对」 |
 | `avatar-rendering` | 改 Live2D / VRM / MMD 渲染、帧率、形象周边的弹窗和点击穿透、内置模型和动作文件 |
 | `voice-realtime-tts` | 改语音会话启停、热切换、realtime 客户端、外部 TTS、独立 ASR |
