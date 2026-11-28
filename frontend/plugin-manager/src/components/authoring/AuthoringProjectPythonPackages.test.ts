@@ -589,7 +589,8 @@ describe('project dependency management', () => {
     const { container } = await mount()
     expect(container.textContent).toContain(label)
   })
-  // An older shared layer still reports `waiting`; no phase shows blank or as a raw key.
+  // The layer reports `waiting` as each preparation starts; it and any phase without
+  // its own label show "Preparing", never blank or a raw key.
   it.each(['waiting', 'some_future_phase', 'toString'])(
     'shows the generic preparing label for the unknown tool phase %s',
     async (phase) => {

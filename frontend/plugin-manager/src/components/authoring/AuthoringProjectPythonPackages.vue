@@ -310,7 +310,7 @@ function reasonText(code: string) {
 }
 const megabytes = (bytes: number) => (bytes / (1024 * 1024)).toFixed(1)
 function toolProgressLabel(progress: ToolProgress) {
-  // An unknown phase (an older layer's `waiting`) falls back to "Preparing".
+  // Any other phase, `waiting` included, shows as "Preparing".
   const key = Object.hasOwn(toolPhaseKeys, progress.phase)
     ? toolPhaseKeys[progress.phase]
     : 'prepare'

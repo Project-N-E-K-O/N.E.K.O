@@ -77,7 +77,8 @@ export interface PythonPackagesSnapshot {
 }
 /**
  * Mirrors plugin_tool_runtime.ProgressPhase. The layer may report a phase this
- * page has no label for (older layers report `waiting`); it shows "Preparing".
+ * page has no own label for, such as `waiting` (reported as each preparation
+ * starts, and while another preparation holds the tools); it shows "Preparing".
  */
 export type ToolProgressPhase =
   'downloading_uv' | 'checking_uv' | 'installing_python' | 'checking_python' | (string & {})
@@ -91,7 +92,7 @@ export type ToolErrorCode =
   | 'canceled'
   | 'timeout'
   | 'internal_error'
-  // Anything else (an older layer's `busy`) shows the generic failure text.
+  // Anything else (such as `busy`) shows the generic failure text.
   | (string & {})
 export interface ToolProgress {
   phase: ToolProgressPhase
