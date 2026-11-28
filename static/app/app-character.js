@@ -461,6 +461,8 @@
         // 让所有调用方（不光 BC/WS handler）自动受益。
         if (!forceReload && window.lanlan_config && window.lanlan_config.lanlan_name === newCatgirl) {
             if (!sameCurrentCharacterMissingVrm) {
+                // A newer stamped receipt can invalidate the follower's old portrait without reloading the model.
+                if (switchRevision) window.appChatAvatar?.onCharacterScopeCommitted?.(newCatgirl, switchRevision);
                 console.log('[猫娘切换] 已经是当前角色', newCatgirl, '，跳过重复事件（BC + WS 双通道收到同一切换）');
                 return;
             }
@@ -504,6 +506,11 @@
             S._currentSwitchAttemptId === myAttemptId
             && !!(window.lanlan_config && window.lanlan_config.lanlan_name === newCatgirl);
         console.log('[猫娘切换] 设置 isSwitchingCatgirl = true');
+
+        // A same-name receipt can carry a newer committed avatar scope.
+        const isPendingTargetAlreadyApplied = (pending, didCommit) => didCommit
+            && pending?.newCatgirl === newCatgirl
+            && (pending.switchRevision || 0) <= switchRevision;
 
         // Watchdog: 切换路径上有大量没有 timeout 兜底的 await（rAF 循环、wasm reset、模型加载、
         // fetch /api/characters 等）。任何一处永挂都会让 finally 永不执行、isSwitchingCatgirl
@@ -688,10 +695,7 @@
                 S._currentSwitchAttemptId = null;
                 const pendingSwitch = S._pendingCatgirlSwitch;
                 S._pendingCatgirlSwitch = null;
-                const pendingAlreadySatisfied = !!(
-                    switchAlreadyCompleted
-                    && pendingSwitch?.newCatgirl === newCatgirl
-                );
+                const pendingAlreadySatisfied = isPendingTargetAlreadyApplied(pendingSwitch, switchAlreadyCompleted);
                 if (pendingSwitch?.newCatgirl && !pendingAlreadySatisfied) {
                     Promise.resolve().then(() => handleCatgirlSwitch(
                         pendingSwitch.newCatgirl,
@@ -2091,6 +2095,7 @@
                 uid: catgirlConfig._reserved?.character_uid || '',
                 name: newCatgirl
             });
+            window.appChatAvatar?.onCharacterScopeCommitted?.(newCatgirl, switchRevision);
             // commit 之后再 dispose 延后保留的旧 MMD 实例（MMD→非 MMD 路径）。
             // commit 前 dispose 会让中途失败的 rollback 没法恢复旧 MMD（容器没渲染 + 实例已销毁）。
             _disposeDeferredMmd();
@@ -2262,10 +2267,7 @@
                 S._currentSwitchAttemptId = null;
                 const pendingSwitch = S._pendingCatgirlSwitch;
                 S._pendingCatgirlSwitch = null;
-                const pendingAlreadySatisfied = !!(
-                    switchHasCommitted
-                    && pendingSwitch?.newCatgirl === newCatgirl
-                );
+                const pendingAlreadySatisfied = isPendingTargetAlreadyApplied(pendingSwitch, switchHasCommitted);
                 if (pendingSwitch?.newCatgirl && !pendingAlreadySatisfied) {
                     // A failed attempt may roll the name back to the pending target after
                     // model cleanup. Keep forceReload unless this attempt already committed it.

@@ -28,6 +28,7 @@
     // 多窗口模式：由 IPC 从 Pet 窗口注入的头像（/chat 页面无本地模型）
     let externalAvatarDataUrl = '';
     let externalAvatarModelType = '';
+    let externalAvatarPreview = null;
     // 新手教程期间的临时头像覆盖：只驻留内存，不写入用户角色头像缓存。
     let tutorialAvatarOverrideDataUrl = '';
     let tutorialAvatarOverrideModelType = '';
@@ -70,6 +71,8 @@
     }
 
     function saveToStorage(preview) {
+        // A capture can finish after a mirrored IPC portrait arrives.
+        if (isCardDropIdentityFollowerWindow()) return;
         var key = getCurrentCharacterKey();
         if (!key) return;
         try {
@@ -456,8 +459,28 @@
             cachedPreview &&
             cachedPreview.dataUrl &&
             cachedPreview.cacheKey &&
-            cachedPreview.cacheKey === getCurrentModelCacheKey()
+            cachedPreview.cacheKey === getCurrentModelCacheKey() &&
+            getExternalAvatarScope(cachedPreview) !== 'stale'
         );
+    }
+
+    function getExternalAvatarScope(preview) {
+        const scope = preview?.ipcIdentity;
+        if (!scope) return 'unverified';
+        const config = window.lanlan_config;
+        if (scope.name !== config?.lanlan_name || scope.revision !== (config.switch_revision || 0)) return 'stale';
+        if (scope.modelKey.endsWith(':')) return 'unverified';
+        return scope.modelKey === getCurrentModelCacheKey() ? 'current' : 'stale';
+    }
+
+    function modelPreviewForDisplay() {
+        if (cachedPreview?.dataUrl && getExternalAvatarScope(cachedPreview) !== 'stale') {
+            return cachedPreview;
+        }
+        const scope = getExternalAvatarScope(externalAvatarPreview);
+        // Same-model reloads may invalidate the capture cache without changing the IPC owner.
+        if (scope === 'current') return externalAvatarPreview;
+        return loadFromStorage() || (scope === 'unverified' ? externalAvatarPreview : null);
     }
 
     function isRasterImageDataUrl(value) {
@@ -770,6 +793,12 @@
         if (options.scheduleReference !== false) {
             scheduleCharacterReferenceSync('avatar-sync');
         }
+    }
+
+    function publishPreview(preview) {
+        if (preview.displayOnly) return;
+        saveToStorage(preview);
+        syncAvatarToCardDrop(preview.dataUrl);
     }
 
     function applyPreviewResult(result, cacheKey, captureRevision) {
@@ -1459,8 +1488,15 @@
             if (token !== activeCaptureToken) return;
 
             if (showCard || activeCaptureCardVisible) {
-                setPreviewImage('');
-                setPreviewStatus(translateLabel('chat.avatarPreviewFailed', '生成头像失败'), { background: !showCard });
+                // A local capture may mask a still-valid portrait from the Pet owner.
+                const fallback = isCardDropIdentityFollowerWindow()
+                    ? [modelPreviewForDisplay(), externalAvatarPreview]
+                        .find(preview => getExternalAvatarScope(preview) === 'current')
+                    : null;
+                const failed = translateLabel('chat.avatarPreviewFailed', '生成头像失败');
+                setPreviewImage(fallback?.dataUrl || '');
+                setPreviewStatus(fallback ? failed + ' · ' + normalizeModelLabel(fallback.modelType) : failed,
+                    { background: !showCard });
                 setPreviewNote(getErrorMessage(error));
             }
             if (!silent && typeof window.showStatusToast === 'function') {
@@ -1492,7 +1528,7 @@
             return;
         }
         if (hasUsableCachedPreview()) {
-            scheduleCharacterReferenceSync(reason || 'cached-preview');
+            if (!cachedPreview.displayOnly) scheduleCharacterReferenceSync(reason || 'cached-preview');
             return;
         }
         if (lastScheduledCacheKey === cacheKey && isCapturing) {
@@ -1524,11 +1560,10 @@
 
     function handleModelLoaded(reason) {
         advanceCardDropModelRevision();
-        var newCacheKey = getCurrentModelCacheKey();
-        if (cachedPreview && cachedPreview.dataUrl && cachedPreview.cacheKey === newCacheKey) {
+        if (hasUsableCachedPreview()) {
             // 不同猫娘可能复用同一模型/cache key；即使头像无需重抓，也要把当前名称
             // 和缓存预览重新同步到 card-drop 角色快照。该函数内部也会安排参考图同步。
-            syncAvatarToCardDrop(cachedPreview.dataUrl);
+            if (!cachedPreview.displayOnly) syncAvatarToCardDrop(cachedPreview.dataUrl);
             return;
         }
         // 头像捕获失败或尚未完成时，也先同步已知角色名，避免社区卡片流程
@@ -1676,12 +1711,12 @@
         //   2) 否则退回读取当前角色的持久化头像。
         //   3) 都没有，则进入等待态。
         var stored = loadFromStorage();
+        if (getExternalAvatarScope(cachedPreview) === 'stale') cachedPreview = null;
         if (cachedPreview && cachedPreview.dataUrl) {
-            // 保留内存缓存；刷新 cacheKey 并补写一次 localStorage
-            // （加载时 lanlan_config.lanlan_name 可能尚未就绪，保存会静默失败）。
+            // Rebind the preview to its available model config after startup.
+            // A follower's IPC portrait remains display-only after init as well.
             cachedPreview.cacheKey = getCurrentModelCacheKey();
-            saveToStorage(cachedPreview);
-            syncAvatarToCardDrop(cachedPreview.dataUrl);
+            publishPreview(cachedPreview);
             setPreviewImage(cachedPreview.dataUrl);
             setPreviewStatus(
                 translateLabel('chat.avatarPreviewReady', '头像已更新') + ' · ' + normalizeModelLabel(cachedPreview.modelType)
@@ -1788,27 +1823,58 @@
         return mod.getModelAvatarDataUrl();
     };
 
+    let committedBroadcastAvatarScope = null;
+
+    function getCommittedBroadcastAvatarScope() {
+        const scope = committedBroadcastAvatarScope;
+        const config = window.lanlan_config;
+        if (!scope || scope.name !== config?.lanlan_name || scope.revision !== config.switch_revision ||
+            scope.modelKey !== getCurrentModelCacheKey()) return null;
+        return scope;
+    }
+
+    function isCommittedBroadcastAvatarScope(scope) {
+        const current = getCommittedBroadcastAvatarScope();
+        return !!current && scope?.name === current.name && scope.revision === current.revision &&
+            scope.modelKey === current.modelKey;
+    }
+
+    // Observe the character commit, not the early configuration/revision assignment.
+    // The Pet and its follower can finish the same switch in either order.
+    mod.onCharacterScopeCommitted = function (name, revision) {
+        const config = window.lanlan_config;
+        const modelKey = getCurrentModelCacheKey();
+        if (!name || name !== config?.lanlan_name || !Number.isSafeInteger(revision) ||
+            revision <= 0 || revision !== config.switch_revision || !modelKey || modelKey.endsWith(':')) return;
+        const scope = { name, revision, modelKey };
+        if (isCommittedBroadcastAvatarScope(scope)) return;
+        committedBroadcastAvatarScope = scope;
+        window.dispatchEvent(new CustomEvent('neko:avatar-scope-committed', { detail: { ...scope } }));
+    };
+
+    mod.getScopedOwnerPreview = function (scope) {
+        if (isCardDropIdentityFollowerWindow() || !isCommittedBroadcastAvatarScope(scope) ||
+            !hasUsableCachedPreview() || cachedPreview.displayOnly || !isRasterImageDataUrl(cachedPreview.dataUrl) ||
+            cachedPreview.modelType !== getCurrentModelType()) return null;
+        return mod.getCachedPreview();
+    };
+
+    mod.setScopedExternalAvatar = function (dataUrl, modelType, scope) {
+        if (!isCardDropIdentityFollowerWindow() || !isCommittedBroadcastAvatarScope(scope) ||
+            !isRasterImageDataUrl(dataUrl) || modelType !== getCurrentModelType()) return;
+        if (getExternalAvatarScope(externalAvatarPreview) === 'current' &&
+            externalAvatarPreview.dataUrl === dataUrl && externalAvatarPreview.modelType === modelType) return;
+        mod.setExternalAvatar(dataUrl, modelType);
+    };
+
     // The model avatar alone: never the tutorial override or the persisted custom image.
     mod.getModelAvatarDataUrl = function getModelAvatarDataUrl() {
-        if (hasUsableCachedPreview()) return cachedPreview.dataUrl || '';
-        // 内存缓存被 invalidate（模型加载中）或 cacheKey 暂不匹配时，仍返回旧头像
-        if (cachedPreview && cachedPreview.dataUrl) return cachedPreview.dataUrl;
-        // 内存为空但 localStorage 有持久化头像（invalidate 后的 fallback）
-        var stored = loadFromStorage();
-        if (stored && stored.dataUrl) return stored.dataUrl;
-        // 多窗口 fallback：使用 IPC 注入的头像
-        if (externalAvatarDataUrl) return externalAvatarDataUrl;
-        return '';
+        return modelPreviewForDisplay()?.dataUrl || '';
     };
 
     mod.getCurrentAvatarModelType = function getCurrentAvatarModelType() {
         if (tutorialAvatarOverrideDataUrl) return tutorialAvatarOverrideModelType || getCurrentModelType();
-        if (hasUsableCachedPreview()) return cachedPreview.modelType || getCurrentModelType();
-        if (cachedPreview && cachedPreview.dataUrl) return cachedPreview.modelType || getCurrentModelType();
-        var stored = loadFromStorage();
-        if (stored && stored.dataUrl) return stored.modelType || getCurrentModelType();
-        if (externalAvatarDataUrl) return externalAvatarModelType || getCurrentModelType();
-        return getCurrentModelType();
+        return modelPreviewForDisplay()?.modelType || getCurrentModelType();
     };
 
     mod.setTutorialAvatarOverride = function setTutorialAvatarOverride(dataUrl, modelType) {
@@ -1844,18 +1910,25 @@
     mod.setExternalAvatar = function setExternalAvatar(dataUrl, modelType) {
         externalAvatarDataUrl = dataUrl || '';
         externalAvatarModelType = modelType || '';
+        externalAvatarPreview = null;
 
         // 把 IPC 注入的头像合并进 cachedPreview，让 renderAvatarPreview 的快路径直接命中，
         // 避免弹窗打开时再发一次 IPC（可能超时 → 用户看到失败态）。
         if (externalAvatarDataUrl) {
+            const key = getCurrentModelCacheKey();
+            const follower = isCardDropIdentityFollowerWindow();
+            const {lanlan_name: name, switch_revision: revision} = window.lanlan_config || {};
             cachedPreview = {
-                cacheKey: getCurrentModelCacheKey(),
+                cacheKey: key,
                 dataUrl: externalAvatarDataUrl,
                 modelType: externalAvatarModelType || getCurrentModelType(),
-                capturedAt: Date.now()
+                capturedAt: Date.now(),
+                // Chat followers may show the owner window's portrait but do not own its cache.
+                displayOnly: follower,
+                ipcIdentity: follower && name ? {name, revision: revision || 0, modelKey: key} : null,
             };
-            saveToStorage(cachedPreview);
-            syncAvatarToCardDrop(cachedPreview.dataUrl);
+            externalAvatarPreview = cachedPreview;
+            publishPreview(cachedPreview);
         }
 
         // 如果弹窗已打开且本地没有本窗口可采集的模型，就直接把 IPC 数据显示出来。
