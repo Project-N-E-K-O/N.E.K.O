@@ -195,6 +195,45 @@ describe('server download preferences', () => {
     expect(mirror.pypiSources.map((source) => source.id)).not.toContain('pypi-direct')
   })
 
+  it('keeps a server PyPI mirror the browser cache did not know when edited before loading', async () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ mode: 'auto', specifiedSourceId: 'gh-proxy-com' }))
+    let answer!: () => void
+    vi.mocked(fetchBridge)
+      .mockImplementationOnce(() => new Promise((resolve) => {
+        answer = () => resolve(reply({ ...preferences, specified_pypi_source_id: 'pypi-ustc' }))
+      }))
+      .mockImplementation(async (_path, init) => reply({ ...JSON.parse(String(init?.body)), configured: true }))
+    const mirror = await loadComposable()
+
+    mirror.setMode('direct')
+    const ready = mirror.ensureDownloadPreferences()
+    await vi.waitFor(() => expect(answer).toBeTypeOf('function'))
+    answer()
+    await ready
+
+    expect(putBodies()).toEqual([
+      { mode: 'direct', specified_source_id: 'gh-proxy-com', specified_pypi_source_id: 'pypi-ustc' },
+    ])
+    expect(mirror.mode.value).toBe('direct')
+    expect(mirror.specifiedPypiSourceId.value).toBe('pypi-ustc')
+  })
+
+  it('retries a save made while the server was unreachable without resetting unedited fields', async () => {
+    vi.mocked(fetchBridge)
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValueOnce(reply({ ...preferences, specified_pypi_source_id: 'pypi-ustc' }))
+      .mockImplementation(async (_path, init) => reply({ ...JSON.parse(String(init?.body)), configured: true }))
+    const mirror = await loadComposable()
+
+    mirror.setMode('direct')
+    await expect(mirror.ensureDownloadPreferences()).resolves.toBeUndefined()
+
+    expect(putBodies()).toEqual([
+      { mode: 'direct', specified_source_id: 'gh-proxy-com', specified_pypi_source_id: 'pypi-ustc' },
+    ])
+    expect(mirror.specifiedPypiSourceId.value).toBe('pypi-ustc')
+  })
+
   it('retries initialization after the server was unreachable', async () => {
     vi.mocked(fetchBridge).mockRejectedValueOnce(new Error('offline'))
     const mirror = await loadComposable()

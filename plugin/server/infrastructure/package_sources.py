@@ -95,10 +95,18 @@ class SourceFamily:
         base = dict(self.mirrors)[source_id]
         if self.rewrite == "prefix":
             return base + url
-        origin = self.sources[0][1]
-        if not url.startswith(origin):
-            raise ValueError(f"{url!r} is not under {origin!r}")
-        return base + url[len(origin):]
+        # Compared as parsed paths, so a URL the matcher accepts with an
+        # explicit default port (https://pypi.org:443/...) rewrites too.
+        prefix = urlparse(self.sources[0][1]).path
+        parsed = urlparse(url)
+        if not (self.matches(url) and parsed.path.startswith(prefix)):
+            raise ValueError(f"{url!r} is not under {self.sources[0][1]!r}")
+        rewritten = base + parsed.path[len(prefix):]
+        if parsed.query:
+            rewritten += "?" + parsed.query
+        if parsed.fragment:
+            rewritten += "#" + parsed.fragment
+        return rewritten
 
     def resolve_mirror_id(self, source_id: Any) -> str:
         """A mirror id this family offers; a retired one maps to the default."""
@@ -246,6 +254,9 @@ class RouteStats:
     failures: float = 0.0
     samples: int = 0
     updated: float = 0.0
+    # When a transfer or probe last measured this route; a failure only
+    # moves ``updated``. Files from before this field read it as never.
+    measured: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -330,6 +341,8 @@ def _parse_route(source_id: str, values: Any, now: float) -> RouteStats:
     # snapshot) is read as "just now": the history stays usable and decays
     # from there, instead of being lost.
     updated = min(updated, now)
+    # Only decides when a PyPI probe is due: unusable means "never measured".
+    measured = _sample(values.get("measured"), now, allow_zero=True) or 0.0
     samples = values.get("samples", 0)
     if isinstance(samples, bool) or not isinstance(samples, (int, float)):
         raise TypeError("samples is not a number")
@@ -339,6 +352,7 @@ def _parse_route(source_id: str, values: Any, now: float) -> RouteStats:
         failures=min(_MAX_FAILURES, max(0.0, _finite(values.get("failures", 0.0), "failures"))),
         samples=min(_MAX_SAMPLES, max(0, int(_finite(samples, "samples")))),
         updated=updated,
+        measured=measured,
     )
 
 
@@ -448,8 +462,12 @@ def _record(observation: RouteObservation, now: float) -> None:
     # Unconditional: a new route has no failures, and a history stamped 0 or
     # carrying failures without samples still decays (to zero, via _decay).
     stats.failures *= _decay(now - stats.updated, _FAILURE_HALF_LIFE)
-    stats.latency = _blend(stats.latency, _sample(observation.latency, _MAX_LATENCY, allow_zero=True))
-    stats.throughput = _blend(stats.throughput, _sample(observation.throughput, _MAX_THROUGHPUT))
+    latency = _sample(observation.latency, _MAX_LATENCY, allow_zero=True)
+    throughput = _sample(observation.throughput, _MAX_THROUGHPUT)
+    stats.latency = _blend(stats.latency, latency)
+    stats.throughput = _blend(stats.throughput, throughput)
+    if not observation.failed and (latency is not None or throughput is not None):
+        stats.measured = now
     stats.failures = min(_MAX_FAILURES, stats.failures + (1.0 if observation.failed else 0.0))
     stats.samples = min(_MAX_SAMPLES, stats.samples + 1)
     stats.updated = now
@@ -583,10 +601,11 @@ def _pypi_probe_due(now: float) -> bool:
         return False
     _ensure_loaded()
     # Only a route that answered counts: a probe that failed everywhere
-    # (offline, say) is retried after the retry interval.
-    measured = [stats.updated for key, _ in PYPI_FAMILY.sources
-                if (stats := _routes.get(key)) is not None and stats.latency is not None]
-    return not measured or now - max(measured) >= PYPI_PROBE_FRESH_SECONDS
+    # (offline, say) is retried after the retry interval, even when older
+    # measurements are still kept for ranking.
+    measured = max((stats.measured for key, _ in PYPI_FAMILY.sources
+                    if (stats := _routes.get(key)) is not None), default=0.0)
+    return now - measured >= PYPI_PROBE_FRESH_SECONDS
 
 
 def _probe_lock() -> asyncio.Lock:

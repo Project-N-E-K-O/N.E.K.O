@@ -123,6 +123,24 @@ let edited = false
 let initialization: Promise<void> | null = null
 /** Saves run one at a time, in the order they were made. */
 let writes: Promise<void> = Promise.resolve()
+/** Fields the user has changed in this page; the others follow the server. */
+const editedFields = new Set<keyof DownloadPreferences>()
+/** The server setting as first loaded, once it has been. */
+let loaded: DownloadPreferences | null = null
+
+/** ``next`` for the edited ``fields``, the loaded server value for the rest,
+ *  so an edit made before the first load cannot reset a field the browser
+ *  cache did not know (such as a PyPI mirror chosen in another window). */
+function overServer(next: DownloadPreferences, fields: ReadonlySet<keyof DownloadPreferences>): DownloadPreferences {
+  const base = loaded ?? next
+  return {
+    mode: fields.has('mode') ? next.mode : base.mode,
+    specified_source_id: fields.has('specified_source_id') ? next.specified_source_id : base.specified_source_id,
+    specified_pypi_source_id: fields.has('specified_pypi_source_id')
+      ? next.specified_pypi_source_id
+      : base.specified_pypi_source_id,
+  }
+}
 
 function apply(preferences: DownloadPreferences) {
   mode.value = preferences.mode
@@ -162,7 +180,12 @@ async function loadServerPreferences() {
     // `initialize_only` keeps whatever another window stored in the meantime.
     preferences = await putPreferences({ ...cached, initialize_only: true })
   }
-  if (!edited) apply(preferences)
+  loaded = {
+    mode: preferences.mode,
+    specified_source_id: preferences.specified_source_id,
+    specified_pypi_source_id: preferences.specified_pypi_source_id,
+  }
+  apply(edited ? overServer(current(), editedFields) : loaded)
 }
 
 function initialize(): Promise<void> {
@@ -176,13 +199,16 @@ function initialize(): Promise<void> {
   return initialization
 }
 
-function save(next: DownloadPreferences): Promise<void> {
+function save(patch: Partial<DownloadPreferences>): Promise<void> {
   edited = true
+  for (const field of Object.keys(patch) as (keyof DownloadPreferences)[]) editedFields.add(field)
+  const fields = new Set(editedFields)
+  const next = { ...current(), ...patch }
   apply(next)
   writes = writes.then(async () => {
     try {
       await initialize()
-      await putPreferences(next)
+      await putPreferences(overServer(next, fields))
       saveFailed.value = false
     } catch (error) {
       log.warn('saving download preferences failed', error)
@@ -201,15 +227,15 @@ function current(): DownloadPreferences {
 }
 
 function setMode(next: GithubMirrorMode) {
-  void save({ ...current(), mode: next })
+  void save({ mode: next })
 }
 
 function setSpecifiedSourceId(next: GithubProxySourceId) {
-  void save({ ...current(), specified_source_id: next })
+  void save({ specified_source_id: next })
 }
 
 function setSpecifiedPypiSourceId(next: PypiIndexSourceId) {
-  void save({ ...current(), specified_pypi_source_id: next })
+  void save({ specified_pypi_source_id: next })
 }
 
 /** Resolve once the server holds the setting shown in the form, since every
@@ -217,8 +243,14 @@ function setSpecifiedPypiSourceId(next: PypiIndexSourceId) {
 async function ensureDownloadPreferences(): Promise<void> {
   await settleWrites()
   if (saveFailed.value) {
-    // Retry the latest edit; the form still shows it.
-    void save(current())
+    // Retry the latest edit; the form still shows it. Only the edited fields
+    // are resent, so the others still follow the server once it answers.
+    const form = current()
+    const retry: Partial<DownloadPreferences> = {}
+    if (editedFields.has('mode')) retry.mode = form.mode
+    if (editedFields.has('specified_source_id')) retry.specified_source_id = form.specified_source_id
+    if (editedFields.has('specified_pypi_source_id')) retry.specified_pypi_source_id = form.specified_pypi_source_id
+    void save(retry)
     await settleWrites()
   }
   if (saveFailed.value) throw new Error('download_preferences_save_failed')

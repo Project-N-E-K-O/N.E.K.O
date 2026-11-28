@@ -305,3 +305,46 @@ async def test_a_probe_from_before_a_reset_is_dropped(index, monkeypatch):
     await sources.select_pypi_index_url(sources.DownloadPreferences())
     assert len(index.requests) == 10, "the next caller probes again"
     assert all(sources._routes[key].samples == 1 for key in PYPI_IDS)
+
+
+async def test_a_failed_probe_after_expired_successes_is_retried_after_the_interval(index, monkeypatch):
+    now = [1_000_000.0]
+    patch_module_clock(monkeypatch, sources, time=lambda: now[0])
+    await sources.select_pypi_index_url(sources.DownloadPreferences())
+    now[0] += sources.PYPI_PROBE_FRESH_SECONDS + 1
+    index.fail = set(PYPI_IDS)
+    await sources.select_pypi_index_url(sources.DownloadPreferences())
+    assert len(index.requests) == 10
+    # The failed probe keeps the old latencies for ranking but is not a measurement.
+    assert all(sources._routes[key].latency is not None for key in PYPI_IDS)
+    now[0] += sources.PYPI_PROBE_RETRY_SECONDS + 1
+    index.fail = set()
+    await sources.select_pypi_index_url(sources.DownloadPreferences())
+    assert len(index.requests) == 15
+
+
+def test_measurement_time_persists_and_old_or_corrupt_files_read_as_never(monkeypatch):
+    now = 1_000_000.0
+    sources._record(sources.RouteObservation("pypi-tuna", latency=0.1), now)
+    sources._record(sources.RouteObservation("pypi-tuna", failed=True), now + 50)
+    assert sources._routes["pypi-tuna"].measured == now and sources._routes["pypi-tuna"].updated == now + 50
+    patch_module_clock(monkeypatch, sources, time=lambda: now + 100)
+    sources.route_stats_path().write_text(json.dumps({"routes": {
+        "pypi-tuna": {"latency": 0.1, "samples": 1, "updated": now, "measured": now},
+        "pypi-aliyun": {"latency": 0.1, "samples": 1, "updated": now},
+        "pypi-ustc": {"latency": 0.1, "samples": 1, "updated": now, "measured": "soon"},
+    }}), encoding="utf-8")
+    sources._routes.clear()
+    monkeypatch.setattr(sources, "_loaded", False)
+    sources._ensure_loaded()
+    assert sources._routes["pypi-tuna"].measured == now
+    assert sources._routes["pypi-aliyun"].measured == 0.0
+    assert sources._routes["pypi-ustc"].measured == 0.0 and sources._routes["pypi-ustc"].latency == 0.1
+
+
+def test_the_pypi_rewrite_accepts_an_explicit_default_port_and_keeps_query_and_fragment():
+    preferences = sources.DownloadPreferences(mode="specified", specified_pypi_source_id="pypi-ustc")
+    assert sources.download_candidates("https://pypi.org:443/simple/six/?format=html#top", preferences) == [
+        ("pypi-ustc", "https://mirrors.ustc.edu.cn/pypi/simple/six/?format=html#top")]
+    auto = sources.download_candidates("https://pypi.org:443/simple/six/", sources.DownloadPreferences())
+    assert len(auto) == len(sources.PYPI_INDEX_SOURCES)
