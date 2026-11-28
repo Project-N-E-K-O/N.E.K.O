@@ -345,6 +345,8 @@ class TreeWork:
         # Held while a project's worktrees are counted and one more is put on record: two that
         # start at once do not both take the last room.
         self._tree_room = asyncio.Lock()
+        # Serializes read-modify-write updates to ``pending_expired_trees`` in space state.
+        self._pending_expiry_lock = asyncio.Lock()
         # How many worktrees are being made this moment, and how often those an earlier process
         # left are being gone through: neither while the other is under way, so one that is
         # being made is not taken for one that was left.
@@ -2462,6 +2464,8 @@ class TreeWork:
                     repo_root = row.repo_root or row.project_dir
                     if repo_root and not await self._repo_root_gone(repo_root):
                         raise ValueError("not_opened")
+                    if not await self._record_pending_expired_tree(row.id, "expiring", raise_on_error=True):
+                        return {"expired": False, "reason": "state_unwritable"}
                     abort_gone: list[str] = []
 
                     def still_untouched_gone(path: Path) -> bool:
@@ -2475,6 +2479,7 @@ class TreeWork:
                         row, before_delete=still_untouched_gone if check_mtime is not None else None
                     )
                     if went == "aborted":
+                        await self._clear_pending_expired_trees((row.id,))
                         return {"expired": False, "reason": abort_gone[0] if abort_gone else "touched"}
                     self._forget_tree(row)
                     self._tree_handles.pop(row.id, None)
@@ -2486,6 +2491,8 @@ class TreeWork:
                     else:
                         removed, outcome_kind = False, "record_only"
                 elif handle is not None:
+                    if not await self._record_pending_expired_tree(row.id, "expiring", raise_on_error=True):
+                        return {"expired": False, "reason": "state_unwritable"}
                     abort_reason: list[str] = []
 
                     def still_untouched(path: Path) -> bool:
@@ -2508,10 +2515,12 @@ class TreeWork:
                         outcome_kind = "deferred"
                     except (WorktreeError, OSError) as exc:
                         # Failed before deletion began (e.g. git index.lock, token mismatch, unknown identity):
-                        # leave tree record and blocked commission untouched for a future upkeep round.
+                        # clear pending intent and leave tree record and blocked commission untouched.
                         logger.warning("worktree %s expiry skipped before deletion: %s", row.id, exc)
+                        await self._clear_pending_expired_trees((row.id,))
                         return {"expired": False, "reason": "not_removable"}
                     if result == "aborted" or result is False:
+                        await self._clear_pending_expired_trees((row.id,))
                         return {"expired": False, "reason": abort_reason[0] if abort_reason else "touched"}
                     if result == "record_only":
                         removed = False
@@ -2520,6 +2529,8 @@ class TreeWork:
                     self._tree_handles.pop(row.id, None)
                     self._trees_mine.discard(row.id)
                 else:
+                    if not await self._record_pending_expired_tree(row.id, "expiring", raise_on_error=True):
+                        return {"expired": False, "reason": "state_unwritable"}
                     # Directory is already gone; drop lingering git registration/refs if repository still exists.
                     repo_root = row.repo_root or row.project_dir
                     if repo_root and not await self._repo_root_gone(repo_root):
@@ -2538,16 +2549,15 @@ class TreeWork:
                 if workdir_hold is not None and callable(release_workdir_fn):
                     release_workdir_fn(workdir_hold)
 
-            # Persist pending expiry settlement in space state (independent of ledger.db)
-            # before cancelling any blocked commission or dropping the tree row so a
-            # ledger failure or crash followed by restart still settles the commission.
+            # Refine the durable pre-delete intent ("expiring") with the final outcome
+            # before settling the commission and dropping/updating the tree row.
             await self._record_pending_expired_tree(row.id, outcome_kind)
             await self._settle_expired_tree(row, outcome_kind, removed=removed)
             await self._clear_pending_expired_trees((row.id,))
             return {"expired": True, "removed": removed, "outcome": outcome_kind}
 
-    async def _read_pending_expired_trees(self) -> dict[str, str]:
-        """Return ``{tree_id: outcome_kind}`` for auto-expiries awaiting ledger settlement."""
+    async def _read_pending_expired_trees(self, *, raise_on_error: bool = False) -> dict[str, str]:
+        """Return ``{tree_id: marker}`` for auto-expiries awaiting completion or settlement."""
         space = getattr(self, "_space", None)
         if space is None or not hasattr(space, "read_state"):
             return {}
@@ -2556,45 +2566,53 @@ class TreeWork:
         except asyncio.CancelledError:
             raise
         except OSError:
+            if raise_on_error:
+                raise
             return {}
         raw = state.get("pending_expired_trees") if isinstance(state, dict) else None
         if not isinstance(raw, dict):
             return {}
-        valid = {"removed", "deferred", "record_only"}
+        valid = {"expiring", "removed", "deferred", "record_only"}
         return {str(k): str(v) for k, v in raw.items() if isinstance(k, str) and v in valid}
 
-    async def _record_pending_expired_tree(self, tree_id: str, outcome_kind: str) -> None:
-        """Persist a pending expiry settlement in space state."""
+    async def _record_pending_expired_tree(
+        self, tree_id: str, outcome_kind: str, *, raise_on_error: bool = False
+    ) -> bool:
+        """Persist a pending expiry intent or outcome in space state under ``_pending_expiry_lock``."""
         space = getattr(self, "_space", None)
         if space is None or not hasattr(space, "write_state"):
-            return
-        try:
-            current = await self._read_pending_expired_trees()
-            current[tree_id] = outcome_kind
-            await space.write_state(pending_expired_trees=current)
-        except asyncio.CancelledError:
-            raise
-        except OSError:
-            logger.debug("could not persist pending expiry state for worktree %s", tree_id, exc_info=True)
+            return True
+        async with self._pending_expiry_lock:
+            try:
+                current = await self._read_pending_expired_trees(raise_on_error=raise_on_error)
+                current[tree_id] = outcome_kind
+                await space.write_state(pending_expired_trees=current)
+                return True
+            except asyncio.CancelledError:
+                raise
+            except OSError:
+                logger.debug("could not persist pending expiry state for worktree %s", tree_id, exc_info=True)
+                return False
 
     async def _clear_pending_expired_trees(self, tree_ids: tuple[str, ...] | set[str]) -> None:
-        """Remove settled worktree ids from persisted pending expiry state."""
+        """Remove settled worktree ids from persisted pending expiry state under ``_pending_expiry_lock``."""
         space = getattr(self, "_space", None)
         if not tree_ids or space is None or not hasattr(space, "write_state"):
             return
-        try:
-            current = await self._read_pending_expired_trees()
-            changed = False
-            for tid in tree_ids:
-                if tid in current:
-                    del current[tid]
-                    changed = True
-            if changed:
-                await space.write_state(pending_expired_trees=current)
-        except asyncio.CancelledError:
-            raise
-        except OSError:
-            logger.debug("could not clear pending expiry state for worktrees", exc_info=True)
+        async with self._pending_expiry_lock:
+            try:
+                current = await self._read_pending_expired_trees()
+                changed = False
+                for tid in tree_ids:
+                    if tid in current:
+                        del current[tid]
+                        changed = True
+                if changed:
+                    await space.write_state(pending_expired_trees=current)
+            except asyncio.CancelledError:
+                raise
+            except OSError:
+                logger.debug("could not clear pending expiry state for worktrees", exc_info=True)
 
     async def _cancel_expired_commission(self, row: Tree, outcome_kind: str) -> None:
         """Cancel a commission blocked over an expired worktree and settle its session."""
@@ -2777,8 +2795,17 @@ class TreeWork:
             if row.id in pending_expired and row.state in TREE_STATES_LEFT:
                 self._trees_in_hand.add(row.id)
                 try:
-                    outcome_kind = pending_expired[row.id]
+                    marker = pending_expired[row.id]
                     gone = await self._tree_is_gone(row)
+                    if marker == "expiring" and not gone:
+                        # Interrupted before deletion completed (aborted freshness check or
+                        # partial removal): clear the transient intent and keep the row intact
+                        # so intact worktrees stay landable and partial ones retry via upkeep
+                        # rather than dropping the row without settling any blocked commission.
+                        settled_pending.add(row.id)
+                        kept.append(row.id)
+                        continue
+                    outcome_kind = "removed" if marker == "expiring" else marker
                     if gone:
                         repo_root = row.repo_root or row.project_dir
                         if repo_root and not await self._repo_root_gone(repo_root):

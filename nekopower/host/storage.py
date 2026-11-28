@@ -1861,14 +1861,14 @@ class StorageManager:
                     if wt_safety == "missing":
                         raise FileNotFoundError("place_missing")
                     if wt_safety != "ok":
-                        raise ValueError("no_worktree")
+                        raise ValueError("bad_worktree")
                     target = Path(row.workdir or row.path)
                     if not _same_path(target, wt_root_dir):
                         target_safety = await asyncio.to_thread(_classify_path_safety, target, wt_root_dir)
                         if target_safety == "missing":
                             raise FileNotFoundError("place_missing")
                         if target_safety != "ok":
-                            raise ValueError("no_worktree")
+                            raise ValueError("bad_worktree")
                     if not await asyncio.to_thread(target.is_dir):
                         raise FileNotFoundError("place_missing")
                     return target
@@ -1877,7 +1877,7 @@ class StorageManager:
             if safety == "missing":
                 raise FileNotFoundError("place_missing")
             if safety != "ok":
-                raise ValueError("no_worktree")
+                raise ValueError("bad_worktree")
             if not await asyncio.to_thread(target.is_dir):
                 raise FileNotFoundError("place_missing")
             return target
@@ -2166,9 +2166,13 @@ class StorageManager:
                 except ValueError as exc:
                     failed.append({"id": tree_id, "code": str(exc)})
                     continue
+                reported_freed = outcome.get("freed_bytes")
+                if reported_freed is not None:
+                    freed_total += int(reported_freed)
+                elif outcome.get("removed"):
+                    freed_total += est_bytes
                 if outcome.get("removed"):
                     cleaned.append(tree_id)
-                    freed_total += int(outcome.get("freed_bytes") or est_bytes)
                 else:
                     deferred.append(tree_id)
 

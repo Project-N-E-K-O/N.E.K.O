@@ -2852,7 +2852,7 @@ async def test_round12_security_paths_and_storage_guards(tmp_path: Path, monkeyp
             workdir=str(link_sub),
             state="kept",
         )
-        with pytest.raises(ValueError, match="no_worktree"):
+        with pytest.raises(ValueError, match="bad_worktree"):
             await host.resolve_storage_open_path("worktree", "sublnk01")
         # Regular subdir inside worktree opens normally.
         await host.ledger.update_tree("sublnk01", workdir=str(wt_real / "real_app"))
@@ -3171,3 +3171,174 @@ async def test_round12_forget_gone_aborts_if_different_dir_reappears(tmp_path: P
     registered = await mgr._registered(repo)
     assert any(p.name == "fgtheirs1" for p in registered)
     assert "fgtheirs1" in await mgr._ref_ids(repo)
+
+
+async def test_round14_expiry_cancellation_recovery_and_edge_guards(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Verify shutdown cancellation during expire_tree recovers via pre-delete intent, archive/recursion guards, and orphan partial bytes."""
+    import asyncio
+    import shutil
+    from nekopower.host.worktrees import Worktree
+
+    clock = Clock(1_800_000_000.0)
+    host1 = make_host(tmp_path)
+    host1.storage._clock = clock
+    try:
+        old_ts = clock.now - 30 * DAY
+
+        # 1. Shutdown CancelledError right after deletion finishes inside remove_if_untouched (before post-delete
+        #    code runs): pre-delete "expiring" intent survives into a fresh host instance and cancels the blocked task.
+        sess = await host1.ledger.create_session(name="cancel-exp", lanlan_name="Lan", project="cproj")
+        comm, _ = await host1.ledger.create(
+            lanlan_name="Lan",
+            title="Blocked during shutdown",
+            dispatch_text="work",
+            source="dispatch",
+            project="cproj",
+            session_id=sess.id,
+        )
+        wt_cancel = host1.paths.worktree_dir("cncexp01")
+        wt_cancel.mkdir(parents=True)
+        await host1.ledger.update(comm.id, workdir=str(wt_cancel))
+        await host1.ledger.transition(comm.id, "working")
+        await host1.ledger.transition(comm.id, "blocked", reason="waiting for landing")
+        await host1.ledger.add_tree(
+            id="cncexp01",
+            session_id=sess.id,
+            commission_id=comm.id,
+            lanlan_name="Lan",
+            project="cproj",
+            project_dir=str(tmp_path / "gone_repo"),
+            repo_root=str(tmp_path / "gone_repo"),
+            path=str(wt_cancel),
+            workdir=str(wt_cancel),
+            state="held",
+        )
+        await host1.ledger.run(
+            lambda conn: conn.execute("UPDATE worktrees SET updated_at = ? WHERE id = ?", (old_ts, "cncexp01"))
+        )
+
+        async def open_cancel(_pdir: Any, _wt: Any) -> Worktree:
+            return Worktree(id="cncexp01", repo_root=tmp_path / "gone_repo", path=wt_cancel, subpath="", start="abc")
+
+        async def delete_then_cancel(handle: Worktree, _cb: Any = None) -> str:
+            shutil.rmtree(handle.path)
+            raise asyncio.CancelledError()
+
+        with monkeypatch.context() as mp:
+            mp.setattr(host1.task_agents.worktrees, "open", open_cancel)
+            mp.setattr(host1.task_agents.worktrees, "remove_if_untouched", delete_then_cancel)
+            with pytest.raises(asyncio.CancelledError):
+                await host1.task_agents.expire_tree("cncexp01", until=clock.now - 14 * DAY)
+        assert not wt_cancel.exists()
+        assert (await host1.ledger.get(comm.id)).status == "blocked"
+        assert (await host1.ledger.get_tree("cncexp01")) is not None
+
+        # 2. Aborted freshness check clears "expiring" intent and keeps blocked commission & worktree intact.
+        comm2, _ = await host1.ledger.create(
+            lanlan_name="Lan",
+            title="Blocked but fresh",
+            dispatch_text="work",
+            source="dispatch",
+            project="cproj",
+            session_id=sess.id,
+        )
+        wt_abort = host1.paths.worktree_dir("abtexp01")
+        wt_abort.mkdir(parents=True)
+        (wt_abort / "keep.txt").write_text("fresh", encoding="utf-8")
+        await host1.ledger.update(comm2.id, workdir=str(wt_abort))
+        await host1.ledger.transition(comm2.id, "working")
+        await host1.ledger.transition(comm2.id, "blocked", reason="waiting")
+        await host1.ledger.add_tree(
+            id="abtexp01",
+            session_id=sess.id,
+            commission_id=comm2.id,
+            lanlan_name="Lan",
+            project="cproj",
+            project_dir=str(tmp_path / "gone_repo"),
+            repo_root=str(tmp_path / "gone_repo"),
+            path=str(wt_abort),
+            workdir=str(wt_abort),
+            state="held",
+        )
+        await host1.ledger.run(
+            lambda conn: conn.execute("UPDATE worktrees SET updated_at = ? WHERE id = ?", (old_ts, "abtexp01"))
+        )
+
+        async def open_abort(_pdir: Any, _wt: Any) -> Worktree:
+            return Worktree(id="abtexp01", repo_root=tmp_path / "gone_repo", path=wt_abort, subpath="", start="abc")
+
+        async def abort_remove(_handle: Worktree, _cb: Any = None) -> str:
+            return "aborted"
+
+        with monkeypatch.context() as mp:
+            mp.setattr(host1.task_agents.worktrees, "open", open_abort)
+            mp.setattr(host1.task_agents.worktrees, "remove_if_untouched", abort_remove)
+            res_abort = await host1.task_agents.expire_tree("abtexp01", until=clock.now - 14 * DAY)
+        assert res_abort["expired"] is False
+        assert "abtexp01" not in await host1.task_agents._read_pending_expired_trees()
+
+        # 3. Unwritable space state stops deletion before touching disk.
+        async def fail_write_state(**_kwargs: Any) -> None:
+            raise OSError("disk read-only")
+
+        with monkeypatch.context() as mp:
+            mp.setattr(host1.task_agents.worktrees, "open", open_abort)
+            mp.setattr(host1.space, "write_state", fail_write_state)
+            res_ro = await host1.task_agents.expire_tree("abtexp01", until=clock.now - 14 * DAY)
+        assert res_ro == {"expired": False, "reason": "state_unwritable"}
+        assert wt_abort.exists()
+
+        # 4. Partial orphan worktree cleanup reports freed_bytes even when deferred, and explicit 0 is preserved.
+        orph1 = host1.paths.worktree_dir("orphpart1")
+        orph1.mkdir(parents=True)
+        (orph1 / "a.bin").write_bytes(b"a" * 300)
+        orph2 = host1.paths.worktree_dir("orphzero1")
+        orph2.mkdir(parents=True)
+        (orph2 / "b.bin").write_bytes(b"b" * 400)
+
+        async def fake_remove_orphan(tid: str) -> dict[str, Any]:
+            if tid == "orphpart1":
+                return {"removed": False, "freed_bytes": 123}
+            return {"removed": True, "freed_bytes": 0}
+
+        with monkeypatch.context() as mp:
+            mp.setattr(host1.task_agents, "remove_orphan_worktree", fake_remove_orphan)
+            res_orph = await host1.clean_worktrees(["orphpart1", "orphzero1"])
+        assert res_orph["deferred"] == ["orphpart1"]
+        assert res_orph["cleaned"] == ["orphzero1"]
+        assert res_orph["freed_bytes"] == 123
+
+        # 5. Deeply nested project.json (RecursionError) fails closed without crashing overview; corrupt archived
+        #    project.json (OverflowError) is skipped by storage overview but STILL blocks open_project() overwrite.
+        deep_proj = host1.paths.space().project_dir("deepproj")
+        deep_proj.mkdir(parents=True)
+        (deep_proj / "project.json").write_text("[" * 2000 + "]" * 2000, encoding="utf-8")
+        view_deep = await host1.storage_overview()
+        assert "categories" in view_deep
+        shutil.rmtree(deep_proj)
+
+        bad_arch = host1.paths.space().archived_dir("2025", "dup_guard")
+        bad_arch.mkdir(parents=True)
+        (bad_arch / "project.json").write_text(
+            '{"name": "dup_guard", "commissions": ' + ("9" * 401) + "}",
+            encoding="utf-8",
+        )
+        view_bad_arch = await host1.storage_overview()
+        assert "categories" in view_bad_arch
+        with pytest.raises(OverflowError):
+            await host1.space.open_project("dup_guard")
+        assert not host1.paths.space().project_dir("dup_guard").exists()
+    finally:
+        await host1.shutdown()
+
+    # Fresh host instance on the same data root recovers "cncexp01" and cancels its blocked commission.
+    host2 = make_host(tmp_path)
+    try:
+        rec = await host2.task_agents.reconcile_trees()
+        assert "cncexp01" in rec["removed"]
+        assert (await host2.ledger.get_tree("cncexp01")) is None
+        assert (await host2.ledger.get(comm.id)).status == "cancelled"
+        assert (await host2.ledger.get(comm2.id)).status == "blocked"
+        assert (await host2.ledger.get_tree("abtexp01")) is not None
+    finally:
+        await host2.shutdown()

@@ -108,12 +108,12 @@ def _error_code(text: Any) -> str | None:
     return "dsh_install"
 
 
-def _measure(paths: list[Path], budget: float) -> list[tuple[int | None, bool]]:
+def _measure(paths: list[Path | None], budget: float) -> list[tuple[int | None, bool]]:
     """Blocking: return ``(bytes, whole)`` for each directory; None for one that is not there."""
     deadline = time.monotonic() + budget
     measured: list[tuple[int | None, bool]] = []
     for path in paths:
-        if not path.is_dir():
+        if path is None or not path.is_dir():
             measured.append((None, True))
             continue
         total, whole = 0, True
@@ -384,9 +384,29 @@ def build_console_router(
     @router.get("/places")
     async def get_places() -> dict[str, Any]:
         """Return the directories the host keeps things in, and how much each holds."""
+        from nekopower.host.storage import _classify_path_safety
+
         host = await get_host()
         places = host.places()
-        measured = await asyncio.to_thread(_measure, [Path(place["path"]) for place in places], _SIZE_BUDGET_SECONDS)
+
+        def _safe_targets() -> list[Path | None]:
+            targets: list[Path | None] = []
+            host_paths = getattr(host, "paths", None)
+            host_root = host_paths.root() if host_paths is not None and callable(getattr(host_paths, "root", None)) else None
+            for place in places:
+                p = Path(place["path"])
+                if place["key"] == "worktrees":
+                    allowed = host_root if host_root is not None else p.parent
+                    if _classify_path_safety(p, allowed) != "ok":
+                        targets.append(None)
+                        continue
+                targets.append(p)
+            return targets
+
+        def _measure_places() -> list[tuple[int | None, bool]]:
+            return _measure(_safe_targets(), _SIZE_BUDGET_SECONDS)
+
+        measured = await asyncio.to_thread(_measure_places)
         return {
             "success": True,
             "places": [
@@ -527,7 +547,7 @@ def build_console_router(
             code = str(exc)
             if code == "no_worktree":
                 raise _refuse(404, code) from None
-            known = ("bad_place", "bad_work_dir", "bad_kind", "bad_name")
+            known = ("bad_place", "bad_work_dir", "bad_worktree", "bad_kind", "bad_name")
             raise _refuse(400, code if code in known else "bad_name") from None
         opener = open_directory
         if opener is None:

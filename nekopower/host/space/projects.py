@@ -128,7 +128,7 @@ class ProjectsMixin:
             data = json.loads((directory / SpacePaths.PROJECT_FILE).read_text(encoding="utf-8-sig"))
         except FileNotFoundError:
             return None, True
-        except (OSError, ValueError):
+        except (OSError, ValueError, RecursionError):
             return None, False
         return (data, True) if isinstance(data, dict) else (None, False)
 
@@ -151,7 +151,7 @@ class ProjectsMixin:
             return []
         return [self._project_from(item) for item in directories]
 
-    def _archived_projects(self) -> list[Project]:
+    def _archived_projects(self, *, skip_corrupt: bool = False) -> list[Project]:
         projects: list[Project] = []
         try:
             years = sorted(item for item in self._paths().archive_dir().iterdir() if item.is_dir())
@@ -163,10 +163,13 @@ class ProjectsMixin:
             except OSError:
                 continue
             for item in directories:
-                try:
+                if skip_corrupt:
+                    try:
+                        projects.append(self._project_from(item, archive_year=year.name))
+                    except (OSError, ValueError, TypeError, OverflowError):
+                        continue
+                else:
                     projects.append(self._project_from(item, archive_year=year.name))
-                except (OSError, ValueError, TypeError, OverflowError):
-                    continue
         return projects
 
     def _directory_of(self, project: Project) -> Path:
@@ -248,7 +251,7 @@ class ProjectsMixin:
                     continue
             projects = list(active)
             if include_archived:
-                projects.extend(self._archived_projects())
+                projects.extend(self._archived_projects(skip_corrupt=True))
             return projects, readable
 
         return await self._read(work)
