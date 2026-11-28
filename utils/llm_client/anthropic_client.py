@@ -29,6 +29,7 @@ if TYPE_CHECKING:
 
 from .cache_control import (
     _apply_anthropic_cache_control,
+    _has_anthropic_cache_control,
     _is_cache_control_rejection,
     _strip_anthropic_cache_control,
 )
@@ -570,12 +571,15 @@ def _convert_orphan_tool_result_to_user_blocks(msg: dict) -> list[dict]:
         return [{"type": "text", "text": f"[tool result] {text}"}]
     return [{"type": "text", "text": "[tool result]"}]
 
-def _normalize_messages_to_anthropic(messages: Any) -> tuple[str, list[dict]]:
-    """Convert OpenAI-format messages to Anthropic (system, messages).
+def _normalize_messages_to_anthropic_with_tail(messages: Any) -> tuple[str, list[dict], int]:
+    """Convert OpenAI-format messages to Anthropic ``(system, messages, tail_block_count)``.
 
-    Anthropic requires:
-      - ``system`` as a top-level string (not a message).
-      - ``messages`` alternating user/assistant only.
+    ``tail_block_count`` is the number of content blocks at the end of
+    ``messages[-1]`` contributed by the final non-system input message. When
+    consecutive same-role messages are merged (e.g. a trailing one-shot summary
+    prompt appended onto a user turn), preserving this count allows
+    ``skip_cache_write=True`` to place the rolling cache breakpoint right before
+    the disposable suffix instead of dropping the entire merged turn.
     """
     normalized = _normalize_messages(messages)
     system_parts: list[str] = []
@@ -719,22 +723,39 @@ def _normalize_messages_to_anthropic(messages: Any) -> tuple[str, list[dict]]:
 
     # Enforce strict user/assistant alternation.
     fixed: list[dict] = []
+    tail_block_count = 0
     for msg in anthropic_messages:
+        blocks_count = len(msg["content"])
         if not fixed:
             if msg["role"] != "user":
                 fixed.append({"role": "user", "content": [{"type": "text", "text": "..."}]})
             fixed.append(msg)
+            tail_block_count = blocks_count
             continue
         if msg["role"] == fixed[-1]["role"]:
             # Merge consecutive same-role turns into one content list.
             fixed[-1]["content"] = list(fixed[-1]["content"]) + list(msg["content"])
+            tail_block_count = blocks_count
         else:
             fixed.append(msg)
+            tail_block_count = blocks_count
 
     if not fixed:
         fixed.append({"role": "user", "content": [{"type": "text", "text": "..."}]})
+        tail_block_count = 1
 
     system = "\n".join(system_parts).strip()
+    return system, fixed, tail_block_count
+
+
+def _normalize_messages_to_anthropic(messages: Any) -> tuple[str, list[dict]]:
+    """Convert OpenAI-format messages to Anthropic (system, messages).
+
+    Anthropic requires:
+      - ``system`` as a top-level string (not a message).
+      - ``messages`` alternating user/assistant only.
+    """
+    system, fixed, _tail_blocks = _normalize_messages_to_anthropic_with_tail(messages)
     return system, fixed
 
 _ANTHROPIC_BODY_OVERRIDE_KEYS = {
@@ -909,8 +930,10 @@ class ChatAnthropic:
     def max_completion_tokens(self, value: Any) -> None:
         self._max_tokens = _coerce_anthropic_max_tokens(value)
 
-    def _build_payload(self, messages: Any, *, include_default_extra_body: bool = True) -> dict:
-        system, anthropic_messages = _normalize_messages_to_anthropic(messages)
+    def _build_payload_with_tail(
+        self, messages: Any, *, include_default_extra_body: bool = True
+    ) -> tuple[dict, int]:
+        system, anthropic_messages, tail_block_count = _normalize_messages_to_anthropic_with_tail(messages)
         payload: dict[str, Any] = {
             "model": self.model,
             "messages": anthropic_messages,
@@ -945,6 +968,12 @@ class ChatAnthropic:
             except Exception:
                 # Prompt-only rewriting is best effort and must not break an LLM call.
                 pass
+        return payload, tail_block_count
+
+    def _build_payload(self, messages: Any, *, include_default_extra_body: bool = True) -> dict:
+        payload, _tail_block_count = self._build_payload_with_tail(
+            messages, include_default_extra_body=include_default_extra_body
+        )
         return payload
 
     def _apply_overrides(self, payload: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any]:
@@ -996,32 +1025,34 @@ class ChatAnthropic:
     def _build_payload_for_call(self, messages: Any, overrides: dict[str, Any]) -> dict[str, Any]:
         include_default_extra_body = "extra_body" not in overrides
         skip_cache_write = bool(overrides.get("skip_cache_write", False))
-        payload = self._build_payload(
+        payload, tail_block_count = self._build_payload_with_tail(
             messages,
             include_default_extra_body=include_default_extra_body,
         )
         payload = self._apply_overrides(payload, overrides)
         _apply_tool_turn_replay(payload)
         if self.enable_cache_control and not self._cache_control_rejected:
-            payload = _apply_anthropic_cache_control(payload, skip_cache_write=skip_cache_write)
+            payload = _apply_anthropic_cache_control(
+                payload,
+                skip_cache_write=skip_cache_write,
+                skip_tail_blocks=tail_block_count if skip_cache_write else 0,
+            )
         return payload
 
-    def _can_retry_without_cache_control(self, exc: BaseException) -> bool:
-        return (
-            self.enable_cache_control
-            and not self._cache_control_rejected
-            and _is_cache_control_rejection(exc)
-        )
+    def _can_retry_without_cache_control(self, payload: dict[str, Any], exc: BaseException) -> bool:
+        # Decide from the actual sent payload rather than the instance flag so
+        # concurrent in-flight requests carrying cache_control all recover cleanly.
+        return _has_anthropic_cache_control(payload) and _is_cache_control_rejection(exc)
 
     async def ainvoke(self, messages: Any, **overrides: Any) -> LLMResponse:
         payload = self._build_payload_for_call(messages, overrides)
         try:
             resp = await self._aclient.messages.create(**payload)
         except Exception as exc:
-            if not self._can_retry_without_cache_control(exc):
+            if not self._can_retry_without_cache_control(payload, exc):
                 raise
-            self._cache_control_rejected = True
             resp = await self._aclient.messages.create(**_strip_anthropic_cache_control(payload))
+            self._cache_control_rejected = True
         text_parts = []
         for block in resp.content:
             if getattr(block, "type", None) == "text":
@@ -1045,10 +1076,10 @@ class ChatAnthropic:
         try:
             resp = self._client.messages.create(**payload)
         except Exception as exc:
-            if not self._can_retry_without_cache_control(exc):
+            if not self._can_retry_without_cache_control(payload, exc):
                 raise
-            self._cache_control_rejected = True
             resp = self._client.messages.create(**_strip_anthropic_cache_control(payload))
+            self._cache_control_rejected = True
         text_parts = []
         for block in resp.content:
             if getattr(block, "type", None) == "text":
@@ -1162,10 +1193,11 @@ class ChatAnthropic:
                             elif event_type == "message_stop":
                                 message = getattr(event, "message", None)
                                 _merge_anthropic_usage(usage_dict, getattr(message, "usage", None))
+                    if attempt == 1:
+                        self._cache_control_rejected = True
                     break
                 except Exception as exc:
-                    if attempt == 0 and not yielded_any and self._can_retry_without_cache_control(exc):
-                        self._cache_control_rejected = True
+                    if attempt == 0 and not yielded_any and self._can_retry_without_cache_control(payload, exc):
                         payload = _strip_anthropic_cache_control(payload)
                         usage_dict.clear()
                         replay_blocks.clear()
@@ -1190,11 +1222,11 @@ class ChatAnthropic:
         try:
             resp = await self._aclient.messages.create(**payload)
         except Exception as exc:
-            if not self._can_retry_without_cache_control(exc):
+            if not self._can_retry_without_cache_control(payload, exc):
                 raise
-            self._cache_control_rejected = True
             payload = _strip_anthropic_cache_control(payload)
             resp = await self._aclient.messages.create(**payload)
+            self._cache_control_rejected = True
         _record_anthropic_token_usage(self.model, _anthropic_usage_to_dict(getattr(resp, "usage", None)))
         _remember_tool_turn_from_response(resp, _replay_context_key(payload, payload.get("messages")))
         return resp
@@ -1205,11 +1237,11 @@ class ChatAnthropic:
         try:
             resp = self._client.messages.create(**payload)
         except Exception as exc:
-            if not self._can_retry_without_cache_control(exc):
+            if not self._can_retry_without_cache_control(payload, exc):
                 raise
-            self._cache_control_rejected = True
             payload = _strip_anthropic_cache_control(payload)
             resp = self._client.messages.create(**payload)
+            self._cache_control_rejected = True
         _record_anthropic_token_usage(self.model, _anthropic_usage_to_dict(getattr(resp, "usage", None)))
         _remember_tool_turn_from_response(resp, _replay_context_key(payload, payload.get("messages")))
         return resp

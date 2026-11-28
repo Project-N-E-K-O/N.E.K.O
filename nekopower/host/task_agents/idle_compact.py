@@ -21,12 +21,19 @@ Method-only mixin: every instance attribute is initialized in
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 import dataclasses
 from typing import Any
 
 from nekopower.host.ledger import Session
 from nekopower.host.runtimes import RUNTIME_BUILTIN
-from .types import logger, _IDLE_COMPACT_KINDS, _IDLE_TIMER_MARGIN_SECONDS, _in_builtin
+from .types import (
+    logger,
+    _IDLE_COMPACT_KINDS,
+    _IDLE_TIMER_MARGIN_SECONDS,
+    _SESSION_NOT_GIVEN_BACK,
+    _in_builtin,
+)
 
 # Late-binding read point for symbols that tests rebind on
 # ``nekopower.host.task_agents`` via ``monkeypatch.setattr``. Do NOT
@@ -770,6 +777,7 @@ class IdleCompactMixin:
         workdir: str,
         session_path: str,
         template: Any,
+        still_active: Callable[[], bool] | None = None,
     ) -> bool:
         """Pre-compact a resumed session with its previous larger-window model before switching.
 
@@ -777,7 +785,10 @@ class IdleCompactMixin:
         tokens exceed ``TASK_AGENT_MODEL_SWITCH_PRECOMPACT_RATIO`` of the new
         model's context window, and the previous model is still resolvable with
         a strictly larger context window. Fail-open on any error so switching
-        never blocks opening the session on the new model.
+        never blocks opening the session on the new model — except when an
+        already-opened pre-compaction runtime fails to confirm release within
+        ``_SERVICE_HANDOVER_SECONDS``, in which case ``_SESSION_NOT_GIVEN_BACK``
+        is raised so the same session is never opened concurrently.
         """
         from config.nekopower_settings import (
             TASK_AGENT_IDLE_COMPACT_SECONDS,
@@ -793,12 +804,21 @@ class IdleCompactMixin:
         new_window = int(getattr(new_model, "context_window", 0) or 0)
         if new_window <= 0 or kept.context_tokens <= int(new_window * TASK_AGENT_MODEL_SWITCH_PRECOMPACT_RATIO):
             return False
-        if self._closed or not self._is_switched_on():
+        if self._closed or not self._is_switched_on() or (still_active is not None and not still_active()):
             return False
-        prev_choice = await self._resolve_model_by_ident(prev_ident)
-        if prev_choice is None or not prev_choice.config or not prev_choice.config.get("model"):
+        try:
+            prev_choice = await self._resolve_model_by_ident(prev_ident)
+            if prev_choice is None or not prev_choice.config or not prev_choice.config.get("model"):
+                return False
+            prev_model = await self._model_of(prev_choice.config)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - best-effort pre-compaction must never block opening the new model
+            logger.warning(
+                "resolving previous model for pre-compaction before model switch failed; continuing",
+                exc_info=True,
+            )
             return False
-        prev_model = await self._model_of(prev_choice.config)
         if int(getattr(prev_model, "context_window", 0) or 0) <= new_window:
             return False
 
@@ -806,7 +826,7 @@ class IdleCompactMixin:
         events: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         grant = f"switch:{session_id}"
         runtime: Any = None
-        opened = compacted = asked = False
+        opened = compacted = asked = cancelled_in_flight = False
         try:
             gateway_spec = None
             if self._gateway is not None:
@@ -830,6 +850,8 @@ class IdleCompactMixin:
                 idle_compaction=True,
                 template=template,
             )
+            if still_active is not None and not still_active():
+                return False
             runtime = self._runtimes.builtin()
             if self._pump is None:
                 self._pump = asyncio.ensure_future(self._pump_events())
@@ -843,9 +865,11 @@ class IdleCompactMixin:
                     event = await events.get()
                     kind = event.get("type")
                     if kind == "started" and not asked:
-                        if not self._is_switched_on():
+                        if not self._is_switched_on() or (still_active is not None and not still_active()):
                             return
                         if not await self._charge(bool(prev_choice.free), commission.id):
+                            return
+                        if not self._is_switched_on() or (still_active is not None and not still_active()):
                             return
                         asked = True
                         await runtime.compact(session_id)
@@ -857,8 +881,8 @@ class IdleCompactMixin:
                         return
 
             await asyncio.wait_for(run_compact(), TASK_AGENT_IDLE_COMPACT_SECONDS)
-            return compacted
         except asyncio.CancelledError:
+            cancelled_in_flight = True
             raise
         except Exception:  # noqa: BLE001 - best-effort pre-compaction must never block opening the new model
             logger.warning(
@@ -866,16 +890,48 @@ class IdleCompactMixin:
                 session_id,
                 exc_info=True,
             )
-            return False
         finally:
-            if await self._end_service(session_id, runtime, events, opened):
-                compacted = True
-            if self._gateway is not None:
-                self._gateway.revoke(grant)
-            if compacted:
-                await self._length_is_stale(session_id)
-                try:
-                    await self._ledger.end_compacting(session_id, compacted=True)
-                except Exception:  # noqa: BLE001 - best effort metadata sync
-                    logger.debug("updating compacted_at after model-switch pre-compaction failed", exc_info=True)
-            self._settle_usage_of(session_id)
+            if opened:
+                async def _finish_precompact_teardown() -> None:
+                    nonlocal compacted
+                    me = asyncio.current_task()
+                    try:
+                        if await self._end_service(session_id, runtime, events, opened):
+                            compacted = True
+                    finally:
+                        if self._gateway is not None:
+                            self._gateway.revoke(grant)
+                        if compacted:
+                            await self._length_is_stale(session_id)
+                            try:
+                                await self._ledger.end_compacting(session_id, compacted=True)
+                            except Exception:  # noqa: BLE001 - best effort metadata sync
+                                logger.debug(
+                                    "updating compacted_at after model-switch pre-compaction failed",
+                                    exc_info=True,
+                                )
+                        self._settle_usage_of(session_id)
+                        if self._compacting.get(session_id) is me:
+                            del self._compacting[session_id]
+                        if self._idle_over.get(session_id) is me:
+                            del self._idle_over[session_id]
+
+                over = asyncio.ensure_future(_finish_precompact_teardown())
+                self._compacting[session_id] = over
+                self._idle_over[session_id] = over
+                if not cancelled_in_flight:
+                    await asyncio.wait({over}, timeout=_task_agents_facade._SERVICE_HANDOVER_SECONDS)
+                    if not over.done():
+                        logger.warning(
+                            "pre-compaction runtime did not release session %s within %.1fs; refusing concurrent open",
+                            session_id,
+                            _task_agents_facade._SERVICE_HANDOVER_SECONDS,
+                        )
+                        raise RuntimeError(_SESSION_NOT_GIVEN_BACK)
+                    if not over.cancelled() and over.exception() is not None:
+                        logger.warning("pre-compaction teardown failed", exc_info=over.exception())
+            else:
+                if self._gateway is not None:
+                    self._gateway.revoke(grant)
+                self._settle_usage_of(session_id)
+        return compacted

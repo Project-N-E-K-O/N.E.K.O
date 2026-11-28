@@ -34,9 +34,11 @@ from nekopower.runtime.context import (
     ContextManager,
     ContextPolicy,
     Row,
+    SummaryCutShort,
     SummaryUsedToolError,
     Transcript,
     cap_parallel_batch_results,
+    estimate_tokens,
     extract_compaction_summary,
     frame_summary,
     kind_of,
@@ -684,6 +686,32 @@ def test_parallel_batch_tool_results_are_capped_together(tmp_path: Path) -> None
     capped = cap_parallel_batch_results(rows, budget=4_000, spill=spill)
     assert capped is not None
     assert all("Full formatted result stored at:" in r.message.text for r in capped[2:])
+    total_after = sum(estimate_tokens(r.message, image_tokens=0) for r in capped[2:])
+    assert total_after <= 4_000
+    spilled_files = list((tmp_path / "outputs").iterdir())
+    assert len(spilled_files) == 3
+    assert all(f.read_text(encoding="utf-8") == big for f in spilled_files)
+
+    # Aggregate budget must take precedence over floor_tokens when n * floor_tokens > budget.
+    medium = " ".join(f"tok{i}" for i in range(420))
+    nine_rows = [
+        Row("m0", "human", UserMessage(content="many")),
+        Row(
+            "m1",
+            "assistant",
+            AssistantMessage(content=[ToolCall(id=f"c{i}", name="grep", arguments={}) for i in range(9)]),
+        ),
+        *[
+            Row(f"t{i}", "tool", ToolResultMessage(tool_call_id=f"c{i}", tool_name="grep", content=medium))
+            for i in range(9)
+        ],
+    ]
+    before_nine = sum(estimate_tokens(r.message, image_tokens=0) for r in nine_rows[2:])
+    assert before_nine > 4_096
+    capped_nine = cap_parallel_batch_results(nine_rows, budget=4_096, spill=spill, floor_tokens=512)
+    assert capped_nine is not None
+    after_nine = sum(estimate_tokens(r.message, image_tokens=0) for r in capped_nine[2:])
+    assert after_nine <= 4_096
 
 
 async def test_oversized_user_input_spills_with_anti_guess_notice(tmp_path: Path) -> None:
@@ -770,6 +798,8 @@ async def test_model_switch_precompacts_with_previous_larger_window_model(tmp_pa
             self._gateway = None
             self._pump = object()
             self._service: dict[str, asyncio.Queue[dict[str, Any]]] = {}
+            self._compacting: dict[str, asyncio.Task[Any]] = {}
+            self._idle_over: dict[str, asyncio.Task[Any]] = {}
             self._usage_locks: dict[str, asyncio.Lock] = {}
             self._context_written: dict[str, int] = {}
             self._context_said = 0
@@ -864,3 +894,559 @@ async def test_model_switch_precompacts_with_previous_larger_window_model(tmp_pa
         is False
     )
     assert compacted_calls == []
+
+
+# ---------------------------------------------------------------------------
+# Review regression tests (Greptile + CodeRabbit findings)
+# ---------------------------------------------------------------------------
+
+
+def test_extract_compaction_summary_outer_envelope_and_truncated_analysis() -> None:
+    # Unclosed <analysis> scratchpad must return empty, never leak into history.
+    assert extract_compaction_summary("<analysis>Drafting scratchpad that hit max_tokens") == ""
+    # Closed <analysis> with nothing after must return empty.
+    assert extract_compaction_summary("<analysis>Only analysis here</analysis>") == ""
+    # Truncated inside <summary> keeps the partial summary body.
+    assert (
+        extract_compaction_summary("<analysis>think</analysis>\n<summary>## Goal\nPartial")
+        == "## Goal\nPartial"
+    )
+    # Literal <analysis> / </summary> code examples inside outer <summary> stay intact.
+    raw = (
+        "<analysis>scratch</analysis>\n"
+        "<summary>Fixed parser for `<analysis>demo</analysis>` tags.\n"
+        "Done.</summary>"
+    )
+    assert extract_compaction_summary(raw) == "Fixed parser for `<analysis>demo</analysis>` tags.\nDone."
+
+
+async def test_cut_short_inside_analysis_uses_fallback_and_head_truncated_is_incomplete(tmp_path: Path) -> None:
+    policy = ContextPolicy(window=8_000, max_output=512, summary_max_tokens=512)
+
+    async def cut_in_analysis(_msgs: Any, _cap: int) -> tuple[str, Usage | None]:
+        raise SummaryCutShort("<analysis>unclosed scratchpad")
+
+    seq = iter(range(1, 10_000))
+    mgr = ContextManager(
+        policy=policy,
+        spill=SpillStore(tmp_path / "outputs1"),
+        summarize=cut_in_analysis,
+        new_entry_id=lambda: f"s-{next(seq)}",
+    )
+    prose = " ".join(f"word{i}" for i in range(400))
+    transcript = Transcript(
+        [
+            UserMessage(content="go"),
+            AssistantMessage(content=f"t1 {prose}"),
+            UserMessage(content="u1"),
+            AssistantMessage(content=f"t2 {prose}"),
+            UserMessage(content="u2"),
+            AssistantMessage(content=f"t3 {prose}"),
+            UserMessage(content="next"),
+        ],
+        lambda: f"m-{next(seq)}",
+    )
+    compactions = await mgr.fit(transcript, force=True)
+    assert len(compactions) == 1
+    assert SUMMARY_FALLBACK in compactions[0].stored_summary
+    assert "unclosed scratchpad" not in compactions[0].stored_summary
+    assert compactions[0].complete is False
+
+    # Tier 3 overflow head-truncation saves checkpoint with complete=False so device tools do not fold.
+    calls = 0
+
+    async def overflow_then_ok(_msgs: Any, _cap: int, **_kw: Any) -> tuple[str, Usage | None]:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise ContextOverflowError("prompt is too long: 9000 tokens > 8000 maximum")
+        return "<summary>Trimmed checkpoint</summary>", Usage(input=5, output=5)
+
+    mgr2 = ContextManager(
+        policy=ContextPolicy(window=32_000, max_output=512, summary_max_tokens=512),
+        spill=SpillStore(tmp_path / "outputs2"),
+        summarize=overflow_then_ok,
+        new_entry_id=lambda: f"s-{next(seq)}",
+    )
+    prose = " ".join(f"w{i}" for i in range(400))
+    msgs: list[Any] = [UserMessage(content="start")]
+    for i in range(8):
+        msgs.append(AssistantMessage(content=f"t{i} {prose}"))
+        msgs.append(UserMessage(content=f"u{i}"))
+    t2 = Transcript(msgs, lambda: f"m-{next(seq)}")
+    c2 = await mgr2.fit(t2, force=True)
+    assert len(c2) == 1
+    assert c2[0].complete is False
+    assert texts.CHECKPOINT_HEAD_TRUNCATED_NOTE in c2[0].stored_summary
+
+
+async def test_fit_or_drop_false_without_summarize_restores_pruned_transcript(tmp_path: Path) -> None:
+    policy = ContextPolicy(window=4_000, max_output=256, prune_threshold_tokens=50, prune_head_tokens=20, prune_tail_tokens=10)
+    big_tool = " ".join(f"line{i}" for i in range(400))
+    seq = iter(range(1, 100))
+
+    async def never_called(_msgs: Any, _cap: int) -> tuple[str, Usage | None]:
+        raise AssertionError("summarize must not be called")
+
+    mgr = ContextManager(
+        policy=policy,
+        spill=SpillStore(tmp_path / "outputs"),
+        summarize=never_called,
+        new_entry_id=lambda: f"s-{next(seq)}",
+    )
+    transcript = Transcript(
+        [
+            UserMessage(content="go"),
+            AssistantMessage(content=[ToolCall(id="c1", name="read", arguments={})]),
+            ToolResultMessage(tool_call_id="c1", tool_name="read", content=big_tool),
+            AssistantMessage(content="done"),
+        ],
+        lambda: f"m-{next(seq)}",
+    )
+    res = await mgr.fit(transcript, force=True, or_drop=False, summarize=False)
+    assert res == []
+    # Original unpruned tool output is restored when or_drop=False produces no summary.
+    assert transcript.messages[2].text == big_tool
+
+
+def test_retain_recent_images_marks_unseen_before_first_assistant() -> None:
+    img = ImageContent(data="AA==", mime_type="image/png")
+    rows = [
+        Row("e0", "human", UserMessage(content=[TextContent(text="img1"), img])),
+        Row("e1", "human", UserMessage(content=[TextContent(text="img2"), img])),
+    ]
+    trimmed = retain_recent_images(rows, {"__user__": 1}, include_user_images=True)
+    assert trimmed is not None
+    assert texts.IMAGE_OMITTED_UNSEEN_PLACEHOLDER in trimmed[0].message.text
+
+
+async def test_model_empty_tool_args_and_anthropic_drop_retry_and_404_cancel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from utils.llm_client.messages import LLMStreamChunk
+
+    monkeypatch.setattr("config.nekopower_settings.TASK_AGENT_STREAM_BACKOFF_BASE_SECONDS", 0.001)
+
+    # 1) Empty tool arguments buffer on mid-stream drop must NOT salvage; it must retry.
+    calls = 0
+
+    class _EmptyArgDropClient:
+        async def astream(self, _msgs: Any, **_kw: Any):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                yield LLMStreamChunk(
+                    content="",
+                    tool_call_deltas=[
+                        {"index": 0, "id": "call-1", "function": {"name": "read", "arguments": ""}}
+                    ],
+                )
+                raise ConnectionResetError("dropped before args")
+            yield LLMStreamChunk(
+                content="",
+                tool_call_deltas=[
+                    {"index": 0, "id": "call-1", "function": {"name": "read", "arguments": '{"file_path":"a.txt"}'}}
+                ],
+                finish_reason="tool_calls",
+            )
+
+    async def _return_client(obj: Any) -> Any:
+        return obj
+
+    provider = LLMClientProvider(
+        ModelConfig(model="m", api_key="k"),
+        client_factory=lambda: _return_client(_EmptyArgDropClient()),
+    )
+    events = [ev async for ev in provider.stream_response(model="m", system="s", messages=[UserMessage(content="hi")], tools=[])]
+    done = [ev for ev in events if isinstance(ev, AssistantDoneEvent)]
+    assert calls == 2 and len(done) == 1
+    assert done[0].message.tool_calls[0].arguments == {"file_path": "a.txt"}
+
+    # 2) Anthropic mid-stream drop before message_delta must retry (do not salvage without signed thinking).
+    anth_calls = 0
+
+    class _AnthropicDropClient:
+        wire_dialect = "anthropic"
+
+        async def astream(self, _msgs: Any, **_kw: Any):
+            nonlocal anth_calls
+            anth_calls += 1
+            if anth_calls == 1:
+                yield LLMStreamChunk(
+                    content="",
+                    tool_call_deltas=[
+                        {"index": 0, "id": "call-1", "function": {"name": "read", "arguments": '{"file_path":"a.txt"}'}}
+                    ],
+                )
+                raise ConnectionResetError("dropped before message_delta")
+            yield LLMStreamChunk(
+                content="",
+                tool_call_deltas=[
+                    {"index": 0, "id": "call-1", "function": {"name": "read", "arguments": '{"file_path":"a.txt"}'}}
+                ],
+                finish_reason="tool_calls",
+            )
+
+    provider_anth = LLMClientProvider(
+        ModelConfig(model="claude", api_key="k"),
+        client_factory=lambda: _return_client(_AnthropicDropClient()),
+    )
+    events_anth = [
+        ev async for ev in provider_anth.stream_response(model="claude", system="s", messages=[UserMessage(content="hi")], tools=[])
+    ]
+    assert anth_calls == 2
+    assert any(isinstance(ev, AssistantDoneEvent) for ev in events_anth)
+
+    # 3) Non-streaming 404 fallback honors cancellation while awaiting ainvoke_raw.
+    class _Status404(RuntimeError):
+        status_code = 404
+
+    entered = asyncio.Event()
+
+    class _Slow404Client:
+        async def astream(self, _msgs: Any, **_kw: Any):
+            raise _Status404("no stream")
+            yield  # pragma: no cover
+
+        async def ainvoke_raw(self, _msgs: Any, **_kw: Any):
+            entered.set()
+            await asyncio.sleep(5.0)
+            return SimpleNamespace(choices=[])
+
+    token = SimpleCancellationToken()
+    provider_404 = LLMClientProvider(
+        ModelConfig(model="m", api_key="k"),
+        client_factory=lambda: _return_client(_Slow404Client()),
+    )
+
+    async def _run_404() -> list[Any]:
+        return [
+            ev
+            async for ev in provider_404.stream_response(
+                model="m", system="s", messages=[UserMessage(content="hi")], tools=[], signal=token
+            )
+        ]
+
+    task = asyncio.create_task(_run_404())
+    await asyncio.wait_for(entered.wait(), timeout=2.0)
+    token.cancel()
+    res = await asyncio.wait_for(task, timeout=2.0)
+    assert any(isinstance(ev, AssistantErrorEvent) and ev.reason == "aborted" for ev in res)
+
+
+async def test_session_review_regressions_breaker_spill_nudges_images_and_language(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # 1) Reply language from opening prompt is present on the VERY FIRST model request.
+    model = ModelConfig(model="fake-model", api_key="k", context_window=32_000, max_output_tokens=1_000)
+    llm = ScriptedLLM([[say("好的。"), finish()]])
+    s1_dir = tmp_path / "s1"
+    s1_dir.mkdir()
+    session, events = await open_session(make_spec(s1_dir, model=model), llm)
+    try:
+        mark = len(events.events)
+        session.prompt(
+            "Reply to the user, and write any questions with their options, in Chinese, whatever language the files use.\nDo X.",
+            opening=True,
+            human=True,
+        )
+        ended = await events.wait_ended(start=mark)
+        assert ended["reason"] == "completed"
+        first_req = json.dumps(llm.requests[0], ensure_ascii=False)
+        assert "User reply language: Chinese" in first_req
+
+        # 2) Overflow _fit(force=True) respects tripped compaction breaker; only manual compact() bypasses it.
+        session._compaction_breaker_tripped = True
+        seen_summarize: list[bool] = []
+
+        async def _spy_fit(*_a: Any, **kw: Any):
+            seen_summarize.append(bool(kw.get("summarize")))
+            return []
+
+        monkeypatch.setattr(ContextManager, "fit", _spy_fit)
+        await session._fit(force=True)
+        assert seen_summarize == [False]
+        session._compacting = True
+        try:
+            await session._fit(force=True)
+        finally:
+            session._compacting = False
+        assert seen_summarize == [False, True]
+
+        # 3) Failed SpillStore.save() keeps original user message intact.
+        monkeypatch.setattr(SpillStore, "save", lambda *_a, **_kw: None)
+        huge_text = "KEEP_ME_START " + " ".join(f"w{i}" for i in range(10_000)) + " KEEP_ME_END"
+        u_msg = UserMessage(content=huge_text)
+        session.harness.message_list.append(u_msg)
+        session._record(u_msg)
+        await session._spill_oversized_user_messages()
+        assert session.harness.message_list[-1].text == huge_text
+
+        # 4) Consecutive identical image hash: A, B, A, B, A does NOT trigger; A, A, A DOES trigger.
+        from nekopower.runtime.loop.tools import AgentToolResult
+
+        img_a = AgentToolResult(content=[ImageContent(data="AAAA", mime_type="image/png")])
+        img_b = AgentToolResult(content=[ImageContent(data="BBBB", mime_type="image/png")])
+        call_img = ToolCall(id="i1", name="read_image", arguments={})
+        notices: list[str] = []
+        monkeypatch.setattr(session, "deliver_notice", lambda kind, text: notices.append(kind))
+        for res in (img_a, img_b, img_a, img_b, img_a):
+            await session._after_tool_call(call_img, res, False)
+        assert "repeated_image" not in notices
+        for res in (img_a, img_a):
+            await session._after_tool_call(call_img, res, False)
+        assert "repeated_image" in notices
+
+        # 5) Alternating length + invalid-tool stop hits shared recovery cap; normal stop resets counters.
+        from nekopower.runtime.loop.turns import AgentTurnContext
+
+        session._reset_recovery_nudges()
+        steered = 0
+        monkeypatch.setattr(session.harness, "steer_message", lambda _m: None)
+        for i in range(8):
+            if i % 2 == 0:
+                session._model.last_dropped_unnamed_tool_calls = False
+                msg = AssistantMessage(content="cut", stop_reason="length")
+            else:
+                session._model.last_dropped_unnamed_tool_calls = True
+                msg = AssistantMessage(content="", stop_reason="stop")
+            before_rec = session._recovery_nudges
+            session._finish_turn(AgentTurnContext(message=msg, tool_results=(), messages=(msg,), new_messages=(msg,)), None)
+            if session._recovery_nudges > before_rec:
+                steered += 1
+        assert steered == 4
+        # Normal non-empty stop resets all counters cleanly.
+        session._model.last_dropped_unnamed_tool_calls = False
+        ok_msg = AssistantMessage(content="All done.", stop_reason="stop")
+        session._finish_turn(AgentTurnContext(message=ok_msg, tool_results=(), messages=(ok_msg,), new_messages=(ok_msg,)), None)
+        assert session._recovery_nudges == 0
+        assert session._empty_nudges == 0
+        assert session._output_nudges == 0
+        assert session._invalid_tool_nudges == 0
+    finally:
+        await session.close()
+
+
+async def test_small_window_oversized_user_input_spills_within_input_budget(tmp_path: Path) -> None:
+    model = ModelConfig(model="fake-model", api_key="k", context_window=8_000, max_output_tokens=1_000)
+    llm = ScriptedLLM([[say("OK."), finish()]])
+    session, events = await open_session(make_spec(tmp_path, model=model), llm)
+    try:
+        big_10k = "START " + " ".join(f"token{i}" for i in range(9_500)) + " FINISH"
+        mark = len(events.events)
+        session.prompt(big_10k)
+        ended = await events.wait_ended(start=mark)
+        assert ended["reason"] == "completed"
+        sent = json.dumps(llm.requests[0], ensure_ascii=False)
+        assert "Do NOT guess or fabricate the omitted middle" in sent
+    finally:
+        await session.close()
+
+
+async def test_harness_cancel_marks_running_vs_skipped_sequential_tools() -> None:
+    from nekopower.runtime.loop.provider_events import AssistantStartEvent
+    from nekopower.runtime.loop.tools import AgentTool, AgentToolResult
+
+    started = asyncio.Event()
+
+    async def slow_exec(_id: str, _args: dict[str, Any], _signal: Any, _on_upd: Any) -> AgentToolResult:
+        started.set()
+        await asyncio.sleep(5.0)
+        return AgentToolResult(content=[TextContent(text="done")])
+
+    tool_a = AgentTool(name="first", label="first", description="a", parameters={"type": "object"}, execute_fn=slow_exec)
+    tool_b = AgentTool(name="second", label="second", description="b", parameters={"type": "object"}, execute_fn=slow_exec)
+
+    class _TwoToolProvider:
+        async def stream_response(self, **_kw: Any):
+            msg = AssistantMessage(
+                content=[
+                    ToolCall(id="call-1", name="first", arguments={}),
+                    ToolCall(id="call-2", name="second", arguments={}),
+                ],
+                stop_reason="toolUse",
+            )
+            yield AssistantStartEvent(partial=msg)
+            yield AssistantDoneEvent(reason="toolUse", message=msg)
+
+    harness = AgentHarness(
+        AgentHarnessConfig(provider=_TwoToolProvider(), model="m", system="s", tools=[tool_a, tool_b])
+    )
+
+    async def consume() -> None:
+        async for _ev in harness.prompt("go"):
+            pass
+
+    task = asyncio.create_task(consume())
+    await asyncio.wait_for(started.wait(), timeout=2.0)
+    harness.cancel()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    results = {m.tool_call_id: m.text for m in harness.messages if isinstance(m, ToolResultMessage)}
+    assert results["call-1"] == INTERRUPTED_TOOL_RUNNING
+    assert results["call-2"] == INTERRUPTED_TOOL_SKIPPED
+
+
+def test_cache_control_review_regressions() -> None:
+    from utils.llm_client import create_chat_llm
+    from utils.llm_client.anthropic_client import ChatAnthropic
+    from utils.llm_client.cache_control import (
+        _apply_anthropic_cache_control,
+        _inject_cache_control,
+        _is_cache_control_rejection,
+    )
+
+    # 1) Explicit enable_cache_control=False on api.anthropic.com must not raise TypeError.
+    client = create_chat_llm(
+        model="claude-sonnet-4-6",
+        base_url="https://api.anthropic.com/v1",
+        api_key="test-key",
+        provider_type="anthropic",
+        max_tokens=1024,
+        timeout=30,
+        enable_cache_control=False,
+    )
+    assert isinstance(client, ChatAnthropic)
+    assert client.enable_cache_control is False
+
+    # 2) Single-message skip_cache_write without leading system must not mark the lone message.
+    lone = [{"role": "user", "content": "summarize this"}]
+    assert _inject_cache_control(lone, rolling_tail=True, skip_cache_write=True) == lone
+
+    # 3) Longer 1h TTL in messages blocks injecting shorter 5m default on earlier system/tools.
+    payload_1h = {
+        "system": "sys prompt",
+        "tools": [{"name": "t1", "input_schema": {"type": "object"}}],
+        "messages": [
+            {"role": "user", "content": [{"type": "document", "cache_control": {"type": "ephemeral", "ttl": "1h"}}]}
+        ],
+    }
+    marked_1h = _apply_anthropic_cache_control(payload_1h)
+    assert marked_1h["system"] == "sys prompt"
+    assert "cache_control" not in marked_1h["tools"][0]
+
+    # 4) Merged same-role user turn with skip_cache_write marks the prefix block before the disposable tail.
+    anth_client = ChatAnthropic(
+        model="claude-sonnet-4-6",
+        base_url="https://api.anthropic.com/v1",
+        api_key="test-key",
+        max_tokens=1024,
+        timeout=30,
+        enable_cache_control=True,
+    )
+    built = anth_client._build_payload_for_call(
+        [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "existing user turn"},
+            {"role": "user", "content": "one-shot summarize instruction"},
+        ],
+        {"skip_cache_write": True},
+    )
+    last_blocks = built["messages"][-1]["content"]
+    assert len(last_blocks) == 2
+    assert last_blocks[0].get("cache_control") == {"type": "ephemeral"}
+    assert "cache_control" not in last_blocks[1]
+
+    # 5) Tool schema error mentioning cache_control property is NOT misclassified as capability rejection.
+    class _Schema400(RuntimeError):
+        status_code = 400
+
+    assert _is_cache_control_rejection(
+        _Schema400("tools.0.input_schema.properties.cache_control.type: invalid schema")
+    ) is False
+    assert _is_cache_control_rejection(
+        _Schema400("messages.0.content.0.cache_control: Extra inputs are not permitted")
+    ) is True
+
+
+async def test_model_switch_precompact_bounded_teardown_and_cancellation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from nekopower.host.ledger import Session
+    from nekopower.host.role_models import Choice
+    from nekopower.host.task_agents.idle_compact import IdleCompactMixin
+    from nekopower.host.task_agents.types import _SESSION_NOT_GIVEN_BACK
+
+    monkeypatch.setattr("nekopower.host.task_agents._SERVICE_HANDOVER_SECONDS", 0.05)
+
+    class _HungRuntime:
+        async def start(self, spec: Any) -> None:
+            mgr._service[spec.session_id].put_nowait({"type": "started", "session_id": spec.session_id})
+
+        async def compact(self, session_id: str) -> None:
+            mgr._service[session_id].put_nowait({"type": "error", "command": "compact", "error": "boom"})
+
+        async def close(self, session_id: str) -> None:
+            del session_id
+            # Deliberately never emits ended(reason="closed")!
+
+    class _FakeMgr(IdleCompactMixin):
+        def __init__(self) -> None:
+            self._closed = False
+            self._switched_on = None
+            self._gateway = None
+            self._pump = object()
+            self._service: dict[str, asyncio.Queue[dict[str, Any]]] = {}
+            self._compacting: dict[str, asyncio.Task[Any]] = {}
+            self._idle_over: dict[str, asyncio.Task[Any]] = {}
+            self._usage_locks: dict[str, asyncio.Lock] = {}
+            self._context_written: dict[str, int] = {}
+            self._context_said = 0
+            self._ledger = SimpleNamespace(end_compacting=lambda *_a, **_kw: asyncio.sleep(0))
+            self._rt = _HungRuntime()
+            self._runtimes = SimpleNamespace(builtin=lambda: self._rt)
+
+        async def _resolve_model_by_ident(self, _ident: str) -> Any:
+            return Choice(slot="s", agent=False, name="big", ident="old", free=False, config={"model": "big"})
+
+        async def _model_of(self, _cfg: dict[str, Any]) -> ModelConfig:
+            return ModelConfig(model="big", context_window=200_000)
+
+        async def _spec(self, _c: Any, kept: Any, model: Any, **_kw: Any) -> Any:
+            return SimpleNamespace(session_id=kept.id, model=model)
+
+        async def _charge(self, _f: bool, _k: str) -> bool:
+            return True
+
+        async def _note_usage(self, *_a: Any) -> None:
+            pass
+
+        def _settle_usage_of(self, _sid: str) -> None:
+            pass
+
+    mgr = _FakeMgr()
+    kept = Session(
+        id="sess-hung",
+        name="demo",
+        lanlan_name="Lan",
+        kind="project",
+        project="demo",
+        workdir=str(tmp_path),
+        session_dir=str(tmp_path),
+        runtime="builtin",
+        parent_id=None,
+        forked_from=None,
+        status="closed",
+        created_at=0.0,
+        last_active_at=0.0,
+        compacted_at=None,
+        context_tokens=28_000,
+        model_ident="new",
+        model_was="old",
+    )
+    with pytest.raises(RuntimeError, match=_SESSION_NOT_GIVEN_BACK):
+        await mgr._maybe_precompact_for_model_switch(
+            SimpleNamespace(id="c1"),
+            kept,
+            Choice(slot="s2", agent=False, name="small", ident="new", free=False),
+            ModelConfig(model="small", context_window=32_000),
+            workdir=str(tmp_path),
+            session_path=str(tmp_path),
+            template=SimpleNamespace(calls_nothing=False),
+        )
+    # Release the hung background teardown task cleanly.
+    mgr._service["sess-hung"].put_nowait({"type": "ended", "reason": "closed"})
+    if "sess-hung" in mgr._idle_over:
+        await asyncio.wait_for(mgr._idle_over["sess-hung"], timeout=2.0)

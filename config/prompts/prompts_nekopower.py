@@ -392,8 +392,8 @@ CHECKPOINT_HEAD_TRUNCATED_NOTE = (
 
 # dsh packages/compaction/compaction-tool-result-pruner, extended with side-effect guidance.
 PRUNED_MIDDLE_MARKER = (
-    "\n\n[... tool result middle pruned — this tool already ran and any side effects already "
-    "occurred; do not re-run it blindly ...]\n\n"
+    "\n\n[... tool result middle pruned — the tool already returned; its output was shortened. "
+    "Check the actual state of the operation before retrying ...]\n\n"
 )
 
 # dsh packages/spill/spill-policy/src/index.ts (GAP) and src/notice.ts, with the

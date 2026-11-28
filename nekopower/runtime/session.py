@@ -170,6 +170,7 @@ _TAIL_STEP_BYTES = 65536
 MAX_OUTPUT_CUT_OFF_NUDGES = 3
 MAX_EMPTY_COMPLETION_NUDGES = 2
 MAX_INVALID_TOOL_NUDGES = 2
+MAX_TOTAL_RECOVERY_NUDGES = 4
 _INPUT_POLL_SECONDS = 0.1
 _REPLY_LANGUAGE_RE = re.compile(
     r"questions with their options, in ([^,.\n]+), whatever language",
@@ -515,13 +516,15 @@ class TaskAgentSession(SessionInbox):
         self._output_nudges = 0
         self._empty_nudges = 0
         self._invalid_tool_nudges = 0
+        self._recovery_nudges = 0
         self._turns_since_last_compaction = 0
         self._rapid_compactions = 0
         self._compaction_breaker_tripped = False
         self._compaction_breaker_notified = False
         self._turns_since_todo_write = 0
         self._turns_since_todo_nudge = 0
-        self._image_hashes: dict[str, int] = {}
+        self._last_image_hash: str | None = None
+        self._consecutive_image_count = 0
         self._reply_language_hint: str | None = None
         self._repeat = RepeatToolGuard()
         self._system = ""
@@ -1079,15 +1082,22 @@ class TaskAgentSession(SessionInbox):
                 self._not_human = [other for other in self._not_human if other is not message]
             else:
                 # Text from the user: it authorizes goal management for this run
-                # and resets the automatic-compaction circuit breaker.
+                # and resets the automatic-compaction circuit breaker and recovery nudges.
                 self._human_in_run = True
                 self._rapid_compactions = 0
                 self._compaction_breaker_tripped = False
                 self._compaction_breaker_notified = False
+                self._output_nudges = 0
+                self._empty_nudges = 0
+                self._invalid_tool_nudges = 0
+                self._recovery_nudges = 0
                 if opening:
                     lang_match = _REPLY_LANGUAGE_RE.search(message.text)
                     if lang_match is not None:
-                        self._reply_language_hint = lang_match.group(1).strip()
+                        detected_lang = lang_match.group(1).strip()
+                        if detected_lang and detected_lang != self._reply_language_hint:
+                            self._reply_language_hint = detected_lang
+                            self._context_due = True
                 gateway = self._gateway
                 if taken is not None and not opening and self._commission_tools and gateway.device_groups:
                     from nekopower.device_intent import classify_device_intent
@@ -1426,10 +1436,12 @@ class TaskAgentSession(SessionInbox):
     async def _spill_oversized_user_messages(self) -> None:
         """Spill any oversized human text message to disk with a head/tail preview and anti-guess notice."""
         rows = self.transcript.rows()
-        # Only spill inputs that exceed the single-part wire limit or the
-        # context compaction threshold itself; smaller long opening prompts
-        # stay intact for normal pinning / compaction semantics.
-        cap = min(WIRE_TEXT_PART_MAX_TOKENS, max(self.context.policy.threshold, 16_000))
+        # Spill inputs that exceed either the single-part wire limit or the
+        # session's remaining input budget (threshold minus system prompt, tool
+        # schemas, and headroom) so small-window sessions never choke on a
+        # single oversized user message that compaction cannot shorten.
+        input_budget = max(512, self.context.policy.threshold - self.context.fixed_tokens - 256)
+        cap = min(WIRE_TEXT_PART_MAX_TOKENS, input_budget)
         candidates = [
             index
             for index, row in enumerate(rows)
@@ -1453,20 +1465,21 @@ class TaskAgentSession(SessionInbox):
                 if count_tokens(raw) <= cap:
                     continue
                 path = self.context.spill.save(f"user-{row.entry_id}", raw)
-                preview_half = min(2_000, max(256, (cap - 128) // 2))
+                if path is None:
+                    # Never replace or hide user instructions when the full text
+                    # could not be saved to disk.
+                    continue
+                sample_notice = texts.user_input_spill_notice(len(raw.encode("utf-8", errors="replace")), str(path))
+                notice_tokens = count_tokens(sample_notice) + 32
+                preview_total = max(128, cap - notice_tokens)
+                preview_half = min(2_000, max(64, preview_total // 2))
                 kept = truncate_head_tail_tokens(raw, preview_half, preview_half, separator=texts.SPILL_GAP)
                 omitted = max(
                     0,
                     len(raw.encode("utf-8", errors="replace"))
                     - len(kept.replace(texts.SPILL_GAP, "", 1).encode("utf-8", errors="replace")),
                 )
-                if path is not None:
-                    notice = texts.user_input_spill_notice(omitted, str(path))
-                else:
-                    notice = (
-                        f"(Omitted {omitted} bytes from an oversized user message; "
-                        "do NOT guess or fabricate the omitted middle.)"
-                    )
+                notice = texts.user_input_spill_notice(omitted, str(path))
                 out[index] = Row(
                     row.entry_id,
                     row.kind,
@@ -1485,7 +1498,7 @@ class TaskAgentSession(SessionInbox):
         from config.nekopower_settings import TASK_AGENT_BATCH_TOOL_RESULT_MAX_TOKENS
 
         rows = self.transcript.rows()
-        budget = min(TASK_AGENT_BATCH_TOOL_RESULT_MAX_TOKENS, max(4_096, self._window // 3))
+        budget = min(TASK_AGENT_BATCH_TOOL_RESULT_MAX_TOKENS, max(1, self._window // 3))
         rewritten = await asyncio.to_thread(
             cap_parallel_batch_results,
             rows,
@@ -1533,7 +1546,7 @@ class TaskAgentSession(SessionInbox):
             pinned=self._pinned(),
             or_drop=or_drop,
             reserve_tokens=reserve_tokens,
-            summarize=force or not self._compaction_breaker_tripped,
+            summarize=self._compacting or not self._compaction_breaker_tripped,
         )
 
     def _pinned(self) -> tuple[str, ...]:
@@ -1634,7 +1647,8 @@ class TaskAgentSession(SessionInbox):
         # Re-arm runtime context so todos, running jobs, active goal, and reply
         # language are re-injected on the next turn after compaction.
         self._context_due = True
-        self._image_hashes.clear()
+        self._last_image_hash = None
+        self._consecutive_image_count = 0
         self._turns_since_todo_nudge = 0
         # Only now: stopped while the snapshot was written, the next run
         # does all of this again, and measures against what it sends.
@@ -1811,15 +1825,24 @@ class TaskAgentSession(SessionInbox):
                 digest = hashlib.sha1(
                     block.data.encode("ascii", errors="replace"), usedforsecurity=False
                 ).hexdigest()
-                count = self._image_hashes.get(digest, 0) + 1
-                self._image_hashes[digest] = count
-                if count >= 3 and count % 3 == 0:
+                if digest == self._last_image_hash:
+                    self._consecutive_image_count += 1
+                else:
+                    self._last_image_hash = digest
+                    self._consecutive_image_count = 1
+                if self._consecutive_image_count >= 3 and self._consecutive_image_count % 3 == 0:
                     self.deliver_notice("repeated_image", texts.REPEATED_IMAGE_REMINDER)
                     break
         reminder = self._repeat.observe(call.name, call.arguments)
         if reminder is not None:
             self.deliver_notice("repeat_tool", reminder)
         return result, is_error
+
+    def _reset_recovery_nudges(self) -> None:
+        self._output_nudges = 0
+        self._empty_nudges = 0
+        self._invalid_tool_nudges = 0
+        self._recovery_nudges = 0
 
     def _finish_turn(
         self, turn: AgentTurnContext, signal: CancellationToken | None
@@ -1832,10 +1855,12 @@ class TaskAgentSession(SessionInbox):
         self._turns_since_todo_nudge += 1
 
         if message.stop_reason == "length" and not message.tool_calls and not cancelled:
-            self._empty_nudges = 0
-            self._invalid_tool_nudges = 0
-            if self._output_nudges < MAX_OUTPUT_CUT_OFF_NUDGES:
+            if (
+                self._output_nudges < MAX_OUTPUT_CUT_OFF_NUDGES
+                and self._recovery_nudges < MAX_TOTAL_RECOVERY_NUDGES
+            ):
                 self._output_nudges += 1
+                self._recovery_nudges += 1
                 dropped_tools = getattr(self._model, "last_dropped_truncated_tools", ())
                 if dropped_tools:
                     nudge = texts.OUTPUT_CUT_OFF_TOOL_NUDGE.replace("<<TOOLS>>", ", ".join(dropped_tools))
@@ -1861,11 +1886,14 @@ class TaskAgentSession(SessionInbox):
                 )
             return None
 
-        self._output_nudges = 0
         if message.stop_reason == "stop" and not message.tool_calls and not cancelled:
             if getattr(self._model, "last_dropped_unnamed_tool_calls", False):
-                if self._invalid_tool_nudges < MAX_INVALID_TOOL_NUDGES:
+                if (
+                    self._invalid_tool_nudges < MAX_INVALID_TOOL_NUDGES
+                    and self._recovery_nudges < MAX_TOTAL_RECOVERY_NUDGES
+                ):
                     self._invalid_tool_nudges += 1
+                    self._recovery_nudges += 1
                     self.harness.steer_message(
                         CustomMessage(
                             custom_type="notice:invalid_tool_turn",
@@ -1873,27 +1901,34 @@ class TaskAgentSession(SessionInbox):
                             display=False,
                         )
                     )
-                    return None
-            elif not message.text.strip():
+                return None
+            if not message.text.strip():
                 after_tool = len(turn.messages) >= 2 and isinstance(turn.messages[-2], ToolResultMessage)
                 suspicious_empty = (
                     bool(message.thinking_text.strip())
                     or message.usage.output > 0
                     or after_tool
                 )
-                if suspicious_empty and self._empty_nudges < MAX_EMPTY_COMPLETION_NUDGES:
-                    self._empty_nudges += 1
-                    self.harness.steer_message(
-                        CustomMessage(
-                            custom_type="notice:empty_completion",
-                            content=texts.EMPTY_COMPLETION_NUDGE,
-                            display=False,
+                if suspicious_empty:
+                    if (
+                        self._empty_nudges < MAX_EMPTY_COMPLETION_NUDGES
+                        and self._recovery_nudges < MAX_TOTAL_RECOVERY_NUDGES
+                    ):
+                        self._empty_nudges += 1
+                        self._recovery_nudges += 1
+                        self.harness.steer_message(
+                            CustomMessage(
+                                custom_type="notice:empty_completion",
+                                content=texts.EMPTY_COMPLETION_NUDGE,
+                                display=False,
+                            )
                         )
-                    )
                     return None
-        else:
-            self._empty_nudges = 0
-            self._invalid_tool_nudges = 0
+            # Normal non-empty stop completion is genuine progress: reset all
+            # recovery counters so later work gets a fresh budget.
+            self._reset_recovery_nudges()
+        elif not cancelled and (message.tool_calls or message.text.strip()):
+            self._reset_recovery_nudges()
 
         if (
             not cancelled
@@ -2088,6 +2123,10 @@ class TaskAgentSession(SessionInbox):
             # Its entry is known once the run has taken it (``_record``).
             self._opening_message = message
             self._leave_behind()
+            if human:
+                lang_match = _REPLY_LANGUAGE_RE.search(text)
+                if lang_match is not None:
+                    self._reply_language_hint = lang_match.group(1).strip() or None
         self._begin_run(message)
 
     def _leave_behind(self) -> None:
@@ -2100,12 +2139,14 @@ class TaskAgentSession(SessionInbox):
         stand in the way of one of its own.
         """
         self.todos.clear()
-        self._image_hashes.clear()
+        self._last_image_hash = None
+        self._consecutive_image_count = 0
         self._turns_since_todo_write = 0
         self._turns_since_todo_nudge = 0
         self._rapid_compactions = 0
         self._compaction_breaker_tripped = False
         self._compaction_breaker_notified = False
+        self._reset_recovery_nudges()
         self._reply_language_hint = None
         if not self._goal_of_this_start:
             self.goals.drop()
@@ -2245,6 +2286,9 @@ class TaskAgentSession(SessionInbox):
             raise SessionError("a background command is still running")
         self._abort_requested = False
         self._compacting = True
+        self._rapid_compactions = 0
+        self._compaction_breaker_tripped = False
+        self._compaction_breaker_notified = False
         task = asyncio.ensure_future(self._compact())
         self._run_task = task
         task.add_done_callback(self._compact_never_ran)

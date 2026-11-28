@@ -960,7 +960,7 @@ class _ResponseBuilder:
         return events
 
     def has_complete_tool_calls(self) -> bool:
-        """Whether every streamed tool call slot has a name and valid JSON object arguments."""
+        """Whether every streamed tool call slot has a name and non-empty valid JSON object arguments."""
         if not self._tool_slots:
             return False
         found = False
@@ -968,8 +968,10 @@ class _ResponseBuilder:
             if not slot["name"]:
                 return False
             raw = slot["arguments"]
+            if not raw.strip():
+                return False
             try:
-                parsed = json.loads(raw) if raw.strip() else {}
+                parsed = json.loads(raw)
             except ValueError:
                 return False
             if not isinstance(parsed, dict):
@@ -1482,7 +1484,19 @@ class LLMClientProvider:
                         await _close_stream()
                         if signal is not None and signal.is_cancelled():
                             raise _Aborted
-                        raw_resp = await client.ainvoke_raw(wire, **overrides)
+                        pending = asyncio.ensure_future(client.ainvoke_raw(wire, **overrides))
+                        while True:
+                            done, _waiting = await asyncio.wait({pending}, timeout=_CANCEL_POLL_SECONDS)
+                            if done:
+                                break
+                            if signal is not None and signal.is_cancelled():
+                                raise _Aborted
+                        try:
+                            raw_resp = pending.result()
+                        finally:
+                            pending = None
+                        if signal is not None and signal.is_cancelled():
+                            raise _Aborted
                         for event in builder.feed_raw_response(raw_resp):
                             yield event
                         break
@@ -1509,7 +1523,15 @@ class LLMClientProvider:
                     # 5-state mid-stream recovery on transient drop or stall.
                     if builder.emitted_output and _is_transient_stream_drop(exc):
                         await _close_stream()
-                        if builder.has_complete_tool_calls():
+                        # On Anthropic Messages API, signed thinking replay blocks
+                        # are only persisted at message_delta (which also sets
+                        # finish_reason). Never salvage a tool turn dropped before
+                        # message_delta on Anthropic, or the next round would lose
+                        # its signed thinking blocks and fail.
+                        can_salvage_tools = builder.has_complete_tool_calls() and not (
+                            anthropic and builder.finish_reason is None
+                        )
+                        if can_salvage_tools:
                             logger.warning(
                                 "stream dropped after complete tool call(s); salvaging tool turn: %s", exc
                             )

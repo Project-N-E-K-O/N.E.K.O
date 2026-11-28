@@ -93,20 +93,48 @@ class SummaryUsedToolError(RuntimeError):
     """The model called a tool instead of writing the checkpoint summary."""
 
 
-_ANALYSIS_BLOCK_RE = re.compile(r"<analysis>.*?</analysis>", re.IGNORECASE | re.DOTALL)
-_SUMMARY_BLOCK_RE = re.compile(r"<summary>(.*?)</summary>", re.IGNORECASE | re.DOTALL)
+_ANALYSIS_OPEN_RE = re.compile(r"^\s*<analysis>", re.IGNORECASE)
+_ANALYSIS_CLOSE_RE = re.compile(r"</analysis>", re.IGNORECASE)
+_SUMMARY_OPEN_RE = re.compile(r"^\s*<summary>", re.IGNORECASE)
+_SUMMARY_CLOSE_RE = re.compile(r"</summary>", re.IGNORECASE)
 
 
 def extract_compaction_summary(raw_text: str) -> str:
-    """Strip any ``<analysis>`` scratchpad and unwrap ``<summary>`` tags when present.
+    """Strip outer ``<analysis>`` scratchpad and unwrap outer ``<summary>`` tags.
 
-    Falls back to the trimmed text when a model omits the XML tags.
+    Only parses outer envelope tags so literal ``<analysis>`` or ``<summary>``
+    mentions inside the summary body are preserved verbatim. Returns ``""``
+    when the model produced only an ``<analysis>`` block (including a truncated
+    unclosed ``<analysis>`` block that never reached ``<summary>``). Preserves
+    truncated summary prose when output has already entered ``<summary>``, and
+    falls back to trimmed plain prose when the model omitted XML tags.
     """
-    cleaned = _ANALYSIS_BLOCK_RE.sub("", raw_text).strip()
-    match = _SUMMARY_BLOCK_RE.search(cleaned)
-    if match is not None:
-        return match.group(1).strip()
-    return cleaned
+    text = raw_text.strip()
+    if not text:
+        return ""
+    while True:
+        open_analysis = _ANALYSIS_OPEN_RE.match(text)
+        if open_analysis is None:
+            break
+        close_analysis = _ANALYSIS_CLOSE_RE.search(text, open_analysis.end())
+        if close_analysis is None:
+            # Cut off inside scratchpad before summary began: reject completely.
+            return ""
+        text = text[close_analysis.end() :].strip()
+        if not text:
+            return ""
+    open_summary = _SUMMARY_OPEN_RE.match(text)
+    if open_summary is not None:
+        rest = text[open_summary.end() :]
+        # Match up to the LAST closing </summary> so any literal </summary>
+        # code examples inside the body stay intact.
+        last_close = None
+        for match in _SUMMARY_CLOSE_RE.finditer(rest):
+            last_close = match
+        if last_close is not None:
+            return rest[: last_close.start()].strip()
+        return rest.strip()
+    return text
 
 
 # ---------------------------------------------------------------------------
@@ -525,12 +553,30 @@ def cap_parallel_batch_results(
     sizes = {i: estimate_tokens(rows[i].message, image_tokens=0) for i in batch_indices}
     if sum(sizes.values()) <= budget:
         return None
-    share = max(floor_tokens, budget // len(batch_indices))
+    # Water-filling: keep small results untouched and divide the remaining
+    # aggregate budget evenly across oversized siblings. Aggregate ``budget``
+    # takes precedence over ``floor_tokens`` when ``n * floor_tokens > budget``,
+    # floored only at the minimal cap below which the spill notice itself would
+    # not shrink further.
+    min_cap = min(floor_tokens, 160)
+    remaining_budget = budget
+    uncapped = sorted(batch_indices, key=lambda idx: sizes[idx])
+    while uncapped:
+        fair = remaining_budget // len(uncapped)
+        if sizes[uncapped[0]] <= fair:
+            remaining_budget -= sizes[uncapped[0]]
+            uncapped.pop(0)
+        else:
+            break
+    if not uncapped:
+        return None
+    fair = remaining_budget // len(uncapped)
+    # Reserve message-wrapper overhead (``estimate_tokens`` adds 6 per message)
+    # so the combined post-cap estimate stays within ``budget``.
+    item_cap = max(min_cap, fair - 16)
     out = list(rows)
     changed = False
-    for index in batch_indices:
-        if sizes[index] <= share:
-            continue
+    for index in uncapped:
         row = out[index]
         message = row.message
         assert isinstance(message, ToolResultMessage)
@@ -538,14 +584,14 @@ def cap_parallel_batch_results(
         hint = f"{message.tool_name}-{message.tool_call_id}-batch"
         parts = first_block_and_rest(message.content)
         if parts is not None:
-            fitted = cap_result_blocks(*parts, share, spill, hint)
+            fitted = cap_result_blocks(*parts, item_cap, spill, hint)
             if fitted is None:
                 continue
             updated = message.model_copy(
                 update={"content": [*(TextContent(text=part) for part in fitted), *images]}
             )
         else:
-            capped = cap_result_text(message.text, share, spill, hint)
+            capped = cap_result_text(message.text, item_cap, spill, hint)
             if capped is None:
                 continue
             updated = message.model_copy(update={"content": [TextContent(text=capped), *images]})
@@ -637,9 +683,10 @@ def retain_recent_images(
         if remaining[counter] > 0:
             remaining[counter] -= 1
             continue
+        unseen = index > last_assistant if (last_assistant >= 0 or isinstance(message, UserMessage)) else False
         placeholder = (
             texts.IMAGE_OMITTED_UNSEEN_PLACEHOLDER
-            if last_assistant >= 0 and index > last_assistant
+            if unseen
             else texts.IMAGE_OMITTED_PLACEHOLDER
         )
         content = [
@@ -903,8 +950,14 @@ class ContextManager:
             transcript.rewrite(pruned)
             self.invalidate()
             if not force and await self.measure(transcript.messages) <= threshold:
+                if as_it_was is not None:
+                    transcript.rewrite(as_it_was)
+                    self.invalidate()
                 return []
         if not summarize:
+            if as_it_was is not None and pruned is not None:
+                transcript.rewrite(as_it_was)
+                self.invalidate()
             return []
 
         done: list[Compaction] = []
@@ -1048,12 +1101,8 @@ class ContextManager:
             logger.warning("the part to be summed up does not fit one request; the conversation is left as it is")
             return None, None, False, False
 
-        def _finalize_text(raw: str) -> str:
-            extracted = extract_compaction_summary(raw)
-            return extracted if extracted else raw.strip()
-
         def _handle_cut_short(cut: SummaryCutShort) -> tuple[str | None, Usage | None, bool, bool]:
-            cleaned = _finalize_text(cut.text)
+            cleaned = extract_compaction_summary(cut.text)
             if not or_drop or not cleaned:
                 logger.warning("context summary was cut short at its length limit")
                 return (SUMMARY_FALLBACK if or_drop else None), None, False, head_truncated
@@ -1070,7 +1119,7 @@ class ContextManager:
             summary, usage = await self._call_summarizer(prepared, policy.summary_cap)
             cleaned = extract_compaction_summary(summary)
             if cleaned:
-                return cleaned, usage, True, head_truncated
+                return cleaned, usage, not head_truncated, head_truncated
             if or_drop and supports_retry_opts:
                 retry_no_tools = True
             else:
@@ -1112,7 +1161,7 @@ class ContextManager:
                 )
                 cleaned = extract_compaction_summary(summary)
                 if cleaned:
-                    return cleaned, usage, True, head_truncated
+                    return cleaned, usage, not head_truncated, head_truncated
                 return SUMMARY_FALLBACK, usage, False, head_truncated
             except asyncio.CancelledError:
                 raise
@@ -1151,7 +1200,7 @@ class ContextManager:
                     )
                     cleaned = extract_compaction_summary(summary)
                     if cleaned:
-                        return cleaned, usage, True, head_truncated
+                        return cleaned, usage, False, head_truncated
                 except asyncio.CancelledError:
                     raise
                 except SummaryCutShort as cut:

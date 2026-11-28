@@ -1683,7 +1683,7 @@ class TaskAgentManager(
             # model with a smaller context window, pre-compact once using the
             # previous larger-window model (best-effort, fail-open).
             if runtime_name == RUNTIME_BUILTIN and begun_in == RUNTIME_BUILTIN and not session.cleared_before:
-                await self._maybe_precompact_for_model_switch(
+                precompacted = await self._maybe_precompact_for_model_switch(
                     commission,
                     kept,
                     choice,
@@ -1691,7 +1691,12 @@ class TaskAgentManager(
                     workdir=home,
                     session_path=session_path,
                     template=template,
+                    still_active=receiving,
                 )
+                if precompacted:
+                    refreshed = await self._ledger.get_session(session.session_id)
+                    if refreshed is not None:
+                        kept = refreshed
             # Uninstall/replace must see this commission before gateway setup yields.
             session.runtime, session.runtime_name = runtime, runtime_name
             url = await self._gateway.start() if self._gateway is not None else None
