@@ -36,7 +36,7 @@ from nekopower.dsh import DshUnavailable
 from nekopower.host.paths import DSH_SESSION_NAME, TRANSCRIPT_NAME
 from nekopower.host.runtimes import RUNTIME_BUILTIN, RUNTIME_DSH
 from nekopower.host.task_agents import _Handed, _Unsaid, _begun_in, _has_transcript
-from tests.unit.nekopower.fakes import ScriptedLLM, call, finish
+from tests.unit.nekopower.fakes import ScriptedLLM, call, finish, say
 from tests.unit.nekopower.host_fakes import (
     FakeDecisionLLM,
     make_host,
@@ -868,10 +868,11 @@ async def test_a_task_agent_started_by_another_runs_where_that_one_runs(
     assert (name, note) == (expected, None)
 
 
-async def test_a_task_agent_whose_preset_withholds_tools_runs_in_the_built_in_runtime_though_its_starter_is_in_dsh(
+async def test_a_task_agent_whose_preset_withholds_tools_runs_where_its_starter_is_and_is_told_what_not_to_use(
     hosts, tmp_path
 ):
-    # dsh has file and command tools of its own, which the host cannot keep from a session there.
+    # dsh has file and command tools of its own, which the host cannot keep from a session there:
+    # a session of a preset that is without them is opened there all the same, and told not to use them.
     def lead(preset: dict[str, Any]) -> ScriptedLLM:
         return ScriptedLLM(
             [
@@ -892,12 +893,15 @@ async def test_a_task_agent_whose_preset_withholds_tools_runs_in_the_built_in_ru
     (scout,) = await host.ledger.select(parent_id=scouted.id)
     (worker,) = await host.ledger.select(parent_id=worked.id)
     assert (scouted.runtime, worked.runtime) == (RUNTIME_DSH, RUNTIME_DSH)
-    # The scout where the host keeps the tools from it; a worker where its starter is, as before.
-    assert ((await host.ledger.get_session(scout.session_id)).preset, scout.runtime) == ("scout", RUNTIME_BUILTIN)
+    # Both where their starter is.
+    assert ((await host.ledger.get_session(scout.session_id)).preset, scout.runtime) == ("scout", RUNTIME_DSH)
     assert ((await host.ledger.get_session(worker.session_id)).preset, worker.runtime) == ("worker", RUNTIME_DSH)
-    # That is where it belongs: it is not on record as a commission dsh could not take.
-    assert await _fallbacks(host, scout.id) == []
-    assert len(host.fake.builtin.created) == 1
+    assert await _fallbacks(host, scout.id) == [] and host.fake.builtin.created == []
+    # The scout is told, with what opens its part, which of dsh's own tools its preset is without;
+    # the worker, which has them, is told nothing of the kind.
+    told = [json.dumps(request) for request in child.requests]
+    kept_off = "This runtime still offers you tools of its own that write or edit files or run commands; as scout"
+    assert kept_off in told[0] and "still offers you tools" not in told[-1]
 
 
 @pytest.mark.parametrize(
@@ -1010,6 +1014,118 @@ async def test_a_search_in_dsh_is_ruled_on_before_it_is_called_and_not_again(hos
     assert len(asked) == 2
     release.set()
     await wait_status(host, commission_id, "done")
+
+
+def _leader_at_work() -> tuple[Any, Any, Any]:
+    import asyncio
+
+    release = asyncio.Event()
+
+    async def wait() -> None:
+        await release.wait()
+
+    leader = ScriptedLLM([[wait, say("that is all"), finish("stop")]])
+    member = ScriptedLLM([_report("ready", "header fixed")])
+    return (lambda spec: leader if "hand_over" not in spec.disabled_tools else member), leader, release
+
+
+@pytest.mark.parametrize(("answer", "refused"), [("once", False), ("deny", True)])
+async def test_a_leader_in_dsh_is_asked_about_a_member_that_changes_files_before_it_hands_over_and_not_again(
+    hosts, tmp_path, answer, refused
+):
+    pick, _leader, release = _leader_at_work()
+    host = _host(hosts, tmp_path, pick, Installation())
+    asked: list[Any] = []
+
+    async def asker(commission_id: str, ask: Any) -> str:
+        asked.append((commission_id, ask.category, ask.detail.get("tool"), ask.detail.get("preset")))
+        return answer
+
+    host.permissions.set_asker(asker)
+    led = await host.open_session("Lan", "Shop site", preset="boss")
+    commission_id = await _dispatch(host, "fix the header of the shop site")
+    await wait_status(host, commission_id, "working")
+    await wait_until(lambda: commission_id in host.task_agents.running, what="the session")
+    agents = host.task_agents
+    hands = {"description": "fixes the pages", "brief": "Fix the header."}
+
+    # Before the call, where dsh waits as long as the user takes: asked what the call would ask,
+    # and nothing is made or marked by it.
+    reply = await agents._cb_permission(
+        commission_id, {"tool": "hand_over", "category": "host_tool", "arguments": hands, "workdir": "w", "default": "allow"}
+    )
+    assert reply["allow"] is True and asked == [(commission_id, "open_session", "hand_over", "worker")]
+    assert await host.ledger.members("Lan", "Shop site") == [] and agents._sessions[commission_id].handing_over is None
+
+    # The call does not ask a second time: it goes through, or is answered with the refusal.
+    if refused:
+        with pytest.raises(RuntimeError, match="did not allow"):
+            await agents._cb_hand_over(led["session_id"], hands)
+        assert await host.ledger.members("Lan", "Shop site") == []
+    else:
+        await agents._cb_hand_over(led["session_id"], hands)
+        (made,) = await host.ledger.members("Lan", "Shop site")
+        assert agents._sessions[commission_id].handing_over[0] == made.id
+    assert len(asked) == 1
+
+    # That was for the one call: one that asks about another is asked about by itself.
+    assert agents._open_rulings == {}
+    if refused:
+        with pytest.raises(RuntimeError, match="did not allow"):
+            await agents._cb_hand_over(led["session_id"], hands)
+        assert len(asked) == 2
+    release.set()
+    await wait_status(host, commission_id, "done")
+    # Nothing waits for a call once the commission is over.
+    assert agents._open_rulings == {}
+
+
+async def test_what_was_ruled_ahead_of_a_hand_over_is_only_for_what_the_user_was_asked_about(hosts, tmp_path):
+    pick, _leader, release = _leader_at_work()
+    host = _host(hosts, tmp_path, pick, Installation())
+    asked: list[Any] = []
+
+    async def asker(commission_id: str, ask: Any) -> str:
+        asked.append(ask.detail.get("title"))
+        return "deny"
+
+    host.permissions.set_asker(asker)
+    led = await host.open_session("Lan", "Shop site", preset="boss")
+    commission_id = await _dispatch(host, "fix the header of the shop site")
+    await wait_status(host, commission_id, "working")
+    await wait_until(lambda: commission_id in host.task_agents.running, what="the session")
+    agents = host.task_agents
+
+    def ahead(arguments: dict[str, Any]) -> Any:
+        return agents._cb_permission(commission_id, {"tool": "hand_over", "category": "host_tool", "arguments": arguments})
+
+    # One that reads only is not asked about, ahead of the call or in it; nor is a call that is
+    # wrong (no such member), which the call itself answers.
+    assert (await ahead({"preset": "scout", "description": "looks", "brief": "Look."}))["allow"] is True
+    assert (await ahead({"to": "nobody", "brief": "Fix."}))["allow"] is True
+    assert asked == [] and agents._open_rulings == {}
+
+    # Asked about one, and the call is for another: that one is asked about by itself.
+    await ahead({"description": "fixes the pages", "brief": "Fix the header."})
+    with pytest.raises(RuntimeError, match="did not allow"):
+        await agents._cb_hand_over(led["session_id"], {"description": "fixes the styles", "brief": "Fix the styles."})
+    assert [title.split(" <- ")[0] for title in asked] == ["fixes the pages", "fixes the styles"]
+
+    # What was ruled waits for its call as long as a call takes to follow, and no longer.
+    pages = {"description": "fixes the pages", "brief": "Fix the header."}
+    await ahead(pages)
+    detail, decision, _until = agents._open_rulings[commission_id]
+    agents._open_rulings[commission_id] = (detail, decision, 0.0)
+    with pytest.raises(RuntimeError, match="did not allow"):
+        await agents._cb_hand_over(led["session_id"], pages)
+    assert len(asked) == 4
+    # And not past the commission it was for.
+    await ahead(pages)
+    assert commission_id in agents._open_rulings
+    release.set()
+    await wait_status(host, commission_id, "done")
+    await wait_until(lambda: commission_id not in agents.running, what="the session being released")
+    assert agents._open_rulings == {}
 
 
 async def test_a_ruling_on_a_search_is_only_for_what_the_user_was_asked_about(hosts, tmp_path):
@@ -1352,3 +1468,29 @@ async def test_stock_job_list_uses_the_other_tool_policy(tmp_path, mode, choice,
                 assert "no background jobs" in message["content"].lower()
         finally:
             await host.shutdown()
+
+
+async def test_the_leader_of_a_project_is_opened_in_dsh_too_and_hands_its_commission_over_from_there(hosts, tmp_path):
+    leader = ScriptedLLM(
+        [
+            [call("hand_over", {"description": "fixes the pages", "brief": "Fix the header."}), finish("tool_calls")],
+            [say("handed over"), finish("stop")],
+        ]
+    )
+    member = ScriptedLLM([_report("ready", "header fixed")])
+    host = _host(
+        hosts, tmp_path, lambda spec: leader if "hand_over" not in spec.disabled_tools else member, Installation()
+    )
+    await host.permission_store.set_mode("open_session", "allow")
+    led = await host.open_session("Lan", "Shop site", preset="boss")
+
+    done = await wait_status(host, await _dispatch(host, "fix the header of the shop site"), "done")
+
+    # It went through the leader, which was opened where any session would be, and on to a member.
+    (handed,) = [event.payload for event in await host.ledger.events(done.id) if event.type == "handed_over"]
+    assert handed["from"] == led["session_id"] and done.session_id == handed["to"] and done.result_summary == "header fixed"
+    assert (await host.ledger.get_session(led["session_id"])).runtime == RUNTIME_DSH
+    assert host.fake.builtin.created == []
+    # Told there, with what opens the commission, which of dsh's own tools a leader is without.
+    told = json.dumps(leader.requests[0])
+    assert "This runtime still offers you tools of its own that write or edit files or run commands; as lead" in told

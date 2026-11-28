@@ -191,6 +191,42 @@ PRESET_COPIED_TOO_OFTEN = (
     "with is not followed back that far, and it is not opened without it"
 )
 
+# What a session is told with the first message of the start after its
+# preset was changed (``TaskAgentManager._start``): once for a change. The
+# head of its requests was put together anew for that start, so its system
+# prompt and its tools are the new preset's; what was said before is not.
+# Rendered with str.format: was, now (as a model reads a preset called).
+PRESET_CHANGED = (
+    "A note from the host, not from the user: this session's preset was changed from {was} to "
+    "{now}. What your system prompt says of your role, and the tools you have, are those of {now} "
+    "from here on; what is above this was done as {was}."
+)
+# The same for a session in dsh, whose system prompt is the process's and
+# says nothing of a role: it was told of its role with its first message,
+# and is told of the new one here. Rendered with str.format: was, now, role.
+PRESET_CHANGED_IN_DSH = (
+    "A note from the host, not from the user: this session's preset was changed from {was} to "
+    "{now}. What you were told of your role before no longer holds; what is above this was done as "
+    "{was}. {role}"
+)
+# What stands for the role of a preset that says nothing of one.
+PRESET_CHANGED_NO_ROLE = "You have no role beyond what every session is told."
+# Said to a session in dsh of a preset that is without tools dsh has of its
+# own, which the host cannot keep from a session there: it is held to its
+# preset by being told. With the first message of such a session, behind the
+# host's instructions, and after the role where it is told of a change. Rendered with str.format:
+# now, what (``PRESET_IN_DSH_FILES``, ``PRESET_IN_DSH_COMMANDS`` or both, joined by `` or ``).
+PRESET_IN_DSH_KEEPS_OFF = (
+    "This runtime still offers you tools of its own that {what}; as {now} you do not use them, "
+    "whatever is said above of having none."
+)
+PRESET_IN_DSH_FILES = "write or edit files"
+PRESET_IN_DSH_COMMANDS = "run commands"
+
+# Why a preset is not changed by anyone but the user to one that can change
+# files. Rendered with str.format: reason.
+PRESET_CHANGE_NOT_ALLOWED = "the user did not allow this task agent a preset that can change files ({reason})"
+
 # What a task agent is told when it says what its session takes (``duty`` of
 # ``report``) and the user has written that line of the card.
 CARD_DUTY_IS_THE_USERS = "The user wrote what this session takes; that line of its card is left as it is."

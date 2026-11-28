@@ -306,6 +306,10 @@ class MessagingMixin:
             return
         # Taken, so it is not refused any more.
         _not_refused(session, number)
+        if session.started_as is not None and number >= session.started_as_with:
+            # The text that tells it of a change of its preset is in its conversation: it knows
+            # itself as that preset from here on, whatever becomes of the run that took it.
+            await self._note_started_as(session)
         receipt = session.answer_receipts.pop(number, None)
         if receipt is not None:
             self._settle_call_soon(receipt[0], "completed")
