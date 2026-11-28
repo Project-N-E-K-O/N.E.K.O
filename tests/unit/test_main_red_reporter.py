@@ -93,6 +93,10 @@ def test_every_plugin_job_reruns_its_failures_with_the_marker():
         assert rerun[0]["if"] == "failure() && steps.full-suite.outcome == 'failure'", name
         assert f"{mr.RERUN_MARKER}=$verdict" in rerun[0]["run"], name
         assert rerun[0]["run"].rstrip().endswith("exit 0"), name
+        # The verdict must be printed before the step limit kills the step:
+        # no new test after 120 s, plus at most one 300 s test, stays below it.
+        assert "--session-timeout 120" in rerun[0]["run"], name
+        assert 120 + 300 < rerun[0]["timeout-minutes"] * 60, name
 
 
 def test_windows_plugin_flaky_check_does_not_pass_a_run_cut_short_by_a_crash():

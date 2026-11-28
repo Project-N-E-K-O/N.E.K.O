@@ -93,17 +93,17 @@ jobs:
         # empty record from re-running everything. The job stays red either
         # way; main-red-reporter.yml reads the NEKO_LF_RERUN_RESULT line from
         # this job's log and labels the issue `flaky` when the re-run passed.
-        # `timeout 420`: here (signal method) every hung test in the re-run
-        # takes its full 300 s and the next one starts, so two of them would
-        # outlast the step limit and the step would be killed before printing
-        # the verdict. Stopping pytest first reports them as `failed` (exit
-        # 124). The Windows re-run cannot get there: its first hung test ends
-        # the pytest process.
+        # The re-run has to print its verdict before the 8 min step limit kills
+        # it. `--session-timeout 120` (pytest-timeout, both jobs) starts no new
+        # test after 120 s, and the test already running is cut at 300 s by the
+        # per-test limit, so the re-run ends by about 420 s with exit 1, i.e.
+        # `failed`. `timeout 450` is a hard stop in case a test hangs where the
+        # signal-based timeout cannot interrupt it (exit 124, also `failed`).
         if: failure() && steps.full-suite.outcome == 'failure'
         timeout-minutes: 8
         run: |
           rc=0
-          timeout -k 10 420 uv run pytest plugin/tests -q -n 0 --lf --lfnf none || rc=$?
+          timeout -k 10 450 uv run pytest plugin/tests -q -n 0 --lf --lfnf none --session-timeout 120 || rc=$?
           if [ "$rc" -eq 0 ]; then verdict=passed; else verdict=failed; fi
           echo "NEKO_LF_RERUN_RESULT=$verdict (pytest exit $rc)"
           {
@@ -111,7 +111,7 @@ jobs:
             echo
             echo "Re-running only the failed tests exited with ${rc}: **$verdict**."
             if [ "$rc" -eq 124 ]; then
-              echo 'The re-run was stopped after 7 min.'
+              echo 'The re-run was stopped after 7.5 min.'
             fi
             if [ "$verdict" = passed ]; then
               echo 'The failures did not reproduce; treat them as flaky until proven otherwise.'
@@ -183,16 +183,16 @@ jobs:
 
       - name: Re-run failed tests once (flaky check)
         # Same step as the Linux job above and unit-tests.yml; see the comment
-        # there. One addition: when the full run stopped at a crashed worker,
-        # the tests still queued never ran and are not in the `--lf` record, so
-        # a passing re-run says nothing about them. The step then prints no
+        # there, including `--session-timeout`. One addition: when the full run
+        # stopped at a crashed worker, the tests still queued never ran and are
+        # not in the `--lf` record, so a passing re-run says nothing about them. The step then prints no
         # verdict (the reporter does not call the run flaky) and says why in
         # the summary. A failing re-run is still reported as `failed`.
         if: failure() && steps.full-suite.outcome == 'failure'
         timeout-minutes: 8
         shell: pwsh
         run: |
-          uv run pytest plugin/tests -q -n 0 --lf --lfnf none --basetemp "${{ runner.temp }}/neko-plugin-rerun"
+          uv run pytest plugin/tests -q -n 0 --lf --lfnf none --session-timeout 120 --basetemp "${{ runner.temp }}/neko-plugin-rerun"
           $rc = $LASTEXITCODE
           $junit = "${{ runner.temp }}/plugin-junit/full.xml"
           $cutShort = -not (Test-Path -LiteralPath $junit) -or (Select-String -LiteralPath $junit -Pattern 'crashed while running' -SimpleMatch -Quiet)
