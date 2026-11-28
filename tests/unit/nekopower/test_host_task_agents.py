@@ -2325,7 +2325,7 @@ async def test_nothing_is_said_to_a_commission_while_the_end_of_its_run_writes_t
     assert told is False and not any("and skip the drafts" in str(request) for request in llm.requests)
     assert done.result_summary == "photos sorted"
     assert await _events(host, receipt.commission_id, "told") == []
-    assert manager._landing_ends == {}
+    assert manager._landing_ends == {} and manager._landing_holds == {}
 
 
 async def test_what_is_said_to_a_commission_held_back_twice_at_once_waits_for_the_last_hold(hosts, tmp_path):
