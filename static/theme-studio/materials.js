@@ -6,7 +6,8 @@
    Public API on window.NekoMaterials:
      mount(root)     render the shell (#materials-root in index.html)
      sync(palette)   sync current/baseline after get_theme returns, then redraw
-     snapshot()      current material settings for applyTheme
+     snapshot()      full current material settings snapshot (for save comparison)
+     submitPayload() apply payload with only added/modified custom_presets
      isDirty()       whether there are unapplied material edits
      resetLocal()    drop local edits and return to the baseline
 */
@@ -1610,8 +1611,32 @@
     if (!materials || typeof materials !== 'object') return;
     var keepEdits = !!(options && Object.prototype.hasOwnProperty.call(options, 'submitted') &&
       CURRENT && !same(CURRENT, options.submitted));
+    var prevBasePresets = (BASELINE && BASELINE.custom_presets && typeof BASELINE.custom_presets === 'object')
+      ? BASELINE.custom_presets : {};
     BASELINE = ensureSections(clone(materials));
     if (keepEdits) {
+      // Reconcile custom_presets that this panel did not edit against the refreshed disk
+      // baseline, so a concurrent delete/update from another panel is adopted without
+      // discarding edits made locally while the save was in flight.
+      if (!CURRENT.custom_presets || typeof CURRENT.custom_presets !== 'object') {
+        CURRENT.custom_presets = {};
+      }
+      var nextBasePresets = BASELINE.custom_presets || {};
+      Object.keys(CURRENT.custom_presets).forEach(function (name) {
+        if (HAS.call(prevBasePresets, name) && same(CURRENT.custom_presets[name], prevBasePresets[name])) {
+          if (HAS.call(nextBasePresets, name)) {
+            CURRENT.custom_presets[name] = clone(nextBasePresets[name]);
+          } else {
+            delete CURRENT.custom_presets[name];
+            if (CURRENT.preset === name) CURRENT.preset = 'custom';
+          }
+        }
+      });
+      Object.keys(nextBasePresets).forEach(function (name) {
+        if (!HAS.call(prevBasePresets, name) && !HAS.call(CURRENT.custom_presets, name)) {
+          CURRENT.custom_presets[name] = clone(nextBasePresets[name]);
+        }
+      });
       DIRTY = !same(CURRENT, BASELINE);
     } else {
       CURRENT = ensureSections(clone(materials));
@@ -1628,6 +1653,29 @@
   function snapshot() {
     if (!CURRENT) return null;
     return clone(CURRENT);
+  }
+
+  /**
+   * Build the payload submitted by "Apply": includes all five active param sections,
+   * but only custom_presets that this panel added or modified relative to BASELINE.
+   * Unchanged presets are omitted so a dirty panel never resurrects presets deleted
+   * or overwrites presets edited in another open panel (delete/rename use dedicated entries).
+   */
+  function submitPayload() {
+    if (!CURRENT) return null;
+    var out = clone(CURRENT);
+    var curPresets = (CURRENT.custom_presets && typeof CURRENT.custom_presets === 'object')
+      ? CURRENT.custom_presets : {};
+    var basePresets = (BASELINE && BASELINE.custom_presets && typeof BASELINE.custom_presets === 'object')
+      ? BASELINE.custom_presets : {};
+    var changedPresets = {};
+    Object.keys(curPresets).forEach(function (name) {
+      if (!HAS.call(basePresets, name) || !same(curPresets[name], basePresets[name])) {
+        changedPresets[name] = clone(curPresets[name]);
+      }
+    });
+    out.custom_presets = changedPresets;
+    return out;
   }
 
   function isDirty() {
@@ -1674,6 +1722,7 @@
     mount: mount,
     sync: sync,
     snapshot: snapshot,
+    submitPayload: submitPayload,
     isDirty: isDirty,
     resetLocal: resetLocal,
     applyPreset: function (id) { applyPreset(id); }

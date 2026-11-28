@@ -826,3 +826,61 @@ def test_startup_survives_unwritable_theme_file(tmp_path, monkeypatch):
         assert studio.startup_sync()["status"] == "ready"
     finally:
         studio.shutdown()
+
+
+@pytest.mark.unit
+def test_apply_theme_filtered_custom_presets_does_not_resurrect_deleted_or_overwrite_newer(studio):
+    """Submitting only added/edited custom presets keeps concurrent deletes and updates intact."""
+    from theme_studio import materials as ts_materials
+
+    deleted_cfg = ts_materials.default_materials()
+    deleted_cfg["global"]["blur"] = 10.0
+    edited_cfg = ts_materials.default_materials()
+    edited_cfg["global"]["blur"] = 12.0
+    assert theme_studio.run_entry_sync(
+        "save_material_preset", {"name": "DeletedByOther", "materials": deleted_cfg}
+    ).ok
+    assert theme_studio.run_entry_sync(
+        "save_material_preset", {"name": "EditedByOther", "materials": edited_cfg}
+    ).ok
+
+    # Simulate another open panel deleting DeletedByOther and updating EditedByOther on disk.
+    assert theme_studio.run_entry_sync("delete_material_preset", {"name": "DeletedByOther"}).ok
+    newer_cfg = ts_materials.default_materials()
+    newer_cfg["global"]["blur"] = 28.0
+    assert theme_studio.run_entry_sync(
+        "save_material_preset", {"name": "EditedByOther", "materials": newer_cfg}
+    ).ok
+
+    # A stale panel with unapplied blur edits submits only its newly added preset in custom_presets.
+    added_cfg = ts_materials.default_materials()
+    added_cfg["global"]["blur"] = 22.0
+    payload = ts_materials.default_materials()
+    payload["enabled"] = True
+    payload["global"]["blur"] = 22.0
+    payload["preset"] = "EditedByOther"
+    payload["custom_presets"] = {
+        "AddedBySelf": {
+            section: added_cfg[section]
+            for section in ("global", "lighting", "refraction", "surface", "animation")
+        }
+    }
+    applied = theme_studio.run_entry_sync("apply_theme", {"materials": payload})
+    assert applied.ok, applied.error
+
+    after = theme_studio.run_entry_sync("get_theme", {}).value["materials"]
+    assert "DeletedByOther" not in after["custom_presets"]
+    assert "AddedBySelf" in after["custom_presets"]
+    assert after["custom_presets"]["EditedByOther"]["global"]["blur"] == 28.0
+    assert after["global"]["blur"] == 22.0
+    assert after["preset"] == "EditedByOther"
+
+    # When the stale panel had the deleted preset selected, applying falls back to "custom".
+    stale_selected = ts_materials.default_materials()
+    stale_selected["preset"] = "DeletedByOther"
+    stale_selected["custom_presets"] = {}
+    reapplied = theme_studio.run_entry_sync("apply_theme", {"materials": stale_selected})
+    assert reapplied.ok, reapplied.error
+    after_reapply = theme_studio.run_entry_sync("get_theme", {}).value["materials"]
+    assert "DeletedByOther" not in after_reapply["custom_presets"]
+    assert after_reapply["preset"] == "custom"

@@ -3745,14 +3745,20 @@ function collect(mode) {
 function renderMeta(options) {
   var p = state.palette;
   if (!p) return;
-  // If the user changed name/enabled but hasn't applied, don't overwrite the inputs with server values:
-  // the old code always wrote #theme-enabled on every read-back, so flipping the switch was silently
-  // reset to the server value, and the user thought it was changed when applying.
+  // If the user changed name or enabled but hasn't applied, don't overwrite that control
+  // with server values; track each control independently against the previous baseline so a
+  // pending name edit does not hold onto a stale enabled checkbox (or vice versa) when the
+  // other field updates on disk (e.g. a schedule switch setting enabled = true).
   // Exception: when the user clicks "Reload" and confirms discarding changes, name / enabled also go
   // back to the disk values, otherwise the panel says "discarded" while these two linger, keep blocking
   // external sync, and get written on the next apply.
   var discard = !!(options && options.discard);
-  var keepEdits = !discard && metaDirtyCount() > 0;
+  var nameInput = $('theme-name');
+  var enabledInput = $('theme-enabled');
+  var keepName = !discard && !!nameInput &&
+    nameInput.value.trim() !== String(state.metaName || '').trim();
+  var keepEnabled = !discard && !!enabledInput &&
+    (!!enabledInput.checked !== !!state.metaEnabled);
   // The baseline must refresh on every palette read-back: applyTheme uses it to tell whether name/enabled really changed.
   state.metaName = p.name || '';
   state.metaEnabled = p.enabled !== false;
@@ -3761,11 +3767,12 @@ function renderMeta(options) {
   $('meta-name').textContent = p.name || tsT('editor.meta.defaultName', '默认');
   var when = p.updated_at ? String(p.updated_at).replace('T', ' ').slice(0, 19) : '—';
   $('meta-updated').textContent = when;
-  if (!keepEdits && document.getElementById('theme-name') &&
-      (discard || document.activeElement !== $('theme-name'))) {
-    $('theme-name').value = p.name || '';
+  if (!keepName && nameInput && (discard || document.activeElement !== nameInput)) {
+    nameInput.value = p.name || '';
   }
-  if (!keepEdits) $('theme-enabled').checked = p.enabled !== false;
+  if (!keepEnabled && enabledInput) {
+    enabledInput.checked = p.enabled !== false;
+  }
 }
 
 /* ===== CHANGES_BEGIN (v0.5.1: pending changes list) ===== */
@@ -4036,12 +4043,14 @@ function materialsSnapshot() {
   try { return api.snapshot() || null; } catch (error) { return null; }
 }
 
-/** The material center's current edit values; null when unchanged / not mounted (the backend then keeps the on-disk materials). */
+/** The material center's current edit payload; null when unchanged / not mounted (the backend then keeps the on-disk materials). */
 function currentMaterialsPayload() {
   var api = window.NekoMaterials;
-  if (!api || typeof api.snapshot !== 'function' || typeof api.isDirty !== 'function') return null;
+  if (!api || typeof api.isDirty !== 'function') return null;
+  var getter = typeof api.submitPayload === 'function' ? api.submitPayload : api.snapshot;
+  if (typeof getter !== 'function') return null;
   try {
-    return api.isDirty() ? (api.snapshot() || null) : null;
+    return api.isDirty() ? (getter() || null) : null;
   } catch (error) {
     return null;
   }
@@ -8340,5 +8349,7 @@ window.__ntsPanel = window.__ntsPanel || {
   startExternalSync: startExternalSync,
   stopExternalSync: stopExternalSync,
   loadCatalogCollapsed: loadCatalogCollapsed,
-  saveCatalogCollapsed: saveCatalogCollapsed
+  saveCatalogCollapsed: saveCatalogCollapsed,
+  currentMaterialsPayload: currentMaterialsPayload,
+  renderMeta: renderMeta
 };
