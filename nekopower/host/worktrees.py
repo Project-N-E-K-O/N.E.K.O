@@ -812,17 +812,20 @@ class WorktreeManager:
                 worktree.repo_root, worktree.path, worktree.id, remove_directory=False, token=worktree.token
             )
 
-    async def remove_if_untouched(self, worktree: Worktree, is_untouched: Any) -> bool:
-        """Remove ``worktree`` under its repository lock only if ``is_untouched(path)`` still holds.
+    async def remove_if_untouched(self, worktree: Worktree, is_untouched: Any = None) -> str:
+        """Remove ``worktree`` under its repository lock if ``is_untouched(path)`` still holds.
 
-        Checks ``is_untouched`` before git metadata queries and re-checks it
-        immediately before recursive directory deletion (after identity checks)
-        while holding the repository lock. Returns True when removal ran and
-        completed, or False when ``is_untouched`` aborted deletion.
+        When ``is_untouched`` is provided, checks it before git metadata queries
+        and re-checks it immediately before recursive directory deletion (in the
+        same worker thread as ``_remove_tree``) while holding the repository
+        lock. Returns ``"removed"`` when the worktree was deleted (or already
+        absent), ``"record_only"`` when only stale registration/refs were dropped
+        leaving another's directory intact, or ``"aborted"`` when ``is_untouched``
+        refused deletion.
         """
         async with await self._lock(worktree.repo_root):
-            if not await asyncio.to_thread(is_untouched, worktree.path):
-                return False
+            if is_untouched is not None and not await asyncio.to_thread(is_untouched, worktree.path):
+                return "aborted"
             return await self._forget(
                 worktree.repo_root,
                 worktree.path,
@@ -1480,8 +1483,14 @@ class WorktreeManager:
         remove_directory: bool,
         token: str = "",
         before_delete: Any = None,
-    ) -> bool:
-        """Drop a worktree's registration, its directory when registered (or ``remove_directory``), and its refs."""
+    ) -> str:
+        """Drop a worktree's registration, its directory when registered (or ``remove_directory``), and its refs.
+
+        Returns ``"removed"`` when the worktree was deleted (or already gone),
+        ``"record_only"`` when ``_whose`` determined another directory stands at
+        ``path`` so only stale registration and refs were dropped, or
+        ``"aborted"`` when ``before_delete`` rejected deletion.
+        """
         listed = await self._registered(repo_root)
         registered = any(_same_path(known, path) for known in listed)
         # Another registered worktree of the same name owns the refs.
@@ -1502,7 +1511,7 @@ class WorktreeManager:
             await _to_the_end(asyncio.to_thread(_drop_registration, common, path))
             if not theirs:
                 await self._delete_refs(repo_root, worktree_id)
-            return True
+            return "record_only"
         if whose == "unknown":
             raise WorktreeError(
                 f"{path} is no longer known to be this worktree (its .git is gone, and which directory it was "
@@ -1515,20 +1524,36 @@ class WorktreeManager:
         # The directory goes first; the registration only once it is gone.
         # Ours: registered (and known to be ours above), made by this call,
         # or its .git file still points here.
+        deleted_directory = False
         if registered or remove_directory or await asyncio.to_thread(_points_into, path, common):
-            if before_delete is not None and not await asyncio.to_thread(before_delete, path):
-                return False
-            # Waited for to the end: the lock is not let go while it runs.
-            await _to_the_end(asyncio.to_thread(_remove_tree, path))
+            def _check_and_remove() -> tuple[bool, bool]:
+                if before_delete is not None and not before_delete(path):
+                    return False, False
+                existed = os.path.lexists(_fs(path))
+                _remove_worktree_dir(path)
+                return True, existed
+
+            # Waited for to the end: the lock is not let go while it runs, and
+            # before_delete + _remove_tree run back-to-back in one worker thread.
+            proceeded, deleted_directory = await _to_the_end(asyncio.to_thread(_check_and_remove))
+            if not proceeded:
+                return "aborted"
             if await asyncio.to_thread(os.path.lexists, _fs(path)):
                 raise WorktreeRemovalIncomplete(
                     f"{path} could not be removed entirely; its registration and refs are kept"
                 )
-        if registered:
-            await _to_the_end(asyncio.to_thread(_drop_registration, common, path))
-        if not theirs:
-            await self._delete_refs(repo_root, worktree_id)
-        return True
+        try:
+            if registered:
+                await _to_the_end(asyncio.to_thread(_drop_registration, common, path))
+            if not theirs:
+                await self._delete_refs(repo_root, worktree_id)
+        except (WorktreeError, OSError) as exc:
+            if deleted_directory:
+                raise WorktreeRemovalIncomplete(
+                    f"{path} was removed, but dropping its registration or refs failed: {exc}"
+                ) from exc
+            raise
+        return "removed"
 
     async def _delete_refs(self, repo_root: Path, worktree_id: str) -> None:
         listed = await self._git(repo_root, "for-each-ref", "--format=%(refname)", f"{REF_PREFIX}{worktree_id}/")
@@ -1998,6 +2023,54 @@ def _remove_tree(path: Path) -> None:
             function(failed)
 
     shutil.rmtree(_fs(path), onerror=clear_read_only)
+
+
+def _remove_worktree_dir(path: Path) -> None:
+    """Remove non-``.git`` entries before ``.git`` so partial removal keeps worktree identity for retries."""
+    fs_path = _fs(path)
+    try:
+        st = os.lstat(fs_path)
+    except FileNotFoundError:
+        return
+    except OSError:
+        _remove_tree(path)
+        return
+    if not stat.S_ISDIR(st.st_mode) or not os.path.lexists(_fs(path / ".git")):
+        _remove_tree(path)
+        return
+    try:
+        with os.scandir(fs_path) as it:
+            entries = list(it)
+    except OSError:
+        _remove_tree(path)
+        return
+    for entry in entries:
+        if entry.name == ".git":
+            continue
+        child = path / entry.name
+        try:
+            is_dir = entry.is_dir(follow_symlinks=False)
+        except OSError:
+            continue
+        if is_dir:
+            with contextlib.suppress(OSError):
+                _remove_tree(child)
+        else:
+            child_fs = _fs(child)
+            try:
+                os.unlink(child_fs)
+            except OSError:
+                with contextlib.suppress(OSError):
+                    os.chmod(child_fs, stat.S_IWRITE | stat.S_IREAD)
+                    os.unlink(child_fs)
+    # Only drop .git and the root directory once all other entries are gone.
+    try:
+        with os.scandir(fs_path) as it:
+            if any(entry.name != ".git" for entry in it):
+                return
+    except OSError:
+        return
+    _remove_tree(path)
 
 
 def _points_into(path: Path, common_dir: Path) -> bool:

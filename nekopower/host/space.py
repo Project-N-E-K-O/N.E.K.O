@@ -67,6 +67,7 @@ import logging
 import os
 import re
 import shutil
+import stat
 import threading
 import time
 import unicodedata
@@ -5933,6 +5934,40 @@ class TaskAgentSpace:
             if include_archived:
                 projects.extend(self._archived_projects())
             return projects
+
+        return await self._read(work)
+
+    async def list_projects_checked(self, *, include_archived: bool = True) -> tuple[list[Project], bool]:
+        """Return projects and whether active directory enumeration and every active record succeeded."""
+
+        def work() -> tuple[list[Project], bool]:
+            projects_dir = self._paths().projects_dir()
+            try:
+                entries = sorted(projects_dir.iterdir())
+            except FileNotFoundError:
+                entries = []
+            except OSError:
+                return [], False
+            active: list[Project] = []
+            readable = True
+            for item in entries:
+                try:
+                    st = item.stat()
+                except FileNotFoundError:
+                    continue
+                except OSError:
+                    readable = False
+                    continue
+                if not stat.S_ISDIR(st.st_mode) or item.name.startswith("."):
+                    continue
+                data, ok = self._project_data(item)
+                if not ok:
+                    readable = False
+                active.append(self._project_of(data, item, None))
+            projects = list(active)
+            if include_archived:
+                projects.extend(self._archived_projects())
+            return projects, readable
 
         return await self._read(work)
 

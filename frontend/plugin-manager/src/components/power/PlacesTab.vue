@@ -1025,6 +1025,21 @@ function syncPolicyDraft(settings: StorageSettingsValues) {
   policyDraft.worktree_kept_days = settings.worktree_kept_days
 }
 
+function mergePolicyDraft(previous: StorageSettingsValues, next: StorageSettingsValues) {
+  if (policyDraft.auto_clean_work_dirs === previous.auto_clean_work_dirs) {
+    policyDraft.auto_clean_work_dirs = next.auto_clean_work_dirs
+  }
+  if (policyDraft.work_dir_kept_days === previous.work_dir_kept_days) {
+    policyDraft.work_dir_kept_days = next.work_dir_kept_days
+  }
+  if (policyDraft.auto_clean_worktrees === previous.auto_clean_worktrees) {
+    policyDraft.auto_clean_worktrees = next.auto_clean_worktrees
+  }
+  if (policyDraft.worktree_kept_days === previous.worktree_kept_days) {
+    policyDraft.worktree_kept_days = next.worktree_kept_days
+  }
+}
+
 const policyDirty = computed(() => {
   const current = overview.value?.settings
   if (!current) return false
@@ -1105,12 +1120,14 @@ async function load(options: boolean | LoadOptions = false) {
     const data = await getStorage()
     if (mySeq !== storageLoadSeq) return
     if (data && Array.isArray(data.places)) {
-      const shouldSyncPolicy = opts.forceSyncPolicy || !hasLoadedPolicy || !policyDirty.value
+      const prevSettings = overview.value?.settings
       overview.value = data
       places.value = data.places
-      if (shouldSyncPolicy) {
+      if (opts.forceSyncPolicy || !hasLoadedPolicy || !prevSettings) {
         syncPolicyDraft(data.settings)
         hasLoadedPolicy = true
+      } else {
+        mergePolicyDraft(prevSettings, data.settings)
       }
       const validWt = new Set(data.worktrees.filter(w => w.can_clean).map(w => w.id))
       selectedWorktrees.value = selectedWorktrees.value.filter(id => validWt.has(id))

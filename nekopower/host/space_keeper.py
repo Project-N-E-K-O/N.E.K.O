@@ -1722,7 +1722,14 @@ class SpaceKeeper:
         return outcome
 
     async def _clean_one(self, session_id: str, until: float) -> str:
-        """Clean one session the query found, if it is still to be cleaned.
+        """Clean one session the query found, if it is still to be cleaned."""
+        outcome, _freed = await self._clean_one_result(session_id, until)
+        return outcome
+
+    async def _clean_one_result(
+        self, session_id: str, until: float, *, measure_fn: Any = None
+    ) -> tuple[str, int]:
+        """Clean one session under its file hold, optionally estimating removed bytes once held.
 
         Held against a commission being started in it for as long as its
         files are removed, and looked up again once it is held: a session
@@ -1739,48 +1746,66 @@ class SpaceKeeper:
             # as old as it was, and the scan does not come by it again. It
             # is looked at again next round; one that went on to work and
             # was closed anew is dropped then, being young.
-            return _NOT_REMOVED
+            return _NOT_REMOVED, 0
         try:
             current = await self._ledger.get_session(session_id)
             if current is None or current.status == "cleared" or current.last_active_at > until:
-                return _NOTHING
+                return _NOTHING, 0
             if await self._ledger.select(session_id=session_id, statuses=ACTIVE_STATUSES, limit=1):
-                return _SKIPPED
+                return _SKIPPED, 0
             # What was copied from it goes with it, and first: a session
             # made from this one (``fork_session``) holds what was said
             # here, is of no use once this one starts over from nothing,
             # and reads what this one kept of long tool output where it
             # is. While a copy is in use this session stays as it is, and
             # is looked at again next round.
-            if not await self._clean_copies(current.id):
-                return _NOT_REMOVED
-            directory = await asyncio.to_thread(self._session_dir_of, current)
+            copies_ok, copies_freed = await self._clean_copies_result(current.id, measure_fn=measure_fn)
+            if not copies_ok:
+                return _NOT_REMOVED, copies_freed
+            directory = Path(await asyncio.to_thread(self._session_dir_of, current))
+            est = 0
+            if measure_fn is not None:
+                try:
+                    est = await asyncio.to_thread(self._record_bytes, directory, measure_fn)
+                except (OSError, ValueError):
+                    est = 0
             # A thread cannot be stopped. Cancelled (the host shutting down),
             # this still waits for the removing to finish before the hold
             # below is given back and before shutting down goes on: nothing
             # opens the session while its files are still being removed.
-            outcome = await to_thread_through_cancellation(self._clean, Path(directory), current.id)
+            outcome = await to_thread_through_cancellation(self._clean, directory, current.id)
             if outcome == _REMOVED:
                 # With the session, and with each commission of it.
                 await asyncio.shield(self._ledger.mark_session_cleared(current.id))
-            return outcome
+                return outcome, est + copies_freed
+            return outcome, copies_freed
         except (OSError, ValueError):
             logger.warning("an old session could not be looked at", exc_info=True)
-            return _NOT_REMOVED
+            return _NOT_REMOVED, 0
         finally:
             if self._release_files is not None:
                 self._release_files(session_id)
 
     async def _clean_copies(self, session_id: str) -> bool:
         """Remove what was said in the sessions copied from a session. False while one of them is in use."""
+        ok, _freed = await self._clean_copies_result(session_id)
+        return ok
+
+    async def _clean_copies_result(
+        self, session_id: str, *, measure_fn: Any = None
+    ) -> tuple[bool, int]:
+        """Remove transcripts of copied sessions, returning ``(all_clean, freed_bytes)``."""
+        freed = 0
         for copy in await self._ledger.forks_of(session_id):
             if copy.status == "cleared":
                 continue
             # By what became of it just now, not by asking again whether a
             # commission is under way in it: that may have changed since.
-            if await self._clean_one(copy.id, float("inf")) in (_NOT_REMOVED, _SKIPPED):
-                return False
-        return True
+            outcome, copy_freed = await self._clean_one_result(copy.id, float("inf"), measure_fn=measure_fn)
+            freed += copy_freed
+            if outcome in (_NOT_REMOVED, _SKIPPED):
+                return False, freed
+        return True, freed
 
     async def clear_session(self, session_id: str) -> bool:
         """Remove what was said in a session now, however lately it was in use. Returns whether nothing of it is left.
@@ -1922,18 +1947,10 @@ class SpaceKeeper:
             if not found:
                 break
             for session_id, _last_active_at in found:
-                session = await self._ledger.get_session(session_id)
-                est = 0
-                if session is not None:
-                    try:
-                        directory = Path(await asyncio.to_thread(self._session_dir_of, session))
-                        est = await asyncio.to_thread(self._record_bytes, directory, measure_dir)
-                    except (OSError, ValueError):
-                        est = 0
-                outcome = await self._clean_one(session_id, until)
+                outcome, item_freed = await self._clean_one_result(session_id, until, measure_fn=measure_dir)
+                freed += item_freed
                 if outcome == _REMOVED:
                     cleaned += 1
-                    freed += est
                 elif outcome in (_NOT_REMOVED, _SKIPPED):
                     skipped += 1
             if len(found) < _CLEAN_BATCH:
@@ -1956,6 +1973,21 @@ class SpaceKeeper:
         if outputs.is_dir() and not outputs.is_symlink():
             total += measure_fn(outputs, time.monotonic() + 0.25).bytes
         return total
+
+    async def _has_uncleared_descendant_fork(self, session_id: str) -> bool:
+        """Return whether any descendant fork of ``session_id`` is not yet cleared."""
+        seen: set[str] = {session_id}
+        frontier: list[str] = [session_id]
+        while frontier:
+            parent_id = frontier.pop(0)
+            for copy in await self._ledger.forks_of(parent_id):
+                if copy.id in seen:
+                    continue
+                if copy.status != "cleared":
+                    return True
+                seen.add(copy.id)
+                frontier.append(copy.id)
+        return False
 
     def _hold_files_keeping_idle_timer(self, session_id: str) -> bool:
         """Hold ``session_id`` without cancelling idle-compaction timers when supported."""
@@ -2018,7 +2050,7 @@ class SpaceKeeper:
                         continue
                     if await self._ledger.select(session_id=session.id, statuses=ACTIVE_STATUSES, limit=1):
                         continue
-                    if any(copy.status != "cleared" for copy in await self._ledger.forks_of(session.id)):
+                    if await self._has_uncleared_descendant_fork(session.id):
                         continue
                     try:
                         directory = Path(await asyncio.to_thread(self._session_dir_of, session))

@@ -575,6 +575,15 @@ class StorageSettingsStore:
             self._kept = values
             return dict(values)
 
+    def allows_auto_clean(self, target: str, kept_days: int) -> bool:
+        """Synchronously check whether the cached settings still allow auto-clean at ``kept_days``."""
+        kept = self._kept
+        if kept is None:
+            return False
+        if target == "work_dirs":
+            return bool(kept.get("auto_clean_work_dirs")) and int(kept.get("work_dir_kept_days", -1)) == kept_days
+        return bool(kept.get("auto_clean_worktrees")) and int(kept.get("worktree_kept_days", -1)) == kept_days
+
 
 # -- work dir id encoding -----------------------------------------------------
 
@@ -616,6 +625,35 @@ def format_work_dir_id(scope: str, project: str, session_id: str | None = None) 
 # -- main storage manager -----------------------------------------------------
 
 
+class _SessionWorkdirIndex:
+    """In-memory batch index mapping normalized directory prefixes and projects to session IDs."""
+
+    def __init__(self) -> None:
+        self.max_rowid: int = 0
+        self._by_prefix: dict[str, set[str]] = {}
+        self._by_project: dict[str, set[str]] = {}
+
+    def add(self, rowid: int, sid: str, project: str | None, workdir: str | None) -> None:
+        if rowid > self.max_rowid:
+            self.max_rowid = rowid
+        if project is not None:
+            self._by_project.setdefault(project, set()).add(sid)
+        if workdir:
+            cur = os.path.normcase(os.path.normpath(workdir))
+            while True:
+                self._by_prefix.setdefault(cur, set()).add(sid)
+                parent = os.path.dirname(cur)
+                if not parent or parent == cur:
+                    break
+                cur = parent
+
+    def matching_workdir(self, norm_target: str) -> set[str]:
+        return set(self._by_prefix.get(norm_target, ()))
+
+    def matching_project(self, project: str) -> set[str]:
+        return set(self._by_project.get(project, ()))
+
+
 class StorageManager:
     """Inspects and cleans disk space owned by the NekoPower host."""
 
@@ -651,28 +689,69 @@ class StorageManager:
     async def _read_projects_checked(
         self, *, include_archived: bool
     ) -> tuple[dict[str, Any], set[str] | None, bool]:
-        """Read projects while verifying each active project's ``project.json`` is readable.
+        """Read projects while verifying active directory enumeration and every ``project.json``.
 
-        ``TaskAgentSpace.list_projects()`` returns stub records with ``workdir=None``
-        when an individual ``project.json`` fails to read. Calling ``read_project()``
-        on each active project lets callers distinguish a real ``workdir=None`` from
-        an unreadable record and fail closed.
+        ``TaskAgentSpace.list_projects()`` returns an empty list when
+        ``projects/`` cannot be enumerated and stub records with ``workdir=None``
+        when an individual ``project.json`` fails to read. Using
+        ``list_projects_checked()`` (plus checking space root reachability via
+        ``os.stat``) lets cleanup fail closed on any unreadable project listing
+        or record.
         """
         projects_by_name: dict[str, Any] = {}
         active_project_workdirs: set[str] = set()
-        if not await asyncio.to_thread(self._paths.space().root.is_dir):
+
+        def _check_space_root() -> str:
+            root = self._paths.space().root
+            try:
+                st = os.stat(_fs(root))
+            except FileNotFoundError:
+                return "missing"
+            except OSError:
+                return "error"
+            return "dir" if stat.S_ISDIR(st.st_mode) else "error"
+
+        root_state = await asyncio.to_thread(_check_space_root)
+        if root_state == "missing":
             return projects_by_name, active_project_workdirs, True
-        try:
-            listed = await self._space.list_projects(include_archived=include_archived)
-        except OSError:
-            logger.warning("listing projects for storage check failed", exc_info=True)
+        if root_state != "dir":
+            logger.warning("task agent space root is unreadable; failing closed for storage cleanup")
             return projects_by_name, None, False
-        read_project = getattr(self._space, "read_project", None)
+
         projects_readable = True
-        for proj in listed:
-            if proj.archive_year is None:
-                record = proj
-                if callable(read_project):
+        list_checked = getattr(self._space, "list_projects_checked", None)
+        if callable(list_checked):
+            try:
+                listed, projects_readable = await list_checked(include_archived=include_archived)
+            except OSError:
+                logger.warning("listing projects for storage check failed", exc_info=True)
+                return projects_by_name, None, False
+        else:
+            def _probe_projects_dir() -> bool:
+                pdir = self._paths.space().projects_dir()
+                try:
+                    list(pdir.iterdir())
+                except FileNotFoundError:
+                    return True
+                except OSError:
+                    return False
+                return True
+
+            if not await asyncio.to_thread(_probe_projects_dir):
+                logger.warning("enumerating active projects directory failed; failing closed for storage cleanup")
+                return projects_by_name, None, False
+            try:
+                listed = await self._space.list_projects(include_archived=include_archived)
+            except OSError:
+                logger.warning("listing projects for storage check failed", exc_info=True)
+                return projects_by_name, None, False
+            read_project = getattr(self._space, "read_project", None)
+            if callable(read_project):
+                verified: list[Any] = []
+                for proj in listed:
+                    if proj.archive_year is not None:
+                        verified.append(proj)
+                        continue
                     try:
                         checked, ok = await read_project(proj.name)
                     except OSError:
@@ -683,21 +762,37 @@ class StorageManager:
                         projects_readable = False
                         logger.warning("project %s record is unreadable; failing closed for storage cleanup", proj.name)
                         continue
-                    if checked is None:
-                        continue
-                    record = checked
-                projects_by_name[record.name] = record
-                if record.workdir:
-                    active_project_workdirs.add(os.path.normcase(os.path.normpath(record.workdir)))
+                    if checked is not None:
+                        verified.append(checked)
+                listed = verified
+
+        for proj in listed:
+            if proj.archive_year is None:
+                projects_by_name[proj.name] = proj
+                if proj.workdir:
+                    active_project_workdirs.add(os.path.normcase(os.path.normpath(proj.workdir)))
             elif proj.name not in projects_by_name:
                 projects_by_name[proj.name] = proj
+        if not projects_readable:
+            logger.warning("one or more active project records could not be read; failing closed for storage cleanup")
         return projects_by_name, (active_project_workdirs if projects_readable else None), projects_readable
 
     async def _ledger_snapshot(
         self,
-    ) -> tuple[dict[str, Any], set[str], set[str], set[str], dict[str, Any], list[Any], bool, bool]:
-        """Read sessions, live workdirs, active project workdirs, projects, and trees in one pass."""
+    ) -> tuple[
+        dict[str, Any],
+        dict[str, tuple[str, float, str, str | None]],
+        set[str],
+        set[str],
+        set[str],
+        dict[str, Any],
+        list[Any],
+        bool,
+        bool,
+    ]:
+        """Read sessions, untruncated session metadata, live workdirs, projects, and trees in one pass."""
         sessions_by_id: dict[str, Any] = {}
+        all_sessions_meta: dict[str, tuple[str, float, str, str | None]] = {}
         active_sessions: set[str] = set()
         live_workdirs: set[str] = set()
 
@@ -705,18 +800,33 @@ class StorageManager:
         if has_ledger:
             all_sessions = await self._ledger.find_sessions(limit=10_000, commissions_each=1)
             for row in all_sessions:
-                session = row.session
-                sessions_by_id[session.id] = row
-                if session.status in _BUSY_SESSION_STATUSES or self._task_agents._in_use(session.id):
-                    active_sessions.add(session.id)
-                    if session.workdir:
-                        live_workdirs.add(os.path.normcase(os.path.normpath(session.workdir)))
-            under_way = await self._ledger.select(statuses=tuple(ACTIVE_STATUSES), limit=2000)
-            for commission in under_way:
-                if commission.session_id:
-                    active_sessions.add(commission.session_id)
-                if commission.workdir:
-                    live_workdirs.add(os.path.normcase(os.path.normpath(commission.workdir)))
+                sessions_by_id[row.session.id] = row
+            meta_rows = await self._ledger.run(
+                lambda conn: [
+                    (
+                        str(r["id"]),
+                        str(r["status"]),
+                        float(r["last_active_at"] or 0.0),
+                        str(r["kind"] or ""),
+                        str(r["forked_from"]) if r["forked_from"] is not None else None,
+                        str(r["workdir"]) if r["workdir"] is not None else None,
+                    )
+                    for r in conn.execute(
+                        "SELECT id, status, last_active_at, kind, forked_from, workdir FROM sessions"
+                    ).fetchall()
+                ]
+            )
+            for sid, status, last_active_at, kind, forked_from, workdir in meta_rows:
+                all_sessions_meta[sid] = (status, last_active_at, kind, forked_from)
+                if status in _BUSY_SESSION_STATUSES or self._task_agents._in_use(sid):
+                    active_sessions.add(sid)
+                    if workdir:
+                        live_workdirs.add(os.path.normcase(os.path.normpath(workdir)))
+            for comm_sid, comm_workdir in await self._active_commission_refs():
+                if comm_sid:
+                    active_sessions.add(comm_sid)
+                if comm_workdir:
+                    live_workdirs.add(os.path.normcase(os.path.normpath(comm_workdir)))
             trees = await self._ledger.trees()
             for row in trees:
                 for backing in (row.repo_root, row.project_dir, row.path, row.workdir):
@@ -732,6 +842,7 @@ class StorageManager:
 
         return (
             sessions_by_id,
+            all_sessions_meta,
             active_sessions,
             live_workdirs,
             active_project_workdirs,
@@ -752,6 +863,66 @@ class StorageManager:
                     str(row["workdir"]) if row["workdir"] is not None else None,
                 )
                 for row in conn.execute("SELECT id, project, status, workdir FROM sessions").fetchall()
+            ]
+        )
+
+    async def _refresh_session_index(self, index: _SessionWorkdirIndex) -> None:
+        """Populate ``index`` with every session row added since ``index.max_rowid``."""
+        since = index.max_rowid
+        rows = await self._ledger.run(
+            lambda conn, cursor=since: [
+                (
+                    int(row["rowid"]),
+                    str(row["id"]),
+                    str(row["project"]) if row["project"] is not None else None,
+                    str(row["workdir"]) if row["workdir"] is not None else None,
+                )
+                for row in conn.execute(
+                    "SELECT rowid, id, project, workdir FROM sessions WHERE rowid > ? ORDER BY rowid ASC",
+                    (cursor,),
+                ).fetchall()
+            ]
+        )
+        for rowid, sid, project, workdir in rows:
+            index.add(rowid, sid, project, workdir)
+
+    async def _descendant_forks(self, session_id: str) -> list[Any]:
+        """Return every descendant fork of ``session_id`` across arbitrary fork depth."""
+        descendants: list[Any] = []
+        seen: set[str] = {session_id}
+        frontier: list[str] = [session_id]
+        while frontier:
+            parent_id = frontier.pop(0)
+            for copy in await self._ledger.forks_of(parent_id):
+                if copy.id in seen:
+                    continue
+                seen.add(copy.id)
+                descendants.append(copy)
+                frontier.append(copy.id)
+        return descendants
+
+    async def _active_session_rows(
+        self, extra_ids: set[str] | frozenset[str] = frozenset()
+    ) -> list[tuple[str, str, str | None]]:
+        """Return ``(id, status, workdir)`` for busy sessions and ``extra_ids`` without scanning idle rows."""
+        statuses = tuple(sorted(_BUSY_SESSION_STATUSES))
+        status_placeholders = ",".join("?" for _ in statuses)
+        ids = tuple(sorted(extra_ids))
+        if ids:
+            id_placeholders = ",".join("?" for _ in ids)
+            sql = f"SELECT id, status, workdir FROM sessions WHERE status IN ({status_placeholders}) OR id IN ({id_placeholders})"
+            params: tuple[str, ...] = (*statuses, *ids)
+        else:
+            sql = f"SELECT id, status, workdir FROM sessions WHERE status IN ({status_placeholders})"
+            params = statuses
+        return await self._ledger.run(
+            lambda conn, q=sql, p=params: [
+                (
+                    str(row["id"]),
+                    str(row["status"]),
+                    str(row["workdir"]) if row["workdir"] is not None else None,
+                )
+                for row in conn.execute(q, p).fetchall()
             ]
         )
 
@@ -797,14 +968,22 @@ class StorageManager:
         live_workdirs: set[str] = set()
         active_project_workdirs: set[str] | None = set()
         if await asyncio.to_thread(self._paths.ledger_db().is_file):
-            for sid, _project, status, workdir in await self._all_session_rows():
-                in_use = status in _BUSY_SESSION_STATUSES or (
-                    sid not in excluded and self._task_agents._in_use(sid)
-                )
-                if in_use:
+            in_use_ids_fn = getattr(self._task_agents, "_in_use_session_ids", None)
+            if callable(in_use_ids_fn):
+                mem_in_use = set(in_use_ids_fn()) - excluded
+                for sid, _status, workdir in await self._active_session_rows(mem_in_use):
                     active_sessions.add(sid)
                     if workdir:
                         live_workdirs.add(os.path.normcase(os.path.normpath(workdir)))
+            else:
+                for sid, _project, status, workdir in await self._all_session_rows():
+                    in_use = status in _BUSY_SESSION_STATUSES or (
+                        sid not in excluded and self._task_agents._in_use(sid)
+                    )
+                    if in_use:
+                        active_sessions.add(sid)
+                        if workdir:
+                            live_workdirs.add(os.path.normcase(os.path.normpath(workdir)))
             for comm_sid, comm_workdir in await self._active_commission_refs():
                 if comm_sid:
                     active_sessions.add(comm_sid)
@@ -836,6 +1015,7 @@ class StorageManager:
 
         (
             sessions_by_id,
+            all_sessions_meta,
             active_sessions,
             live_workdirs,
             active_project_workdirs,
@@ -875,19 +1055,25 @@ class StorageManager:
             elif row.commission_id and await self._task_agents._still_at_it_in(row):
                 still_at_it.add(row.id)
 
-        # Forks map: source_session_id -> uncleared forks, latest activity, and busy forks.
+        # Forks map: propagate uncleared forks, latest activity, and busy status up the full ancestor chain.
         uncleared_fork_sources: set[str] = set()
         fork_latest_active: dict[str, float] = {}
         busy_fork_sources: set[str] = set()
-        for srow in sessions_by_id.values():
-            s = srow.session
-            if s.kind == "fork" and s.forked_from and s.status != "cleared":
-                uncleared_fork_sources.add(s.forked_from)
-                prev = fork_latest_active.get(s.forked_from)
-                if prev is None or s.last_active_at > prev:
-                    fork_latest_active[s.forked_from] = s.last_active_at
-                if s.id in active_sessions:
-                    busy_fork_sources.add(s.forked_from)
+        for sid, (s_status, s_last_active, s_kind, s_forked_from) in all_sessions_meta.items():
+            if s_kind != "fork" or not s_forked_from or s_status == "cleared":
+                continue
+            seen_ancestors: set[str] = {sid}
+            ancestor: str | None = s_forked_from
+            while ancestor and ancestor not in seen_ancestors:
+                seen_ancestors.add(ancestor)
+                uncleared_fork_sources.add(ancestor)
+                prev = fork_latest_active.get(ancestor)
+                if prev is None or s_last_active > prev:
+                    fork_latest_active[ancestor] = s_last_active
+                if sid in active_sessions:
+                    busy_fork_sources.add(ancestor)
+                parent_meta = all_sessions_meta.get(ancestor)
+                ancestor = parent_meta[3] if parent_meta is not None else None
 
         root = self._paths.root()
         places_spec = self._places()
@@ -908,7 +1094,7 @@ class StorageManager:
             seen_wt_ids: set[str] = set()
 
             for row in trees:
-                seen_wt_ids.add(row.id)
+                seen_wt_ids.add(os.path.normcase(row.id))
                 wt_path = Path(row.path)
                 stats = measure_dir(wt_path, item_deadline())
                 wt_whole = wt_whole and stats.whole
@@ -958,7 +1144,7 @@ class StorageManager:
                     with os.scandir(_fs(wt_root)) as entries:
                         for entry in entries:
                             name = entry.name
-                            if name in seen_wt_ids:
+                            if os.path.normcase(name) in seen_wt_ids:
                                 continue
                             child = wt_root / name
                             if _is_reparse_link(child):
@@ -1057,10 +1243,14 @@ class StorageManager:
                 except OSError:
                     ta_other_whole = False
 
+            projects_root_is_dir = projects_root.is_dir() and not _is_reparse_link(projects_root)
             if ta_exists:
-                _measure_unclassified(ta_root, frozenset({"projects"}))
+                _measure_unclassified(
+                    ta_root,
+                    frozenset({"projects"}) if projects_root_is_dir else frozenset(),
+                )
 
-            if ta_exists and projects_root.is_dir() and not _is_reparse_link(projects_root):
+            if ta_exists and projects_root_is_dir:
                 try:
                     with os.scandir(_fs(projects_root)) as project_entries:
                         proj_dirs = list(project_entries)
@@ -1092,12 +1282,20 @@ class StorageManager:
                         ta_other_whole = ta_other_whole and extra_stats.whole
                         continue
 
-                    _measure_unclassified(proj_path, frozenset({_WORK_NAME, "sessions"}))
-
                     proj_record = projects_by_name.get(proj_name)
-                    # Project-level default work dir: task_agents/projects/<project>/work
                     proj_work = proj_path / _WORK_NAME
-                    if proj_work.is_dir() and not _is_reparse_link(proj_work):
+                    proj_work_is_dir = proj_work.is_dir() and not _is_reparse_link(proj_work)
+                    sessions_dir = proj_path / "sessions"
+                    sessions_is_dir = sessions_dir.is_dir() and not _is_reparse_link(sessions_dir)
+                    proj_skip: set[str] = set()
+                    if proj_work_is_dir:
+                        proj_skip.add(_WORK_NAME)
+                    if sessions_is_dir:
+                        proj_skip.add("sessions")
+                    _measure_unclassified(proj_path, frozenset(proj_skip))
+
+                    # Project-level default work dir: task_agents/projects/<project>/work
+                    if proj_work_is_dir:
                         stats = measure_dir(proj_work, item_deadline())
                         work_dirs_whole = work_dirs_whole and stats.whole
                         work_dirs_bytes += stats.bytes
@@ -1148,8 +1346,7 @@ class StorageManager:
                         )
 
                     # Session directories: task_agents/projects/<project>/sessions/<session_id>/
-                    sessions_dir = proj_path / "sessions"
-                    if not sessions_dir.is_dir() or _is_reparse_link(sessions_dir):
+                    if not sessions_is_dir:
                         continue
                     try:
                         with os.scandir(_fs(sessions_dir)) as sess_entries:
@@ -1185,11 +1382,18 @@ class StorageManager:
                         srow = sessions_by_id.get(sess_id)
                         session = srow.session if srow is not None else None
                         latest_comm = srow.commissions[0] if (srow is not None and srow.commissions) else None
+                        sess_meta = all_sessions_meta.get(sess_id)
+                        in_ledger = sess_meta is not None
+                        sess_status = sess_meta[0] if sess_meta is not None else (session.status if session else "orphan")
+                        sess_last_active = (
+                            sess_meta[1] if sess_meta is not None else (session.last_active_at if session else None)
+                        )
                         session_active = sess_id in active_sessions
 
                         # Measure session work/ directory if present
                         work_path = sess_path / _WORK_NAME
-                        if work_path.is_dir() and not _is_reparse_link(work_path):
+                        work_is_dir = work_path.is_dir() and not _is_reparse_link(work_path)
+                        if work_is_dir:
                             stats = measure_dir(work_path, item_deadline())
                             work_dirs_whole = work_dirs_whole and stats.whole
                             work_dirs_bytes += stats.bytes
@@ -1204,7 +1408,7 @@ class StorageManager:
                                 (
                                     t
                                     for t in (
-                                        session.last_active_at if session else None,
+                                        sess_last_active,
                                         fork_latest_active.get(sess_id),
                                         stats.newest_mtime,
                                     )
@@ -1219,7 +1423,7 @@ class StorageManager:
                                 and stats.whole
                                 and (
                                     is_empty
-                                    or session is None
+                                    or not in_ledger
                                     or (last_at is not None and last_at <= work_dir_cutoff)
                                 )
                             )
@@ -1236,7 +1440,7 @@ class StorageManager:
                                         (session.title if session and session.title else "")
                                         or (latest_comm.title if latest_comm else "")
                                     ),
-                                    "session_status": session.status if session else "orphan",
+                                    "session_status": sess_status,
                                     "path": str(work_path),
                                     "bytes": stats.bytes,
                                     "bytes_whole": stats.whole,
@@ -1255,6 +1459,9 @@ class StorageManager:
                         sess_outputs_bytes = 0
                         has_record = False
                         has_outputs = False
+                        sess_skip: set[str] = set()
+                        if work_is_dir:
+                            sess_skip.add(_WORK_NAME)
                         for fname in (TRANSCRIPT_NAME, SYSTEM_SNAPSHOT_NAME):
                             fpath = sess_path / fname
                             try:
@@ -1262,6 +1469,7 @@ class StorageManager:
                                 if stat.S_ISREG(fst.st_mode):
                                     sess_record_bytes += int(fst.st_size)
                                     has_record = True
+                                    sess_skip.add(fname)
                             except OSError:
                                 # Missing or unreadable optional record file is skipped.
                                 pass
@@ -1271,12 +1479,10 @@ class StorageManager:
                             transcript_whole = transcript_whole and ostats.whole
                             sess_outputs_bytes = ostats.bytes
                             has_outputs = True
+                            sess_skip.add(_OUTPUTS_NAME)
 
                         # Account for other session files (e.g. dsh-session.json) without double-counting.
-                        _measure_unclassified(
-                            sess_path,
-                            frozenset({_WORK_NAME, _OUTPUTS_NAME, TRANSCRIPT_NAME, SYSTEM_SNAPSHOT_NAME}),
-                        )
+                        _measure_unclassified(sess_path, frozenset(sess_skip))
 
                         combined = sess_record_bytes + sess_outputs_bytes
                         if has_record or has_outputs:
@@ -1284,13 +1490,14 @@ class StorageManager:
                             transcript_bytes += combined
                             is_expired = (
                                 not session_active
-                                and session is not None
-                                and session.status != "cleared"
-                                and session.last_active_at <= transcript_cutoff
+                                and in_ledger
+                                and sess_status != "cleared"
+                                and sess_last_active is not None
+                                and sess_last_active <= transcript_cutoff
                             )
                             is_cleanable_outputs = (
                                 has_outputs
-                                and session is not None
+                                and in_ledger
                                 and not session_active
                                 and sess_id not in uncleared_fork_sources
                             )
@@ -1519,10 +1726,17 @@ class StorageManager:
         cleaned: list[str] = []
         failed: list[dict[str, str]] = []
         freed_total = 0
+        session_index = _SessionWorkdirIndex()
+        if await asyncio.to_thread(self._paths.ledger_db().is_file):
+            await self._refresh_session_index(session_index)
 
         for item_id, (scope, project, session_id) in parsed:
             outcome, freed = await self._clean_one_work_dir(
-                scope, project, session_id, skip_project_referenced=True
+                scope,
+                project,
+                session_id,
+                skip_project_referenced=True,
+                session_index=session_index,
             )
             freed_total += freed
             if outcome == "cleaned":
@@ -1539,6 +1753,8 @@ class StorageManager:
         *,
         until: float | None = None,
         skip_project_referenced: bool = False,
+        session_index: _SessionWorkdirIndex | None = None,
+        expected_kept_days: int | None = None,
     ) -> tuple[str, int]:
         """Remove one validated host-owned ``work/`` directory.
 
@@ -1565,13 +1781,13 @@ class StorageManager:
                 held_sids: list[str] = []
                 try:
                     if await asyncio.to_thread(self._paths.ledger_db().is_file):
-                        for sid, sess_proj, _status, sess_workdir in await self._all_session_rows():
-                            if sess_proj == project or (
-                                sess_workdir and _path_is_or_inside(sess_workdir, norm_target)
-                            ):
-                                if not self._task_agents.hold_files(sid, drop_idle_timer=False):
-                                    return "in_use", 0
-                                held_sids.append(sid)
+                        idx = session_index if session_index is not None else _SessionWorkdirIndex()
+                        await self._refresh_session_index(idx)
+                        to_hold = idx.matching_project(project) | idx.matching_workdir(norm_target)
+                        for sid in sorted(to_hold):
+                            if not self._task_agents.hold_files(sid, drop_idle_timer=False):
+                                return "in_use", 0
+                            held_sids.append(sid)
                     if await self._project_busy(project) is not None:
                         return "in_use", 0
                     _active_ids, live_workdirs, active_project_workdirs = await self._busy_workdirs(
@@ -1608,14 +1824,12 @@ class StorageManager:
         try:
             has_ledger = await asyncio.to_thread(self._paths.ledger_db().is_file)
             if has_ledger:
-                # Hold every fork of this session and every other session whose workdir
-                # is inside target so none can start concurrently while target is deleted.
-                extra_sids: set[str] = set()
-                for copy in await self._ledger.forks_of(session_id):
-                    extra_sids.add(copy.id)
-                for sid, _sess_proj, _status, sess_workdir in await self._all_session_rows():
-                    if sid != session_id and sess_workdir and _path_is_or_inside(sess_workdir, norm_target):
-                        extra_sids.add(sid)
+                # Hold every descendant fork of this session and every other session whose
+                # workdir is inside target so none can start concurrently while target is deleted.
+                idx = session_index if session_index is not None else _SessionWorkdirIndex()
+                await self._refresh_session_index(idx)
+                descendants = await self._descendant_forks(session_id)
+                extra_sids: set[str] = {copy.id for copy in descendants} | idx.matching_workdir(norm_target)
                 for sid in sorted(extra_sids - {session_id}):
                     if not self._task_agents.hold_files(sid, drop_idle_timer=False):
                         return "in_use", 0
@@ -1629,7 +1843,15 @@ class StorageManager:
                         return "in_use", 0
                     if until is not None and session.last_active_at > until:
                         return "recent", 0
-                    for copy in await self._ledger.forks_of(session_id):
+                    # Re-scan descendants after acquiring holds so any fork created in the window is covered.
+                    descendants = await self._descendant_forks(session_id)
+                    held_set = set(held_sids)
+                    for copy in descendants:
+                        if copy.id not in held_set:
+                            if not self._task_agents.hold_files(copy.id, drop_idle_timer=False):
+                                return "in_use", 0
+                            held_sids.append(copy.id)
+                            held_set.add(copy.id)
                         if copy.status in _BUSY_SESSION_STATUSES:
                             return "in_use", 0
                         if await self._ledger.select(session_id=copy.id, statuses=ACTIVE_STATUSES, limit=1):
@@ -1659,14 +1881,37 @@ class StorageManager:
                     return "scan_incomplete", 0
                 if mtime is not None and mtime > until:
                     return "recent", 0
+                if expected_kept_days is not None:
+                    live_policy = await self.settings.get()
+                    if (
+                        not live_policy["auto_clean_work_dirs"]
+                        or live_policy["work_dir_kept_days"] != expected_kept_days
+                    ):
+                        return "policy_changed", 0
+
+            def _verify_and_remove() -> tuple[str, int]:
+                if until is not None:
+                    from config.nekopower_settings import STORAGE_AUTO_CLEAN_SCAN_SECONDS
+
+                    if expected_kept_days is not None and not self.settings.allows_auto_clean(
+                        "work_dirs", expected_kept_days
+                    ):
+                        return "policy_changed", 0
+                    recheck_mtime, recheck_whole = newest_mtime_of(target, STORAGE_AUTO_CLEAN_SCAN_SECONDS)
+                    if not recheck_whole:
+                        return "scan_incomplete", 0
+                    if recheck_mtime is not None and recheck_mtime > until:
+                        return "recent", 0
+                removed, freed = remove_dir_safely(target, ta_root)
+                return ("cleaned" if removed else "not_removed"), freed
+
             try:
-                removed, freed = await to_thread_through_cancellation(remove_dir_safely, target, ta_root)
+                outcome, freed = await to_thread_through_cancellation(_verify_and_remove)
             except ValueError:
                 return "unsafe_path", 0
-            if removed:
+            if outcome == "cleaned":
                 await asyncio.to_thread(_prune_empty_parents, target.parent, projects_root)
-                return "cleaned", freed
-            return "not_removed", freed
+            return outcome, freed
         finally:
             for sid in held_sids:
                 self._task_agents.release_files(sid)
@@ -1753,7 +1998,8 @@ class StorageManager:
         policy = await self.settings.get()
         if not policy["auto_clean_work_dirs"]:
             return
-        due = now - policy["work_dir_kept_days"] * 86400.0
+        kept_days = policy["work_dir_kept_days"]
+        due = now - kept_days * 86400.0
         until, note = _confirmed_cutoff(
             state, now, due, until_key=_WORK_DIRS_DUE_KEY, seen_key=_WORK_DIRS_SEEN_KEY
         )
@@ -1766,14 +2012,26 @@ class StorageManager:
         candidates = await asyncio.to_thread(self._find_session_work_dirs, projects_root)
         if not candidates:
             return
+        session_index = _SessionWorkdirIndex()
+        if await asyncio.to_thread(self._paths.ledger_db().is_file):
+            await self._refresh_session_index(session_index)
         removed = 0
         skipped_incomplete = 0
         for project, session_id in candidates:
-            if not (await self.settings.get())["auto_clean_work_dirs"]:
+            live_policy = await self.settings.get()
+            if not live_policy["auto_clean_work_dirs"] or live_policy["work_dir_kept_days"] != kept_days:
                 break
             outcome, _freed = await self._clean_one_work_dir(
-                "session", project, session_id, until=until, skip_project_referenced=True
+                "session",
+                project,
+                session_id,
+                until=until,
+                skip_project_referenced=True,
+                session_index=session_index,
+                expected_kept_days=kept_days,
             )
+            if outcome == "policy_changed":
+                break
             if outcome == "cleaned":
                 removed += 1
             elif outcome == "scan_incomplete":
@@ -1833,14 +2091,15 @@ class StorageManager:
     async def reap_worktrees(self, now: float, state: dict[str, Any]) -> None:
         """Retry ``discarding`` worktrees and automatically expire old left-over worktrees."""
         # Always retry worktrees the user already explicitly discarded.
-        retried = await self._task_agents.retry_discarded_trees()
+        retried = await self._task_agents.retry_discarded_trees(include_expired=False)
         if retried:
             logger.info("task agent storage: finished removing %d previously discarded worktree(s)", retried)
 
         policy = await self.settings.get()
         if not policy["auto_clean_worktrees"]:
             return
-        due = now - policy["worktree_kept_days"] * 86400.0
+        kept_days = policy["worktree_kept_days"]
+        due = now - kept_days * 86400.0
         until, note = _confirmed_cutoff(
             state, now, due, until_key=_WORKTREES_DUE_KEY, seen_key=_WORKTREES_SEEN_KEY
         )
@@ -1853,11 +2112,39 @@ class StorageManager:
 
         if not await asyncio.to_thread(self._paths.ledger_db().is_file):
             return
+
+        def _check_worktree_mtime(path: Path) -> tuple[float | None, bool]:
+            if not self.settings.allows_auto_clean("worktrees", kept_days):
+                return float("inf"), True
+            mtime, whole = newest_mtime_of(path, STORAGE_AUTO_CLEAN_SCAN_SECONDS, skip_git=True)
+            if not self.settings.allows_auto_clean("worktrees", kept_days):
+                return float("inf"), True
+            return mtime, whole
+
+        # Retry auto-expired discarding worktrees only while retention policy matches and files stay untouched.
+        retried_expired = 0
+        for row in await self._ledger.trees(states=("discarding",)):
+            if row.reason != "expired":
+                continue
+            live_policy = await self.settings.get()
+            if not live_policy["auto_clean_worktrees"] or live_policy["worktree_kept_days"] != kept_days:
+                return
+            try:
+                if await self._task_agents.retry_discarded_tree(
+                    row.id, until=until, check_mtime=_check_worktree_mtime
+                ):
+                    retried_expired += 1
+            except (LookupError, ValueError):
+                continue
+        if retried_expired:
+            logger.info("task agent storage: finished removing %d previously expired worktree(s)", retried_expired)
+
         rows = await self._ledger.trees(states=tuple(sorted(TREE_STATES_LEFT)))
         expired = 0
         skipped_incomplete = 0
         for row in rows:
-            if not (await self.settings.get())["auto_clean_worktrees"]:
+            live_policy = await self.settings.get()
+            if not live_policy["auto_clean_worktrees"] or live_policy["worktree_kept_days"] != kept_days:
                 break
             if row.updated_at > until:
                 continue
@@ -1865,9 +2152,7 @@ class StorageManager:
                 outcome = await self._task_agents.expire_tree(
                     row.id,
                     until=until,
-                    check_mtime=lambda path, budget=STORAGE_AUTO_CLEAN_SCAN_SECONDS: newest_mtime_of(
-                        path, budget, skip_git=True
-                    ),
+                    check_mtime=_check_worktree_mtime,
                 )
             except (LookupError, ValueError):
                 continue

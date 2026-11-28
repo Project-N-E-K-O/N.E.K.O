@@ -523,9 +523,17 @@ describe('the folders tab', () => {
     expect(byTest('storage-banner')?.textContent).toContain('160 MB')
   })
 
-  it('keeps unsaved policy edits across refresh and renders string kept_copies on failed merge', async () => {
-    api.getStorage.mockResolvedValue(storageSample())
+  it('keeps unsaved policy edits across refresh, syncs unedited server fields, and renders string kept_copies on failed merge', async () => {
+    const initial = storageSample()
+    const updatedServer = storageSample()
+    updatedServer.settings.worktree_kept_days = 30
+    api.getStorage
+      .mockResolvedValueOnce(initial)
+      .mockResolvedValue(updatedServer)
     api.cleanTranscripts.mockResolvedValue({ cleaned: 1, freed_bytes: 10 * 1024 * 1024, skipped: 0 })
+    api.setStorageSettings.mockResolvedValue({
+      settings: { ...updatedServer.settings, auto_clean_work_dirs: false },
+    })
     api.landWorktree.mockResolvedValueOnce({
       status: 'failed', files: [], more: 0, conflicts: [], resolving: false,
       detail: 'write failed', kept_copies: 'C:/kept/backup',
@@ -537,12 +545,16 @@ describe('the folders tab', () => {
     expect(toggle.checked).toBe(false)
     expect((byTest('policy-save') as HTMLButtonElement).disabled).toBe(false)
 
-    // Triggering a cleanup refresh must not overwrite unsaved policy draft.
+    // Refresh picks up another client's worktree_kept_days (30) while keeping local auto_clean_work_dirs=false.
     await click(byTest('storage-tab-transcripts'))
     await click(byTest('clean-output-caches'))
     await click(byTest('storage-confirm-submit'))
     expect(toggle.checked).toBe(false)
     expect((byTest('policy-save') as HTMLButtonElement).disabled).toBe(false)
+
+    // Saving must only send the locally edited field, not overwrite the server's 30-day retention with stale 14.
+    await click(byTest('policy-save'))
+    expect(api.setStorageSettings).toHaveBeenCalledWith({ auto_clean_work_dirs: false })
 
     // Merging a worktree whose backend returns kept_copies as a string renders backup path without throwing.
     await click(byTest('storage-tab-worktrees'))

@@ -8499,6 +8499,15 @@ class TaskAgentManager(TreeWork):
         in_hand = (*self._sessions, *self._queue, *self._taking_up, *self._requeueing)
         return any(self._session_of.get(commission_id) == session_id for commission_id in in_hand)
 
+    def _in_use_session_ids(self) -> set[str]:
+        """Return every session id currently considered in use in memory."""
+        ids: set[str] = set(self._held_by) | set(self._clearing) | set(self._compacting) | set(self._copying_from)
+        for commission_id in (*self._sessions, *self._queue, *self._taking_up, *self._requeueing):
+            sid = self._session_of.get(commission_id)
+            if sid:
+                ids.add(sid)
+        return ids
+
     def release_files(self, session_id: str) -> None:
         """Give back what ``hold_files`` claimed; a start that waited goes on."""
         clearing = self._clearing.pop(session_id, None)
