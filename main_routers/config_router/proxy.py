@@ -27,16 +27,16 @@ from ..system_router._shared import (
 )
 from main_logic.activity.system_signals import is_remote_backend_deployment
 from utils.deployment import has_forwarding_metadata, is_behind_proxy
+from utils.http import PROXY_ENV_LOCK
 
 import os
-import threading
 import urllib.parse
 from fastapi import Request
 from fastapi.responses import JSONResponse
 
 
 # --- proxy mode helpers ---
-_PROXY_LOCK = threading.Lock()
+_PROXY_LOCK = PROXY_ENV_LOCK
 
 
 _proxy_snapshot: dict[str, str] = {}

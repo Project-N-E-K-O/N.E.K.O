@@ -209,9 +209,10 @@ async def test_shared_http_pool_retries_dead_reused_socket_once(monkeypatch):
     connections = 0
     requests_received = 0
     responses_sent = 0
+    stale_socket_reused = False
 
     async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-        nonlocal connections, requests_received, responses_sent
+        nonlocal connections, requests_received, responses_sent, stale_socket_reused
         connections += 1
         conn_id = connections
         try:
@@ -224,10 +225,12 @@ async def test_shared_http_pool_retries_dead_reused_socket_once(monkeypatch):
                 # Drop as soon as the second request hits the stale keep-alive
                 # socket before the server reads the full request or replies.
                 try:
-                    await reader.read(1)
+                    first_byte = await reader.read(1)
                 except ConnectionError:
                     # Peer closed first during teardown.
                     return
+                if first_byte:
+                    stale_socket_reused = True
                 writer.close()
                 return
         except (asyncio.IncompleteReadError, ConnectionError):
@@ -264,6 +267,7 @@ async def test_shared_http_pool_retries_dead_reused_socket_once(monkeypatch):
         r2 = await llm2.ainvoke([{"role": "user", "content": "second"}])
         await llm2.aclose()
         assert r2.content == "c2"
+        assert stale_socket_reused is True
         assert connections == 2
         assert requests_received == 2
         assert responses_sent == 2
@@ -850,3 +854,73 @@ async def test_create_chat_llm_async_rebuilds_if_shutdown_closes_borrowed_http_m
     finally:
         release_return.set()
         await close_warm_chat_llms()
+
+
+@pytest.mark.asyncio
+async def test_deferred_borrower_aclose_stays_tracked_when_cancelled(monkeypatch):
+    from utils.llm_client import create_chat_llm_async, http_pool
+    from utils.llm_client.warm_pool import close_warm_chat_llms
+
+    _clear_proxy_env(monkeypatch)
+    monkeypatch.setattr(http_pool, "SHARED_LLM_HTTP_POOL_MAX_CLIENTS", 1)
+    started = asyncio.Event()
+    allow_finish = asyncio.Event()
+    close_calls = 0
+
+    try:
+        llm1 = await create_chat_llm_async(
+            "m", "https://defer-cancel.example.test/v1", "k1", max_completion_tokens=16, timeout=10.0
+        )
+        http1 = llm1._aclient._client
+        orig_aclose = http1.aclose
+
+        async def slow_aclose():
+            nonlocal close_calls
+            close_calls += 1
+            started.set()
+            await allow_finish.wait()
+            await orig_aclose()
+
+        monkeypatch.setattr(http1, "aclose", slow_aclose)
+
+        # Evict k1 while llm1 still holds a borrow.
+        llm2 = await create_chat_llm_async(
+            "m", "https://defer-cancel.example.test/v1", "k2", max_completion_tokens=16, timeout=10.0
+        )
+
+        # Cancel llm1.aclose() midway: caller receives CancelledError, but pool keeps tracking the close task.
+        closer = asyncio.create_task(llm1.aclose())
+        await asyncio.wait_for(started.wait(), timeout=1.0)
+        closer.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await closer
+
+        # Concurrent shutdown must wait for the in-flight close task without calling aclose() twice.
+        shutdown_task = asyncio.create_task(http_pool.aclose_shared_llm_http_clients())
+        await asyncio.sleep(0)
+        assert shutdown_task.done() is False
+        allow_finish.set()
+        await asyncio.wait_for(shutdown_task, timeout=1.0)
+        assert close_calls == 1
+        assert http1.is_closed is True
+        await llm2.aclose()
+    finally:
+        allow_finish.set()
+        await close_warm_chat_llms()
+
+
+def test_snapshot_http_proxy_config_handles_mixed_case_and_shares_proxy_lock():
+    from main_routers.config_router import proxy as proxy_router
+    from utils.http import PROXY_ENV_LOCK
+    from utils.http.pool_utils import _proxies_from_env_items, _proxy_mount_map_from_proxies
+
+    assert proxy_router._PROXY_LOCK is PROXY_ENV_LOCK
+
+    proxies_mixed = _proxies_from_env_items([("Https_Proxy", "http://127.0.0.1:7890")])
+    assert proxies_mixed == {"https": "http://127.0.0.1:7890"}
+    assert _proxy_mount_map_from_proxies(proxies_mixed) == {"https://": "http://127.0.0.1:7890"}
+
+    proxies_cleared = _proxies_from_env_items(
+        [("Https_Proxy", "http://127.0.0.1:7890"), ("https_proxy", "")]
+    )
+    assert proxies_cleared == {}

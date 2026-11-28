@@ -504,3 +504,69 @@ async def test_gateway_pooled_client_uses_atomic_proxy_snapshot(monkeypatch):
         assert not any("9999" in u for u in proxy_urls)
     finally:
         await gateway.aclose()
+
+
+@pytest.mark.asyncio
+async def test_gateway_acquire_does_not_repopulate_pool_after_aclose(monkeypatch):
+    import threading
+
+    _clear_proxy_env(monkeypatch)
+    loop = asyncio.get_running_loop()
+    worker_started = threading.Event()
+    release_worker = threading.Event()
+    gateway = ModelGatewayService()
+    orig_make = ModelGatewayService._make_pooled_client
+
+    def gated_make(proxy_mount_map):
+        worker_started.set()
+        release_worker.wait(timeout=5.0)
+        return orig_make(proxy_mount_map)
+
+    monkeypatch.setattr(gateway, "_make_pooled_client", gated_make)
+    try:
+        acquire_task = asyncio.create_task(
+            gateway._acquire_pooled_client(_make_slot("https://post-close.example.test/v1"))
+        )
+        await asyncio.to_thread(worker_started.wait, 5.0)
+        await gateway.aclose()
+        release_worker.set()
+
+        acquired_loop, entry, _, _ = await asyncio.wait_for(acquire_task, timeout=5.0)
+        assert gateway._pools.get(loop) is None
+        assert entry.evicted is True
+        await gateway._release_pooled_client(acquired_loop, entry)
+        assert entry.client.is_closed is True
+    finally:
+        release_worker.set()
+        await gateway.aclose()
+
+
+@pytest.mark.asyncio
+async def test_gateway_aclose_preserves_in_flight_close_on_waiter_cancel():
+    loop = asyncio.get_running_loop()
+    started = asyncio.Event()
+    allow_finish = asyncio.Event()
+    calls = 0
+
+    class _SlowClient:
+        async def aclose(self) -> None:
+            nonlocal calls
+            calls += 1
+            started.set()
+            await allow_finish.wait()
+
+    gateway = ModelGatewayService()
+    gateway._pools[loop] = OrderedDict([(("slow",), _PooledClientEntry(_SlowClient()))])
+
+    first = asyncio.create_task(gateway.aclose())
+    await asyncio.wait_for(started.wait(), timeout=1.0)
+    first.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+
+    second = asyncio.create_task(gateway.aclose())
+    await asyncio.sleep(0)
+    assert second.done() is False
+    allow_finish.set()
+    await asyncio.wait_for(second, timeout=1.0)
+    assert calls == 1

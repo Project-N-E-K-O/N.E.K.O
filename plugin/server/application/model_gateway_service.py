@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import weakref
 from collections import OrderedDict
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -134,12 +135,13 @@ def _prepare(
 class _PooledClientEntry:
     """Reference-counted pooled client so evicted clients drain and close cleanly."""
 
-    __slots__ = ("client", "in_flight", "evicted")
+    __slots__ = ("client", "in_flight", "evicted", "closing")
 
     def __init__(self, client: httpx.AsyncClient) -> None:
         self.client = client
         self.in_flight = 0
         self.evicted = False
+        self.closing = False
 
 
 class ModelGatewayService:
@@ -154,6 +156,16 @@ class ModelGatewayService:
         )
         # Evicted entries waiting for active requests or shutdown to finish closing.
         self._draining: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, set[_PooledClientEntry]]" = (
+            weakref.WeakKeyDictionary()
+        )
+        # Per-loop shutdown generation, in-progress close counter, and tracked close tasks.
+        self._generations: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, int]" = (
+            weakref.WeakKeyDictionary()
+        )
+        self._closing_loops: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, int]" = (
+            weakref.WeakKeyDictionary()
+        )
+        self._pending_close_tasks: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, set[asyncio.Task[None]]]" = (
             weakref.WeakKeyDictionary()
         )
         # OpenAI-compatible endpoints that rejected injected stream_options.
@@ -207,15 +219,54 @@ class ModelGatewayService:
             # Best-effort teardown of evicted or shutting-down pooled clients.
             pass
 
+    def _start_tracked_close_task(
+        self,
+        loop: asyncio.AbstractEventLoop,
+        client: httpx.AsyncClient,
+    ) -> asyncio.Task[None] | None:
+        if loop.is_closed():
+            return None
+        coro = self._close_client_quietly(client)
+        try:
+            task = loop.create_task(coro)
+        except Exception:
+            coro.close()
+            return None
+        tasks = self._pending_close_tasks.get(loop)
+        if tasks is None:
+            tasks = set()
+            self._pending_close_tasks[loop] = tasks
+        tasks.add(task)
+
+        def _cleanup(done: asyncio.Task[None]) -> None:
+            loop_tasks = self._pending_close_tasks.get(loop)
+            if loop_tasks is not None:
+                loop_tasks.discard(done)
+
+        task.add_done_callback(_cleanup)
+        return task
+
+    def _start_entry_close_task(
+        self,
+        loop: asyncio.AbstractEventLoop,
+        entry: _PooledClientEntry,
+    ) -> asyncio.Task[None] | None:
+        draining = self._draining.get(loop)
+        if draining is not None:
+            draining.discard(entry)
+        if entry.closing:
+            return None
+        entry.closing = True
+        return self._start_tracked_close_task(loop, entry.client)
+
     async def _close_draining_entry(
         self,
         loop: asyncio.AbstractEventLoop,
         entry: _PooledClientEntry,
     ) -> None:
-        draining = self._draining.get(loop)
-        if draining is not None:
-            draining.discard(entry)
-        await self._close_client_quietly(entry.client)
+        task = self._start_entry_close_task(loop, entry)
+        if task is not None:
+            await asyncio.shield(task)
 
     async def _release_pooled_client(
         self,
@@ -242,12 +293,15 @@ class ModelGatewayService:
         )
 
         loop = asyncio.get_running_loop()
+        gen = self._generations.get(loop, 0)
         proxy_fp, proxy_mount_map = snapshot_http_proxy_config()
         key = (
             http_origin_key(slot.base_url),
             slot.protocol,
             credential_fingerprint(slot.api_key),
             proxy_fp,
+            os.environ.get("SSL_CERT_FILE"),
+            os.environ.get("SSL_CERT_DIR"),
         )
         pool = self._pools.get(loop)
         if pool is not None:
@@ -260,7 +314,36 @@ class ModelGatewayService:
                 existing.evicted = True
                 pool.pop(key, None)
 
-        made = await asyncio.to_thread(self._make_pooled_client, proxy_mount_map)
+        build_task = asyncio.create_task(asyncio.to_thread(self._make_pooled_client, proxy_mount_map))
+        try:
+            made = await asyncio.shield(build_task)
+        except asyncio.CancelledError:
+            def _close_cancelled_build(done: asyncio.Task[httpx.AsyncClient]) -> None:
+                if done.cancelled():
+                    return
+                try:
+                    built = done.result()
+                except Exception:
+                    # Failed background client build has nothing to close.
+                    return
+                self._start_tracked_close_task(loop, built)
+
+            build_task.add_done_callback(_close_cancelled_build)
+            raise
+
+        # If shutdown advanced the loop's generation (or is actively closing) while
+        # the worker thread ran, keep the new client out of _pools so it closes on release.
+        if self._generations.get(loop, 0) != gen or self._closing_loops.get(loop, 0) > 0:
+            ephemeral = _PooledClientEntry(made)
+            ephemeral.evicted = True
+            ephemeral.in_flight = 1
+            draining = self._draining.get(loop)
+            if draining is None:
+                draining = set()
+                self._draining[loop] = draining
+            draining.add(ephemeral)
+            return loop, ephemeral, [], []
+
         pool = self._pools.get(loop)
         if pool is None:
             pool = OrderedDict()
@@ -291,32 +374,49 @@ class ModelGatewayService:
         return loop, entry, [], idle_evicted
 
     async def aclose(self) -> None:
-        """Concurrently close every active and draining pooled upstream HTTP client."""
+        """Concurrently close every active and draining pooled upstream HTTP client.
+
+        Close tasks are tracked on the loop and shielded from waiter cancellation
+        so a cancelled shutdown does not abort transport teardown, and a later
+        ``aclose()`` awaits those same in-flight tasks.
+        """
         loop = asyncio.get_running_loop()
-        pool = self._pools.pop(loop, None)
-        draining = self._draining.pop(loop, None)
-        clients: list[httpx.AsyncClient] = []
-        seen_ids: set[int] = set()
-        if pool:
-            for entry in pool.values():
-                entry.evicted = True
+        self._generations[loop] = self._generations.get(loop, 0) + 1
+        self._closing_loops[loop] = self._closing_loops.get(loop, 0) + 1
+        try:
+            pool = self._pools.pop(loop, None)
+            draining = self._draining.pop(loop, None)
+            existing_tasks = list(self._pending_close_tasks.get(loop, ()))
+            all_tasks: list[asyncio.Task[None]] = list(existing_tasks)
+            seen_ids: set[int] = set()
+            entries: list[_PooledClientEntry] = []
+            if pool:
+                for entry in pool.values():
+                    entry.evicted = True
+                    entries.append(entry)
+            if draining:
+                for entry in draining:
+                    entry.evicted = True
+                    entries.append(entry)
+            for entry in entries:
                 cid = id(entry.client)
-                if cid not in seen_ids:
-                    seen_ids.add(cid)
-                    clients.append(entry.client)
-        if draining:
-            for entry in draining:
-                entry.evicted = True
-                cid = id(entry.client)
-                if cid not in seen_ids:
-                    seen_ids.add(cid)
-                    clients.append(entry.client)
-        if not clients:
-            return
-        await asyncio.gather(
-            *(self._close_client_quietly(client) for client in clients),
-            return_exceptions=True,
-        )
+                if cid in seen_ids:
+                    continue
+                seen_ids.add(cid)
+                task = self._start_entry_close_task(loop, entry)
+                if task is not None:
+                    all_tasks.append(task)
+            if all_tasks:
+                await asyncio.gather(
+                    *(asyncio.shield(task) for task in all_tasks),
+                    return_exceptions=True,
+                )
+        finally:
+            remaining = self._closing_loops.get(loop, 0) - 1
+            if remaining <= 0:
+                self._closing_loops.pop(loop, None)
+            else:
+                self._closing_loops[loop] = remaining
 
     async def _send_pooled_request(
         self,

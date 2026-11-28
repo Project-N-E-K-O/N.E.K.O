@@ -713,22 +713,20 @@ class ChatOpenAI:
 
     async def aclose(self) -> None:
         """Close underlying httpx clients (async path)."""
+        import asyncio
+
         self._closed = True
         release = getattr(self, "_borrowed_http_release", None)
         self._borrowed_http_release = None
-        if getattr(self, "_borrowed_async_http", False):
-            if release is not None:
-                evicted_client = release(defer_close=True)
-                if evicted_client is not None:
-                    try:
-                        await evicted_client.aclose()
-                    except Exception:
-                        # Best-effort teardown of a drained evicted HTTP client.
-                        pass
-        else:
-            await self._aclient.close()
         self._client.close()
         self._client_finalizer.detach()
+        if getattr(self, "_borrowed_async_http", False):
+            if release is not None:
+                close_task = release(defer_close=True)
+                if close_task is not None:
+                    await asyncio.shield(close_task)
+        else:
+            await self._aclient.close()
 
     def close(self) -> None:
         """Close underlying httpx clients (sync path)."""

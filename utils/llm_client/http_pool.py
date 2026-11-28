@@ -218,10 +218,9 @@ def _schedule_close_on_loop(loop: asyncio.AbstractEventLoop, client: Any) -> Non
         # If shutdown already claimed and started closing this client, skip duplicating.
         with _POOL_LOCK:
             pending = _pending_close_clients.get(loop)
-            if pending is not None and client not in pending:
+            if pending is None or client not in pending:
                 return
-            if pending is not None:
-                pending.discard(client)
+            pending.discard(client)
         _start_tracked_close_task(loop, client)
 
     try:
@@ -246,11 +245,11 @@ def _is_loop_accepting_locked(
 def _make_release(
     loop: asyncio.AbstractEventLoop,
     entry: _SharedPoolEntry,
-) -> Callable[..., Any | None]:
+) -> Callable[..., asyncio.Task[None] | None]:
     loop_ref = weakref.ref(loop)
     released = False
 
-    def _release(*, defer_close: bool = False) -> Any | None:
+    def _release(*, defer_close: bool = False) -> asyncio.Task[None] | None:
         nonlocal released
         client_to_close = None
         target_loop: asyncio.AbstractEventLoop | None = None
@@ -265,15 +264,23 @@ def _make_release(
                     draining = _draining_pools.get(target_loop)
                     if draining is not None:
                         draining.discard(entry)
-                    if not defer_close:
-                        _register_pending_close_client_locked(target_loop, entry.client)
+                    _register_pending_close_client_locked(target_loop, entry.client)
                 client_to_close = entry.client
-        if client_to_close is None:
+        if client_to_close is None or target_loop is None:
             return None
         if defer_close:
-            return client_to_close
-        if target_loop is not None:
-            _schedule_close_on_loop(target_loop, client_to_close)
+            try:
+                running_loop = asyncio.get_running_loop()
+            except RuntimeError:
+                running_loop = None
+            if running_loop is target_loop:
+                with _POOL_LOCK:
+                    pending = _pending_close_clients.get(target_loop)
+                    if pending is None or client_to_close not in pending:
+                        return None
+                    pending.discard(client_to_close)
+                return _start_tracked_close_task(target_loop, client_to_close)
+        _schedule_close_on_loop(target_loop, client_to_close)
         return None
 
     return _release

@@ -18,3 +18,9 @@ Implementations live in this package. The historical top-level ``utils``
 modules remain compatibility aliases so existing imports, singleton state,
 and module-private monkeypatch seams continue to refer to the same objects.
 """
+
+import threading
+
+# Guards process-wide proxy environment variable mutations (set_proxy_mode) and
+# atomic snapshots read by HTTP connection pools.
+PROXY_ENV_LOCK = threading.Lock()
