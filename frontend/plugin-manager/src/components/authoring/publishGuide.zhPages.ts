@@ -81,8 +81,11 @@ export const zhPages: Record<PublishPageId, PageGuide> = {
           '"有未提交的改动"：说明有文件改过但没提交，按上面三步操作。若某些文件不该上传（如临时文件、密钥），把它们写进 .gitignore 文件。',
           '"HEAD 还没推送"：已提交但没上传，运行 git push。',
           '"分支没有上游"：第一次上传要用 {firstPush}。',
-          '"release.yml 不是最新"：在 N.E.K.O 源码目录运行 uv run neko-plugin setup-repo "{dir}" --upgrade-github-actions，然后提交并上传。',
+          '"release.yml 不是最新"：在 N.E.K.O 源码目录运行下面的命令，然后提交并上传。',
           '"仓库不是公开的"：打开 GitHub 仓库页面 → Settings → 最下方 Danger Zone → Change visibility → Public。',
+        ],
+        commands: [
+          { label: '更新 release.yml', command: 'uv run neko-plugin setup-repo {dirArg} --upgrade-github-actions', fillIn: 'dirArg' },
         ],
       },
     ],

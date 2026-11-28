@@ -151,6 +151,8 @@ function publishStatus(overrides: {
   remote?: Partial<NonNullable<PublishStatus['remote']>> | null
   actions?: PublishStatus['actions']
   workspace?: PublishStatus['workspace']
+  plugin_dir_argument?: string
+  plugin_dir_fill_in?: PublishStatus['plugin_dir_fill_in']
 } = {}): PublishStatus {
   return {
     plugin_id: listed.plugin_id!,
@@ -191,6 +193,8 @@ function publishStatus(overrides: {
             tag: 'missing',
             ...overrides.remote,
           },
+    plugin_dir_argument: overrides.plugin_dir_argument ?? '/work/hello_world',
+    plugin_dir_fill_in: overrides.plugin_dir_fill_in ?? null,
     workspace: overrides.workspace ?? null,
   }
 }
@@ -1052,7 +1056,7 @@ describe('authoring workbench backed by the server project list', () => {
       'https://github.com/owner/hello_world/actions'
     )
     // Unfilled placeholders never leak into the text.
-    expect(container.querySelector('.authoring-publish')!.textContent).not.toMatch(/\{(repo|tag|version|branch|firstPush|pluginId|dir)\}/)
+    expect(container.querySelector('.authoring-publish')!.textContent).not.toMatch(/\{(repo|tag|version|branch|firstPush|pluginId|dirArg)\}/)
   })
 
   it('fills the guide commands with the branch the server quoted', async () => {
@@ -1098,14 +1102,38 @@ describe('authoring workbench backed by the server project list', () => {
     const figures = [...page('repository').querySelectorAll('.authoring-guide-command')]
     const byCommand = (command: string) => figures.find((node) => node.querySelector('code')!.textContent === command)!
     expect(byCommand('git init -b "<branch>"').querySelector('.authoring-guide-command__note')!.textContent).toBe(
-      'Replace <branch> with: feat%PATH%&calc&'
+      'In that command, replace <branch> with: feat%PATH%&calc&'
     )
     expect(byCommand('git push -u origin "<branch>"').querySelector('.authoring-guide-command__note')!.textContent).toBe(
-      'Replace <branch> with: refs/heads/feat%PATH%&calc&'
+      'In that command, replace <branch> with: refs/heads/feat%PATH%&calc&'
     )
     for (const node of page('repository').querySelectorAll('.authoring-guide-command code')) {
       expect(node.textContent).not.toContain('calc')
     }
+  })
+
+  it('fills the setup-repo command with the directory the server quoted', async () => {
+    api.route.query = { project: 'p1' }
+    api.listPluginProjects.mockResolvedValue([listed])
+    // No Windows quoting keeps %USERPROFILE% literal, and a " would end the quoting.
+    const dir = 'C:\\work\\%USERPROFILE%\\a"&calc&"'
+    api.getPluginProjectPublishStatus.mockResolvedValue(
+      publishStatus({
+        plugin_dir_argument: '"<plugin directory>"',
+        plugin_dir_fill_in: { placeholder: '<plugin directory>', value: dir },
+      })
+    )
+    const container = await mount()
+    await openPublish(container)
+    const figure = [...page('repository').querySelectorAll('.authoring-guide-command')].find((node) =>
+      node.querySelector('code')!.textContent!.includes('setup-repo')
+    )!
+    expect(figure.querySelector('code')!.textContent).toBe(
+      'uv run neko-plugin setup-repo "<plugin directory>" --upgrade-github-actions'
+    )
+    expect(figure.querySelector('.authoring-guide-command__note')!.textContent).toBe(
+      `In that command, replace <plugin directory> with: ${dir}`
+    )
   })
 
   it('opens the page a blocker dialog points to', async () => {

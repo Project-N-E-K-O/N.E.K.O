@@ -5,8 +5,8 @@
  *
  * Written in full in Simplified Chinese and English; every other locale shows
  * the English guide. Text may hold `{repo}`, `{tag}`, `{version}`, `{branch}`,
- * `{firstPush}`, `{pluginId}` and `{dir}`, filled from the project's publish
- * status; `{branch}` and `{firstPush}` come quoted for the shell.
+ * `{firstPush}`, `{pluginId}` and `{dirArg}`, filled from the project's publish
+ * status; `{branch}`, `{firstPush}` and `{dirArg}` come quoted for the shell.
  */
 import type { PublishPageId, ToolId } from '@/components/authoring/publishFlow'
 import { enUS } from '@/components/authoring/publishGuide.en'
@@ -59,14 +59,12 @@ export interface PublishGuide {
     copyFailed: string
     howToInstall: string
     afterInstall: string
-    /** Below a command that shows a placeholder: `{placeholder}`, `{value}`. */
-    fillIn: string
   }
   pages: Record<PublishPageId, PageGuide>
   tools: Record<ToolId, ToolGuide>
 }
 
-export type GuideFillInId = 'branch' | 'firstPush'
+export type GuideFillInId = 'branch' | 'firstPush' | 'dirArg'
 
 export interface GuideFillIn {
   placeholder: string
@@ -74,9 +72,9 @@ export interface GuideFillIn {
 }
 
 export type GuideParams = Partial<
-  Record<'repo' | 'tag' | 'version' | 'branch' | 'firstPush' | 'pluginId' | 'dir', string>
+  Record<'repo' | 'tag' | 'version' | 'branch' | 'firstPush' | 'pluginId' | 'dirArg', string>
 > & {
-  /** What a placeholder in `{branch}` or `{firstPush}` stands for; shown as text, never pasted. */
+  /** What a placeholder in `{branch}`, `{firstPush}` or `{dirArg}` stands for; shown as text, never pasted. */
   fillIns?: Partial<Record<GuideFillInId, GuideFillIn>>
 }
 

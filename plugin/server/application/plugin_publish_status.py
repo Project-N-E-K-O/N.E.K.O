@@ -135,6 +135,24 @@ def repository_status(state: RepoState) -> dict[str, object]:
     }
 
 
+def plugin_dir_status(source_dir: Path) -> dict[str, object]:
+    """The plugin directory as one quoted argument, for the guide's setup-repo command.
+
+    Like the gate's own hint: a placeholder when no quoting keeps the path
+    literal, its value in ``plugin_dir_fill_in``.
+    """
+    from plugin.neko_plugin_cli.commands.release_cmd import (
+        _PLUGIN_DIR_PLACEHOLDER,
+        _placeholder_path,
+        _plugin_dir_argument,
+    )
+
+    return {
+        "plugin_dir_argument": _plugin_dir_argument(source_dir, ""),
+        "plugin_dir_fill_in": _fill_in(_PLUGIN_DIR_PLACEHOLDER, _placeholder_path(source_dir)),
+    }
+
+
 def read_local_status(project_id: str) -> LocalStatus:
     """Local facts of a registered project; shared with the publish gate."""
     # The template generator pulls in the build rules (pydantic); keep it out
@@ -372,6 +390,7 @@ async def get_publish_status(project_id: str, *, fresh: bool = False) -> dict[st
         "plugin_id": local.plugin_id,
         "version": local.version,
         "repository": repository_status(state),
+        **plugin_dir_status(local.source_dir),
         "actions": local.actions,
         "remote": remote,
         "workspace": asdict(workspace) if workspace else None,

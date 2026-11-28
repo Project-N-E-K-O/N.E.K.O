@@ -49,7 +49,7 @@ import { openExternalUrl } from '@/utils/openExternal'
  * the full explanation in a disclosure that starts open on the page to act on.
  */
 const props = defineProps<{ pageId: PublishPageId; params: GuideParams; open: boolean }>()
-const { locale } = useI18n()
+const { locale, t } = useI18n()
 const guide = computed(() => publishGuide(locale.value))
 const page = computed(() => guide.value.pages[props.pageId])
 const fill = (text: string) => fillGuide(text, props.params)
@@ -57,7 +57,7 @@ const fill = (text: string) => fillGuide(text, props.params)
 function fillInNote(id: GuideFillInId | undefined) {
   const fillIn = id ? props.params.fillIns?.[id] : undefined
   return fillIn
-    ? guide.value.labels.fillIn.replace('{placeholder}', fillIn.placeholder).replace('{value}', () => fillIn.value)
+    ? t('authoring.publishRepoPushFillIn', { placeholder: fillIn.placeholder, value: fillIn.value })
     : undefined
 }
 </script>

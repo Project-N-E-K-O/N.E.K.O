@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import io
+import shlex
 import sys
 import threading
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
@@ -832,3 +834,24 @@ async def test_slow_spawn_does_not_block_polling_and_termination_reaps_the_child
     assert result == (None, "")
     assert terminated == [child]
     assert task.process is None
+
+
+def test_the_status_quotes_the_plugin_directory_for_the_guide(monkeypatch):
+    from plugin.neko_plugin_cli.commands import release_cmd
+    from plugin.server.application.plugin_publish_status import plugin_dir_status
+
+    # % and " in one name: no Windows quoting keeps it literal (and a " ends
+    # the quoting in cmd), so the guide shows a placeholder and the path
+    # travels apart from the command.
+    source_dir = Path("C:/work/%USERPROFILE%/a\"&calc&\"")
+    monkeypatch.setattr(release_cmd, "_WINDOWS_SHELL", True)
+    status = plugin_dir_status(source_dir)
+    assert status["plugin_dir_argument"] == '"<plugin directory>"'
+    assert status["plugin_dir_fill_in"] == {"placeholder": "<plugin directory>", "value": str(source_dir)}
+
+    # POSIX single quotes keep both characters literal: no placeholder.
+    monkeypatch.setattr(release_cmd, "_WINDOWS_SHELL", False)
+    status = plugin_dir_status(source_dir)
+    assert status["plugin_dir_argument"] == shlex.quote(str(source_dir))
+    assert status["plugin_dir_fill_in"] is None
+    assert status["plugin_dir_argument"] != str(source_dir)

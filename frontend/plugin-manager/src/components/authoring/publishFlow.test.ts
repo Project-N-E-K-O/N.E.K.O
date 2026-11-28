@@ -21,6 +21,8 @@ function status(
     remote?: Partial<NonNullable<PublishStatus['remote']>> | null
     actions?: PublishStatus['actions']
     workspace?: PublishStatus['workspace']
+    plugin_dir_argument?: string
+    plugin_dir_fill_in?: PublishStatus['plugin_dir_fill_in']
   } = {}
 ): PublishStatus {
   return {
@@ -62,6 +64,8 @@ function status(
             tag: 'missing',
             ...overrides.remote,
           },
+    plugin_dir_argument: overrides.plugin_dir_argument ?? '/work/hello_world',
+    plugin_dir_fill_in: overrides.plugin_dir_fill_in ?? null,
     workspace: overrides.workspace ?? null,
   }
 }

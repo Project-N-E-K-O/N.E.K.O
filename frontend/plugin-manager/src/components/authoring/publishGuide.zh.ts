@@ -9,7 +9,6 @@ export const zhCN: PublishGuide = {
     copyFailed: '复制失败，请手动选中命令复制。',
     howToInstall: '怎么安装',
     afterInstall: '装好之后',
-    fillIn: '把 {placeholder} 换成：{value}',
   },
   pages: zhPages,
   tools: {

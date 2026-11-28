@@ -244,8 +244,6 @@ const props = defineProps<{
   /** plugin.toml name and description: the defaults of a new Market draft. */
   pluginName: string
   pluginDescription: string
-  /** The project folder, filled into the guide's commands. */
-  sourceDir?: string
 }>()
 const { t } = useI18n()
 const describeError = useProjectErrorMessage()
@@ -328,9 +326,10 @@ const guideParams = computed<GuideParams>(() => ({
   fillIns: {
     branch: status.value?.repository.branch_fill_in ?? undefined,
     firstPush: status.value?.repository.set_upstream_fill_in ?? undefined,
+    dirArg: status.value?.plugin_dir_fill_in ?? undefined,
   },
   pluginId: status.value?.plugin_id,
-  dir: props.sourceDir,
+  dirArg: status.value?.plugin_dir_argument ?? '"<plugin directory>"',
 }))
 /** The guide starts open on a page with something to do, folded on a finished one. */
 function guideOpen(id: PublishPageId) {

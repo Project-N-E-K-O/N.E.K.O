@@ -179,6 +179,10 @@ export interface PublishStatus {
   /** Standard GitHub Actions files keyed by path. */
   actions: Record<string, 'ADD' | 'CURRENT' | 'UPGRADE' | 'CONFLICT'>
   remote: PublishRemoteState | null
+  /** The plugin directory quoted as one shell argument, or a placeholder. */
+  plugin_dir_argument: string
+  /** What the placeholder of `plugin_dir_argument` stands for. */
+  plugin_dir_fill_in: { placeholder: string; value: string } | null
   /** Recent commits and uncommitted changes; null without the plugin's own repository. */
   workspace: WorkspaceLog | null
 }

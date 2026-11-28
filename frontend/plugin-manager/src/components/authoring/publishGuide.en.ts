@@ -9,7 +9,6 @@ export const enUS: PublishGuide = {
     copyFailed: 'Could not copy. Select the command and copy it by hand.',
     howToInstall: 'How to install',
     afterInstall: 'After installing',
-    fillIn: 'Replace {placeholder} with: {value}',
   },
   pages: enPages,
   tools: {
