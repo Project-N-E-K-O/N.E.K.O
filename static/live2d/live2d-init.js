@@ -76,9 +76,17 @@ function _nekoShouldSelfHealLive2D() {
     }
 }
 
-function hasMountedLive2D() {
+function getMountedLive2D() {
     const model = window.live2dManager?.getCurrentModel?.() || window.live2dManager?.currentModel;
-    return !!model && !model.destroyed;
+    return model && !model.destroyed ? model : null;
+}
+
+function hasMountedLive2D() {
+    return !!getMountedLive2D();
+}
+
+function configuredInitialLive2DPath() {
+    return typeof cubism4Model !== 'undefined' ? cubism4Model : (window.cubism4Model || '');
 }
 
 // 模型路径缺失时：有界地重新拉取 page_config 并重试初始化（解决瞬时后端未就绪 / 配置迟到）。
@@ -494,24 +502,28 @@ async function cleanupVRMResources() {
 }
 
 // 自动初始化函数（重入保护包装；真正逻辑在 _initLive2DModelInner）
-async function initLive2DModel() {
+async function runLive2DInitialization(replacement = null) {
     if (_nekoLive2DInitInFlight) {
         console.log('[Live2D Init] 初始化进行中，跳过本次重入调用');
         return;
     }
     _nekoLive2DInitInFlight = true;
     try {
-        await _initLive2DModelInner();
+        await _initLive2DModelInner(replacement);
     } finally {
         _nekoLive2DInitInFlight = false;
     }
 }
 
+function initLive2DModel() {
+    return runLive2DInitialization();
+}
+
 window.initLive2DModel = initLive2DModel;
 
 // 自动初始化函数（延迟执行，等待 cubism4Model 设置）
-async function _initLive2DModelInner() {
-    const _preInitModelPath = (typeof cubism4Model !== 'undefined' ? cubism4Model : (window.cubism4Model || ''));
+async function _initLive2DModelInner(replacement) {
+    const _preInitModelPath = configuredInitialLive2DPath();
     // 存储位置启动哨兵必须始终等待——不设超时、不因已知路径而跳过：它是用户存储/迁移决定的门，
     // 抢跑会让头像/主界面用错或未批准的存储位置（PR #1920 review P1）。已解析则瞬时返回；
     // 若用户迟迟不决定（或哨兵真卡死），保持等待与 startPageConfigLoad 一致，也比抢跑安全。
@@ -578,11 +590,16 @@ async function _initLive2DModelInner() {
         || (!_preInitModelPath && hasMountedLive2D() && !recoveringSkippedTutorialBoot)) return;
 
     // 获取模型路径
-    const targetModelPath = (typeof cubism4Model !== 'undefined' ? cubism4Model : (window.cubism4Model || ''));
+    const targetModelPath = configuredInitialLive2DPath();
     const startupName = window.lanlan_config?.lanlan_name || '';
+    const stillOwnsMountedReplacement = () => replacement?.manager === window.live2dManager
+        && replacement?.mounted === getMountedLive2D()
+        && replacement?.name === startupName && replacement?.path === targetModelPath
+        && window.live2dManager._lastLoadedModelPath === replacement.previousPath;
+    if (replacement && !stillOwnsMountedReplacement()) return;
     const stillOwnsInitialLive2DStartup = () => {
         if (isModelManagerPage) return true;
-        const currentPath = (typeof cubism4Model !== 'undefined' ? cubism4Model : (window.cubism4Model || ''));
+        const currentPath = configuredInitialLive2DPath();
         return !window.appState?.isSwitchingCatgirl
             && (window.lanlan_config?.lanlan_name || '') === startupName
             // switch_revision is a receipt high-water mark, not proof that a
@@ -590,7 +607,7 @@ async function _initLive2DModelInner() {
             // while leaving this same name/path authoritative.
             && (window.lanlan_config?.model_type || 'live2d').toLowerCase() === 'live2d'
             && currentPath === targetModelPath
-            && (!hasMountedLive2D() || recoveringSkippedTutorialBoot);
+            && (!hasMountedLive2D() || recoveringSkippedTutorialBoot || stillOwnsMountedReplacement());
     };
     const ownsInitialLive2DStartupAfterSwitchSettlement = async () => {
         const deadline = Date.now() + 46000;
@@ -848,6 +865,7 @@ async function _initLive2DModelInner() {
             await window.live2dManager.loadModel(targetModelPath, {
                 preferences: modelPreferences,
                 isMobile: typeof window.isMobileWidth === 'function' ? window.isMobileWidth() : (window.innerWidth <= 768),
+                ...(stillOwnsMountedReplacement() ? { preservePreviousUntilLoaded: true, skipCloseWindows: true } : {}),
                 // 在常驻表情应用完成后应用参数（事件驱动，替代不可靠的 setTimeout）
                 onResidentExpressionApplied: (model) => {
                     const effectiveParameters = window.live2dManager.effectiveModelParameters;
@@ -913,15 +931,27 @@ async function _initLive2DModelInner() {
 
 // An earlier live switch may own the mounted model even when index.js
 // had not yet installed pageConfigReady at script evaluation time.
-function startInitialLive2DModel() {
-    if (!hasMountedLive2D()) initLive2DModel();
+function startInitialLive2DModel(acceptedPageConfig) {
+    const mounted = getMountedLive2D();
+    if (!mounted) {
+        initLive2DModel();
+        return;
+    }
+    const manager = window.live2dManager;
+    const path = configuredInitialLive2DPath();
+    const previousPath = manager?._lastLoadedModelPath;
+    // Presence is not ownership when the accepted startup wants another asset.
+    // Bind replacement to this exact mount so a later switch cannot be undone.
+    if (acceptedPageConfig === true && path && previousPath && previousPath !== path) {
+        runLive2DInitialization({manager, mounted, name: window.lanlan_config?.lanlan_name || '', path, previousPath});
+    }
 }
 
 function scheduleInitialLive2DModel() {
     if (window.pageConfigReady && typeof window.pageConfigReady.then === 'function') {
         window.pageConfigReady.then(startInitialLive2DModel, startInitialLive2DModel);
     } else {
-        const targetModelPath = (typeof cubism4Model !== 'undefined' ? cubism4Model : (window.cubism4Model || ''));
+        const targetModelPath = configuredInitialLive2DPath();
         if (targetModelPath) {
             startInitialLive2DModel();
         } else {

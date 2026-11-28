@@ -1945,7 +1945,7 @@ test('pre-index Live2D startup does not refetch or reload after C has committed'
 test('initial Live2D startup rechecks ownership immediately before delayed model load', () => {
     const source = fs.readFileSync(path.join(root, 'static/live2d/live2d-init.js'), 'utf8');
     const ownership = source.match(/const stillOwnsInitialLive2DStartup = \(\) => \{[\s\S]*?^    \};/m)?.[0] || '';
-    assert.match(ownership, /currentPath === targetModelPath[\s\S]*?\(!hasMountedLive2D\(\) \|\| recoveringSkippedTutorialBoot\)/);
+    assert.match(ownership, /currentPath === targetModelPath[\s\S]*?\(!hasMountedLive2D\(\) \|\| recoveringSkippedTutorialBoot \|\| stillOwnsMountedReplacement\(\)\)/);
     assert.match(source, /hasMountedLive2D\(\) && !recoveringSkippedTutorialBoot/, 'tutorial recovery may replace the still-mounted Yui model');
     assert.doesNotMatch(ownership, /lanlan_config\?\.switch_revision/, 'receipt high-water mark is not renderer-commit ownership');
     assert.match(source, /const ownsInitialLive2DStartupAfterSwitchSettlement = async \(\) => \{[\s\S]*?isSwitchingCatgirl[\s\S]*?setTimeout\(resolve, 50\)/);
@@ -4550,3 +4550,104 @@ for(const [path,source,avatarLate] of [
     assert.deepEqual(saved,[]);
     assert.ok(!requests.some(([p,method])=>p.startsWith('/api/model')||method==='POST'));
 });
+
+// The non-IPC cold boot can accept a changed asset after a same-revision switch mounts.
+for (const scenario of ['changed asset', 'same asset', 'newer committed role', 'replacement asset fails', 'newer role during preferences']) {
+    test('r4726393607 cold non-IPC Live2D follows the accepted mounted asset: ' + scenario, {timeout: 5000}, async () => {
+        const h = setupReviewWindow('/'), w = h.window, c = h.context;
+        const requested = deferred(), release = deferred(), domReady = [], loads = [];
+        const preferencesStarted = deferred(), releasePreferences = deferred();
+        const old = '/static/mao_pro/old.model3.json';
+        const desired = scenario === 'same asset' ? old : '/static/mao_pro/new.model3.json';
+        const other = '/static/mao_pro/B.model3.json';
+        w.__NEKO_MULTI_WINDOW__ = false;
+        w.requestAnimationFrame = () => 0;
+        c.document.querySelector = () => null;
+        c.document.getElementById = id => id === 'live2d-canvas' ? {style:{}} : null;
+        c.document.addEventListener = (event, fn) => { if (event === 'DOMContentLoaded') domReady.push(fn); };
+        c.Live2DManager = class {
+            currentModel = null; pixi_app = {renderer:{}};
+            getCurrentModel() { return this.currentModel; }
+            removeModel() { this.currentModel = null; this._lastLoadedModelPath = null; }
+            async ensurePIXIReady() {}
+            async loadUserPreferences() {
+                if (scenario === 'newer role during preferences' && w.cubism4Model === desired && !w.appState.isSwitchingCatgirl) {
+                    preferencesStarted.resolve();
+                    await releasePreferences.promise;
+                }
+                return [];
+            }
+            getEmotionMapping() { return {}; }
+            setupUnloadCleanup() {}
+            async loadModel(input, options) {
+                const url = typeof input === 'string' ? input : input.url;
+                loads.push(url);
+                if (url === desired && desired !== old) {
+                    assert.equal(options.preservePreviousUntilLoaded, true, 'reuse the manager’s guarded replacement');
+                    assert.equal(options.skipCloseWindows, true, 'replacing a stale asset must not close existing dialogs');
+                    if (scenario === 'replacement asset fails') throw new Error('fixture replacement asset 503');
+                }
+                this._lastLoadedModelPath = url;
+                return (this.currentModel = {url});
+            }
+        };
+        c.fetch = async (url) => {
+            const value = new URL(String(url),w.location.href);
+            if (value.pathname === '/api/config/page_config') {
+                assert.equal(value.searchParams.get('lanlan_name'), null);
+                requested.resolve();
+                await release.promise;
+                return {ok:true,json:async()=>desktopAvatarConfig('A','live2d',83,desired)};
+            }
+            if (value.pathname === '/api/characters') return {ok:true,json:async()=>({'猫娘': {
+                A: {model_type:'live2d',_reserved:{character_uid:UID_A}},
+                B: {model_type:'live2d',_reserved:{character_uid:UID_B}},
+            }})};
+            if (value.pathname === '/api/characters/current_live2d_model') return {ok:true,json:async()=>({
+                success:true, model_info:{path: value.searchParams.get('catgirl_name') === 'B' ? other : old}
+            })};
+            return {ok:true,json:async()=>({})};
+        };
+        // Preserve the actual page order: live2d-init.js evaluates before index.js.
+        h.load('static/live2d/live2d-init.js');
+        h.load('static/js/index.js');
+        h.load('static/app/app-character.js');
+        const ready = w.startPageConfigLoad();
+        for (const fn of domReady) fn();
+        await requested.promise;
+        assert.equal(await w.handleCatgirlSwitch('A','',{switchRevision:83}),true);
+        assert.equal(w.live2dManager.currentModel.url,old,'initial switch actually mounted the old asset');
+        if (scenario === 'newer committed role') {
+            assert.equal(await w.handleCatgirlSwitch('B','A',{switchRevision:84}),true);
+            assert.equal(w.live2dManager.currentModel.url,other,'higher receipt actually mounted its replacement');
+        }
+        release.resolve();
+        const accepted = await ready;
+        if (scenario === 'newer role during preferences') {
+            await preferencesStarted.promise;
+            try {
+                assert.equal(await w.handleCatgirlSwitch('B','A',{switchRevision:84}),true);
+                assert.equal(w.live2dManager.currentModel.url,other);
+            } finally {
+                releasePreferences.resolve();
+            }
+        }
+        for(let turn=0;turn<8;turn++) await new Promise(setImmediate);
+        if (scenario === 'newer committed role' || scenario === 'newer role during preferences') {
+            assert.equal(w.lanlan_config.lanlan_name,'B');
+            assert.equal(w.live2dManager.currentModel.url,other,'stale A bootstrap cannot touch the newer mounted B');
+            assert.deepEqual(loads,[old,other]);
+        } else {
+            assert.equal(accepted,true);
+            assert.equal(await w.pageConfigReady,true);
+            assert.equal(w.cubism4Model,desired);
+            const expected = scenario === 'replacement asset fails' ? old : desired;
+            assert.equal(w.live2dManager.currentModel.url,expected,'on success mount the accepted asset; on a fetch error keep the prior renderer');
+            assert.deepEqual(loads,scenario === 'same asset' ? [old] : [old,desired]);
+            if (scenario === 'changed asset') {
+                assert.equal(await w.handleCatgirlSwitch('A','A',{switchRevision:83}),true);
+                assert.deepEqual(loads,[old,desired],'a same-revision replay does not restore the superseded asset');
+            }
+        }
+    });
+}
