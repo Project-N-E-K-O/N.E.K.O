@@ -2658,7 +2658,10 @@ class BrowserSession:
         try:
             is_file_input = bool(await self._call(page, object_id, _IS_FILE_INPUT, session_id=node.session_id))
         except _DialogOpened:
-            return
+            raise BrowserError(
+                f"A dialog opened before the file could be uploaded to element with uid {uid}; no file was uploaded. "
+                f"Handle the dialog, then upload again.\n{self.dialog_notice(page)}"
+            ) from None
         if is_file_input:
             await self._send_session(
                 page, node.session_id, "DOM.setFileInputFiles", {"files": [resolved], "objectId": object_id}
@@ -2699,9 +2702,15 @@ class BrowserSession:
                     await self._send_session(page, sid, "Page.setInterceptFileChooserDialog", {"enabled": False}, timeout=5.0)
                 except (BrowserError, CdpError):
                     pass
-        if page.dialog is not None or not self.is_open(page):
-            await self.after_action(page, before)
-            return
+        if page.dialog is not None:
+            raise BrowserError(
+                f"A dialog opened when clicking element with uid {uid} before any file chooser appeared; no file was uploaded. "
+                f"Handle the dialog, then upload again.\n{self.dialog_notice(page)}"
+            )
+        if not self.is_open(page):
+            raise BrowserError(
+                f"The page closed when clicking element with uid {uid} before any file chooser appeared; no file was uploaded."
+            )
         if not page.file_chooser_event.is_set() or page.file_chooser_backend_id is None:
             raise BrowserError(
                 f"Element with uid {uid} is not a file input and clicking it did not open a file chooser."

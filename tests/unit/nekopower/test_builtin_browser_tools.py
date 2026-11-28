@@ -1707,3 +1707,34 @@ async def test_attach_mode_select_page_keeps_user_tab_selected_across_actions_an
     # User's tab still cannot be closed because page.own remains False.
     closing = await tools.call(TOOL_PREFIX + "close_page", {"pageId": 1}, owner="team-a")
     assert not closing.success and "not one opened for this work" in closing.text
+
+
+async def test_upload_file_interrupted_by_dialog_or_tab_close_reports_failure(
+    tools: BrowserTools, world: BrowserWorld, tmp_path: Path
+) -> None:
+    sample = tmp_path / "doc.txt"
+    sample.write_text("payload", encoding="utf-8")
+    world.browser.serve(
+        "https://shop.example/upload-interrupt",
+        lambda: Document(
+            "Upload Interrupt",
+            el("button", "Confirm upload", on_click=lambda b, p: b.open_dialog(p, "confirm", "Allow upload?")),
+            el("button", "Close tab", on_click=lambda b, p: b.remove_page(p)),
+        ),
+    )
+    opened = await call(tools, "navigate_page", url="https://shop.example/upload-interrupt")
+    assert opened.success
+    confirm_uid = re.search(r'uid=(\S+) button "Confirm upload"', opened.text).group(1)
+
+    res_dialog = await call(tools, "upload_file", uid=confirm_uid, filePath=str(sample))
+    assert not res_dialog.success
+    assert "no file was uploaded" in res_dialog.text
+    assert "Allow upload?" in res_dialog.text
+
+    handled = await call(tools, "handle_dialog", action="dismiss")
+    assert handled.success
+    snap = await call(tools, "take_snapshot")
+    close_uid = re.search(r'uid=(\S+) button "Close tab"', snap.text).group(1)
+    res_closed = await call(tools, "upload_file", uid=close_uid, filePath=str(sample))
+    assert not res_closed.success
+    assert "no file was uploaded" in res_closed.text
