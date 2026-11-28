@@ -640,6 +640,25 @@ def _proactive_turn_still_owned(mgr: Any, proactive_sid: Any) -> bool:
     )
 
 
+async def _release_proactive_turn(mgr: Any, proactive_sid: Any) -> bool:
+    """Retract a rejected proactive turn's TTS and rotate the sid, if still owned.
+
+    Returns whether the sid was actually rotated: False when the turn was
+    no longer owned at entry, and False when the user (or a session
+    takeover) took it while cleanup was suspended. Ownership is checked again inside ``handle_new_message`` after each of its
+    suspension points and under ``mgr.lock``: a user who takes the turn while
+    cleanup is suspended owns the sid by then, and a proactive cleanup that
+    rotated it anyway would drop the user's reply audio.
+    """
+    if proactive_sid is None or not _proactive_turn_still_owned(mgr, proactive_sid):
+        return False
+    return bool(
+        await mgr.handle_new_message(
+            still_owned=lambda: _proactive_turn_still_owned(mgr, proactive_sid),
+        )
+    )
+
+
 async def _enter_proactive_phase2(
     mgr: Any,
     proactive_sid: Any,
@@ -667,8 +686,7 @@ async def _enter_proactive_phase2(
         active_logger.info(
             "proactive Phase 2 abandoned: user engaged during transition"
         )
-        if _proactive_turn_still_owned(mgr, proactive_sid):
-            await mgr.handle_new_message()
+        await _release_proactive_turn(mgr, proactive_sid)
         return False
     return True
 

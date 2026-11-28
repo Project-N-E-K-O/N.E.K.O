@@ -16,6 +16,7 @@
 """Delivery, post-commit recording, and lifecycle stages for proactive chat."""
 
 import logging
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -34,13 +35,18 @@ from .contracts import (
     _proactive_pass_body,
 )
 from .decisions import build_proactive_response
+from .directive_gate import (
+    _MUSIC_SOURCE_MARKER,
+    _proactive_delivery_directive_block,
+    _proactive_delivery_directive_hit_count,
+)
 from .mini_game_invite import _mini_game_invite_count_post_response_chat
 from .music_recommendation import _append_music_recommendations
 from .state import (
     _increment_proactive_chat_total,
     _proactive_feed_rejected_for_takeover,
     _proactive_material_key,
-    _proactive_turn_still_owned,
+    _release_proactive_turn,
     _record_proactive_chat,
     _record_proactive_material,
     _record_reminiscence_usage,
@@ -163,6 +169,10 @@ class DeliveryCommit:
 
     result: ProactiveChatResult | None
     delivery: CommittedDelivery | None
+    # Cards whose own visible text hit a ban when the gate dropped the
+    # delivery. The caller records them in source history like delivered
+    # cards, so a banned hot card decays instead of being picked again.
+    blocked_links: tuple[dict[str, Any], ...] = ()
 
 
 def _get_internal_http_client():
@@ -290,6 +300,27 @@ async def _commit_proactive_delivery(
         delivered_tag = "CHAT"
         is_music_used = False
 
+    # Ban-topic gate on the full visible payload: the line plus every card
+    # that will be shown with it. Must run before the TTS feed below.
+    directive_block = await _proactive_delivery_directive_block(
+        mgr=mgr,
+        proactive_sid=proactive_sid,
+        lanlan_name=lanlan_name,
+        text=response_text,
+        source_links=source_links,
+        channel="phase2",
+    )
+    if directive_block is not None:
+        return DeliveryCommit(
+            result=ProactiveChatResult(body=directive_block),
+            delivery=None,
+            blocked_links=tuple(
+                link
+                for link in source_links
+                if _proactive_delivery_directive_hit_count(lanlan_name, "", [link])
+            ),
+        )
+
     action_note = build_proactive_action_note(
         primary_channel=primary_channel,
         source_links=source_links,
@@ -318,8 +349,7 @@ async def _commit_proactive_delivery(
                 "[%s] buffered proactive TTS dropped after user interaction or takeover",
                 lanlan_name,
             )
-            if _proactive_turn_still_owned(mgr, proactive_sid):
-                await mgr.handle_new_message()
+            await _release_proactive_turn(mgr, proactive_sid)
             return DeliveryCommit(
                 result=ProactiveChatResult(
                     body=_proactive_pass_body(
@@ -352,11 +382,9 @@ async def _commit_proactive_delivery(
             lanlan_name,
             exc,
         )
-        if _proactive_turn_still_owned(mgr, proactive_sid):
-            await mgr.handle_new_message()
-        else:
+        if not await _release_proactive_turn(mgr, proactive_sid):
             active_logger.info(
-                "[%s] buffered delivery failed after user takeover; skip TTS cleanup",
+                "[%s] buffered delivery failed; turn not released (released=False), skip TTS cleanup",
                 lanlan_name,
             )
         return DeliveryCommit(
@@ -374,10 +402,9 @@ async def _commit_proactive_delivery(
             "[%s] 主动搭话被用户接管，短路下游写入（topic/memory/response）",
             lanlan_name,
         )
-        if _proactive_turn_still_owned(mgr, proactive_sid):
-            # The TTS chunk was accepted before the final engagement check.
-            # Retract it when UI-only engagement invalidates the commit.
-            await mgr.handle_new_message()
+        # The TTS chunk was accepted before the final engagement check.
+        # Retract it when UI-only engagement invalidates the commit.
+        await _release_proactive_turn(mgr, proactive_sid)
         return DeliveryCommit(
             result=ProactiveChatResult(
                 body=_proactive_pass_body(
@@ -465,6 +492,142 @@ async def _record_commitment_offer(
         logger.debug("[%s] 承诺提供记录失败，投递时再记: %s", lanlan_name, exc)
         return False
     return isinstance(body, dict) and body.get("commitments_recorded") is True
+
+
+async def _record_music_link_used(
+    music_link: dict[str, Any],
+    *,
+    memory_dir: str | Path | None = None,
+) -> None:
+    """Record one track by song identity, the key music selection checks."""
+    state_storage_kwargs = (
+        {"memory_dir": memory_dir} if memory_dir is not None else {}
+    )
+    music_title = (
+        f"{music_link.get('title', '')} - {music_link.get('artist', '')}"
+    ).strip(" -")
+    await _record_source_used(
+        # Persist song identity, not an expiring/provider-specific playback URL.
+        # Selection still checks old URL records for rolling compatibility.
+        url="" if music_title else music_link.get("url", "") or "",
+        kind="music",
+        title=music_title,
+        **state_storage_kwargs,
+    )
+
+
+async def _record_selected_sources_used(
+    *,
+    lanlan_name: str,
+    source_links: Iterable[dict[str, Any]],
+    is_music_used: bool,
+    selected_web_link: dict[str, Any] | None,
+    selected_web_topic_key: str | None,
+    web_parsed: dict[str, Any] | None,
+    selected_music_link: dict[str, Any] | None,
+    selected_music_topic_key: str | None,
+    selected_meme_link: dict[str, Any] | None,
+    selected_meme_topic_key: str | None,
+    memory_dir: str | Path | None = None,
+) -> None:
+    """Record this round's selected sources that appear in ``source_links``.
+
+    Called with the delivered cards after a commit, and with the cards the
+    ban-topic gate blocked (see ``_record_blocked_sources_used``).
+    """
+    source_links = list(source_links)
+    state_storage_kwargs = (
+        {"memory_dir": memory_dir} if memory_dir is not None else {}
+    )
+    if selected_web_topic_key and (
+        selected_web_link is None or _is_link_selected(selected_web_link, source_links)
+    ):
+        web_link = selected_web_link or {}
+        web_title = web_link.get("title", "") or (
+            web_parsed.get("title", "") if web_parsed else ""
+        )
+        await _record_source_used(
+            url=web_link.get("dedupe_key") or web_link.get("url", "") or "",
+            kind="web",
+            title=web_title,
+            **state_storage_kwargs,
+        )
+        print(
+            f"[{lanlan_name}] 已记录 Web source 衰减历史: {selected_web_topic_key[:16]}"
+        )
+
+    if selected_music_topic_key and (
+        is_music_used or _is_link_selected(selected_music_link, source_links)
+    ):
+        await _record_music_link_used(
+            selected_music_link or {}, **state_storage_kwargs,
+        )
+        print(
+            f"[{lanlan_name}] 已记录音乐 source 衰减历史: "
+            f"{selected_music_topic_key[:16]}"
+        )
+
+    if selected_meme_topic_key and _is_link_selected(
+        selected_meme_link,
+        source_links,
+    ):
+        await _record_source_used(
+            url=(selected_meme_link or {}).get("url", "") or "",
+            kind="image",
+            title=(selected_meme_link or {}).get("title", "") or "",
+            **state_storage_kwargs,
+        )
+        print(
+            f"[{lanlan_name}] 已记录表情包 source 衰减历史: "
+            f"{selected_meme_topic_key[:16]}"
+        )
+
+
+async def _record_blocked_sources_used(
+    *,
+    lanlan_name: str,
+    blocked_links: Iterable[dict[str, Any]],
+    selected_web_link: dict[str, Any] | None,
+    selected_web_topic_key: str | None,
+    web_parsed: dict[str, Any] | None,
+    selected_meme_link: dict[str, Any] | None,
+    selected_meme_topic_key: str | None,
+    memory_dir: str | Path | None = None,
+) -> None:
+    """Decay the cards a ban-topic hit blocked, as if they were delivered.
+
+    Only cards whose own text hit are passed in; a card blocked because the
+    line hit stays available. A title-only web topic has no card, so it is
+    recorded only when delivered. Music is recorded per blocked track card:
+    the extra tracks appended next to the selected one are cards of their
+    own, and a banned one would otherwise be picked and blocked again.
+    """
+    blocked_links = list(blocked_links)
+    if not blocked_links:
+        return
+    blocked_music = [
+        link for link in blocked_links if link.get("source") == _MUSIC_SOURCE_MARKER
+    ]
+    for music_link in blocked_music:
+        await _record_music_link_used(music_link, memory_dir=memory_dir)
+    if blocked_music:
+        print(f"[{lanlan_name}] 已记录被拦音乐卡 source 衰减历史: {len(blocked_music)} 张")
+    await _record_selected_sources_used(
+        lanlan_name=lanlan_name,
+        source_links=blocked_links,
+        is_music_used=False,
+        selected_web_link=selected_web_link,
+        selected_web_topic_key=(
+            selected_web_topic_key if selected_web_link is not None else None
+        ),
+        web_parsed=web_parsed,
+        # Recorded per card above.
+        selected_music_link=None,
+        selected_music_topic_key=None,
+        selected_meme_link=selected_meme_link,
+        selected_meme_topic_key=selected_meme_topic_key,
+        memory_dir=memory_dir,
+    )
 
 
 async def _record_committed_delivery(
@@ -555,57 +718,19 @@ async def _record_committed_delivery(
             exc,
         )
 
-    if selected_web_topic_key and (
-        selected_web_link is None or _is_link_selected(selected_web_link, source_links)
-    ):
-        web_link = selected_web_link or {}
-        web_title = web_link.get("title", "") or (
-            web_parsed.get("title", "") if web_parsed else ""
-        )
-        await _record_source_used(
-            url=web_link.get("dedupe_key") or web_link.get("url", "") or "",
-            kind="web",
-            title=web_title,
-            **state_storage_kwargs,
-        )
-        print(
-            f"[{lanlan_name}] 已记录 Web source 衰减历史: {selected_web_topic_key[:16]}"
-        )
-
-    if selected_music_topic_key and (
-        delivery.is_music_used or _is_link_selected(selected_music_link, source_links)
-    ):
-        music_link = selected_music_link or {}
-        music_title = (
-            f"{music_link.get('title', '')} - {music_link.get('artist', '')}"
-        ).strip(" -")
-        await _record_source_used(
-            # Persist song identity, not an expiring/provider-specific playback URL.
-            # Selection still checks old URL records for rolling compatibility.
-            url="" if music_title else music_link.get("url", "") or "",
-            kind="music",
-            title=music_title,
-            **state_storage_kwargs,
-        )
-        print(
-            f"[{lanlan_name}] 已记录音乐 source 衰减历史: "
-            f"{selected_music_topic_key[:16]}"
-        )
-
-    if selected_meme_topic_key and _is_link_selected(
-        selected_meme_link,
-        source_links,
-    ):
-        await _record_source_used(
-            url=(selected_meme_link or {}).get("url", "") or "",
-            kind="image",
-            title=(selected_meme_link or {}).get("title", "") or "",
-            **state_storage_kwargs,
-        )
-        print(
-            f"[{lanlan_name}] 已记录表情包 source 衰减历史: "
-            f"{selected_meme_topic_key[:16]}"
-        )
+    await _record_selected_sources_used(
+        lanlan_name=lanlan_name,
+        source_links=source_links,
+        is_music_used=delivery.is_music_used,
+        selected_web_link=selected_web_link,
+        selected_web_topic_key=selected_web_topic_key,
+        web_parsed=web_parsed,
+        selected_music_link=selected_music_link,
+        selected_music_topic_key=selected_music_topic_key,
+        selected_meme_link=selected_meme_link,
+        selected_meme_topic_key=selected_meme_topic_key,
+        **state_storage_kwargs,
+    )
 
     return ProactiveChatResult(
         body=_proactive_chat_body(

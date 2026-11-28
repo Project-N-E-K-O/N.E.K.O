@@ -89,7 +89,7 @@ from .state import (
     _find_verbatim_recent_proactive_chat,
     _is_recent_proactive_material,
     _proactive_material_key,
-    _proactive_turn_still_owned,
+    _release_proactive_turn,
 )
 
 logger = get_module_logger(__name__, "Main")
@@ -925,8 +925,7 @@ async def _run_phase2_generation(
             "[%s] proactive Phase 2 abandoned after user interaction during generation",
             lanlan_name,
         )
-        if _proactive_turn_still_owned(mgr, proactive_sid):
-            await mgr.handle_new_message()
+        await _release_proactive_turn(mgr, proactive_sid)
         return Phase2GuardedOutput(
             result=ProactiveChatResult(
                 body=_proactive_pass_body(
@@ -1303,14 +1302,13 @@ async def _generate_phase2_stream(
     )
     if aborted or not full_text.strip():
         final_reason = abort_reason_code or PROACTIVE_REASON_PASS_GENERATION_EMPTY
-        if _proactive_turn_still_owned(mgr, proactive_sid):
-            await mgr.handle_new_message()
+        if await _release_proactive_turn(mgr, proactive_sid):
             active_logger.debug(
                 "[%s] Phase 2 abort，已中断 TTS + 前端音频", lanlan_name
             )
         else:
             active_logger.info(
-                "[%s] Phase 2 abort 但用户已接管 (state preempted)，"
+                "[%s] Phase 2 abort，回合未交还 (released=False)，"
                 "跳过 TTS 清理避免误伤正常回复",
                 lanlan_name,
             )
@@ -1328,12 +1326,10 @@ async def _generate_phase2_stream(
         source_tag = leak_tag
     response_text = _strip_proactive_intent_label_leak(full_text.strip())
     if not response_text:
-        if _proactive_turn_still_owned(mgr, proactive_sid):
-            await mgr.handle_new_message()
-        else:
+        if not await _release_proactive_turn(mgr, proactive_sid):
             active_logger.info(
-                "[%s] cleaned proactive output is empty but user already "
-                "took over; skip TTS cleanup",
+                "[%s] cleaned proactive output is empty; turn not "
+                "released (released=False), skip TTS cleanup",
                 lanlan_name,
             )
         return Phase2Generation(
@@ -1487,8 +1483,7 @@ async def _guard_phase2_output(
             f"[{lanlan_name}] 主动搭话命中用户明确要求回避的话题，已拦截 "
             f"({len(directive_hits)} 项)"
         )
-        if _proactive_turn_still_owned(mgr, proactive_sid):
-            await mgr.handle_new_message()
+        await _release_proactive_turn(mgr, proactive_sid)
         return _output(
             result=ProactiveChatResult(
                 body=_proactive_pass_body(
@@ -1549,11 +1544,9 @@ async def _guard_phase2_output(
             f"(similarity={similarity_score:.3f}, "
             f"threshold={_PROACTIVE_SIMILARITY_THRESHOLD:.2f})"
         )
-        if _proactive_turn_still_owned(mgr, proactive_sid):
-            await mgr.handle_new_message()
-        else:
+        if not await _release_proactive_turn(mgr, proactive_sid):
             active_logger.info(
-                "[%s] repeat guard hit but user already took over; skip TTS cleanup",
+                "[%s] repeat guard hit; turn not released (released=False), skip TTS cleanup",
                 lanlan_name,
             )
         return _output(
@@ -1784,8 +1777,7 @@ async def _guard_phase2_output(
                 "[%s] proactive regen abandoned after user interaction",
                 lanlan_name,
             )
-            if _proactive_turn_still_owned(mgr, proactive_sid):
-                await mgr.handle_new_message()
+            await _release_proactive_turn(mgr, proactive_sid)
             return _output(
                 result=ProactiveChatResult(
                     body=_proactive_pass_body(
@@ -1812,8 +1804,7 @@ async def _guard_phase2_output(
                 "[%s] proactive BM25 regen returned empty/PASS/untagged, drop",
                 lanlan_name,
             )
-            if _proactive_turn_still_owned(mgr, proactive_sid):
-                await mgr.handle_new_message()
+            await _release_proactive_turn(mgr, proactive_sid)
             return _output(
                 result=ProactiveChatResult(
                     body=_proactive_pass_body(
@@ -1870,8 +1861,7 @@ async def _guard_phase2_output(
                 lanlan_name,
                 len(regen_directive_hits),
             )
-            if _proactive_turn_still_owned(mgr, proactive_sid):
-                await mgr.handle_new_message()
+            await _release_proactive_turn(mgr, proactive_sid)
             return _output(
                 result=ProactiveChatResult(
                     body=_proactive_pass_body(
@@ -1911,8 +1901,7 @@ async def _guard_phase2_output(
                 lanlan_name,
                 regen_total,
             )
-            if _proactive_turn_still_owned(mgr, proactive_sid):
-                await mgr.handle_new_message()
+            await _release_proactive_turn(mgr, proactive_sid)
             return _output(
                 result=ProactiveChatResult(
                     body=_proactive_pass_body(
@@ -1962,8 +1951,7 @@ async def _guard_phase2_output(
                 regen_unanswered_repeat_signal.considered_count,
                 regen_unanswered_repeat_signal.best_similarity,
             )
-            if _proactive_turn_still_owned(mgr, proactive_sid):
-                await mgr.handle_new_message()
+            await _release_proactive_turn(mgr, proactive_sid)
             return _output(
                 result=ProactiveChatResult(
                     body=_proactive_pass_body(
@@ -2005,8 +1993,7 @@ async def _guard_phase2_output(
                 lanlan_name,
                 regen_similarity,
             )
-            if _proactive_turn_still_owned(mgr, proactive_sid):
-                await mgr.handle_new_message()
+            await _release_proactive_turn(mgr, proactive_sid)
             return _output(
                 result=ProactiveChatResult(
                     body=_proactive_pass_body(
@@ -2045,11 +2032,9 @@ async def _guard_phase2_output(
         is_music_used = False
         music_content = None
         source_tag = "PASS"
-        if _proactive_turn_still_owned(mgr, proactive_sid):
-            await mgr.handle_new_message()
-        else:
+        if not await _release_proactive_turn(mgr, proactive_sid):
             active_logger.info(
-                "[%s] 降级拦截 abort 但用户已接管 (state preempted)，跳过 TTS 清理",
+                "[%s] 降级拦截 abort，回合未交还 (released=False)，跳过 TTS 清理",
                 lanlan_name,
             )
         return _output(

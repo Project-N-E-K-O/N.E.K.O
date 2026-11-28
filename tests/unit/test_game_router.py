@@ -9865,6 +9865,74 @@ async def test_sdk_pregame_metadata_is_scoped_bounded_and_keeps_context_shape(mo
         assert "scope_metadata" not in stale
 
 
+class _DirectivePostgameState(_FakePostgameState):
+    # Mirrors production: the postgame path never claims a proactive round
+    # (no try_start_proactive), so the state machine holds no proactive_sid.
+    proactive_sid = None
+
+    @staticmethod
+    def is_proactive_preempted(*_args):
+        return False
+
+
+class _DirectivePostgameManager(_FakePostgameTextManager):
+    def __init__(self):
+        super().__init__()
+        self.state = _DirectivePostgameState()
+        self.handle_new_message = AsyncMock()
+
+
+async def _deliver_postgame_line(monkeypatch, banned_terms):
+    """#3013: the postgame bubble goes through the shared ban-topic gate."""
+    import memory.user_directives as user_directives_module
+
+    directives = MagicMock()
+    directives.get_active_terms.return_value = list(banned_terms)
+    monkeypatch.setattr(
+        user_directives_module, "get_user_directives_manager", lambda: directives,
+    )
+
+    async def completed_run_game_chat(*_args, **_kwargs):
+        return {"line": "这局足球踢得真痛快！", "llm_source": {"provider": "fake"}}
+
+    _gr_patch_all(monkeypatch, "_run_game_chat", completed_run_game_chat)
+    mgr = _DirectivePostgameManager()
+    archive = {"game_type": "example-game", "session_id": "route-A", "lanlan_name": "Lan"}
+    result = await gr_runtime._deliver_postgame_text_bubble(
+        "example-game", "route-A", mgr, archive, {"enabled": True},
+        source_state={**archive, "game_route_active": False},
+    )
+    return mgr, result
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_postgame_text_blocks_banned_topic_before_tts(monkeypatch):
+    mgr, result = await _deliver_postgame_line(monkeypatch, ["足球"])
+
+    assert result["action"] == "pass"
+    assert result["reason"] == "user_directive"
+    assert "line" not in result
+    assert mgr.feed_tts_calls == []
+    assert mgr.finish_calls == []
+    # Nothing was fed and no round is owned, so the gate releases nothing;
+    # PROACTIVE_DONE in the finally block closes the turn, as for an empty line.
+    mgr.handle_new_message.assert_not_awaited()
+    assert mgr.state.events[-1][0].name == "PROACTIVE_DONE"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_postgame_text_delivers_without_banned_topic(monkeypatch):
+    mgr, result = await _deliver_postgame_line(monkeypatch, ["股票"])
+
+    assert result["action"] == "chat"
+    assert result["reason"] == "delivered"
+    assert [text for text, _ in mgr.feed_tts_calls] == ["这局足球踢得真痛快！"]
+    assert len(mgr.finish_calls) == 1
+    mgr.handle_new_message.assert_not_awaited()
+
+
 @pytest.mark.unit
 def test_soccer_pregame_opening_line_limits_match_all_locale_prompts():
     from config.prompts.prompts_soccer import (

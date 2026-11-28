@@ -393,3 +393,197 @@ def test_work_break_never_invites_an_unidentified_theater_story():
     assert _render_work_break_game_invite_prompt(
         pending=SimpleNamespace(app='VS Code', minutes=45), game_type='theater',
         master_name='主人', lang='zh') is None
+
+
+async def _run_work_break_round(
+    monkeypatch, tmp_path, *, delivered_channel, banned_terms=(), result=None,
+):
+    """Drive one water-break round through the real router with a stubbed delivery."""
+    import memory.user_directives as user_directives_module
+    from main_logic.proactive_chat import break_reminders
+
+    directives = MagicMock()
+    directives.get_active_terms.return_value = list(banned_terms)
+    directives.render_prompt_block.return_value = ""
+    monkeypatch.setattr(
+        user_directives_module, "get_user_directives_manager", lambda: directives,
+    )
+    monkeypatch.setattr(
+        proactive_service, "_render_mini_game_invite_line",
+        lambda *_args, **_kwargs: "休息一下，要不要一起踢足球？",
+    )
+
+    state = SimpleNamespace(
+        try_start_proactive=AsyncMock(return_value=True),
+        fire=AsyncMock(),
+    )
+    snapshot = SimpleNamespace(
+        state="focused_work",
+        propensity="open",
+        propensity_reasons=[],
+        skip_probability=0.0,
+        tone="casual",
+        seconds_since_user_msg=None,
+        unfinished_thread=None,
+        anti_slack_pending=None,
+        work_break_pending=SimpleNamespace(app="VS Code", minutes=90),
+    )
+    tracker = SimpleNamespace(
+        get_snapshot=AsyncMock(return_value=snapshot),
+        mark_work_break_used=MagicMock(),
+        _sm=SimpleNamespace(
+            _prefs=SimpleNamespace(work_break_game_invite_probability=1.0),
+        ),
+    )
+    mgr = SimpleNamespace(
+        state=state,
+        is_active=False,
+        session=None,
+        websocket=SimpleNamespace(send_json=AsyncMock(), client_state=None),
+        _activity_tracker=tracker,
+        is_goodbye_silent=lambda: False,
+    )
+    config_manager = SimpleNamespace(
+        memory_dir=tmp_path,
+        aget_character_data=AsyncMock(
+            return_value=("博士", "Yui", None, None, None, {}, None, None, None),
+        ),
+    )
+    request = SimpleNamespace(
+        json=AsyncMock(
+            return_value={
+                "lanlan_name": "Yui",
+                "language": "zh",
+                "enabled_modes": ["home"],
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        proactive_chat_flow, "_validate_local_mutation_request", lambda request: None,
+    )
+    monkeypatch.setattr(proactive_chat_flow, "get_config_manager", lambda: config_manager)
+    monkeypatch.setattr(
+        proactive_chat_flow,
+        "get_session_manager",
+        lambda: SimpleNamespace(get=lambda lanlan_name: mgr),
+    )
+    monkeypatch.setattr(game_router, "is_game_route_active", lambda name: False)
+    monkeypatch.setattr(
+        preferences, "ais_privacy_mode_enabled", AsyncMock(return_value=False),
+    )
+    monkeypatch.setattr(
+        proactive_chat_flow, "_run_mini_game_invite_short_circuit", AsyncMock(return_value=None),
+    )
+    push_options = AsyncMock()
+    monkeypatch.setattr(proactive_chat_flow, "_push_mini_game_invite_options", push_options)
+    monkeypatch.setattr(proactive_service, "MINI_GAME_INVITE_ENABLED", True)
+    monkeypatch.setattr(
+        proactive_service, "_pick_mini_game_type", lambda *_args, **_kwargs: "soccer",
+    )
+    record_invite = MagicMock()
+    monkeypatch.setattr(proactive_service, "_mini_game_invite_record_delivered", record_invite)
+    monkeypatch.setattr(proactive_service, "_record_invite_delivery_persistent", AsyncMock())
+    bump_total = AsyncMock()
+    monkeypatch.setattr(proactive_service, "_increment_proactive_chat_total", bump_total)
+    deliver = AsyncMock(
+        return_value=result or break_reminders.BreakReminderDeliveryResult(
+            delivered_text="记得起来喝口水。",
+            proactive_sid="break-sid",
+            delivered_channel=delivered_channel,
+        )
+    )
+    monkeypatch.setattr(proactive_service, "_deliver_break_reminder_via_llm", deliver)
+
+    response = await proactive_chat_flow.proactive_chat(request)
+    return SimpleNamespace(
+        body=json.loads(response.body),
+        deliver=deliver,
+        tracker=tracker,
+        record_invite=record_invite,
+        push_options=push_options,
+        bump_total=bump_total,
+    )
+
+
+@pytest.mark.parametrize("delivered_channel", ("work_break", "work_break_game_invite"))
+@pytest.mark.asyncio
+async def test_work_break_combo_bookkeeping_follows_delivered_channel(
+    monkeypatch,
+    delivered_channel,
+    tmp_path: Path,
+) -> None:
+    """#3013: a combo invite that hit a ban and fell back to the plain reminder
+    must be booked as a plain work-break reminder: no invite recorded, no
+    invite options pushed, the counter bumped once."""
+    run = await _run_work_break_round(
+        monkeypatch, tmp_path, delivered_channel=delivered_channel,
+    )
+    body, deliver, tracker = run.body, run.deliver, run.tracker
+    record_invite, push_options, bump_total = (
+        run.record_invite, run.push_options, run.bump_total,
+    )
+    deliver.assert_awaited_once()
+    kwargs = deliver.await_args.kwargs
+    assert kwargs["channel"] == "work_break_game_invite"
+    assert kwargs["directive_fallback"][1] == "work_break"
+    assert body["action"] == "chat"
+    tracker.mark_work_break_used.assert_called_once_with()
+    if delivered_channel == "work_break":
+        assert body["channel"] == "work_break"
+        assert "seed" in body
+        record_invite.assert_not_called()
+        push_options.assert_not_awaited()
+        bump_total.assert_awaited_once()
+    else:
+        assert body["channel"] == "work_break_game_invite"
+        record_invite.assert_called_once()
+        push_options.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_work_break_combo_skipped_when_invited_game_is_banned(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """#3013: a banned game or story is never offered by the combo, even when
+    the model's line would not name it; the plain reminder goes out instead,
+    without spending the combo model call."""
+    run = await _run_work_break_round(
+        monkeypatch, tmp_path, delivered_channel="work_break", banned_terms=["足球"],
+    )
+
+    run.deliver.assert_awaited_once()
+    kwargs = run.deliver.await_args.kwargs
+    assert kwargs["channel"] == "work_break"
+    assert "directive_fallback" not in kwargs
+    assert run.body["channel"] == "work_break"
+    run.record_invite.assert_not_called()
+    run.push_options.assert_not_awaited()
+
+
+@pytest.mark.parametrize("repeat", (False, True), ids=("ban", "repeat"))
+@pytest.mark.parametrize(
+    ("dropped_channel", "label"),
+    (("work_break", "work-break reminder"), ("work_break_game_invite", "work-break game invite")),
+)
+@pytest.mark.asyncio
+async def test_work_break_combo_block_message_names_the_dropped_reminder(
+    monkeypatch, tmp_path: Path, dropped_channel, label, repeat,
+) -> None:
+    """After falling back, a plain reminder dropped by a ban or by repeat
+    suppression is reported as the plain reminder, not the game invite."""
+    from main_logic.proactive_chat import break_reminders
+
+    run = await _run_work_break_round(
+        monkeypatch,
+        tmp_path,
+        delivered_channel=None,
+        result=break_reminders.BreakReminderDeliveryResult(
+            directive_blocked=not repeat, repeat_suppressed=repeat,
+            dropped_channel=dropped_channel,
+        ),
+    )
+
+    assert run.body["action"] == "pass"
+    verdict = "suppressed as repeated" if repeat else "blocked by user ban-topic directive"
+    assert run.body["message"] == f"{label} {verdict}"
+    run.tracker.mark_work_break_used.assert_called_once_with()

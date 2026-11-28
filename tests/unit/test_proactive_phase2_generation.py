@@ -219,7 +219,7 @@ async def test_pass_after_prefix_is_blocked_at_every_split(monkeypatch, raw) -> 
         mgr = _FakeManager()
         generated = await _generate(mgr, [raw[:cut], raw[cut:]])
         assert generated.result.body["reason_code"] == contracts.PROACTIVE_REASON_PASS_MODEL_PASS
-        mgr.handle_new_message.assert_awaited_once_with()
+        mgr.handle_new_message.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -265,7 +265,7 @@ async def test_label_only_output_becomes_generation_empty(monkeypatch) -> None:
         generated.result.body["reason_code"]
         == contracts.PROACTIVE_REASON_PASS_GENERATION_EMPTY
     )
-    mgr.handle_new_message.assert_awaited_once_with()
+    mgr.handle_new_message.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -285,7 +285,7 @@ async def test_bare_pass_returns_model_pass_and_clears_proactive_tts(
     )
     assert generated.full_text == ""
     assert generated.response_text == ""
-    mgr.handle_new_message.assert_awaited_once_with()
+    mgr.handle_new_message.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -302,7 +302,7 @@ async def test_pass_sentinel_split_across_chunks_is_still_blocked(
         generated.result.body["reason_code"]
         == contracts.PROACTIVE_REASON_PASS_MODEL_PASS
     )
-    mgr.handle_new_message.assert_awaited_once_with()
+    mgr.handle_new_message.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -397,7 +397,7 @@ async def test_initial_phase2_generation_aborts_after_ui_engagement(
 
     guard_output.assert_not_awaited()
     if expects_cleanup:
-        mgr.handle_new_message.assert_awaited_once_with()
+        mgr.handle_new_message.assert_awaited_once()
     else:
         mgr.handle_new_message.assert_not_awaited()
     assert output.result is not None

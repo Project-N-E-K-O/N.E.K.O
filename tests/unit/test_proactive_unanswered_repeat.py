@@ -122,7 +122,7 @@ async def test_normal_delivery_guards_tts_and_commit_with_engagement_snapshot(
             == 100.0
         )
     if expects_cleanup:
-        mgr.handle_new_message.assert_awaited_once_with()
+        mgr.handle_new_message.assert_awaited_once()
     else:
         mgr.handle_new_message.assert_not_awaited()
     assert result.delivery is None
@@ -456,7 +456,7 @@ async def test_break_reminder_applies_unanswered_repeat_regen_before_delivery(
         if preempted_after_initial:
             mgr.handle_new_message.assert_not_awaited()
         else:
-            mgr.handle_new_message.assert_awaited_once_with()
+            mgr.handle_new_message.assert_awaited_once()
     elif interaction_during_regen:
         assert corpus.score_unanswered_proactive_draft.call_count == 1
         assert result == break_reminders.BreakReminderDeliveryResult()
@@ -465,7 +465,7 @@ async def test_break_reminder_applies_unanswered_repeat_regen_before_delivery(
         if replacement_sid_during_regen:
             mgr.handle_new_message.assert_not_awaited()
         else:
-            mgr.handle_new_message.assert_awaited_once_with()
+            mgr.handle_new_message.assert_awaited_once()
     elif regen_returns_pass:
         assert corpus.score_unanswered_proactive_draft.call_count == 1
         assert result.delivered_text is None
@@ -473,7 +473,7 @@ async def test_break_reminder_applies_unanswered_repeat_regen_before_delivery(
         assert result.repeat_suppressed is True
         mgr.feed_tts_chunk.assert_not_awaited()
         mgr.finish_proactive_delivery.assert_not_awaited()
-        mgr.handle_new_message.assert_awaited_once_with()
+        mgr.handle_new_message.assert_awaited_once()
     elif regen_still_repeats:
         assert corpus.score_unanswered_proactive_draft.call_count == 2
         assert result.delivered_text is None
@@ -481,7 +481,7 @@ async def test_break_reminder_applies_unanswered_repeat_regen_before_delivery(
         assert result.repeat_suppressed is True
         mgr.feed_tts_chunk.assert_not_awaited()
         mgr.finish_proactive_delivery.assert_not_awaited()
-        mgr.handle_new_message.assert_awaited_once_with()
+        mgr.handle_new_message.assert_awaited_once()
     elif tts_feed_rejected:
         assert result == break_reminders.BreakReminderDeliveryResult()
         mgr.feed_tts_chunk.assert_awaited_once_with(
@@ -490,7 +490,7 @@ async def test_break_reminder_applies_unanswered_repeat_regen_before_delivery(
             expected_user_engagement_time=None,
         )
         mgr.finish_proactive_delivery.assert_not_awaited()
-        mgr.handle_new_message.assert_awaited_once_with()
+        mgr.handle_new_message.assert_awaited_once()
     elif tts_feed_failed_locally:
         assert result.delivered_text == regenerated_text
         assert result.proactive_sid == "break-sid"
@@ -512,7 +512,7 @@ async def test_break_reminder_applies_unanswered_repeat_regen_before_delivery(
             expected_speech_id="break-sid",
             expected_user_engagement_time=None,
         )
-        mgr.handle_new_message.assert_awaited_once_with()
+        mgr.handle_new_message.assert_awaited_once()
     else:
         assert corpus.score_unanswered_proactive_draft.call_count == 2
         assert result.delivered_text == regenerated_text
@@ -584,7 +584,7 @@ async def test_break_reminder_tts_failure_restores_message_handling(monkeypatch)
     )
 
     assert result == break_reminders.BreakReminderDeliveryResult()
-    mgr.handle_new_message.assert_awaited_once_with()
+    mgr.handle_new_message.assert_awaited_once()
     mgr.finish_proactive_delivery.assert_not_awaited()
     record_proactive.assert_not_called()
 
@@ -1062,7 +1062,7 @@ async def test_regenerated_music_without_material_keeps_text_rechecks(monkeypatc
     )
 
     assert corpus.score_unanswered_proactive_draft.call_count == 2
-    mgr.handle_new_message.assert_awaited_once_with()
+    mgr.handle_new_message.assert_awaited_once()
     assert output.result is not None
     assert output.result.body["reason_code"] == PROACTIVE_REASON_PASS_DUPLICATE
 
@@ -1217,7 +1217,7 @@ async def test_regenerated_delivery_aborts_when_engagement_cutoff_advances(
         corpus.score_unanswered_proactive_draft.call_args.kwargs["silence_since"]
         == 100.0
     )
-    mgr.handle_new_message.assert_awaited_once_with()
+    mgr.handle_new_message.assert_awaited_once()
     assert output.result is not None
     assert output.result.body["action"] == "pass"
     assert (

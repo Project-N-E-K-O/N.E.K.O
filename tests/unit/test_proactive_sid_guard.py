@@ -1073,3 +1073,192 @@ async def test_the_end_of_a_proactive_speech_is_only_for_its_own_turn():
     mgr._request_tts_done_for_turn.assert_awaited_once_with(
         "finish_proactive_delivery", expected_speech_id="s_proactive"
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Proactive turn release: ownership rechecked across handle_new_message's
+# suspension points (#3888 / CodeRabbit 4649518442).
+# ─────────────────────────────────────────────────────────────────────────────
+
+class _ReleaseState:
+    """The ownership surface _proactive_turn_still_owned reads, plus the
+    hooks handle_new_message calls under the lock and after it."""
+
+    def __init__(self, proactive_sid):
+        self.proactive_sid = proactive_sid
+        self.preempted = False
+        self.fire = AsyncMock()
+
+    def is_proactive_preempted(self, _claim_token=None):
+        return self.preempted
+
+    def mark_user_input_preempt(self):
+        self.preempted = True
+
+
+def _release_mgr(takeover_at=None):
+    """A manager whose proactive turn ``s_proactive`` is still owned.
+
+    ``takeover_at`` names the suspension point (``"clear"`` or
+    ``"activity"``) during which the user's own handle_new_message lands:
+    it rotates the sid to ``s_user`` and raises the preempt flag.
+    """
+    mgr = _make_mgr()
+    mgr.current_speech_id = "s_proactive"
+    mgr.state = _ReleaseState("s_proactive")
+    mgr.audio_resampler = MagicMock()
+    mgr._reset_ai_turn_buffer = MagicMock()
+    mgr._discarded_turn_open = False
+
+    def _user_takes_over():
+        mgr.current_speech_id = "s_user"
+        mgr.state.preempted = True
+
+    async def _clear(**_kwargs):
+        if takeover_at == "clear":
+            _user_takes_over()
+
+    async def _activity():
+        if takeover_at == "activity":
+            _user_takes_over()
+
+    mgr._clear_tts_pipeline = AsyncMock(side_effect=_clear)
+    mgr.send_user_activity = AsyncMock(side_effect=_activity)
+    return mgr
+
+
+async def test_proactive_release_rotates_sid_while_still_owned():
+    from main_logic.proactive_chat.state import _release_proactive_turn
+
+    mgr = _release_mgr()
+    assert await _release_proactive_turn(mgr, "s_proactive") is True
+    assert mgr.current_speech_id not in ("s_proactive", "s_user")
+    mgr.state.fire.assert_awaited_once_with(SessionEvent.USER_INPUT, sid=mgr.current_speech_id)
+
+
+@pytest.mark.parametrize("takeover_at", ["clear", "activity"])
+async def test_proactive_release_keeps_user_sid_after_mid_cleanup_takeover(takeover_at):
+    from main_logic.proactive_chat.state import _release_proactive_turn
+
+    mgr = _release_mgr(takeover_at)
+    # Nothing was rotated, so callers log "user took over", not "interrupted".
+    assert await _release_proactive_turn(mgr, "s_proactive") is False
+    # The user's turn keeps its sid, so its reply audio is not dropped, and
+    # the proactive cleanup fires no second USER_INPUT for it.
+    assert mgr.current_speech_id == "s_user"
+    mgr.state.fire.assert_not_awaited()
+    if takeover_at == "clear":
+        # The user's own call does these resets for its turn.
+        mgr.send_user_activity.assert_not_awaited()
+        mgr._reset_ai_turn_buffer.assert_not_called()
+
+
+async def test_proactive_release_skips_cleanup_when_not_owned_at_entry():
+    from main_logic.proactive_chat.state import _release_proactive_turn
+
+    mgr = _release_mgr()
+    mgr.current_speech_id = "s_user"
+    assert await _release_proactive_turn(mgr, "s_proactive") is False
+    assert await _release_proactive_turn(mgr, None) is False
+    mgr._clear_tts_pipeline.assert_not_awaited()
+    assert mgr.current_speech_id == "s_user"
+
+
+async def test_proactive_release_reports_no_rotation_under_session_takeover():
+    from main_logic.proactive_chat.state import _release_proactive_turn
+
+    mgr = _release_mgr()
+    mgr._takeover_active = True
+    assert await _release_proactive_turn(mgr, "s_proactive") is False
+    assert mgr.current_speech_id == "s_proactive"
+    mgr.state.fire.assert_not_awaited()
+
+
+async def test_user_input_new_message_rotates_regardless_of_proactive_ownership():
+    """Without ``still_owned`` (user input) the rotation stays unconditional."""
+    mgr = _release_mgr("clear")
+    assert await LLMSessionManager.handle_new_message(mgr) is True
+    assert mgr.current_speech_id not in ("s_proactive", "s_user")
+    mgr.state.fire.assert_awaited_once()
+
+
+def test_proactive_chat_releases_turns_only_through_the_owned_helper():
+    """A bare ``mgr.handle_new_message()`` in proactive code would rotate the
+    sid without the in-lock ownership recheck."""
+    import ast
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2] / "main_logic" / "proactive_chat"
+    offenders = []
+    for path in sorted(root.glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "handle_new_message"
+                and not any(kw.arg == "still_owned" for kw in node.keywords)
+            ):
+                offenders.append(f"{path.name}:{node.lineno}")
+    assert offenders == []
+
+
+async def test_proactive_release_real_cleanup_spares_user_audio_after_takeover(monkeypatch):
+    """With the real _clear_tts_pipeline: a user who takes the turn during
+    the interrupt wait keeps the audio and text already queued for it.
+
+    The takeover is pinned inside that wait: the wait signals entry, the
+    user takes over, and only then does the cleanup resume.
+    """
+    import main_logic.core.tts_runtime as tts_runtime
+    from main_logic.proactive_chat.state import _release_proactive_turn
+
+    mgr = _release_mgr()
+    del mgr._clear_tts_pipeline  # back to the real cleanup chain
+    for name in ("_cancel_tts_soft_flush", "_cancel_game_speech_completion_wait",
+                 "_clear_game_speech_correlation", "_reset_tts_stream_normalizer",
+                 "_reset_tts_replay_state"):
+        setattr(mgr, name, MagicMock())
+    mgr._tts_output_is_current = lambda: True
+    mgr._tts_runtime_is_current = lambda _runtime: True
+    runtime = SimpleNamespace(retired=False)
+    mgr._tts_runtime = runtime
+    mgr._snapshot_tts_runtime = lambda: runtime
+    mgr.tts_pending_chunks.append(("s_proactive", "旧的主动搭话"))
+    monkeypatch.setattr(tts_runtime.GAME_SPEECH_AUDIO_CACHE, "discard_owner", lambda _owner: None)
+
+    wait_entered = asyncio.Event()
+    takeover_done = asyncio.Event()
+
+    real_sleep = asyncio.sleep
+
+    async def _sleep(delay, *args, **kwargs):
+        if delay != 0.02:
+            await real_sleep(delay, *args, **kwargs)
+            return
+        # The interrupt wait inside the real _let_tts_interrupt_land.
+        wait_entered.set()
+        await takeover_done.wait()
+
+    class _AsyncioWithPinnedWait:
+        sleep = staticmethod(_sleep)
+
+        def __getattr__(self, name):
+            return getattr(asyncio, name)
+
+    monkeypatch.setattr(tts_runtime, "asyncio", _AsyncioWithPinnedWait())
+
+    release = asyncio.create_task(_release_proactive_turn(mgr, "s_proactive"))
+    await asyncio.wait_for(wait_entered.wait(), timeout=1)
+    assert not release.done()
+    mgr.current_speech_id = "s_user"
+    mgr.state.preempted = True
+    mgr.tts_response_queue.put(("s_user", b"user-audio"))
+    mgr.tts_pending_chunks.append(("s_user", "用户回复"))
+    takeover_done.set()
+    assert await asyncio.wait_for(release, timeout=1) is False
+
+    assert mgr.current_speech_id == "s_user"
+    assert mgr.tts_response_queue.get_nowait() == ("s_user", b"user-audio")
+    # Only the interrupted proactive turn's chunk is pruned.
+    assert mgr.tts_pending_chunks == [("s_user", "用户回复")]

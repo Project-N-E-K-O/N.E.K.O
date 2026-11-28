@@ -58,6 +58,7 @@ from main_logic.proactive_chat.contracts import (
     PROACTIVE_REASON_PASS_DISABLED,
     PROACTIVE_REASON_PASS_DUPLICATE,
     PROACTIVE_REASON_PASS_PRIVACY,
+    PROACTIVE_REASON_PASS_USER_DIRECTIVE,
     ProactiveChatCommand,
     ProactiveChatResult,
     _proactive_chat_body,
@@ -85,6 +86,7 @@ from main_logic.proactive_chat.delivery import (
     DeliveryCommit,
     ProactiveLifecycle,
     _commit_proactive_delivery,
+    _record_blocked_sources_used,
     _record_committed_delivery,
 )
 from main_logic.proactive_chat.candidate_selection import (
@@ -116,8 +118,13 @@ from main_logic.proactive_chat.mini_game_invite import (
     _mini_game_invite_count_post_response_chat,
     _mini_game_invite_get_state,
     _mini_game_invite_record_delivered,
+    _mini_game_invite_surface_text,
     _pick_mini_game_type,
+    _render_mini_game_invite_line,
     _select_theater_story,
+)
+from main_logic.proactive_chat.directive_gate import (
+    _proactive_delivery_directive_hit_count,
 )
 from main_logic.proactive_chat.music_recommendation import (
     _build_music_dynamic_context,
@@ -190,6 +197,24 @@ def _consume_repeat_suppressed_break_reminder(
             marker_name,
             mark_err,
         )
+
+
+def _suppressed_break_reminder_body(
+    reminder_delivery: Any,
+    label: str,
+) -> dict[str, Any]:
+    """Pass body for a break reminder whose source was deliberately consumed."""
+    if reminder_delivery.directive_blocked:
+        return _proactive_pass_body(
+            PROACTIVE_REASON_PASS_USER_DIRECTIVE,
+            message=f"{label} blocked by user ban-topic directive",
+        )
+    return {
+        "success": True,
+        "action": "pass",
+        "reason_code": PROACTIVE_REASON_PASS_DUPLICATE,
+        "message": f"{label} suppressed as repeated",
+    }
 
 
 _MEME_PROXY_CANDIDATE_CHECK_LIMIT = 3
@@ -1105,7 +1130,7 @@ async def handle_proactive_chat(
                     round_id=lifecycle.screenshot_request_id,
                 )
                 delivered_text = reminder_delivery.delivered_text
-                if reminder_delivery.repeat_suppressed:
+                if reminder_delivery.consumes_source:
                     _consume_repeat_suppressed_break_reminder(
                         mgr,
                         lanlan_name=lanlan_name,
@@ -1113,12 +1138,9 @@ async def handle_proactive_chat(
                     )
                     return await _end_proactive(
                         ProactiveChatResult(
-                            body={
-                                "success": True,
-                                "action": "pass",
-                                "reason_code": PROACTIVE_REASON_PASS_DUPLICATE,
-                                "message": "anti-slack reminder suppressed as repeated",
-                            }
+                            body=_suppressed_break_reminder_body(
+                                reminder_delivery, "anti-slack reminder",
+                            )
                         )
                     )
                 if delivered_text:
@@ -1203,8 +1225,81 @@ async def handle_proactive_chat(
                             lang=_break_lang,
                             theater_story=selected_theater,
                         )
+                        # Same invite-surface ban check as the standalone
+                        # invite: a banned game or story never gets offered,
+                        # even if the model's line would not name it. Plain
+                        # reminder instead; no model call spent on the combo.
+                        _invite_hits = (
+                            _proactive_delivery_directive_hit_count(
+                                lanlan_name,
+                                _mini_game_invite_surface_text(
+                                    _render_mini_game_invite_line(
+                                        chosen_game_type,
+                                        _break_invite_lang,
+                                        master_name_current,
+                                        selected_story=selected_theater,
+                                    ),
+                                    selected_theater,
+                                ),
+                            )
+                            if gi_prompt is not None
+                            else 0
+                        )
+                        if _invite_hits:
+                            # Count only, never the term or the story text.
+                            logger.info(
+                                "[%s] work-break game invite skipped by user ban-topic "
+                                "directive (%d term(s) matched)",
+                                lanlan_name,
+                                _invite_hits,
+                            )
+                            print(
+                                f"[{lanlan_name}] 休息+游戏邀请的游戏/故事命中用户明确要求回避的话题，"
+                                "改发普通提醒"
+                            )
+                            gi_prompt = None
                         if gi_prompt is not None:
                             branch_game_invite = True
+
+            # Rendered up front: the combo branch falls back to it in the same
+            # turn when its draft hits a user ban-topic directive.
+            _plain_break_channel = "work_break"
+            wb_prompt, wb_seed = _render_work_break_prompt(
+                pending=water_pending,
+                master_name=master_name_current,
+                lang=_break_lang,
+            )
+            wb_system_prompt = _compose_break_system_prompt(
+                _break_character_prompt,
+                wb_prompt,
+            )
+
+            async def _end_work_break_delivered() -> ProactiveChatResult:
+                try:
+                    mgr._activity_tracker.mark_work_break_used()
+                except Exception as _mark_err:
+                    logger.warning(
+                        "[%s] mark_work_break_used failed: %s",
+                        lanlan_name,
+                        _mark_err,
+                    )
+                # Same chats-since-response counter as anti_slack branch.
+                _mini_game_invite_count_post_response_chat(lanlan_name)
+                await _increment_proactive_chat_total(
+                    lanlan_name, **state_storage_kwargs
+                )
+                return await _end_proactive(
+                    ProactiveChatResult(
+                        body={
+                            "success": True,
+                            "action": "chat",
+                            "reason_code": PROACTIVE_REASON_CHAT_DELIVERED,
+                            "message": "work-break reminder delivered",
+                            "channel": "work_break",
+                            "seed": wb_seed,
+                        }
+                    )
+                )
 
             if (
                 branch_game_invite
@@ -1222,9 +1317,10 @@ async def handle_proactive_chat(
                     channel="work_break_game_invite",
                     lang=_break_lang,
                     round_id=lifecycle.screenshot_request_id,
+                    directive_fallback=(wb_system_prompt, _plain_break_channel),
                 )
                 delivered_text = reminder_delivery.delivered_text
-                if reminder_delivery.repeat_suppressed:
+                if reminder_delivery.consumes_source:
                     _consume_repeat_suppressed_break_reminder(
                         mgr,
                         lanlan_name=lanlan_name,
@@ -1232,14 +1328,18 @@ async def handle_proactive_chat(
                     )
                     return await _end_proactive(
                         ProactiveChatResult(
-                            body={
-                                "success": True,
-                                "action": "pass",
-                                "reason_code": PROACTIVE_REASON_PASS_DUPLICATE,
-                                "message": "work-break game invite suppressed as repeated",
-                            }
+                            body=_suppressed_break_reminder_body(
+                                reminder_delivery,
+                                # Dropped after falling back: the plain reminder, not the invite.
+                                "work-break reminder"
+                                if reminder_delivery.dropped_channel == _plain_break_channel
+                                else "work-break game invite",
+                            )
                         )
                     )
+                if delivered_text and reminder_delivery.delivered_channel == _plain_break_channel:
+                    # The invite hit a ban and the plain reminder went out instead.
+                    return await _end_work_break_delivered()
                 if delivered_text:
                     invite_session_id = str(uuid4())
                     _mini_game_invite_record_delivered(lanlan_name, invite_session_id)
@@ -1335,25 +1435,17 @@ async def handle_proactive_chat(
                 )
 
             # Regular drink/stretch nudge branch
-            wb_prompt, wb_seed = _render_work_break_prompt(
-                pending=water_pending,
-                master_name=master_name_current,
-                lang=_break_lang,
-            )
             reminder_delivery = await _deliver_break_reminder_via_llm(
                 lanlan_name=lanlan_name,
                 mgr=mgr,
                 config_manager=break_config_manager_provider(),
-                system_prompt=_compose_break_system_prompt(
-                    _break_character_prompt,
-                    wb_prompt,
-                ),
+                system_prompt=wb_system_prompt,
                 channel="work_break",
                 lang=_break_lang,
                 round_id=lifecycle.screenshot_request_id,
             )
             delivered_text = reminder_delivery.delivered_text
-            if reminder_delivery.repeat_suppressed:
+            if reminder_delivery.consumes_source:
                 _consume_repeat_suppressed_break_reminder(
                     mgr,
                     lanlan_name=lanlan_name,
@@ -1361,40 +1453,13 @@ async def handle_proactive_chat(
                 )
                 return await _end_proactive(
                     ProactiveChatResult(
-                        body={
-                            "success": True,
-                            "action": "pass",
-                            "reason_code": PROACTIVE_REASON_PASS_DUPLICATE,
-                            "message": "work-break reminder suppressed as repeated",
-                        }
+                        body=_suppressed_break_reminder_body(
+                            reminder_delivery, "work-break reminder",
+                        )
                     )
                 )
             if delivered_text:
-                try:
-                    mgr._activity_tracker.mark_work_break_used()
-                except Exception as _mark_err:
-                    logger.warning(
-                        "[%s] mark_work_break_used failed: %s",
-                        lanlan_name,
-                        _mark_err,
-                    )
-                # Same chats-since-response counter as anti_slack branch.
-                _mini_game_invite_count_post_response_chat(lanlan_name)
-                await _increment_proactive_chat_total(
-                    lanlan_name, **state_storage_kwargs
-                )
-                return await _end_proactive(
-                    ProactiveChatResult(
-                        body={
-                            "success": True,
-                            "action": "chat",
-                            "reason_code": PROACTIVE_REASON_CHAT_DELIVERED,
-                            "message": "work-break reminder delivered",
-                            "channel": "work_break",
-                            "seed": wb_seed,
-                        }
-                    )
-                )
+                return await _end_work_break_delivered()
             return await _end_proactive(
                 ProactiveChatResult(
                     body={
@@ -2731,6 +2796,16 @@ async def handle_proactive_chat(
             vision_consent_epoch=vision_consent_epoch,
         )
         if delivery_commit.result is not None:
+            await _record_blocked_sources_used(
+                lanlan_name=lanlan_name,
+                blocked_links=delivery_commit.blocked_links,
+                selected_web_link=selected_web_link,
+                selected_web_topic_key=selected_web_topic_key,
+                web_parsed=web_parsed,
+                selected_meme_link=selected_meme_link,
+                selected_meme_topic_key=selected_meme_topic_key,
+                **state_storage_kwargs,
+            )
             return await _end_proactive(
                 ProactiveChatResult(body=delivery_commit.result.body)
             )

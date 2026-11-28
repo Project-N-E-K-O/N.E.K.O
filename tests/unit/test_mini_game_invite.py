@@ -681,7 +681,7 @@ async def test_maybe_deliver_aborts_when_user_engages_during_phase2_transition(
     assert out["reason_code"] == sr.PROACTIVE_REASON_DELIVERY_PREEMPTED
     mgr.feed_tts_chunk.assert_not_awaited()
     mgr.finish_proactive_delivery.assert_not_awaited()
-    mgr.handle_new_message.assert_awaited_once_with()
+    mgr.handle_new_message.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -743,7 +743,7 @@ async def test_maybe_deliver_pass_when_engagement_rejects_tts(monkeypatch):
     assert out is not None
     assert out["reason_code"] == sr.PROACTIVE_REASON_DELIVERY_PREEMPTED
     mgr.finish_proactive_delivery.assert_not_awaited()
-    mgr.handle_new_message.assert_awaited_once_with()
+    mgr.handle_new_message.assert_awaited_once()
     assert LANLAN not in sr._mini_game_invite_state
 
 
