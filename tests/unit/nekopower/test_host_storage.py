@@ -1686,8 +1686,11 @@ async def test_round5_worktree_orphan_expiry_and_gitfile_preservation(tmp_path: 
             workdir=str(tracked_wt),
             state="active",
         )
-        case_insensitive = (tracked_wt.parent / "ABC012345678").exists()
-        if case_insensitive:
+        matches_tracked = (
+            (tracked_wt.parent / "ABC012345678").exists()
+            or os.path.normcase("ABC012345678") == os.path.normcase("abc012345678")
+        )
+        if matches_tracked:
             with pytest.raises(ValueError, match="busy"):
                 await host.task_agents.remove_orphan_worktree("ABC012345678")
         else:
@@ -2350,3 +2353,309 @@ async def test_round8_worktree_subdir_gone_restart_forget_gone_and_record_only(
             assert "cancelrm1" not in host2.task_agents._trees_in_hand
     finally:
         await host2.shutdown()
+
+
+async def test_round9_worktree_active_session_protection_and_partial_retry_mtime(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Verify other active sessions block worktree expiry/retry, workdir hold serializes starts, and partial cleanup does not delay retries."""
+    import asyncio
+    from nekopower.host.worktrees import Worktree, WorktreeRemovalIncomplete
+
+    clock = Clock(1_800_000_000.0)
+    host = make_host(tmp_path)
+    host.storage._clock = clock
+    host.space_keeper._clock = clock
+    try:
+        old_ts = clock.now - 30 * DAY
+        recent_ts = clock.now - 1 * DAY
+        fake_repo = tmp_path / "r9_repo"
+        fake_repo.mkdir()
+
+        # 1. Another running session (e.g. a fork of a child session) working inside an old kept worktree blocks
+        #    expire_tree(), discard_tree(), retry_discarded_tree(), and marks can_clean=False in overview().
+        wt_shared = host.paths.worktree_dir("sharedwt1")
+        nested_sub = wt_shared / "sub"
+        nested_sub.mkdir(parents=True)
+        (nested_sub / "work.txt").write_text("active session work", encoding="utf-8")
+        _set_tree_mtime(wt_shared, old_ts)
+        await host.ledger.add_tree(
+            id="sharedwt1",
+            session_id=None,
+            commission_id=None,
+            lanlan_name="Lan",
+            project=DEFAULT_PROJECT,
+            project_dir=str(fake_repo),
+            repo_root=str(fake_repo),
+            path=str(wt_shared),
+            workdir=str(wt_shared),
+            state="kept",
+        )
+        await host.ledger.run(
+            lambda conn: conn.execute("UPDATE worktrees SET updated_at = ? WHERE id = ?", (old_ts, "sharedwt1"))
+        )
+        other_sess = await host.ledger.create_session(
+            name="fork-in-wt", lanlan_name="Lan", project=DEFAULT_PROJECT, workdir=str(nested_sub)
+        )
+        await host.ledger.update_session(other_sess.id, status="running")
+
+        view_busy = await host.storage_overview()
+        wt_row_view = next(w for w in view_busy["worktrees"] if w["id"] == "sharedwt1")
+        assert wt_row_view["can_clean"] is False
+
+        exp_busy = await host.task_agents.expire_tree("sharedwt1", until=clock.now - 14 * DAY)
+        assert exp_busy == {"expired": False, "reason": "in_use"}
+        assert (nested_sub / "work.txt").exists()
+
+        with pytest.raises(ValueError, match="at_work"):
+            await host.task_agents.discard_tree("sharedwt1")
+        assert (nested_sub / "work.txt").exists()
+
+        await host.ledger.update_tree("sharedwt1", state="discarding", reason="expired")
+        assert await host.task_agents.retry_discarded_tree("sharedwt1") is False
+        assert (nested_sub / "work.txt").exists()
+
+        # Once the other session stops, expire_tree holds the workdir against concurrent starts throughout removal.
+        await host.ledger.update_session(other_sess.id, status="idle")
+        await host.ledger.update_tree("sharedwt1", state="kept", reason="")
+        await host.ledger.run(
+            lambda conn: conn.execute("UPDATE worktrees SET updated_at = ? WHERE id = ?", (old_ts, "sharedwt1"))
+        )
+
+        shared_handle = Worktree(id="sharedwt1", repo_root=fake_repo, path=wt_shared, subpath="", start="abc")
+        entered_remove = asyncio.Event()
+        finish_remove = asyncio.Event()
+
+        async def fake_handle_shared(_row: Any) -> Worktree:
+            return shared_handle
+
+        async def slow_remove_if_untouched(_handle: Worktree, _check: Any = None) -> str:
+            entered_remove.set()
+            await finish_remove.wait()
+            return "removed"
+
+        with monkeypatch.context() as mp:
+            mp.setattr(host.task_agents, "_handle_of", fake_handle_shared)
+            mp.setattr(host.task_agents.worktrees, "remove_if_untouched", slow_remove_if_untouched)
+            exp_task = asyncio.create_task(host.task_agents.expire_tree("sharedwt1", until=clock.now - 14 * DAY))
+            await asyncio.wait_for(entered_remove.wait(), timeout=2.0)
+
+            start_claimed = asyncio.Event()
+
+            async def try_start_in_wt() -> None:
+                while not await host.task_agents._claim_workdir_for_start("comm-wt-race", nested_sub):
+                    pass
+                start_claimed.set()
+
+            race_task = asyncio.create_task(try_start_in_wt())
+            await asyncio.sleep(0.02)
+            assert not start_claimed.is_set()
+
+            finish_remove.set()
+            exp_done = await asyncio.wait_for(exp_task, timeout=2.0)
+            assert exp_done == {"expired": True, "removed": True, "outcome": "removed"}
+            await asyncio.wait_for(start_claimed.wait(), timeout=2.0)
+            await race_task
+            host.task_agents._starting_workdirs.pop("comm-wt-race", None)
+
+        # 2. Partial auto-expiry bumps the parent directory's mtime when deleting one file while leaving a locked
+        #    file behind. The next reap_worktrees() round must retry immediately (not wait another 14 days),
+        #    while a real user edit to a file in the deferred worktree still spares it.
+        wt_partial = host.paths.worktree_dir("partwt01")
+        wt_partial.mkdir(parents=True)
+        rem_file = wt_partial / "removable.txt"
+        locked_file = wt_partial / "locked.txt"
+        rem_file.write_text("gone on first try", encoding="utf-8")
+        locked_file.write_text("locked on first try", encoding="utf-8")
+        _set_tree_mtime(wt_partial, old_ts)
+        await host.ledger.add_tree(
+            id="partwt01",
+            session_id=None,
+            commission_id=None,
+            lanlan_name="Lan",
+            project=DEFAULT_PROJECT,
+            project_dir=str(fake_repo),
+            repo_root=str(fake_repo),
+            path=str(wt_partial),
+            workdir=str(wt_partial),
+            state="kept",
+        )
+        await host.ledger.run(
+            lambda conn: conn.execute("UPDATE worktrees SET updated_at = ? WHERE id = ?", (old_ts, "partwt01"))
+        )
+        part_handle = Worktree(id="partwt01", repo_root=fake_repo, path=wt_partial, subpath="", start="abc")
+        removed_on_retry = {"done": False}
+
+        async def fake_handle_part(_row: Any) -> Worktree:
+            return part_handle
+
+        async def partial_then_complete_remove(handle: Worktree, is_untouched: Any = None) -> str:
+            if is_untouched is not None and not is_untouched(handle.path):
+                return "aborted"
+            if rem_file.exists():
+                rem_file.unlink()
+                # Removing rem_file refreshes wt_partial's directory mtime to recent_ts while locked_file stays old.
+                _set_mtime(wt_partial, recent_ts)
+                raise WorktreeRemovalIncomplete("locked.txt still open")
+            locked_file.unlink()
+            wt_partial.rmdir()
+            removed_on_retry["done"] = True
+            return "removed"
+
+        await host.set_storage_settings(auto_clean_worktrees=True, worktree_kept_days=14)
+        wt_state = {
+            "worktrees_due_until": clock.now - 14 * DAY,
+            "worktrees_due_seen_at": clock.now - 2 * DAY,
+        }
+        with monkeypatch.context() as mp:
+            mp.setattr(host.task_agents, "_handle_of", fake_handle_part)
+            mp.setattr(host.task_agents.worktrees, "remove_if_untouched", partial_then_complete_remove)
+            # Round 1: expires partwt01, removes removable.txt (bumping dir mtime), defers due to locked.txt.
+            await host.storage.reap_worktrees(clock.now, wt_state)
+            row_mid = await host.ledger.get_tree("partwt01")
+            assert row_mid is not None and row_mid.state == "discarding" and row_mid.reason == "expired"
+            assert not rem_file.exists() and locked_file.exists()
+
+            # overview() still considers it stale because remaining files are old (dir mtime alone is ignored).
+            view_mid = await host.storage_overview()
+            item_mid = next(w for w in view_mid["worktrees"] if w["id"] == "partwt01")
+            assert item_mid["stale"] is True
+
+            # Round 2 (same day, after lock released): retries immediately and completes removal!
+            await host.storage.reap_worktrees(clock.now + 3600.0, wt_state)
+            assert removed_on_retry["done"] is True
+            assert (await host.ledger.get_tree("partwt01")) is None
+            assert not wt_partial.exists()
+
+        # 3. Real user edit to a deferred auto-expired worktree still spares it on reap_worktrees().
+        wt_edited = host.paths.worktree_dir("editwt02")
+        wt_edited.mkdir(parents=True)
+        edited_file = wt_edited / "notes.txt"
+        edited_file.write_text("user came back", encoding="utf-8")
+        _set_tree_mtime(wt_edited, recent_ts)
+        await host.ledger.add_tree(
+            id="editwt02",
+            session_id=None,
+            commission_id=None,
+            lanlan_name="Lan",
+            project=DEFAULT_PROJECT,
+            project_dir=str(fake_repo),
+            repo_root=str(fake_repo),
+            path=str(wt_edited),
+            workdir=str(wt_edited),
+            state="discarding",
+            reason="expired",
+        )
+        edit_handle = Worktree(id="editwt02", repo_root=fake_repo, path=wt_edited, subpath="", start="abc")
+
+        async def fake_handle_edit(_row: Any) -> Worktree:
+            return edit_handle
+
+        async def fail_if_removed(_handle: Worktree, is_untouched: Any = None) -> str:
+            if is_untouched is not None and not is_untouched(_handle.path):
+                return "aborted"
+            raise AssertionError("edited file must not be removed")
+
+        with monkeypatch.context() as mp:
+            mp.setattr(host.task_agents, "_handle_of", fake_handle_edit)
+            mp.setattr(host.task_agents.worktrees, "remove_if_untouched", fail_if_removed)
+            await host.storage.reap_worktrees(clock.now + 3600.0, wt_state)
+        assert (await host.ledger.get_tree("editwt02")) is not None
+        assert edited_file.read_text(encoding="utf-8") == "user came back"
+    finally:
+        await host.shutdown()
+
+
+async def test_round9_subdir_gone_with_existing_worktree_uses_repo_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Verify worktree cleanup opens via repo_root (and refuses _remove_what_is_left) when project subdir is gone but repo and worktree exist."""
+    import asyncio
+    import shutil
+    from nekopower.host import worktrees as wt_mod
+    from nekopower.host.worktrees import WorktreeError
+
+    if shutil.which("git") is None:
+        pytest.skip("git is not installed")
+
+    empty_cfg = tmp_path / "empty-gitconfig"
+    empty_cfg.write_text("", encoding="utf-8")
+    (tmp_path / "git-template").mkdir()
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(empty_cfg))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("GIT_ATTR_NOSYSTEM", "1")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("GIT_TEMPLATE_DIR", str(tmp_path / "git-template"))
+    for env_name in wt_mod._REDIRECTING_ENV:
+        monkeypatch.delenv(env_name, raising=False)
+
+    repo = tmp_path / "sub_exist_repo"
+    subdir = repo / "packages" / "web"
+    subdir.mkdir(parents=True)
+
+    def _init_repo() -> None:
+        for args in (
+            ("git", "init"),
+            ("git", "config", "user.name", "Test"),
+            ("git", "config", "user.email", "test@example.com"),
+        ):
+            subprocess.run(args, cwd=repo, check=True, capture_output=True)
+        (subdir / "index.ts").write_text("export const x = 1;\n", encoding="utf-8")
+        subprocess.run(("git", "add", "."), cwd=repo, check=True, capture_output=True)
+        subprocess.run(("git", "commit", "-m", "init"), cwd=repo, check=True, capture_output=True)
+
+    await asyncio.to_thread(_init_repo)
+
+    clock = Clock(1_800_000_000.0)
+    host = make_host(tmp_path)
+    host.storage._clock = clock
+    try:
+        old_ts = clock.now - 30 * DAY
+        handle = await host.task_agents.worktrees.create(subdir, host.paths.worktrees_dir() / "sublive01")
+        await host.ledger.add_tree(
+            id=handle.id,
+            session_id=None,
+            commission_id=None,
+            lanlan_name="Lan",
+            project="web",
+            project_dir=str(subdir),
+            repo_root=str(repo),
+            path=str(handle.path),
+            workdir=str(handle.workdir),
+            state="kept",
+        )
+        await host.ledger.run(
+            lambda conn: conn.execute("UPDATE worktrees SET updated_at = ? WHERE id = ?", (old_ts, handle.id))
+        )
+        # Drop cached handle and delete the project subdir while BOTH repo_root and worktree directory still exist.
+        host.task_agents._tree_handles.pop(handle.id, None)
+        shutil.rmtree(subdir)
+        assert not subdir.exists()
+        assert (repo / ".git").is_dir()
+        assert handle.path.is_dir()
+
+        # 1. If opening via repo_root fails transiently while repo_root exists, expire_tree must NOT fall back to
+        #    _remove_what_is_left (which would drop the row without cleaning git metadata).
+        real_open = host.task_agents.worktrees.open
+
+        async def fail_open(*_args: Any, **_kwargs: Any) -> Any:
+            raise WorktreeError("transient git lock")
+
+        with monkeypatch.context() as mp:
+            mp.setattr(host.task_agents.worktrees, "open", fail_open)
+            with pytest.raises(ValueError, match="not_opened"):
+                await host.task_agents.expire_tree(handle.id, until=clock.now - 14 * DAY)
+        assert handle.path.is_dir()
+        assert (await host.ledger.get_tree(handle.id)) is not None
+
+        # 2. Once git open succeeds via repo_root fallback, expire_tree cleans directory + git registration + refs.
+        host.task_agents.worktrees.open = real_open  # type: ignore[method-assign]
+        res = await host.task_agents.expire_tree(handle.id, until=clock.now - 14 * DAY)
+        assert res == {"expired": True, "removed": True, "outcome": "removed"}
+        assert not handle.path.exists()
+        assert (await host.ledger.get_tree(handle.id)) is None
+        registered = await host.task_agents.worktrees._registered(repo)
+        assert all(p.name != "sublive01" for p in registered)
+        assert "sublive01" not in await host.task_agents.worktrees._ref_ids(repo)
+    finally:
+        await host.shutdown()
