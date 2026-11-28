@@ -9,8 +9,17 @@
     </div>
     <router-view v-else />
     <LocaleLoadNotice />
-    <div v-if="consentState.activeRequest" class="consent-loader-host">
-      <PluginConsentDialog :onClose="closeConsentRequest(consentState.activeRequest)" />
+    <div v-if="startDialog.active" class="consent-loader-host">
+      <PermissionStartDialog
+        :key="startDialog.active.key"
+        :panel="startDialog.active.panel"
+        :pending="startDialog.active.pending"
+        :request="startDialog.active.request"
+        :plugin-name="startDialog.active.pluginName"
+        start
+        :onResult="resultFor(startDialog.active.key)"
+        :onClose="closeFor(startDialog.active.key)"
+      />
     </div>
   </el-config-provider>
 </template>
@@ -19,18 +28,19 @@
 import { ref, watch } from 'vue'
 import { elementLocale, localeLoadState } from './i18n'
 import LocaleLoadNotice from './components/common/LocaleLoadNotice.vue'
-import { deferredPanel } from './components/common/deferredPanel'
-import { usePluginConsentState, type ConsentRequest } from './stores/pluginConsentState'
+import { PermissionStartDialog } from './components/plugin/permissionStartDialog'
+import { usePermissionStartDialog } from './stores/permissionStartDialog'
 
-const consentState = usePluginConsentState()
-// Reuse the optional-panel recovery UI. The existing request v-if/nextTick
-// handoff unmounts an old loader before presenting the next queued request.
-const PluginConsentDialog = deferredPanel(() => import('./components/plugin/PluginConsentDialog.vue'))
-function closeConsentRequest(request: ConsentRequest) {
-  // A late close from an old dialog/loader must not cancel its successor.
-  return () => {
-    if (consentState.activeRequest === request) consentState.resolveConfirmation(false)
-  }
+// The dialog before a manual start. Its module is loaded before it is asked
+// for; if the loader still shows its own box, closing that box starts the
+// plugin, as a failed read does: the dialog never keeps a plugin from starting.
+const startDialog = usePermissionStartDialog()
+// Each handler is bound to its own dialog: a late answer from a replaced one is dropped.
+function resultFor(key: number) {
+  return (result: { start: boolean }) => startDialog.answer(result.start, key)
+}
+function closeFor(key: number) {
+  return () => startDialog.answer(true, key)
 }
 
 const ELEMENT_Z_INDEX = 12000

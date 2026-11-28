@@ -60,7 +60,7 @@ async function mount(props: {
     pending: null,
     pluginName: 'Stickers',
     ...props,
-    onClose: (result: { start: boolean; changed: boolean }) => closed.push(result),
+    onResult: (result: { start: boolean; changed: boolean }) => closed.push(result),
   })
   app.component(
     'el-dialog',

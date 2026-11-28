@@ -520,7 +520,6 @@ import { useRoute, useRouter } from 'vue-router'
 import type { AxiosError } from 'axios'
 import { Refresh, RefreshRight, Box, Connection, Finished, Sort, CircleClose, Close, VideoPlay, VideoPause, Delete, Upload, Download, ShoppingCart, ArrowRight, ArrowLeft, User, Top, MoreFilled, Check } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { usePluginStartGate } from '@/composables/usePluginStartGate'
 import { usePluginStore } from '@/stores/plugin'
 import { useMetricsStore } from '@/stores/metrics'
 import { useMarketVersionsStore, type MarketVersionTarget } from '@/stores/marketVersions'
@@ -547,7 +546,6 @@ import type {
 import { getMarketUrl } from '@/api/market'
 import { deletePlugin } from '@/api/plugins'
 import { collectBatchPluginDeleteWarnings } from '@/utils/pluginDeleteResult'
-import { usePluginConsentState } from '@/stores/pluginConsentState'
 import { buildPluginCli, downloadPluginPackage } from '@/api/pluginCli'
 import { usePluginListContextActions, type ResolvedPluginListAction } from '@/composables/usePluginListContextActions'
 import { usePluginWorkbench } from '@/composables/usePluginWorkbench'
@@ -1257,26 +1255,11 @@ function getSelectedPlugins() {
   return rawPlugins.value.filter((p) => selectedPluginIds.value.includes(p.id))
 }
 
-const startGate = usePluginStartGate()
 const { busy: batchBusy, runBatch } = useBatchActions(getSelectedPlugins, refreshAfterPluginChange)
 
 async function handleBatchStart() {
-  const ids = getSelectedPlugins().filter((p) => p.status !== 'running' && p.status !== 'disabled').map((p) => p.id)
-  let allowed: string[] = []
-  let consentConfirmed = false
-  if (ids.length) {
-    try {
-      const prepared = await startGate.prepareBatchStart(ids)
-      allowed = prepared.allowed
-      consentConfirmed = prepared.confirmed
-    } catch {
-      ElMessage.error(t('pluginConsent.loadFailed'))
-      return
-    }
-  }
   await runBatch({
-    skipConfirm: consentConfirmed,
-    filter: (p) => allowed.includes(p.id),
+    filter: (p) => p.status !== 'running' && p.status !== 'disabled',
     action: (p) => pluginStore.start(p.id, { refresh: false }),
     noItemsKey: 'plugins.batchNoStartable',
     confirmKey: 'plugins.batchStartConfirm',
@@ -1332,9 +1315,6 @@ async function handleBatchDelete() {
     try {
       const result = await deletePlugin(p.id)
       ok++
-      // Same as the context-menu delete: drop the deleted plugin's cached
-      // permission details, so a restored built-in under this id does not show them.
-      usePluginConsentState().forget(p.id)
       deleted.push({ result, plugin: p.name, pluginId: p.id })
     } catch { fail++ }
   }

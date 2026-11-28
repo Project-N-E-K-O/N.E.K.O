@@ -22,12 +22,21 @@ const pluginStore = vi.hoisted(() => ({
   stop: vi.fn().mockResolvedValue(undefined),
 }))
 vi.mock('@/api/pluginPermissions', () => api)
-const consentStore = vi.hoisted(() => ({
-  details: {} as Record<string, unknown>,
-  analyze: vi.fn().mockResolvedValue(undefined),
-  load: vi.fn().mockResolvedValue(undefined),
+const scanApi = vi.hoisted(() => ({
+  getPluginScan: vi.fn(),
+  rescanPlugin: vi.fn(),
 }))
-vi.mock('@/stores/pluginConsentState', () => ({ usePluginConsentState: () => consentStore }))
+vi.mock('@/api/pluginScan', () => scanApi)
+// The earlier plugin-wide line has its own tests.
+vi.mock('./PluginLegacyConsentBanner.vue', async () => {
+  const { defineComponent, h } = await import('vue')
+  return {
+    default: defineComponent({
+      emits: ['changed'],
+      setup: (_, { emit }) => () => h('button', { 'data-test': 'banner-changed', onClick: () => emit('changed') }),
+    }),
+  }
+})
 // The dialogs have their own tests: here only what opens them and what closing does.
 const dialogStub = vi.hoisted(() => ({ props: [] as Array<Record<string, unknown>> }))
 vi.mock('./PluginPermissionDialog.vue', async () => {
@@ -35,12 +44,12 @@ vi.mock('./PluginPermissionDialog.vue', async () => {
   return {
     default: defineComponent({
       props: ['panel', 'pending', 'request', 'pluginName', 'start'],
-      emits: ['close'],
+      emits: ['result'],
       setup: (props, { emit }) => () => {
         dialogStub.props.push({ ...props })
         return h('div', { 'data-test': 'dialog-stub', 'data-kind': (props.request as { kind: string }).kind }, [
-          h('button', { 'data-test': 'dialog-close', onClick: () => emit('close', { start: false, changed: false }) }),
-          h('button', { 'data-test': 'dialog-changed', onClick: () => emit('close', { start: false, changed: true }) }),
+          h('button', { 'data-test': 'dialog-close', onClick: () => emit('result', { start: false, changed: false }) }),
+          h('button', { 'data-test': 'dialog-changed', onClick: () => emit('result', { start: false, changed: true }) }),
         ])
       },
     }),
@@ -144,7 +153,8 @@ function failure(status: number, code: string) {
 beforeEach(() => {
   vi.clearAllMocks()
   dialogStub.props.length = 0
-  consentStore.details = {}
+  scanApi.getPluginScan.mockResolvedValue({ plugin_id: 'demo', version: '1.0.0', analysis: { status: 'completed', capabilities: [], evidence: [], warnings: [] } })
+  scanApi.rescanPlugin.mockResolvedValue(null)
   pluginStore.status = 'running'
   vi.spyOn(ElMessage, 'error').mockImplementation(() => ({ close: () => {} }) as never)
 })
@@ -744,19 +754,43 @@ describe('PluginPermissions tab', () => {
     api.getPermissionPanel.mockResolvedValue(panel())
     q(root, 'rescan')!.click()
     await flush()
-    expect(consentStore.analyze).toHaveBeenCalledWith('demo')
+    expect(scanApi.rescanPlugin).toHaveBeenCalledWith('demo')
     expect(q(root, 'notice-scan-failed')).toBeNull()
   })
 
   it('shows the warnings of the last scan in the developer details', async () => {
-    consentStore.details = {
-      demo: { analysis: { warnings: [{ code: 'budget_exceeded' }, { code: 'source_unreadable', file: 'a.py' }] } },
-    }
     serve(panel())
+    scanApi.getPluginScan.mockResolvedValue({
+      plugin_id: 'demo', version: '1.0.0',
+      analysis: { status: 'partial', capabilities: [], evidence: [], warnings: [{ code: 'budget_exceeded' }, { code: 'source_unreadable', file: 'a.py' }] },
+    })
     const root = await mount()
     const warnings = q(root, 'scan-warnings')!.textContent!
     expect(warnings).toContain('pluginConsent.warnings.budget_exceeded')
     expect(warnings).toContain('pluginConsent.warnings.source_unreadable (a.py)')
+  })
+
+  it('shows the warnings of a new scan after "Analyze again", and reads the tab again', async () => {
+    serve(panel({ analysis: { ...panel().analysis, status: 'failed' } }))
+    const root = await mount()
+    expect(q(root, 'scan-warnings')).toBeNull()
+    scanApi.rescanPlugin.mockResolvedValue({
+      plugin_id: 'demo', version: '1.0.0',
+      analysis: { status: 'queued', capabilities: [], evidence: [], warnings: [{ code: 'analysis_failed' }] },
+    })
+    scanApi.getPluginScan.mockRejectedValue(new Error('offline'))
+    q(root, 'rescan')!.click()
+    await flush()
+    expect(api.getPermissionPanel).toHaveBeenCalledTimes(2)
+    expect(q(root, 'scan-warnings')!.textContent).toContain('pluginConsent.warnings.analysis_failed')
+  })
+
+  it('reads the tab again after the earlier plugin-wide line changed', async () => {
+    serve(panel())
+    const root = await mount()
+    q(root, 'banner-changed')!.click()
+    await flush()
+    expect(api.getPermissionPanel).toHaveBeenCalledTimes(2)
   })
 
   it('reads the last-use coverage again after a decision', async () => {

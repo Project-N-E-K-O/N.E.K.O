@@ -176,8 +176,10 @@ const props = defineProps<{
   start?: boolean
 }>()
 const emit = defineEmits<{
-  /** ``start``: the user chose to start; ``changed``: a decision was saved. */
-  close: [result: { start: boolean; changed: boolean }]
+  /** The dialog is done. ``start``: the user chose to start; ``changed``: a decision was saved. */
+  result: [result: { start: boolean; changed: boolean }]
+  /** Declared but never sent: keeps a lazy loader's close listener off the dialog. */
+  close: []
 }>()
 const { t, te } = useI18n()
 
@@ -286,7 +288,7 @@ async function decideUsed(state: 'granted' | 'denied') {
 }
 function close(startNow: boolean) {
   if (busy.value !== null) return
-  emit('close', { start: startNow, changed })
+  emit('result', { start: startNow, changed })
 }
 </script>
 

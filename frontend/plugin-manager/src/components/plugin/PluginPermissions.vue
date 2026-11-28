@@ -1,5 +1,6 @@
 <template>
   <section class="perm-tab perm-palette">
+    <PluginLegacyConsentBanner :plugin-id="pluginId" @changed="load()" />
     <div v-if="loading && !panel" class="perm-tab__state">{{ t('pluginConsent.tab.loading') }}</div>
     <div v-else-if="!panel" class="perm-tab__state">
       {{ t('pluginConsent.tab.loadFailed') }}
@@ -306,7 +307,7 @@
         :pending="pending"
         :request="dialog"
         :plugin-name="pluginName"
-        @close="closeDialog"
+        @result="closeDialog"
       />
     </template>
   </section>
@@ -333,8 +334,9 @@ import {
   type PermissionPanel,
 } from '@/api/pluginPermissions'
 import { usePluginStore } from '@/stores/plugin'
-import { usePluginConsentState } from '@/stores/pluginConsentState'
+import { getPluginScan, rescanPlugin, type PluginScanRecord } from '@/api/pluginScan'
 import { usePluginStopAction } from '@/composables/usePluginStopAction'
+import PluginLegacyConsentBanner from './PluginLegacyConsentBanner.vue'
 import PluginPermissionDialog from './PluginPermissionDialog.vue'
 import { dialogFor, type DialogRequest } from '@/utils/permissionDialogs'
 import { capabilityMessageKey } from '@/utils/pluginCapabilities'
@@ -368,13 +370,14 @@ import {
 const props = defineProps<{ pluginId: string }>()
 const { t, te } = useI18n()
 const store = usePluginStore()
-const consentState = usePluginConsentState()
 const stopAction = usePluginStopAction()
 
 const panel = ref<PermissionPanel | null>(null)
 const catalog = ref<PermissionCatalog | null>(null)
 const audit = ref<PermissionAuditPage | null>(null)
 const pending = ref<PendingPermissions | null>(null)
+/** The last scan report, for its warnings; the panel does not carry them. */
+const scan = ref<PluginScanRecord | null>(null)
 const loading = ref(false)
 const busy = ref<string | null>(null)
 const rescanning = ref(false)
@@ -464,11 +467,12 @@ async function load(timed = false) {
   stopPolling()
   loading.value = true
   try {
-    const [nextPanel, nextCatalog, nextAudit, nextPending] = await Promise.all([
+    const [nextPanel, nextCatalog, nextAudit, nextPending, nextScan] = await Promise.all([
       optional(getPermissionPanel(props.pluginId)),
       optional(getPermissionCatalog()),
       optional(getPermissionAuditHistory(props.pluginId)),
       optional(getPendingPermissions()),
+      optional(getPluginScan(props.pluginId)),
     ])
     // A later load owns the view now; a save that started meanwhile asked for a new one.
     if (seq !== loadSeq || unmounted) return
@@ -479,6 +483,7 @@ async function load(timed = false) {
       failedPolls++
     }
     if (validCatalog(nextCatalog)) catalog.value = nextCatalog
+    if (nextScan?.analysis) scan.value = nextScan
     // Without a current answer, nothing is claimed about unused time.
     audit.value = validHistory(nextAudit) ? nextAudit : null
     if (validPending(nextPending)) pending.value = nextPending
@@ -568,9 +573,9 @@ const notices = computed(() => {
   return out
 })
 
-/** Warnings of the last scan (budget, unreadable files), from the consent record. */
+/** Warnings of the last scan (budget, unreadable files). */
 const scanWarnings = computed(() =>
-  (consentState.details[props.pluginId]?.analysis.warnings ?? []).map((warning) => {
+  (scan.value?.analysis.warnings ?? []).map((warning) => {
     const key = `pluginConsent.warnings.${warning.code}`
     const text = te(key) ? t(key) : warning.code
     return warning.file ? `${text} (${warning.file})` : text
@@ -580,7 +585,8 @@ const scanWarnings = computed(() =>
 async function rescan() {
   rescanning.value = true
   try {
-    await consentState.analyze(props.pluginId)
+    const next = await rescanPlugin(props.pluginId)
+    if (next?.analysis) scan.value = next
   } catch {
     ElMessage.error(t('pluginConsent.tab.errors.rescanFailed'))
   } finally {

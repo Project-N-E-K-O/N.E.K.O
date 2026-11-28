@@ -3,58 +3,16 @@ import { withPermissionLabels } from '../plugin-permissions/shared'
 
 const messages = {
   title: 'Permissions',
-  dialogTitle: 'Confirm plugin capabilities',
-  introduction:
-    'This plugin can use the capabilities below while it runs. Confirm them to start it.',
-  analysisPending:
-    'Capability analysis is not finished yet. Click start again to start directly: {names}',
-  incomplete: 'Capability analysis is incomplete. You can still confirm and start this plugin.',
-  upgraded: 'Added after upgrade',
-  pending: 'Pending confirmation',
   decision: {
-    approved: 'Approved',
     denied: 'Denied',
   },
   banner: {
-    confirm: '{n} capabilities need confirmation',
-    upgradedConfirm: '{n} new capabilities added after upgrade need confirmation',
-    capabilitiesDesc:
-      'The plugin may read your conversations or memory, or send content to N.E.K.O. Once confirmed you will not be asked again until an upgrade adds new capabilities.',
-    incompleteTitle: 'Capability analysis did not finish completely',
-    incompleteDesc:
-      'Results may be incomplete. You can still approve and keep using the plugin.',
     deniedDesc: 'Autostart will skip this plugin; starting it manually asks again.',
-    approvedAt: 'Confirmed {date}',
-    analyzingTitle: 'Analyzing plugin capabilities…',
-    analyzingDesc: 'Results will appear here automatically once the analysis finishes.',
   },
-  approve: 'Approve',
-  reject: 'Deny',
-  approveAndStart: 'Approve and start',
-  revoke: 'Revoke confirmation',
   revokeDecision: 'Withdraw decision',
-  evidenceToggle: 'Code locations ({n})',
-  meta: {
-    analyzed: 'Analyzed {date}',
-    version: 'Version {version}',
-    files: '{n} files',
-  },
-  noticesTitle: 'Plugin capabilities need confirmation',
-  loading: 'Loading capability information…',
-  loadFailed: 'Capability information could not be loaded.',
   saveFailed: 'The decision could not be saved. Please retry.',
-  unknown:
-    'Its exact data use is not yet known. Plugin SDKs can read conversations and memory, and send content to N.E.K.O.',
-  noneFound: 'No issues found: the code scan found no permission use and no code it could not confirm.',
   retry: 'Analyze again',
   findings: {
-    usedTitle: 'Permissions this plugin uses',
-    usedBanner: 'This plugin uses {n} permission(s)',
-    declared: 'Declared by the author',
-    detected: 'Found in code',
-    blindSpotsTitle: '{n} place(s) could not be confirmed by static analysis',
-    blindSpotsDesc: 'These places load code dynamically, use reflection or run generated code, or were not analyzed. What they do cannot be determined without running the plugin.',
-    unlocated: 'Part of the plugin (no single file)',
     partialTag: 'Partly unconfirmable',
     partialTagHint: 'Some code could not be analyzed statically. See the details page.',
   },

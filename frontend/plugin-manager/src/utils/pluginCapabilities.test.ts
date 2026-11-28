@@ -4,17 +4,7 @@ const request = vi.hoisted(() => ({ readErrorCode: vi.fn() }))
 vi.mock('@/utils/request', () => request)
 
 import { AxiosError } from 'axios'
-import {
-  analysisFoundNothing,
-  blindSpots,
-  capabilityMessageKey,
-  consentSaveErrorKey,
-  isPartlyUnconfirmed,
-  needsPermissionReview,
-  usedPermissions,
-  capabilityOrigin,
-} from './pluginCapabilities'
-import type { CapabilityAnalysis } from '@/api/pluginConsent'
+import { capabilityMessageKey, consentSaveErrorKey, isPartlyUnconfirmed } from './pluginCapabilities'
 import { SUPPORTED_LOCALES } from '@/i18n'
 import { allPluginConsentMessages as pluginConsentMessages } from '@/i18n/plugin-consent/testing'
 
@@ -64,122 +54,6 @@ describe('capabilityMessageKey', () => {
   })
 })
 
-describe('permission findings of an analysis', () => {
-  function analysis(extras: Partial<CapabilityAnalysis> = {}): CapabilityAnalysis {
-    return {
-      status: 'completed',
-      capabilities: [],
-      evidence: [],
-      warnings: [],
-      permissions: {},
-      blind_spots: [],
-      ...extras,
-    }
-  }
-
-  it('reports nothing found only without capabilities, permissions or blind spots', () => {
-    expect(analysisFoundNothing(analysis())).toBe(true)
-  })
-
-  it('lists declared and detected permissions, so nothing is reported as found', () => {
-    const report = analysis({
-      permissions: {
-        'system.network:connect': {
-          declared: null,
-          findings: [
-            { file: 'main.py', line: 3 },
-            { file: 'main.py', line: 3 },
-          ],
-        },
-        'plugin_sdk.models:invoke': { declared: 'required', findings: [] },
-      },
-    })
-    expect(usedPermissions(report)).toEqual([
-      { id: 'plugin_sdk.models:invoke', declared: true, locations: [] },
-      { id: 'system.network:connect', declared: false, locations: ['main.py:3'] },
-    ])
-    expect(analysisFoundNothing(report)).toBe(false)
-  })
-
-  it('counts blind spots, so nothing is reported as found', () => {
-    const report = analysis({
-      blind_spots: [
-        { type: 'dynamic_import', file: 'main.py', line: 8 },
-        { type: 'not_analyzed', file: 'lib/big.py', line: null },
-      ],
-    })
-    expect(blindSpots(report)).toHaveLength(2)
-    expect(usedPermissions(report)).toEqual([])
-    expect(analysisFoundNothing(report)).toBe(false)
-  })
-
-  it('does not report nothing found when parts were not analyzed', () => {
-    const report = analysis({
-      blind_spots: [],
-      not_analyzed: [{ type: 'not_analyzed', file: 'ui/panel.vue', line: null, reason: 'non_python' }],
-    })
-    expect(blindSpots(report)).toEqual([])
-    expect(analysisFoundNothing(report)).toBe(false)
-    expect(analysisFoundNothing(analysis({ blind_spots: [], not_analyzed: [] }))).toBe(true)
-  })
-
-  it('leaves permissions already listed under their earlier capability name to that list', () => {
-    const report = analysis({
-      capabilities: ['memory.read'],
-      permissions: {
-        'plugin_sdk.main_agent.memory:read': {
-          declared: null,
-          findings: [{ file: 'main.py', line: 1 }],
-        },
-      },
-    })
-    expect(usedPermissions(report)).toEqual([])
-    expect(analysisFoundNothing(report)).toBe(false)
-  })
-
-  it('keeps the origin and code locations of a permission listed under its earlier name', () => {
-    const report = analysis({
-      capabilities: ['memory.read', 'messages.push', 'conversations.read'],
-      evidence: [
-        { capability: 'memory.read', method: 'bus.memory.get', file: 'main.py', line: 1 },
-        { capability: 'conversations.read', method: 'bus.conversations.get', file: 'main.py', line: 4 },
-      ],
-      permissions: {
-        'plugin_sdk.main_agent.memory:read': {
-          declared: 'require',
-          findings: [{ file: 'main.py', line: 1 }],
-        },
-        // The evidence list was already full when this call was found.
-        'plugin_sdk.main_agent.messages:push': {
-          declared: null,
-          findings: [{ file: 'main.py', line: 900 }],
-        },
-      },
-    })
-    expect(capabilityOrigin(report, 'memory.read')).toEqual({
-      declared: true,
-      locations: ['main.py:1'],
-    })
-    expect(capabilityOrigin(report, 'messages.push')).toEqual({
-      declared: false,
-      locations: ['main.py:900'],
-    })
-    // No permission entry: no origin to show, evidence still listed.
-    expect(capabilityOrigin(report, 'conversations.read')).toEqual({
-      declared: null,
-      locations: ['main.py:4'],
-    })
-  })
-
-  it.each([
-    ['partial', {}],
-    ['failed', {}],
-    ['completed', { permissions: undefined }],
-  ] as const)('does not report nothing found for a %s analysis %o', (status, extras) => {
-    expect(analysisFoundNothing(analysis({ status, ...extras }))).toBe(false)
-  })
-})
-
 describe('list marks', () => {
   it.each([
     [undefined, false, false],
@@ -193,8 +67,7 @@ describe('list marks', () => {
     // A failed analysis reports no blind spots but checked none of the code.
     [{ state: 'clear', decision: 'approved', upgraded: false, blind_spots: 0, analysis_incomplete: true }, false, true],
     [{ state: 'confirm', decision: null, upgraded: false, blind_spots: 0, analysis_incomplete: true }, true, true],
-  ] as const)('%o -> pending %s, partly unconfirmed %s', (consent, pending, partial) => {
-    expect(needsPermissionReview(consent)).toBe(pending)
+  ] as const)('%o -> partly unconfirmed %s', (consent, _pending, partial) => {
     expect(isPartlyUnconfirmed(consent)).toBe(partial)
   })
 })

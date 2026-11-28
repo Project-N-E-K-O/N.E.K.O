@@ -5,7 +5,8 @@ import { createApp, defineComponent, getCurrentInstance, h, nextTick, reactive, 
 import App from './App.vue'
 import { localeLoadState } from './i18n'
 import { createI18n } from 'vue-i18n'
-import { usePluginConsentState } from './stores/pluginConsentState'
+import { usePermissionStartDialog } from './stores/permissionStartDialog'
+import { panel } from './utils/permissionTab.fixtures'
 
 const consentLoader = vi.hoisted(() => ({ load: vi.fn() }))
 vi.mock('./components/common/deferredPanel', async (importOriginal) => {
@@ -41,7 +42,7 @@ function mountConsentApp() {
   const host = document.createElement('div')
   app.mount(host)
   apps.push(app)
-  return { host, store: usePluginConsentState(pinia) }
+  return { host, store: usePermissionStartDialog(pinia) }
 }
 
 function deferredModule() {
@@ -73,77 +74,69 @@ it('gates initial locale loading but preserves route state on later language cha
   } finally { app.unmount() }
 })
 
-it('loads consent only on request and closes a failed loader without approving', async () => {
+const ask = (store: ReturnType<typeof usePermissionStartDialog>, pluginName: string) =>
+  store.ask({
+    panel: panel(),
+    pending: { first_use: [], incomplete: [] },
+    request: { kind: 'first', items: ['system.network:connect'] },
+    pluginName,
+  })
+// The dialog module is loaded once per page: every test after the first load sees this one.
+const results: Array<(value: { start: boolean; changed: boolean }) => void> = []
+const dialogStub = defineComponent({
+  props: { panel: Object, pending: Object, request: Object, pluginName: String, start: Boolean },
+  emits: ['result', 'close'],
+  setup: (props, { emit }) => {
+    results.push(getCurrentInstance()!.vnode.props!.onResult as (value: { start: boolean; changed: boolean }) => void)
+    return () => [
+      h('span', `dialog ${props.pluginName} ${props.start}`),
+      h('button', { 'data-test': 'start', onClick: () => emit('result', { start: true, changed: false }) }),
+      h('button', { 'data-test': 'skip', onClick: () => emit('result', { start: false, changed: false }) }),
+    ]
+  },
+})
+
+it('starts when the dialog module fails and its box is closed', async () => {
   consentLoader.load.mockRejectedValueOnce(new Error('Synthetic module load failure'))
   const { host, store } = mountConsentApp()
   expect(consentLoader.load).not.toHaveBeenCalled()
-  const first = store.requestConfirmation([{ id: 'first', name: 'First' }])
+  const request = ask(store, 'First')
   await vi.waitFor(() => expect(host.querySelector('[role="alert"]')?.textContent).toContain('Synthetic module load failure'))
   const close = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'common.close')!
   close.click()
-  await expect(first).resolves.toBe(false)
+  await expect(request).resolves.toBe(true)
   await nextTick()
-  expect(store.activeRequest).toBeNull()
-  expect(host.querySelector('.deferred-panel')).toBeNull()
-
-  const loaded = defineComponent({ emits: ['close'], setup: (_, { emit }) => () => h('button', { onClick: () => emit('close') }, 'loaded consent') })
-  consentLoader.load.mockResolvedValueOnce({ default: loaded })
-  const second = store.requestConfirmation([{ id: 'second', name: 'Second' }])
-  await vi.waitFor(() => expect(host.textContent).toContain('loaded consent'))
-  host.querySelector('button')!.click()
-  await expect(second).resolves.toBe(false)
-  expect(consentLoader.load).toHaveBeenCalledTimes(2)
+  expect(store.active).toBeNull()
 })
 
-it('ignores a late close from the previous request after the queue advances', async () => {
-  const closes: (() => void)[] = []
-  const loaded = defineComponent({
-    emits: ['close'],
-    setup: () => {
-      // Retain the delivered host listener, as a late transition callback can;
-      // emitting from an already-unmounted Vue stub would be a no-op.
-      closes.push(getCurrentInstance()!.parent!.vnode.props!.onClose as () => void)
-      return () => h('span', 'loaded consent')
-    },
-  })
-  consentLoader.load.mockResolvedValue({ default: loaded })
+it('shows the loaded start dialog and answers with the user\'s choice', async () => {
+  consentLoader.load.mockResolvedValue({ default: dialogStub })
   const { host, store } = mountConsentApp()
-  const first = store.requestConfirmation([{ id: 'first', name: 'First' }])
-  const second = store.requestConfirmation([{ id: 'second', name: 'Second' }])
-  await vi.waitFor(() => expect(host.textContent).toContain('loaded consent'))
-  store.resolveConfirmation(false)
-  await expect(first).resolves.toBe(false)
-  await vi.waitFor(() => expect(closes).toHaveLength(2))
-  const current = store.activeRequest
-  closes[0]!()
+  const first = ask(store, 'First')
+  await vi.waitFor(() => expect(host.textContent).toContain('dialog First true'))
+  ;(host.querySelector('[data-test="start"]') as HTMLElement).click()
+  await expect(first).resolves.toBe(true)
   await nextTick()
-  expect(store.activeRequest).toBe(current)
-  expect(store.activeRequest?.plugins[0]?.id).toBe('second')
-  closes[1]!()
+  expect(host.textContent).not.toContain('dialog')
+
+  const second = ask(store, 'Second')
+  await vi.waitFor(() => expect(host.textContent).toContain('dialog Second'))
+  ;(host.querySelector('[data-test="skip"]') as HTMLElement).click()
   await expect(second).resolves.toBe(false)
 })
 
-it('does not mount an old pending loader after its request has been cancelled', async () => {
-  const pending = deferredModule()
-  consentLoader.load.mockReturnValue(pending.promise)
+it('ignores a late answer from a dialog that was replaced', async () => {
+  consentLoader.load.mockResolvedValue({ default: dialogStub })
   const { host, store } = mountConsentApp()
-  const first = store.requestConfirmation([{ id: 'first', name: 'First' }])
-  const second = store.requestConfirmation([{ id: 'second', name: 'Second' }])
-  await vi.waitFor(() => expect(host.querySelector('[role="status"]')).not.toBeNull())
-  host.querySelector('button')!.click()
+  results.length = 0
+  const first = ask(store, 'First')
+  await vi.waitFor(() => expect(host.textContent).toContain('dialog First'))
+  const second = ask(store, 'Second')
   await expect(first).resolves.toBe(false)
-  await vi.waitFor(() => expect(store.activeRequest?.plugins[0]?.id).toBe('second'))
-  const mounted: string[] = []
-  pending.resolve({ default: defineComponent({
-    emits: ['close'],
-    setup: (_, { emit }) => {
-      mounted.push(store.activeRequest!.plugins[0]!.id)
-      return () => h('button', { onClick: () => emit('close') }, 'loaded consent')
-    },
-  }) })
-  await vi.waitFor(() => expect(host.textContent).toContain('loaded consent'))
-  expect(mounted).toEqual(['second'])
-  expect(store.activeRequest?.plugins[0]?.id).toBe('second')
-  host.querySelector('button')!.click()
-  await expect(second).resolves.toBe(false)
+  await vi.waitFor(() => expect(host.textContent).toContain('dialog Second'))
+  results[0]!({ start: true, changed: false })
+  await nextTick()
+  expect(store.active?.pluginName).toBe('Second')
+  results.at(-1)!({ start: true, changed: false })
+  await expect(second).resolves.toBe(true)
 })

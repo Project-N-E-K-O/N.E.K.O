@@ -177,7 +177,7 @@ async function handleOpenUi() {
 async function handleStart() {
   try {
     loading.value = true
-    if (!(await startGate.startWithConsent(props.pluginId))) return
+    if (!(await startGate.startWithReview(props.pluginId))) return
     // Hosted panel 的 context 刷新是尽力而为的后续动作（内部还带重试延时），
     // 不能 await —— 否则每个插件的启停按钮都要多转两秒，成功提示也跟着晚发。
     void refreshHostedPanelsAfterRuntimeChange?.().catch(() => {})

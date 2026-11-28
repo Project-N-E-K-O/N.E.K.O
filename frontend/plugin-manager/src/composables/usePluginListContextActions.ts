@@ -5,8 +5,6 @@ import { deletePlugin } from '@/api/plugins'
 import { collectPluginDeleteWarnings } from '@/utils/pluginDeleteResult'
 import { buildPluginCli } from '@/api/pluginCli'
 import { usePluginStore } from '@/stores/plugin'
-import { usePluginConsentState } from '@/stores/pluginConsentState'
-import { usePluginStartGate } from '@/composables/usePluginStartGate'
 import type { PluginListAction, PluginMeta } from '@/types/api'
 import { resolveLocalizedText } from '@/utils/i18nLabel'
 import { isSafeAppRoute, isSafeSameTabUrl, openExternalUrl } from '@/utils/openExternal'
@@ -35,7 +33,6 @@ const BUILTIN_ACTION_IDS = [
 export function usePluginListContextActions() {
   const router = useRouter()
   const pluginStore = usePluginStore()
-  const startGate = usePluginStartGate()
   const { t, locale } = useI18n()
 
   function isRunning(plugin: PluginListContextPlugin): boolean {
@@ -239,7 +236,7 @@ export function usePluginListContextActions() {
         await router.push({ path: `/plugins/${safeId}`, query: { tab: 'guide' } })
         return
       case 'start':
-        if (!(await startGate.startWithConsent(plugin.id))) return
+        await pluginStore.start(plugin.id)
         ElMessage.success(t('messages.pluginStarted'))
         return
       case 'stop':
@@ -281,7 +278,6 @@ export function usePluginListContextActions() {
       case 'delete':
         {
           const result = await deletePlugin(plugin.id)
-          usePluginConsentState().forget(plugin.id)
           const warnings = collectPluginDeleteWarnings(result, plugin.name, t)
           if (warnings.length > 0) {
             warnings.forEach((warning) => ElMessage.warning(warning))
