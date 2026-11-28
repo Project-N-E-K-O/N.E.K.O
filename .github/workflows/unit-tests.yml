@@ -325,6 +325,13 @@ jobs:
           COUNT: ${{ needs.select-related.outputs.count }}
         run: |
           echo "selection: $SELECT_RESULT (mode=$MODE, files=$COUNT); shards: $SHARD_RESULT"
+          # A run cancelled before its tests finished (most often a newer push to the PR superseded it,
+          # ``cancel-in-progress`` above) stays red: this is a required check, and a skipped one would
+          # count as passed for a run cancelled by hand. It says so, instead of a failure of selection.
+          if [ "$SELECT_RESULT" = "cancelled" ] || [ "$SHARD_RESULT" = "cancelled" ]; then
+            echo "::error::This run was cancelled before the related tests finished (usually superseded by a newer push); the run for the PR's latest commit is the one that counts."
+            exit 1
+          fi
           if [ "$SELECT_RESULT" != "success" ]; then
             echo "::error::Selecting related tests failed."
             exit 1
