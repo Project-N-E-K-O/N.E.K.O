@@ -36,7 +36,6 @@ from models import (  # noqa: E402
     TelemetryEvent,
     model_from_json,
 )
-import models as telemetry_models  # noqa: E402
 from storage import TelemetryStorage  # noqa: E402
 
 pytestmark = pytest.mark.unit
@@ -105,7 +104,7 @@ def test_model_rejects_invalid_or_out_of_window_stat_date(bad_date, monkeypatch)
             return frozen_today
 
     # Pin the validator's clock to the same day the input is derived from.
-    monkeypatch.setattr(telemetry_models, "date", _FixedDate)
+    monkeypatch.setattr(sys.modules[TelemetryEvent.__module__], "date", _FixedDate)
     if bad_date == "future_beyond_window":
         bad_date = (frozen_today + timedelta(days=DAILY_STATS_FUTURE_DAYS + 1)).isoformat()
     payload = _base_event_dict({bad_date: _valid_day()})
