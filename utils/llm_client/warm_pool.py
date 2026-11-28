@@ -36,12 +36,15 @@ import weakref
 from collections import OrderedDict
 from typing import Any
 
+from utils.http.pool_utils import DEFAULT_HTTP_KEEPALIVE_EXPIRY_SECONDS
 from utils.logger_config import get_module_logger
 
 logger = get_module_logger(__name__)
 
 # Seconds an idle connection of a pooled client stays open (httpx default: 5).
-WARM_POOL_KEEPALIVE_SECONDS = 120.0
+# Aligned with DEFAULT_HTTP_KEEPALIVE_EXPIRY_SECONDS (55s), staying below typical
+# 60-75s upstream gateway and NAT idle limits while stale-retry handles early drops.
+WARM_POOL_KEEPALIVE_SECONDS = DEFAULT_HTTP_KEEPALIVE_EXPIRY_SECONDS
 WARM_POOL_MAX_CLIENTS = 8
 
 _pools: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, OrderedDict[tuple, Any]]" = (
@@ -94,8 +97,10 @@ async def get_warm_chat_llm(
     key = _pool_key(model, base_url, api_key, provider_type, kwargs)
     llm = pool.get(key)
     if llm is not None:
-        pool.move_to_end(key)
-        return llm
+        if not getattr(llm, "is_closed", False):
+            pool.move_to_end(key)
+            return llm
+        pool.pop(key, None)
 
     made = await llm_client.create_chat_llm_async(  # noqa: LLM_OUTPUT_BUDGET  # shared client; callers set the budget and timeout per call.
         model,
@@ -106,7 +111,7 @@ async def get_warm_chat_llm(
         **kwargs,
     )
     raced = pool.get(key)
-    if raced is not None:
+    if raced is not None and not getattr(raced, "is_closed", False):
         # Another caller made the same client while this one was being made.
         # Reorder before awaiting: the key may be dropped while the close runs.
         pool.move_to_end(key)
