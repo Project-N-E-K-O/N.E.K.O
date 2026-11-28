@@ -257,9 +257,17 @@ async def set_agent_flags(payload: Dict[str, Any]):
     # awaited. A switch is not written once it no longer stands; nothing is switched off
     # for it either (the switch was off when the request came).
     still_valid = (payload or {}).get("_still_valid")
+    # ``_on_written`` (in-process, with ``_still_valid``): called as such a request writes a switch
+    # itself, not when it finds it on or leaves it to a later setting. Whoever asked can then tell,
+    # should the answer stop standing after the write, a switch it turned on from one it did not.
+    on_written = (payload or {}).get("_on_written")
 
     def _approval_stands() -> bool:
         return not callable(still_valid) or bool(still_valid())
+
+    def _note_written() -> None:
+        if callable(on_written):
+            on_written()
 
     if callable(still_valid) and not _approval_stands():
         # Already stale at the door: nothing is touched, no later toggle is overtaken by it.
@@ -359,6 +367,7 @@ async def set_agent_flags(payload: Dict[str, Any]):
                     if conditional_cf:
                         # Takes its place in the order now, as the write is made.
                         Modules.computer_use_switch_seq += 1
+                        _note_written()
                     Modules.agent_flags["computer_use_enabled"] = True
                 else:
                     _put_switch_off("computer_use_enabled")
@@ -397,6 +406,7 @@ async def set_agent_flags(payload: Dict[str, Any]):
                         # was meant for an earlier setting then finds it is not its own).
                         Modules.browser_use_lifecycle_seq += 1
                         browser_use_lifecycle_seq = Modules.browser_use_lifecycle_seq
+                        _note_written()
                     Modules.agent_flags["browser_use_enabled"] = True
                 else:
                     _put_switch_off("browser_use_enabled")
@@ -427,6 +437,7 @@ async def set_agent_flags(payload: Dict[str, Any]):
             if conditional_uf:
                 Modules.user_plugin_lifecycle_seq += 1
                 user_plugin_lifecycle_seq = Modules.user_plugin_lifecycle_seq
+                _note_written()
             Modules.agent_flags["user_plugin_enabled"] = True
             Modules.notification = json.dumps({"code": "AGENT_UP_ENABLED_CHECKING"})
 

@@ -1398,14 +1398,22 @@ async def test_the_browser_switch_is_written_only_while_the_approval_stands(
         return True, ""
 
     monkeypatch.setattr(api_routes, "_browser_availability", availability)
+    written: list[bool] = []
 
     await api_routes.set_agent_flags(
-        {"browser_use_enabled": True, "_persist_intent": False, "_still_valid": approval}
+        {
+            "browser_use_enabled": True,
+            "_persist_intent": False,
+            "_still_valid": approval,
+            "_on_written": lambda: written.append(True),
+        }
     )
     await stage.settled()
 
     assert stage.state.agent_flags["browser_use_enabled"] is (not then_invalid)
     assert stage.state.notification is None
+    # Told as written exactly when this request wrote the switch itself.
+    assert written == ([] if then_invalid else [True])
 
 
 @pytest.mark.parametrize("then_invalid", [False, True])
@@ -1419,14 +1427,54 @@ async def test_the_keyboard_and_mouse_switch_is_written_only_while_the_approval_
         return {"enabled": True, "ready": True, "reasons": []}
 
     monkeypatch.setattr(api_routes, "_keyboard_mouse_availability", availability)
+    written: list[bool] = []
 
     await api_routes.set_agent_flags(
-        {"computer_use_enabled": True, "_persist_intent": False, "_still_valid": approval}
+        {
+            "computer_use_enabled": True,
+            "_persist_intent": False,
+            "_still_valid": approval,
+            "_on_written": lambda: written.append(True),
+        }
     )
     await stage.settled()
 
     assert stage.state.agent_flags["computer_use_enabled"] is (not then_invalid)
     assert stage.state.notification is None
+    assert written == ([] if then_invalid else [True])
+
+
+async def test_a_switch_found_on_is_not_told_as_written_by_the_request(
+    stage: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # On already (the user at the panel while the request waited): left as it is, and not this request's write.
+    stage.state.agent_flags["browser_use_enabled"] = True
+    monkeypatch.setattr(api_routes, "_browser_availability", lambda: (True, ""))
+    written: list[bool] = []
+
+    await api_routes.set_agent_flags(
+        {
+            "browser_use_enabled": True,
+            "_persist_intent": False,
+            "_still_valid": lambda: True,
+            "_on_written": lambda: written.append(True),
+        }
+    )
+    await stage.settled()
+
+    assert stage.state.agent_flags["browser_use_enabled"] is True and written == []
+
+
+def test_the_plugins_switch_put_off_is_counted_only_from_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    shared = capabilities._shared
+    monkeypatch.setattr(shared.Modules, "agent_flags", {"user_plugin_enabled": True, "browser_use_enabled": True})
+    monkeypatch.setattr(shared.Modules, "user_plugin_switch_offs", 0)
+
+    shared._put_switch_off("user_plugin_enabled")
+    shared._put_switch_off("user_plugin_enabled")
+    shared._put_switch_off("browser_use_enabled")
+
+    assert shared.Modules.user_plugin_switch_offs == 1
 
 
 async def test_a_request_whose_approval_has_stopped_standing_touches_nothing(stage: Any) -> None:
