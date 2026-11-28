@@ -6,16 +6,25 @@ interpreter nor uv, so this module prepares them on demand under one app-owned
 root::
 
     <app_docs_dir>/plugin-runtime/tools/
-        uv/<version>/<os>-<arch>/uv[.exe]   pinned uv, downloaded from PyPI
+        uv/<version>/<os>-<arch>/uv[.exe]   pinned uv, from its GitHub release
         python/                             uv-managed CPython (UV_PYTHON_INSTALL_DIR)
         python.json                         record of the prepared interpreter
         .prepare.lock                       cross-process preparation lock
+        .python-download/                   a CPython build while uv installs it
         envs/                               reserved for tool virtualenvs (not created here)
 
-Preparation downloads the pinned uv (wheel chosen by this interpreter's tags,
-SHA-256 checked against PyPI, size-capped, placed atomically), then installs
-the CPython release matching the host's version and architecture exactly and
+Preparation downloads the pinned uv archive for this host (checked against a
+SHA-256 pinned here, size-capped, placed atomically), then installs the
+CPython release matching the host's version and architecture exactly and
 records it. A compatible uv on PATH is only an optional fallback.
+
+Both downloads are GitHub release assets and go through the plugin market's
+download routes (see package_fetch): GitHub directly or one of its mirrors,
+chosen by the same user preference (auto / direct / specified) and ranked by
+the same route history as market packages. A mirror only changes where the
+bytes come from: uv is checked against the digest pinned here, and the
+CPython build against the digest built into that uv, which installs it from
+the downloaded file.
 
 Reading the status never starts a child process, touches the network or
 creates a directory. Preparing runs in a worker thread, honours a cancel event
@@ -42,11 +51,12 @@ import struct
 import subprocess
 import sys
 import sysconfig
+import tarfile
 import tempfile
 import threading
 import time
 from typing import Literal, Protocol
-from urllib.parse import urlsplit
+from urllib.parse import unquote
 import zipfile
 
 from packaging.tags import sys_tags
@@ -59,12 +69,40 @@ from plugin.neko_plugin_cli.git_env import git_env
 from plugin.utils.http_imports import load_httpx
 
 PINNED_UV_VERSION = "0.13.6"
-_PYPI_METADATA_URL = f"https://pypi.org/pypi/uv/{PINNED_UV_VERSION}/json"
-_DOWNLOAD_HOST = "files.pythonhosted.org"
-_MAX_METADATA_BYTES = 2 * 1024 * 1024
-_MAX_WHEEL_BYTES = 128 * 1024 * 1024
+_UV_RELEASE_URL = f"https://github.com/astral-sh/uv/releases/download/{PINNED_UV_VERSION}"
+# SHA-256 of each uv archive of the pinned release, keyed by target triple:
+# the release's sha256.sum, cross-checked against the digests GitHub reports
+# for its assets. Every download is checked against these, whichever route
+# (GitHub or a mirror) delivered it. Update them with PINNED_UV_VERSION.
+_UV_ARCHIVE_SHA256 = {
+    "aarch64-apple-darwin": "60fbd5c8a1ed681845eea28d9d622fcde03c51e91a43465b64a1e17db1ed3472",
+    "x86_64-apple-darwin": "63ba17fdda55ad1a230d4b37fc6017ffa10c23688c83818bd3bfdf914c652a02",
+    "aarch64-pc-windows-msvc": "c2426c0c8e28b53d8c440e47a18d96ad4db51e159866c0e81435b196d7f0081c",
+    "i686-pc-windows-msvc": "32ceb64db231cbedfd499f7654c72e4c0b564f2846f9e76c0a4a7b2d03d7e67c",
+    "x86_64-pc-windows-msvc": "a2a8820d5eea32f08ef467ef3b7f66883a9b076d5737a2fc2fbb5f458d1bb50f",
+    "aarch64-unknown-linux-gnu": "229e194255c7958d86d56e8790d969a6f74736592133f0dfd0076f754c642c1d",
+    "aarch64-unknown-linux-musl": "819692e404d23e5aae6bc44c0e260f1f5492fd1910ab4693b2c650f926dbe800",
+    "armv7-unknown-linux-gnueabihf": "d00cd4949c4524c934afcfee1aedfa9d337cf4e43be4d6b692ad8d74d0a65562",
+    "armv7-unknown-linux-musleabihf": "b215398c886e8cc2cfa282fe346c02025957f8633b75a3d4fd848e0adda4eddd",
+    "i686-unknown-linux-gnu": "665ea831c38d342900950e606beb2ccc37b7ba0fcefc37b814eb4b076305f2b6",
+    "i686-unknown-linux-musl": "de3a015c4b0fce63c178ae4fa95c94c873adfd92fa1e258c6a2a94e529812629",
+    "powerpc64le-unknown-linux-gnu": "3b2847185ec2946fcc928500efef7e3e74c255d3be6f2cb435081a84885d8c6c",
+    "riscv64gc-unknown-linux-gnu": "517052603ed46483b59d8875c9c61a577946b8f493c73e4339e45e7b119171d0",
+    "riscv64gc-unknown-linux-musl": "659a95dc6aee3ecf86742a08d8ca6c6261422121cbd41decc0042f5a71af6305",
+    "s390x-unknown-linux-gnu": "fb56d731308aa5c7718059d71afcb14d9a933a974997cee3d4eb5d06fc462a4b",
+    "x86_64-unknown-linux-gnu": "f29c3e94ffabd7e6f3ba521dba169a9b7ec12100bf3257087f0f24f6123f3645",
+    "x86_64-unknown-linux-musl": "5d61f26b6c7213779eda90edc6971ea6b0b796bfb8d49a574c8ad69b59838548",
+}
+# python-build-standalone releases as the pinned uv lists them (Astral's
+# mirror) and on GitHub, where the market's mirrors can serve them.
+_PYTHON_RELEASE_PREFIXES = (
+    "https://releases.astral.sh/github/python-build-standalone/releases/download/",
+    "https://github.com/astral-sh/python-build-standalone/releases/download/",
+)
+_PYTHON_GITHUB_PREFIX = _PYTHON_RELEASE_PREFIXES[1]
+_MAX_ARCHIVE_BYTES = 128 * 1024 * 1024
+_MAX_PYTHON_ARCHIVE_BYTES = 256 * 1024 * 1024
 _MAX_BINARY_BYTES = 256 * 1024 * 1024
-_MAX_LICENSE_BYTES = 1024 * 1024
 _MAX_OUTPUT_BYTES = 1024 * 1024
 _SUPPORTED_PLATFORMS = frozenset({"win32", "darwin", "linux"})
 # How often lock waits re-check the cancel event and the deadline.
@@ -473,42 +511,133 @@ def _tail(result: subprocess.CompletedProcess[str]) -> str:
     return " ".join(lines[-3:])[-500:]
 
 
-def _select_uv_wheel(metadata: dict, compatible_tags: list | None = None) -> dict:
-    tags = list(sys_tags()) if compatible_tags is None else compatible_tags
-    ranks = {tag: rank for rank, tag in enumerate(tags)}
-    matches: list[tuple[int, dict]] = []
-    for item in metadata.get("urls", []):
-        if item.get("packagetype") != "bdist_wheel" or item.get("yanked"):
-            continue
+def _linux_libc(compatible_tags: list | None = None) -> str | None:
+    """"gnu" or "musl", as this interpreter's wheel tags tell; None when neither."""
+    platforms = {tag.platform for tag in (sys_tags() if compatible_tags is None else compatible_tags)}
+    if any(name.startswith("manylinux") for name in platforms):
+        return "gnu"
+    if any(name.startswith("musllinux") for name in platforms):
+        return "musl"
+    return None
+
+
+def _uv_target(
+    platform_name: str | None = None, architecture: str | None = None, libc: str | None = None,
+) -> str | None:
+    """The Rust target triple of the pinned uv archive for this host, if one is published."""
+    platform_name = sys.platform if platform_name is None else platform_name
+    architecture = _host_architecture() if architecture is None else architecture
+    if platform_name == "win32":
+        name = {"x86": "i686"}.get(architecture, architecture)
+        target = f"{name}-pc-windows-msvc"
+    elif platform_name == "darwin":
+        target = f"{architecture}-apple-darwin"
+    elif platform_name == "linux":
+        libc = _linux_libc() if libc is None else libc
+        if libc is None:
+            return None
+        name = {"x86": "i686"}.get(architecture, architecture)
+        abi = f"{libc}eabihf" if name == "armv7" else libc
+        target = f"{name}-unknown-linux-{abi}"
+    else:
+        return None
+    return target if target in _UV_ARCHIVE_SHA256 else None
+
+
+def _uv_archive_name(target: str) -> str:
+    return f"uv-{target}.zip" if target.endswith("-windows-msvc") else f"uv-{target}.tar.gz"
+
+
+def _uv_archive_member(target: str, binary_name: str) -> str:
+    # The zip holds the executables at its root; each tarball, in a directory named after it.
+    return binary_name if target.endswith("-windows-msvc") else f"uv-{target}/{binary_name}"
+
+
+# The market's transfer is imported on first use: reading the status, and the
+# build check importing this module, need none of it.
+
+
+def _fetch_release_asset(url: str, directory: Path, **kwargs):
+    from plugin.server.infrastructure.package_fetch import fetch_release_asset
+
+    return fetch_release_asset(url, directory, **kwargs)
+
+
+def _record_route_failure(asset) -> None:
+    from plugin.server.infrastructure.package_fetch import record_route_failure
+
+    record_route_failure(asset)
+
+
+def _download_failures() -> tuple[type[BaseException], ...]:
+    """What a failed download raises, as opposed to a bug in this module."""
+    from plugin.server.infrastructure.package_download import PackageDownloadWriteError
+    from plugin.server.infrastructure.package_fetch import NoRoutesLeft, PackageLoopUnavailable
+
+    return (
+        load_httpx().HTTPError, OSError, ValueError, KeyError, TypeError, zipfile.BadZipFile,
+        tarfile.TarError, PackageDownloadWriteError, PackageLoopUnavailable, NoRoutesLeft,
+    )
+
+
+def _file_sha256(path: Path, cancel: threading.Event, deadline: float) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        while chunk := source.read(1024 * 1024):
+            _check(cancel, deadline)
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _fetch_verified(
+    url: str, directory: Path, *, expected_sha256: str, maximum_bytes: int, phase: ProgressPhase,
+    report: Callable[[ProgressEvent], None], cancel: threading.Event, deadline: float,
+) -> Path:
+    """Download ``url`` over the market's routes and check it against a pinned digest.
+
+    A route that serves other bytes is penalized in the shared route history
+    and skipped; the next route is tried. Only the pinned digest counts,
+    never one offered by a mirror. Raises ``checksum_mismatch`` when no
+    route is left after a mismatch.
+    """
+    mismatched: list[str] = []
+    while True:
         try:
-            name, version, _, wheel_tags = parse_wheel_filename(item["filename"])
-        except (ValueError, KeyError):
-            continue
-        matching = [ranks[tag] for tag in wheel_tags if tag in ranks]
-        if name == "uv" and str(version) == PINNED_UV_VERSION and matching:
-            matches.append((min(matching), item))
-    if not matches:
-        raise ToolRuntimeError("unsupported_platform", f"uv {PINNED_UV_VERSION} has no wheel for this platform")
-    return min(matches, key=lambda match: match[0])[1]
-
-
-def _download_timeout(httpx, deadline: float):
-    remaining = deadline - time.monotonic()
-    if remaining <= 0:
-        raise ToolRuntimeError("timeout", "Plugin tool preparation exceeded its time budget")
-    return httpx.Timeout(min(10.0, remaining), connect=min(5.0, remaining))
+            fetched = _fetch_release_asset(
+                url, directory, maximum_bytes=maximum_bytes, deadline=deadline,
+                check_stopped=lambda: _check(cancel, deadline),
+                progress=lambda received, total: report(ProgressEvent(phase, received, total)),
+                exclude=mismatched,
+            )
+        except _download_failures() as exc:
+            if not mismatched:
+                raise
+            _check(cancel, deadline)
+            raise ToolRuntimeError(
+                "checksum_mismatch",
+                f"{url.rsplit('/', 1)[-1]} failed its SHA-256 check from {', '.join(mismatched)} "
+                f"and no other route delivered it ({type(exc).__name__})",
+            ) from exc
+        try:
+            if _file_sha256(fetched.path, cancel, deadline) == expected_sha256:
+                return fetched.path
+        except BaseException:
+            fetched.path.unlink(missing_ok=True)
+            raise
+        fetched.path.unlink(missing_ok=True)
+        _record_route_failure(fetched)
+        mismatched.append(fetched.source_id)
 
 
 def _download_uv(
     destination: Path, report: Callable[[ProgressEvent], None], cancel: threading.Event, deadline: float,
 ) -> None:
     """Download and extract the pinned uv, mapping failures to error codes."""
-    httpx = load_httpx()
     try:
-        _fetch_uv(httpx, destination, report, cancel, deadline)
+        _fetch_uv(destination, report, cancel, deadline)
     except ToolRuntimeError:
         raise
-    except (httpx.HTTPError, OSError, ValueError, KeyError, TypeError, zipfile.BadZipFile) as exc:
+    except _download_failures() as exc:
         # A network timeout at the deadline is the task's timeout, not a
         # download failure that should fall back to another uv.
         try:
@@ -520,75 +649,66 @@ def _download_uv(
         ) from exc
 
 
-def _fetch_uv(
-    httpx, destination: Path, report: Callable[[ProgressEvent], None],
+def _extract_member(
+    archive_path: Path, target: str, member_name: str, output: Path,
     cancel: threading.Event, deadline: float,
 ) -> None:
-    """Extract pinned-version uv, checking integrity against PyPI's SHA-256.
+    """Copy one archive member to ``output``; nothing else is extracted."""
 
-    PyPI HTTPS metadata and its files.pythonhosted.org artifacts are trusted;
-    the digest is supplied by PyPI, rather than embedded as a trust anchor.
+    def copy(source, size: int) -> None:
+        if size > _MAX_BINARY_BYTES:
+            raise ToolRuntimeError("download_failed", "uv executable exceeds its size limit")
+        with output.open("wb") as handle:
+            while chunk := source.read(65536):
+                _check(cancel, deadline)
+                handle.write(chunk)
+
+    if target.endswith("-windows-msvc"):
+        with zipfile.ZipFile(archive_path) as archive:
+            info = archive.getinfo(member_name)
+            with archive.open(info) as source:
+                copy(source, info.file_size)
+        return
+    with tarfile.open(archive_path, "r:gz") as archive:
+        info = archive.getmember(member_name)
+        if not info.isfile():
+            raise ValueError(f"{member_name} in the uv archive is not a regular file")
+        source = archive.extractfile(info)
+        if source is None:
+            raise ValueError(f"{member_name} in the uv archive cannot be read")
+        with source:
+            copy(source, info.size)
+
+
+def _fetch_uv(
+    destination: Path, report: Callable[[ProgressEvent], None], cancel: threading.Event, deadline: float,
+) -> None:
+    """Install the pinned uv from its GitHub release, checked against the pinned SHA-256.
+
+    The archive travels over the plugin market's routes (GitHub directly or
+    one of its mirrors, by the user's market download preference), so the
+    digest pinned in this module is the only trust anchor.
     """
     _check(cancel, deadline)
+    target = _uv_target()
+    if target is None:
+        raise ToolRuntimeError("unsupported_platform", f"uv {PINNED_UV_VERSION} has no build for this platform")
+    archive_name = _uv_archive_name(target)
     report(ProgressEvent("downloading_uv", 0, None))
-    with httpx.Client(timeout=httpx.Timeout(10.0, connect=5.0), follow_redirects=False) as client:
-        with client.stream("GET", _PYPI_METADATA_URL, timeout=_download_timeout(httpx, deadline)) as response:
-            response.raise_for_status()
-            metadata_bytes = bytearray()
-            for chunk in response.iter_bytes():
-                _check(cancel, deadline)
-                metadata_bytes.extend(chunk)
-                if len(metadata_bytes) > _MAX_METADATA_BYTES:
-                    raise ToolRuntimeError("download_failed", "uv release metadata exceeds its size limit")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".uv-", dir=destination.parent) as temporary:
+        archive_path = _fetch_verified(
+            f"{_UV_RELEASE_URL}/{archive_name}", Path(temporary), expected_sha256=_UV_ARCHIVE_SHA256[target],
+            maximum_bytes=_MAX_ARCHIVE_BYTES, phase="downloading_uv", report=report, cancel=cancel,
+            deadline=deadline,
+        )
+        binary = Path(temporary) / destination.name
+        _extract_member(
+            archive_path, target, _uv_archive_member(target, destination.name), binary, cancel, deadline,
+        )
         _check(cancel, deadline)
-        wheel = _select_uv_wheel(json.loads(metadata_bytes))
-        address = urlsplit(wheel["url"])
-        if address.scheme != "https" or address.hostname != _DOWNLOAD_HOST:
-            raise ToolRuntimeError("download_failed", "Unexpected uv download origin")
-        expected = wheel.get("digests", {}).get("sha256", "")
-        if len(expected) != 64 or any(char not in "0123456789abcdef" for char in expected):
-            raise ToolRuntimeError("checksum_mismatch", "uv release metadata has no usable SHA-256")
-        size = wheel.get("size")
-        total = size if isinstance(size, int) and size > 0 else None
-        if total is not None and total > _MAX_WHEEL_BYTES:
-            raise ToolRuntimeError("download_failed", "uv download exceeds its size limit")
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(prefix=".uv-", dir=destination.parent) as temporary:
-            archive_path = Path(temporary) / "uv.whl"
-            digest = hashlib.sha256()
-            received = 0
-            with client.stream(
-                "GET", wheel["url"], timeout=_download_timeout(httpx, deadline),
-            ) as response, archive_path.open("wb") as output:
-                response.raise_for_status()
-                for chunk in response.iter_bytes():
-                    _check(cancel, deadline)
-                    received += len(chunk)
-                    if received > _MAX_WHEEL_BYTES:
-                        raise ToolRuntimeError("download_failed", "uv download exceeds its size limit")
-                    digest.update(chunk)
-                    output.write(chunk)
-                    report(ProgressEvent("downloading_uv", received, total))
-            if digest.hexdigest() != expected:
-                raise ToolRuntimeError("checksum_mismatch", "uv download failed its SHA-256 check")
-            binary = Path(temporary) / destination.name
-            with zipfile.ZipFile(archive_path) as archive:
-                member = archive.getinfo(f"uv-{PINNED_UV_VERSION}.data/scripts/{destination.name}")
-                if member.file_size > _MAX_BINARY_BYTES:
-                    raise ToolRuntimeError("download_failed", "uv executable exceeds its size limit")
-                with archive.open(member) as source, binary.open("wb") as output:
-                    while chunk := source.read(65536):
-                        _check(cancel, deadline)
-                        output.write(chunk)
-                for name in archive.namelist():
-                    if ".dist-info/licenses/" in name and not name.endswith("/"):
-                        license_info = archive.getinfo(name)
-                        if license_info.file_size <= _MAX_LICENSE_BYTES:
-                            license_path = destination.parent / f"{Path(name).name}.txt"
-                            license_path.write_bytes(archive.read(name))
-            _check(cancel, deadline)
-            binary.chmod(0o755)
-            os.replace(binary, destination)
+        binary.chmod(0o755)
+        os.replace(binary, destination)
 
 
 def _system_uv_candidates() -> list[str]:
@@ -656,6 +776,107 @@ _PROBE = (
 )
 
 
+@dataclass(frozen=True)
+class _PythonDownload:
+    url: str
+    """The build on GitHub, where the market's routes can fetch it."""
+    tag: str
+    filename: str
+
+
+def _python_download(
+    uv: str, request: str, run: Callable[[list[str], str], subprocess.CompletedProcess[str]],
+) -> _PythonDownload | None:
+    """Where the CPython build uv would install for ``request`` is published.
+
+    Read from the list built into uv (``--offline``: nothing is fetched). None
+    when uv cannot list it or names a host this module does not know.
+    """
+    listed = run(
+        [uv, "python", "list", "--no-config", "--managed-python", "--only-downloads", "--show-urls",
+         "--output-format", "json", "--offline", request],
+        "List managed Python downloads",
+    )
+    if listed.returncode:
+        return None
+    try:
+        entries = json.loads(listed.stdout)
+    except ValueError:
+        return None
+    version = ".".join(str(part) for part in sys.version_info[:3])
+    for entry in entries if isinstance(entries, list) else ():
+        if not (
+            isinstance(entry, dict) and entry.get("implementation") == "cpython"
+            and entry.get("version") == version and entry.get("variant") in (None, "default")
+            and isinstance(entry.get("url"), str)
+        ):
+            continue
+        for prefix in _PYTHON_RELEASE_PREFIXES:
+            if entry["url"].startswith(prefix):
+                tag, _, filename = entry["url"][len(prefix):].partition("/")
+                if tag and filename and "/" not in filename and tag not in (".", ".."):
+                    name = unquote(filename)
+                    if name and "/" not in name and "\\" not in name and name not in (".", ".."):
+                        return _PythonDownload(_PYTHON_GITHUB_PREFIX + f"{tag}/{filename}", tag, name)
+        return None
+    return None
+
+
+def _install_downloaded_python(
+    download: _PythonDownload, install: list[str],
+    run: Callable[[list[str], str], subprocess.CompletedProcess[str]],
+    report: Callable[[ProgressEvent], None], cancel: threading.Event, deadline: float,
+) -> None:
+    """Fetch the CPython build over the market's routes, then let uv install that file.
+
+    uv reads it through a ``file://`` mirror and checks it against the
+    SHA-256 built into uv (pinned with uv's own version, whose archive was
+    checked against the digest pinned here); a mismatch fails the install
+    and nothing falls back to the network. A route that served such a file
+    is penalized and the next one is tried.
+    """
+    downloads = tools_root() / ".python-download"
+    shutil.rmtree(downloads, ignore_errors=True)
+    mirror = downloads / "mirror"
+    target = mirror / download.tag / download.filename
+    mismatched: list[str] = []
+    try:
+        target.parent.mkdir(parents=True)
+        while True:
+            try:
+                fetched = _fetch_release_asset(
+                    download.url, downloads, maximum_bytes=_MAX_PYTHON_ARCHIVE_BYTES, deadline=deadline,
+                    check_stopped=lambda: _check(cancel, deadline),
+                    progress=lambda received, total: report(ProgressEvent("installing_python", received, total)),
+                    exclude=mismatched,
+                )
+            except ToolRuntimeError:
+                raise
+            except _download_failures() as exc:
+                _check(cancel, deadline)
+                code: ErrorCode = "checksum_mismatch" if mismatched else "python_install_failed"
+                raise ToolRuntimeError(
+                    code, f"Could not download {download.filename}: {type(exc).__name__}: {exc}",
+                ) from exc
+            os.replace(fetched.path, target)
+            report(ProgressEvent("installing_python"))
+            installed = run([*install, "--mirror", mirror.as_uri()], "Install managed Python")
+            if not installed.returncode:
+                return
+            output = f"{installed.stderr}\n{installed.stdout}".lower()
+            if "hash mismatch" not in output:
+                raise ToolRuntimeError(
+                    "python_install_failed", f"uv could not install {download.filename}: {_tail(installed)}",
+                )
+            target.unlink(missing_ok=True)
+            _record_route_failure(fetched)
+            mismatched.append(fetched.source_id)
+    except OSError as exc:
+        raise ToolRuntimeError("python_install_failed", f"Could not stage the Python download: {exc}") from exc
+    finally:
+        shutil.rmtree(downloads, ignore_errors=True)
+
+
 def _prepare_python(
     uv: str, uv_version: str, run_command: CommandRunner, report: Callable[[ProgressEvent], None],
     env: dict[str, str], cancel: threading.Event, deadline: float,
@@ -688,13 +909,16 @@ def _prepare_python(
             raise ToolRuntimeError(
                 "python_install_failed", f"Could not clear the managed Python directory: {exc}",
             ) from exc
-        installed = run(
-            [uv, "python", "install", "--no-config", request, "--install-dir", str(python_root),
-             "--no-bin", "--no-registry"],
-            "Install managed Python",
-        )
-        if installed.returncode:
-            raise ToolRuntimeError("python_install_failed", f"uv could not install {request}: {_tail(installed)}")
+        install = [uv, "python", "install", "--no-config", request, "--install-dir", str(python_root),
+                   "--no-bin", "--no-registry"]
+        download = _python_download(uv, request, run)
+        if download is None:
+            # A uv whose list this module cannot read downloads by itself.
+            installed = run(install, "Install managed Python")
+            if installed.returncode:
+                raise ToolRuntimeError("python_install_failed", f"uv could not install {request}: {_tail(installed)}")
+            return
+        _install_downloaded_python(download, install, run, report, cancel, deadline)
 
     def locate() -> str:
         found = run(find, "Locate managed Python")

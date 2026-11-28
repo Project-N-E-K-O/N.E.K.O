@@ -576,7 +576,7 @@ export default {
   },
   mirrorSource: {
     title: '镜像源',
-    description: '选择插件市场下载 GitHub Release 包时使用的连接方式。',
+    description: '选择插件市场的插件包和插件工具（uv、Python）从 GitHub Release 下载时使用的连接方式。',
     close: '关闭镜像源',
     proxyOptional: 'GitHub Proxy（可选）',
     direct: 'GitHub 直连',
@@ -587,7 +587,7 @@ export default {
     resetHistory: '下次安装重新选源',
     resetSuccess: '已清除短期记录，下次安装将重新选源。',
     resetFailed: '无法清除短期下载记录。',
-    notice: '仅代理 github.com 的插件下载链接；包仍会按 Market 提供的 SHA-256 校验。',
+    notice: '仅代理 github.com 的 Release 下载链接；插件包仍按 Market 提供的 SHA-256 校验，插件工具按内置的固定 SHA-256 校验。',
     preferenceNotice: '设置仅影响后续任务；下方下载进度显示实际线路。',
     saveFailed: '无法保存下载设置，请重试。',
     actualSources: '实际线路：{sources}',

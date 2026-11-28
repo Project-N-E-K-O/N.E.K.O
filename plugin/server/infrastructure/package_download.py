@@ -26,6 +26,23 @@ REQUEST_TIMEOUT = 10.0
 CONNECT_TIMEOUT = 5.0
 WARMUP_TIMEOUT = 5.0
 _shared_client: tuple[asyncio.AbstractEventLoop, ModuleType, Any] | None = None
+# The loop that owns the shared client and the route statistics in
+# package_sources, so code on worker threads can submit transfers to it.
+_package_loop: asyncio.AbstractEventLoop | None = None
+
+
+def bind_package_loop(loop: asyncio.AbstractEventLoop | None) -> None:
+    """Name the server loop that package transfers run on; None unbinds it."""
+    global _package_loop
+    _package_loop = loop
+
+
+def package_loop() -> asyncio.AbstractEventLoop | None:
+    """The bound server loop while it is running, else None."""
+    loop = _package_loop
+    if loop is None or loop.is_closed() or not loop.is_running():
+        return None
+    return loop
 
 
 async def package_http_client() -> Any:
