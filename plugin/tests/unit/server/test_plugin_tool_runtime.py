@@ -183,6 +183,9 @@ def _identity(**overrides) -> str:
     return json.dumps(values)
 
 
+_original_fetch = module._fetch_release_asset
+
+
 class FakeUv:
     """Stands in for uv and the managed interpreter."""
 
@@ -834,6 +837,50 @@ async def test_concurrent_async_calls_do_not_starve_the_loops_default_executor(r
         executor.shutdown(wait=False)
     assert len({result.uv for result in results}) == 1
     assert [url for url, _exclude in release.requests].count(release.uv_url) == 1
+
+
+async def test_async_call_keeps_the_callers_context(root, monkeypatch):
+    import contextvars
+
+    FakeRelease().install(monkeypatch)
+    marker: contextvars.ContextVar[str] = contextvars.ContextVar("marker", default="unset")
+    seen: list[str] = []
+    uv = FakeUv(root)
+
+    def runner(cmd, **kwargs):
+        seen.append(marker.get())
+        return uv(cmd, **kwargs)
+
+    monkeypatch.setattr(module, "_run_command", runner)
+    marker.set("caller")
+    await module.ensure_tool_runtime(timeout=60)
+    assert seen and set(seen) == {"caller"}
+
+
+@pytest.mark.parametrize("asset", ["uv", "python"])
+def test_server_shutting_down_mid_download_is_a_stop_without_fallback(root, monkeypatch, asset):
+    from plugin.server.infrastructure import package_fetch
+
+    release = FakeRelease().install(monkeypatch)
+    fake = module._fetch_release_asset
+    target = release.uv_url if asset == "uv" else _python_url()
+
+    def real_wrapper(url, directory, **kwargs):
+        if url == target:
+            def shutting_down(*_args, **_kwargs):
+                raise package_fetch.PackageLoopUnavailable("the server loop stopped during a package download")
+
+            monkeypatch.setattr(package_fetch, "fetch_release_asset", shutting_down)
+            return _original_fetch(url, directory, **kwargs)
+        return fake(url, directory, **kwargs)
+
+    monkeypatch.setattr(module, "_fetch_release_asset", real_wrapper)
+    monkeypatch.setattr(module, "_system_uv_candidates", lambda: ["/new/uv"])
+    uv = FakeUv(root, listing=_listing(), versions={"/new/uv": "99.0.0"})
+    _expect_failure(uv, "canceled")
+    assert _plain_installs(uv) == []
+    # A stop records no failure for the status.
+    assert module.read_tool_runtime_status().error_code is None
 
 
 # ---------------------------------------------------------------------------

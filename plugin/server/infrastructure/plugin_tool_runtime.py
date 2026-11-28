@@ -39,6 +39,7 @@ environment are meant to build on it.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass
 import hashlib
@@ -554,9 +555,14 @@ def _uv_archive_member(target: str, binary_name: str) -> str:
 
 
 def _fetch_release_asset(url: str, directory: Path, **kwargs):
-    from plugin.server.infrastructure.package_fetch import fetch_release_asset
+    from plugin.server.infrastructure.package_fetch import PackageLoopUnavailable, fetch_release_asset
 
-    return fetch_release_asset(url, directory, **kwargs)
+    try:
+        return fetch_release_asset(url, directory, **kwargs)
+    except PackageLoopUnavailable as exc:
+        # The server is shutting down: a stop, not a failed route, so nothing
+        # falls back to another download and no failure is recorded.
+        raise ToolRuntimeError("canceled", f"Plugin tool preparation stopped with the server: {exc}") from exc
 
 
 def _record_route_failure(source_id: str, generation: int, cancel: threading.Event, deadline: float) -> None:
@@ -568,11 +574,11 @@ def _record_route_failure(source_id: str, generation: int, cancel: threading.Eve
 def _download_failures() -> tuple[type[BaseException], ...]:
     """What a failed download raises, as opposed to a bug in this module."""
     from plugin.server.infrastructure.package_download import PackageDownloadWriteError
-    from plugin.server.infrastructure.package_fetch import NoRoutesLeft, PackageLoopUnavailable, RouteFailed
+    from plugin.server.infrastructure.package_fetch import NoRoutesLeft, RouteFailed
 
     return (
         load_httpx().HTTPError, OSError, ValueError, KeyError, TypeError, zipfile.BadZipFile,
-        tarfile.TarError, PackageDownloadWriteError, PackageLoopUnavailable, NoRoutesLeft, RouteFailed,
+        tarfile.TarError, PackageDownloadWriteError, NoRoutesLeft, RouteFailed,
     )
 
 
@@ -1303,7 +1309,9 @@ async def ensure_tool_runtime(
         except RuntimeError:
             pass  # The loop is closed: nobody awaits the outcome any more.
 
-    threading.Thread(target=work, name="plugin-tool-runtime-call", daemon=True).start()
+    # The caller's context (loguru's contextualize, say) goes along, as with to_thread.
+    context = contextvars.copy_context()
+    threading.Thread(target=context.run, args=(work,), name="plugin-tool-runtime-call", daemon=True).start()
     try:
         return await future
     except asyncio.CancelledError:
