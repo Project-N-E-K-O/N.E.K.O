@@ -7,11 +7,12 @@ import json
 from collections import OrderedDict
 from types import SimpleNamespace
 
-import httpx
 import pytest
 
-from plugin.server.application.model_gateway_service import ModelGatewayService
+from plugin.server.application.model_gateway_service import ModelGatewayService, _PooledClientEntry
 from plugin.server.domain.model_config import ModelSlot
+from plugin.server.model_gateway.errors import ModelGatewayError
+from plugin.server.model_gateway.observation import AttemptObservation
 from utils.http.pool_utils import (
     DEFAULT_HTTP_CONNECT_TIMEOUT_SECONDS,
     DEFAULT_HTTP_KEEPALIVE_EXPIRY_SECONDS,
@@ -121,7 +122,9 @@ async def test_gateway_reuses_single_tcp_connection_and_applies_per_request_spli
         slot_long = _make_slot(base_url, timeout_seconds=120)
         slot_short = _make_slot(base_url, timeout_seconds=6)
 
-        pooled = await gateway._get_pooled_client(slot_long)
+        loop, entry, _, _ = await gateway._acquire_pooled_client(slot_long)
+        pooled = entry.client
+        await gateway._release_pooled_client(loop, entry)
         assert pooled._transport._pool._keepalive_expiry == DEFAULT_HTTP_KEEPALIVE_EXPIRY_SECONDS
         orig_send = pooled.send
 
@@ -163,7 +166,7 @@ async def test_gateway_reuses_single_tcp_connection_and_applies_per_request_spli
 
 
 @pytest.mark.asyncio
-async def test_gateway_pooled_client_retries_dead_reused_socket_once(monkeypatch):
+async def test_gateway_pooled_client_stale_retry_runs_before_send_and_observation_restart(monkeypatch):
     _clear_proxy_env(monkeypatch)
     connections = 0
     posts = 0
@@ -196,14 +199,90 @@ async def test_gateway_pooled_client_retries_dead_reused_socket_once(monkeypatch
     base_url = f"http://127.0.0.1:{port}/v1"
     gateway = ModelGatewayService()
 
+    reservations: list[int] = []
+    retry_codes: list[str] = []
+
+    async def before_send() -> None:
+        reservations.append(posts)
+
     try:
         slot = _make_slot(base_url, timeout_seconds=30)
-        res1 = await gateway.complete(slot, _request_body())
-        res2 = await gateway.complete(slot, _request_body())
+        obs1 = AttemptObservation(on_retry=retry_codes.append)
+        res1 = await gateway.complete(slot, _request_body(), observation=obs1, before_send=before_send)
+        obs2 = AttemptObservation(on_retry=retry_codes.append)
+        res2 = await gateway.complete(slot, _request_body(), observation=obs2, before_send=before_send)
+
         assert res1["choices"][0]["message"]["content"] == "c1"
         assert res2["choices"][0]["message"]["content"] == "c2"
         assert connections == 2
         assert posts == 2
+        # before_send runs before the 1st send, the 2nd send, and the stale-socket retry.
+        assert len(reservations) == 3
+        assert retry_codes == ["upstream_connection_error"]
+        assert obs2.upstream_started is True
+    finally:
+        await gateway.aclose()
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_gateway_stale_retry_stops_when_before_send_rejects_quota(monkeypatch):
+    _clear_proxy_env(monkeypatch)
+    connections = 0
+    posts = 0
+
+    async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        nonlocal connections, posts
+        connections += 1
+        conn_id = connections
+        try:
+            await _read_http_request(reader)
+            posts += 1
+            writer.write(_json_http_response(_openai_payload(f"c{conn_id}")))
+            await writer.drain()
+            if conn_id == 1:
+                try:
+                    await _read_http_request(reader)
+                except (asyncio.IncompleteReadError, ConnectionError):
+                    # Client closed first during teardown.
+                    return
+                writer.close()
+                return
+        except (asyncio.IncompleteReadError, ConnectionError):
+            # Expected disconnect on loopback teardown.
+            pass
+        finally:
+            writer.close()
+
+    server = await asyncio.start_server(handle, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    base_url = f"http://127.0.0.1:{port}/v1"
+    gateway = ModelGatewayService()
+
+    calls = 0
+    retry_codes: list[str] = []
+
+    async def quota_limited_before_send() -> None:
+        nonlocal calls
+        calls += 1
+        if calls >= 3:
+            raise ModelGatewayError("agent_quota_exceeded", "Free agent daily quota exceeded", 429)
+
+    try:
+        slot = _make_slot(base_url, timeout_seconds=30)
+        res1 = await gateway.complete(slot, _request_body(), before_send=quota_limited_before_send)
+        assert res1["choices"][0]["message"]["content"] == "c1"
+
+        obs2 = AttemptObservation(on_retry=retry_codes.append)
+        with pytest.raises(ModelGatewayError) as exc_info:
+            await gateway.complete(slot, _request_body(), observation=obs2, before_send=quota_limited_before_send)
+        assert exc_info.value.code == "agent_quota_exceeded"
+        assert retry_codes == ["upstream_connection_error"]
+        assert obs2.upstream_started is False
+        # Retry was blocked by quota before opening a second upstream connection.
+        assert connections == 1
+        assert posts == 1
     finally:
         await gateway.aclose()
         server.close()
@@ -215,19 +294,91 @@ async def test_gateway_pool_isolates_credentials_protocols_and_proxy(monkeypatch
     _clear_proxy_env(monkeypatch)
     gateway = ModelGatewayService()
     try:
-        c1 = await gateway._get_pooled_client(_make_slot("https://gw.example.test/v1", api_key="k1"))
-        c2 = await gateway._get_pooled_client(_make_slot("https://gw.example.test/v1", api_key="k2"))
-        c3 = await gateway._get_pooled_client(
+        loop, e1, _, _ = await gateway._acquire_pooled_client(_make_slot("https://gw.example.test/v1", api_key="k1"))
+        await gateway._release_pooled_client(loop, e1)
+        loop, e2, _, _ = await gateway._acquire_pooled_client(_make_slot("https://gw.example.test/v1", api_key="k2"))
+        await gateway._release_pooled_client(loop, e2)
+        loop, e3, _, _ = await gateway._acquire_pooled_client(
             _make_slot("https://gw.example.test/v1", protocol="anthropic_messages", api_key="k1")
         )
-        assert c1 is not c2
-        assert c1 is not c3
+        await gateway._release_pooled_client(loop, e3)
+        assert e1.client is not e2.client
+        assert e1.client is not e3.client
 
         monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:8888")
-        c4 = await gateway._get_pooled_client(_make_slot("https://gw.example.test/v1", api_key="k1"))
-        assert c4 is not c1
+        loop, e4, _, _ = await gateway._acquire_pooled_client(_make_slot("https://gw.example.test/v1", api_key="k1"))
+        await gateway._release_pooled_client(loop, e4)
+        assert e4.client is not e1.client
     finally:
         await gateway.aclose()
+
+
+@pytest.mark.asyncio
+async def test_gateway_pool_eviction_closes_idle_and_drains_in_flight_clients(monkeypatch):
+    _clear_proxy_env(monkeypatch)
+    k1_arrived = asyncio.Event()
+    release_k1 = asyncio.Event()
+
+    async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        try:
+            while True:
+                try:
+                    head, _ = await _read_http_request(reader)
+                except (asyncio.IncompleteReadError, ConnectionError):
+                    # Peer closed keep-alive connection during teardown.
+                    break
+                if b"Bearer k1" in head:
+                    k1_arrived.set()
+                    await release_k1.wait()
+                writer.write(_json_http_response(_openai_payload("ok")))
+                await writer.drain()
+        finally:
+            writer.close()
+
+    server = await asyncio.start_server(handle, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    base_url = f"http://127.0.0.1:{port}/v1"
+    gateway = ModelGatewayService()
+    gateway.POOL_MAX_CLIENTS = 2
+    loop = asyncio.get_running_loop()
+
+    try:
+        # Start an in-flight request on k1.
+        t1 = asyncio.create_task(gateway.complete(_make_slot(base_url, api_key="k1"), _request_body()))
+        await asyncio.wait_for(k1_arrived.wait(), timeout=2.0)
+        entry_k1 = next(iter(gateway._pools[loop].values()))
+        assert entry_k1.in_flight == 1
+
+        # Complete an idle request on k2.
+        await gateway.complete(_make_slot(base_url, api_key="k2"), _request_body())
+        entries = list(gateway._pools[loop].values())
+        entry_k2 = entries[1]
+        assert entry_k2.in_flight == 0
+
+        # Request on k3 evicts k1 (still in-flight): must remain open in _draining.
+        await gateway.complete(_make_slot(base_url, api_key="k3"), _request_body())
+        assert entry_k1.evicted is True
+        assert entry_k1.client.is_closed is False
+        assert entry_k1 in gateway._draining[loop]
+
+        # Request on k4 evicts k2 (idle): must close immediately.
+        await gateway.complete(_make_slot(base_url, api_key="k4"), _request_body())
+        assert entry_k2.evicted is True
+        assert entry_k2.client.is_closed is True
+        assert entry_k2 not in gateway._draining.get(loop, set())
+
+        # Let k1 finish: its evicted client must close right after its response closes.
+        release_k1.set()
+        res1 = await asyncio.wait_for(t1, timeout=2.0)
+        assert res1["choices"][0]["message"]["content"] == "ok"
+        assert entry_k1.in_flight == 0
+        assert entry_k1.client.is_closed is True
+        assert entry_k1 not in gateway._draining.get(loop, set())
+    finally:
+        release_k1.set()
+        await gateway.aclose()
+        server.close()
+        await server.wait_closed()
 
 
 @pytest.mark.asyncio
@@ -237,29 +388,34 @@ async def test_gateway_aclose_runs_concurrently_and_is_wired_to_close_model_exec
     loop = asyncio.get_running_loop()
     evt1 = asyncio.Event()
     evt2 = asyncio.Event()
+    evt3 = asyncio.Event()
     closed: list[str] = []
 
     class _BarrierClient:
-        def __init__(self, name: str, own: asyncio.Event, peer: asyncio.Event):
+        def __init__(self, name: str, own: asyncio.Event, peers: list[asyncio.Event]):
             self.name = name
             self.own = own
-            self.peer = peer
+            self.peers = peers
 
         async def aclose(self) -> None:
             self.own.set()
-            await asyncio.wait_for(self.peer.wait(), timeout=1.0)
+            for peer in self.peers:
+                await asyncio.wait_for(peer.wait(), timeout=1.0)
             closed.append(self.name)
 
     gateway = ModelGatewayService()
     gateway._pools[loop] = OrderedDict([
-        (("a",), _BarrierClient("a", evt1, evt2)),
-        (("b",), _BarrierClient("b", evt2, evt1)),
+        (("a",), _PooledClientEntry(_BarrierClient("a", evt1, [evt2, evt3]))),
+        (("b",), _PooledClientEntry(_BarrierClient("b", evt2, [evt1, evt3]))),
     ])
+    gateway._draining[loop] = {
+        _PooledClientEntry(_BarrierClient("draining-c", evt3, [evt1, evt2])),
+    }
     monkeypatch.setattr(routes, "gateway_service", gateway)
 
     app = SimpleNamespace(state=SimpleNamespace(model_executor=None))
     await asyncio.wait_for(routes.close_model_executor(app), timeout=1.5)
-    assert set(closed) == {"a", "b"}
+    assert set(closed) == {"a", "b", "draining-c"}
 
 
 def test_model_gateway_service_keeps_pool_utils_import_lazy():

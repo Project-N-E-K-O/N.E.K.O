@@ -94,11 +94,16 @@ _FRESH_CONNECTION_TRACE_SUFFIXES: tuple[str, ...] = (
     ".connect_unix_socket.started",
     ".start_tls.started",
 )
-_SEND_REQUEST_HEADERS_TRACE_SUFFIX: str = ".send_request_headers.started"
+SEND_REQUEST_HEADERS_TRACE_SUFFIX: str = ".send_request_headers.started"
+_SEND_REQUEST_HEADERS_TRACE_SUFFIX: str = SEND_REQUEST_HEADERS_TRACE_SUFFIX
 
 
-def _is_fresh_connection_trace(event_name: str) -> bool:
+def is_fresh_connection_trace(event_name: str) -> bool:
+    """Return True when an httpcore trace event marks a brand-new connection."""
     return event_name.endswith(_FRESH_CONNECTION_TRACE_SUFFIXES)
+
+
+_is_fresh_connection_trace = is_fresh_connection_trace
 
 
 _ClientT = TypeVar("_ClientT")

@@ -131,6 +131,17 @@ def _prepare(
     return body["model"], encoded, headers, include_usage
 
 
+class _PooledClientEntry:
+    """Reference-counted pooled client so evicted clients drain and close cleanly."""
+
+    __slots__ = ("client", "in_flight", "evicted")
+
+    def __init__(self, client: httpx.AsyncClient) -> None:
+        self.client = client
+        self.in_flight = 0
+        self.evicted = False
+
+
 class ModelGatewayService:
     POOL_MAX_CLIENTS = 16
 
@@ -138,7 +149,11 @@ class ModelGatewayService:
         self._custom_client_factory = client_factory
         self._client_factory = client_factory or self._make_client
         # Loop-scoped warm HTTP clients used when no custom factory is injected.
-        self._pools: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, OrderedDict[tuple, httpx.AsyncClient]]" = (
+        self._pools: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, OrderedDict[tuple, _PooledClientEntry]]" = (
+            weakref.WeakKeyDictionary()
+        )
+        # Evicted entries waiting for active requests or shutdown to finish closing.
+        self._draining: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, set[_PooledClientEntry]]" = (
             weakref.WeakKeyDictionary()
         )
         # OpenAI-compatible endpoints that rejected injected stream_options.
@@ -149,33 +164,29 @@ class ModelGatewayService:
         from utils.http.pool_utils import (
             DEFAULT_HTTP_KEEPALIVE_EXPIRY_SECONDS,
             build_split_http_timeout,
-            install_stale_connection_retry,
         )
 
         httpx = load_httpx()
         # HTTP-level inactivity guard. A total request deadline is owned by the
         # execution policy, not by httpx's connect/read/write/pool timeouts.
         timeout = build_split_http_timeout(slot.timeout_seconds)
-        client = httpx.AsyncClient(
+        return httpx.AsyncClient(
             timeout=timeout if timeout is not None else slot.timeout_seconds,
             follow_redirects=False,
             limits=httpx.Limits(keepalive_expiry=DEFAULT_HTTP_KEEPALIVE_EXPIRY_SECONDS),
         )
-        return install_stale_connection_retry(client, label="Plugin Model Gateway HTTP")
 
     @staticmethod
     def _make_pooled_client() -> httpx.AsyncClient:
-        from utils.http.pool_utils import (
-            DEFAULT_HTTP_KEEPALIVE_EXPIRY_SECONDS,
-            install_stale_connection_retry,
-        )
+        from utils.http.pool_utils import DEFAULT_HTTP_KEEPALIVE_EXPIRY_SECONDS
 
         httpx = load_httpx()
-        client = httpx.AsyncClient(
+        # Do not install blind transport-level POST retry here: _send_pooled_request
+        # coordinates stale-socket recovery with observation.restart and before_send.
+        return httpx.AsyncClient(
             follow_redirects=False,
             limits=httpx.Limits(keepalive_expiry=DEFAULT_HTTP_KEEPALIVE_EXPIRY_SECONDS),
         )
-        return install_stale_connection_retry(client, label="Plugin Model Gateway HTTP")
 
     @staticmethod
     async def _close_client_quietly(client: httpx.AsyncClient) -> None:
@@ -185,7 +196,34 @@ class ModelGatewayService:
             # Best-effort teardown of evicted or shutting-down pooled clients.
             pass
 
-    async def _get_pooled_client(self, slot: ModelSlot) -> httpx.AsyncClient:
+    async def _close_draining_entry(
+        self,
+        loop: asyncio.AbstractEventLoop,
+        entry: _PooledClientEntry,
+    ) -> None:
+        draining = self._draining.get(loop)
+        if draining is not None:
+            draining.discard(entry)
+        await self._close_client_quietly(entry.client)
+
+    async def _release_pooled_client(
+        self,
+        loop: asyncio.AbstractEventLoop,
+        entry: _PooledClientEntry,
+    ) -> None:
+        entry.in_flight = max(0, entry.in_flight - 1)
+        if entry.evicted and entry.in_flight == 0:
+            await self._close_draining_entry(loop, entry)
+
+    async def _acquire_pooled_client(
+        self,
+        slot: ModelSlot,
+    ) -> tuple[
+        asyncio.AbstractEventLoop,
+        _PooledClientEntry,
+        list[httpx.AsyncClient],
+        list[_PooledClientEntry],
+    ]:
         from utils.http.pool_utils import (
             credential_fingerprint,
             http_origin_key,
@@ -203,9 +241,11 @@ class ModelGatewayService:
         if pool is not None:
             existing = pool.get(key)
             if existing is not None:
-                if not getattr(existing, "is_closed", False):
+                if not getattr(existing.client, "is_closed", False):
                     pool.move_to_end(key)
-                    return existing
+                    existing.in_flight += 1
+                    return loop, existing, [], []
+                existing.evicted = True
                 pool.pop(key, None)
 
         made = await asyncio.to_thread(self._make_pooled_client)
@@ -214,20 +254,51 @@ class ModelGatewayService:
             pool = OrderedDict()
             self._pools[loop] = pool
         raced = pool.get(key)
-        if raced is not None and not getattr(raced, "is_closed", False):
+        if raced is not None and not getattr(raced.client, "is_closed", False):
             pool.move_to_end(key)
-            await self._close_client_quietly(made)
-            return raced
-        pool[key] = made
+            raced.in_flight += 1
+            return loop, raced, [made], []
+        if raced is not None:
+            raced.evicted = True
+            pool.pop(key, None)
+
+        entry = _PooledClientEntry(made)
+        entry.in_flight = 1
+        pool[key] = entry
+        idle_evicted: list[_PooledClientEntry] = []
         while len(pool) > self.POOL_MAX_CLIENTS:
-            # Dropped without force-closing: an in-flight call may still use it.
-            pool.popitem(last=False)
-        return made
+            _, evicted = pool.popitem(last=False)
+            evicted.evicted = True
+            draining = self._draining.get(loop)
+            if draining is None:
+                draining = set()
+                self._draining[loop] = draining
+            draining.add(evicted)
+            if evicted.in_flight == 0:
+                idle_evicted.append(evicted)
+        return loop, entry, [], idle_evicted
 
     async def aclose(self) -> None:
-        """Concurrently close every pooled upstream HTTP client on the running loop."""
-        pool = self._pools.pop(asyncio.get_running_loop(), None)
-        clients = list((pool or {}).values())
+        """Concurrently close every active and draining pooled upstream HTTP client."""
+        loop = asyncio.get_running_loop()
+        pool = self._pools.pop(loop, None)
+        draining = self._draining.pop(loop, None)
+        clients: list[httpx.AsyncClient] = []
+        seen_ids: set[int] = set()
+        if pool:
+            for entry in pool.values():
+                entry.evicted = True
+                cid = id(entry.client)
+                if cid not in seen_ids:
+                    seen_ids.add(cid)
+                    clients.append(entry.client)
+        if draining:
+            for entry in draining:
+                entry.evicted = True
+                cid = id(entry.client)
+                if cid not in seen_ids:
+                    seen_ids.add(cid)
+                    clients.append(entry.client)
         if not clients:
             return
         await asyncio.gather(
@@ -235,34 +306,128 @@ class ModelGatewayService:
             return_exceptions=True,
         )
 
+    async def _send_pooled_request(
+        self,
+        client: httpx.AsyncClient,
+        slot: ModelSlot,
+        payload: bytes,
+        headers: dict,
+        *,
+        observation: AttemptObservation | None,
+        before_send: Callable[[], Awaitable[None]] | None,
+    ) -> httpx.Response:
+        import time
+        from utils.http.pool_utils import (
+            SEND_REQUEST_HEADERS_TRACE_SUFFIX,
+            STALE_CONNECTION_ERRORS,
+            STALE_RETRY_MAX_ELAPSED_SECONDS,
+            build_split_http_timeout,
+            is_fresh_connection_trace,
+        )
+
+        request_timeout = build_split_http_timeout(slot.timeout_seconds)
+        effective_timeout = request_timeout if request_timeout is not None else slot.timeout_seconds
+        endpoint = _endpoint(slot)
+        request = client.build_request(
+            "POST",
+            endpoint,
+            content=payload,
+            headers=headers,
+            timeout=effective_timeout,
+        )
+        opened_fresh_connection = False
+        send_started: float | None = None
+
+        async def _track_trace(event_name: str, _info: dict) -> None:
+            nonlocal opened_fresh_connection, send_started
+            if is_fresh_connection_trace(event_name):
+                opened_fresh_connection = True
+            elif send_started is None and event_name.endswith(SEND_REQUEST_HEADERS_TRACE_SUFFIX):
+                send_started = time.monotonic()
+
+        orig_extensions = dict(request.extensions)
+        request.extensions = {**orig_extensions, "trace": _track_trace}
+        started = time.monotonic()
+        if observation is not None:
+            observation.upstream_started = True
+        try:
+            return await client.send(request, stream=True, follow_redirects=False)
+        except STALE_CONNECTION_ERRORS:
+            elapsed = time.monotonic() - (send_started if send_started is not None else started)
+            if opened_fresh_connection or elapsed > STALE_RETRY_MAX_ELAPSED_SECONDS:
+                raise
+            # A reused keep-alive socket died before response headers arrived.
+            # Account for the failed attempt and reserve quota again before
+            # replaying the POST, matching stream_options retry semantics.
+            if observation is not None:
+                observation.restart("upstream_connection_error")
+            if before_send is not None:
+                await before_send()
+            retry_request = client.build_request(
+                "POST",
+                endpoint,
+                content=payload,
+                headers=headers,
+                timeout=effective_timeout,
+            )
+            if observation is not None:
+                observation.upstream_started = True
+            return await client.send(retry_request, stream=True, follow_redirects=False)
+
     @asynccontextmanager
-    async def _request(self, slot: ModelSlot, payload: bytes, headers: dict, observation: AttemptObservation | None = None):
+    async def _request(
+        self,
+        slot: ModelSlot,
+        payload: bytes,
+        headers: dict,
+        observation: AttemptObservation | None = None,
+        before_send: Callable[[], Awaitable[None]] | None = None,
+    ):
         use_pool = (
             self._custom_client_factory is None
             and self._client_factory == self._make_client
         )
+        pooled_loop = None
+        pooled_entry = None
+        raced_to_close: list[httpx.AsyncClient] = []
+        idle_evicted: list[_PooledClientEntry] = []
         if use_pool:
-            from utils.http.pool_utils import build_split_http_timeout
-
-            client = await self._get_pooled_client(slot)
-            owns_client = False
-            request_timeout = build_split_http_timeout(slot.timeout_seconds)
-            request = client.build_request(
-                "POST",
-                _endpoint(slot),
-                content=payload,
-                headers=headers,
-                timeout=request_timeout if request_timeout is not None else slot.timeout_seconds,
+            pooled_loop, pooled_entry, raced_to_close, idle_evicted = (
+                await self._acquire_pooled_client(slot)
             )
+            client = pooled_entry.client
+            owns_client = False
         else:
             client = self._client_factory(slot)
             owns_client = True
-            request = client.build_request("POST", _endpoint(slot), content=payload, headers=headers)
         response = None
         try:
-            if observation is not None:
-                observation.upstream_started = True
-            response = await client.send(request, stream=True, follow_redirects=False)
+            if raced_to_close or idle_evicted:
+                await asyncio.gather(
+                    *(self._close_client_quietly(c) for c in raced_to_close),
+                    *(
+                        self._close_draining_entry(pooled_loop, evicted)
+                        for evicted in idle_evicted
+                        if pooled_loop is not None
+                    ),
+                    return_exceptions=True,
+                )
+                raced_to_close = []
+                idle_evicted = []
+            if use_pool:
+                response = await self._send_pooled_request(
+                    client,
+                    slot,
+                    payload,
+                    headers,
+                    observation=observation,
+                    before_send=before_send,
+                )
+            else:
+                request = client.build_request("POST", _endpoint(slot), content=payload, headers=headers)
+                if observation is not None:
+                    observation.upstream_started = True
+                response = await client.send(request, stream=True, follow_redirects=False)
             if not response.is_success and observation is not None:
                 await _observe_error_usage(response, slot, observation)
             _check_status(response)
@@ -275,8 +440,20 @@ class ModelGatewayService:
                     if response is not None:
                         await response.aclose()
                 finally:
+                    if raced_to_close or idle_evicted:
+                        await asyncio.gather(
+                            *(self._close_client_quietly(c) for c in raced_to_close),
+                            *(
+                                self._close_draining_entry(pooled_loop, evicted)
+                                for evicted in idle_evicted
+                                if pooled_loop is not None
+                            ),
+                            return_exceptions=True,
+                        )
                     if owns_client:
                         await client.aclose()
+                    elif pooled_entry is not None and pooled_loop is not None:
+                        await self._release_pooled_client(pooled_loop, pooled_entry)
 
     async def complete(
         self, slot: ModelSlot, body: object, *, observation: AttemptObservation | None = None,
@@ -290,7 +467,7 @@ class ModelGatewayService:
             # locally rejected requests must not consume the shared allowance.
             await before_send()
         try:
-            async with self._request(slot, payload, headers, observation) as response:
+            async with self._request(slot, payload, headers, observation, before_send=before_send) as response:
                 result = await read_json_response(response)
                 if observation is not None:
                     observation.observe(result.get("usage"), protocol=slot.protocol, reported=True)
@@ -329,7 +506,7 @@ class ModelGatewayService:
             for retrying in (False, True):
                 connected = False
                 try:
-                    async with self._request(slot, payload, headers, observation) as response:
+                    async with self._request(slot, payload, headers, observation, before_send=before_send) as response:
                         connected = True
                         if retrying:
                             self._stream_options_unsupported.add(endpoint)

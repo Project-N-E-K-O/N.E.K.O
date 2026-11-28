@@ -98,7 +98,11 @@ def _close_async_openai_client_from_sync_best_effort(aclient: AsyncOpenAI) -> No
         return
     _schedule_async_openai_client_close_best_effort(aclient, loop=loop)
 
-def _close_chat_openai_clients_best_effort(client: OpenAI, aclient: AsyncOpenAI | None) -> None:
+def _close_chat_openai_clients_best_effort(
+    client: OpenAI,
+    aclient: AsyncOpenAI | None,
+    release_borrowed: Any = None,
+) -> None:
     try:
         client.close()
     except Exception:
@@ -106,8 +110,18 @@ def _close_chat_openai_clients_best_effort(client: OpenAI, aclient: AsyncOpenAI 
         pass
     if aclient is not None:
         _schedule_async_openai_client_close_best_effort(aclient)
+    if callable(release_borrowed):
+        try:
+            release_borrowed()
+        except Exception:
+            # Finalizer release of a borrowed shared client must never raise.
+            pass
 
-def _close_chat_clients_best_effort(client: Any, aclient: Any | None) -> None:
+def _close_chat_clients_best_effort(
+    client: Any,
+    aclient: Any | None,
+    release_borrowed: Any = None,
+) -> None:
     try:
         client.close()
     except Exception:
@@ -115,6 +129,12 @@ def _close_chat_clients_best_effort(client: Any, aclient: Any | None) -> None:
         pass
     if aclient is not None:
         _schedule_async_openai_client_close_best_effort(aclient)
+    if callable(release_borrowed):
+        try:
+            release_borrowed()
+        except Exception:
+            # Finalizer release of a borrowed shared client must never raise.
+            pass
 
 def set_active_character(master_name: str, lanlan_name: str) -> "contextvars.Token":
     """Set ``(master_name, lanlan_name)`` on the active async context so

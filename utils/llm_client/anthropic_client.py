@@ -18,6 +18,7 @@ import base64
 import copy
 import hashlib
 import json as _json
+import os
 import threading
 import weakref
 from collections import OrderedDict
@@ -808,17 +809,24 @@ class ChatAnthropic:
         )
         from .http_pool import (
             SHARED_LLM_HTTP_POOL_KEEPALIVE_SECONDS,
-            get_active_shared_http_pool_loop,
-            get_shared_async_http_client,
+            acquire_shared_async_http_client,
+            get_active_shared_http_pool_context,
         )
 
         _api_key = api_key or "sk-placeholder"
+        effective_base_url = (
+            self.base_url
+            if self.base_url
+            else (os.environ.get("ANTHROPIC_BASE_URL") or "https://api.anthropic.com")
+        )
         _timeout = build_split_http_timeout(timeout)
         if _timeout is None:
             _timeout = build_split_http_timeout(request_timeout)
-        client_kw: dict[str, Any] = dict(api_key=_api_key, max_retries=max_retries)
-        if self.base_url:
-            client_kw["base_url"] = self.base_url
+        client_kw: dict[str, Any] = dict(
+            api_key=_api_key,
+            base_url=effective_base_url,
+            max_retries=max_retries,
+        )
         if _timeout is not None:
             client_kw["timeout"] = _timeout
         # Set the neko/<version> User-Agent to override the SDK's built-in UA (AsyncAnthropic/Python x.y.z),
@@ -828,6 +836,7 @@ class ChatAnthropic:
         client_kw["default_headers"] = ensure_user_agent(default_headers)
 
         self._borrowed_async_http = False
+        self._borrowed_http_release: Any = None
         self._closed = False
         sync_kw = dict(client_kw)
         async_kw = dict(client_kw)
@@ -857,12 +866,14 @@ class ChatAnthropic:
                             )
 
                 async_http = None
-                pool_loop = (
-                    get_active_shared_http_pool_loop()
+                pool_ctx = (
+                    get_active_shared_http_pool_context()
                     if (keepalive_expiry is None and use_shared_http_pool)
                     else None
                 )
-                if pool_loop is not None:
+                if pool_ctx is not None:
+                    pool_loop, pool_epoch = pool_ctx
+
                     def _make_shared_async_http():
                         shared_http_kw: dict[str, Any] = {"verify": ssl_context}
                         try:
@@ -880,18 +891,20 @@ class ChatAnthropic:
                                 )
                         return DefaultAsyncHttpxClient(**shared_http_kw)
 
-                    async_http = get_shared_async_http_client(
+                    async_http, release_borrowed = acquire_shared_async_http_client(
                         pool_loop,
                         family="anthropic",
-                        base_url=self.base_url,
+                        base_url=effective_base_url,
                         api_key=_api_key,
                         default_headers=client_kw["default_headers"],
                         ssl_context=ssl_context,
                         make_client=_make_shared_async_http,
                         label="Anthropic HTTP",
+                        expected_epoch=pool_epoch,
                     )
                     if async_http is not None:
                         self._borrowed_async_http = True
+                        self._borrowed_http_release = release_borrowed
 
                 if async_http is None:
                     async_http = DefaultAsyncHttpxClient(**http_kw)
@@ -914,6 +927,7 @@ class ChatAnthropic:
             _close_chat_clients_best_effort,
             self._client,
             None if self._borrowed_async_http else self._aclient,
+            self._borrowed_http_release,
         )
 
     @property
@@ -1218,7 +1232,18 @@ class ChatAnthropic:
 
     async def aclose(self) -> None:
         self._closed = True
-        if not getattr(self, "_borrowed_async_http", False):
+        release = getattr(self, "_borrowed_http_release", None)
+        self._borrowed_http_release = None
+        if getattr(self, "_borrowed_async_http", False):
+            if release is not None:
+                evicted_client = release(defer_close=True)
+                if evicted_client is not None:
+                    try:
+                        await evicted_client.aclose()
+                    except Exception:
+                        # Best-effort teardown of a drained evicted HTTP client.
+                        pass
+        else:
             await self._aclient.close()
         self._client.close()
         self._client_finalizer.detach()
@@ -1226,7 +1251,12 @@ class ChatAnthropic:
     def close(self) -> None:
         self._closed = True
         self._client.close()
-        if not getattr(self, "_borrowed_async_http", False):
+        release = getattr(self, "_borrowed_http_release", None)
+        self._borrowed_http_release = None
+        if getattr(self, "_borrowed_async_http", False):
+            if release is not None:
+                release()
+        else:
             _close_async_openai_client_from_sync_best_effort(self._aclient)
         self._client_finalizer.detach()
 

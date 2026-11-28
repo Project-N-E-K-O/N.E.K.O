@@ -420,11 +420,169 @@ async def test_close_warm_chat_llms_closes_warm_and_shared_pools_concurrently():
 
     warm_pool._pools[loop] = OrderedDict([(("k1",), c1), (("k2",), c2)])
     with http_pool._POOL_LOCK:
-        http_pool._http_pools[loop] = OrderedDict([(("sh1",), sh)])
+        http_pool._http_pools[loop] = OrderedDict([(("sh1",), http_pool._SharedPoolEntry(sh))])
 
     # Sequential closing would deadlock on the barrier; concurrent gather completes immediately.
     await asyncio.wait_for(warm_pool.close_warm_chat_llms(), timeout=1.5)
     assert set(closed) == {"warm-1", "warm-2", "shared-1"}
+
+
+@pytest.mark.asyncio
+async def test_shared_http_pool_resolves_env_and_default_base_url_for_pool_key(monkeypatch):
+    from utils.llm_client import create_chat_llm_async
+    from utils.llm_client.warm_pool import close_warm_chat_llms
+
+    _clear_proxy_env(monkeypatch)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
+
+    try:
+        # OpenAI: base_url=None resolves OPENAI_BASE_URL (or default https://api.openai.com/v1).
+        oa_default = await create_chat_llm_async("m", None, "k-same", max_completion_tokens=16, timeout=10.0)
+        oa_explicit_default = await create_chat_llm_async(
+            "m", "https://api.openai.com/v1", "k-same", max_completion_tokens=16, timeout=10.0
+        )
+        assert oa_default._aclient._client is oa_explicit_default._aclient._client
+
+        monkeypatch.setenv("OPENAI_BASE_URL", "https://openai-env-a.example.test/v1")
+        oa_env_a = await create_chat_llm_async("m", None, "k-same", max_completion_tokens=16, timeout=10.0)
+        monkeypatch.setenv("OPENAI_BASE_URL", "https://openai-env-b.example.test/v1")
+        oa_env_b = await create_chat_llm_async("m", None, "k-same", max_completion_tokens=16, timeout=10.0)
+        assert oa_env_a._aclient._client is not oa_default._aclient._client
+        assert oa_env_a._aclient._client is not oa_env_b._aclient._client
+
+        # Anthropic: base_url=None resolves ANTHROPIC_BASE_URL (or default https://api.anthropic.com).
+        an_default = await create_chat_llm_async(
+            "m", None, "k-same", max_completion_tokens=16, timeout=10.0, provider_type="anthropic"
+        )
+        monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://anth-env-a.example.test")
+        an_env_a = await create_chat_llm_async(
+            "m", None, "k-same", max_completion_tokens=16, timeout=10.0, provider_type="anthropic"
+        )
+        monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://anth-env-b.example.test")
+        an_env_b = await create_chat_llm_async(
+            "m", None, "k-same", max_completion_tokens=16, timeout=10.0, provider_type="anthropic"
+        )
+        assert an_env_a._aclient._client is not an_default._aclient._client
+        assert an_env_a._aclient._client is not an_env_b._aclient._client
+
+        for llm in (oa_default, oa_explicit_default, oa_env_a, oa_env_b, an_default, an_env_a, an_env_b):
+            await llm.aclose()
+    finally:
+        await close_warm_chat_llms()
+
+
+@pytest.mark.asyncio
+async def test_shared_http_pool_eviction_closes_idle_drains_borrowed_and_cleans_on_shutdown(monkeypatch):
+    from utils.llm_client import create_chat_llm_async, http_pool
+    from utils.llm_client.warm_pool import close_warm_chat_llms
+
+    _clear_proxy_env(monkeypatch)
+    monkeypatch.setattr(http_pool, "SHARED_LLM_HTTP_POOL_MAX_CLIENTS", 2)
+    base_url = "https://evict-llm.example.test/v1"
+
+    try:
+        llm1 = await create_chat_llm_async("m", base_url, "k1", max_completion_tokens=16, timeout=10.0)
+        http1 = llm1._aclient._client
+
+        llm2 = await create_chat_llm_async("m", base_url, "k2", max_completion_tokens=16, timeout=10.0)
+        http2 = llm2._aclient._client
+        await llm2.aclose()  # k2 is now idle (borrows == 0)
+
+        # k3 evicts k1 (still borrowed): k1 must remain open until llm1 closes.
+        llm3 = await create_chat_llm_async("m", base_url, "k3", max_completion_tokens=16, timeout=10.0)
+        http3 = llm3._aclient._client
+        await asyncio.sleep(0)
+        assert http1.is_closed is False
+
+        # k4 evicts k2 (idle): k2 must close promptly on the loop.
+        llm4 = await create_chat_llm_async("m", base_url, "k4", max_completion_tokens=16, timeout=10.0)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert http2.is_closed is True
+
+        # Closing the last borrower of evicted k1 closes http1 deterministically.
+        await llm1.aclose()
+        assert http1.is_closed is True
+
+        # k5 evicts k3 (still borrowed): shutdown must close draining http3 too.
+        llm5 = await create_chat_llm_async("m", base_url, "k5", max_completion_tokens=16, timeout=10.0)
+        assert http3.is_closed is False
+        await close_warm_chat_llms()
+        assert http3.is_closed is True
+
+        for llm in (llm3, llm4, llm5):
+            await llm.aclose()
+    finally:
+        await close_warm_chat_llms()
+
+
+@pytest.mark.asyncio
+async def test_shared_http_pool_rejects_late_worker_registration_after_aclose(monkeypatch):
+    import threading
+
+    from utils.llm_client import create_chat_llm_async, factory as llm_factory, http_pool
+    from utils.llm_client.warm_pool import close_warm_chat_llms
+
+    _clear_proxy_env(monkeypatch)
+    loop = asyncio.get_running_loop()
+    worker_started = threading.Event()
+    release_worker = threading.Event()
+    built_llms: list = []
+    real_create = llm_factory.create_chat_llm
+
+    def gated_create(*args, **kwargs):
+        worker_started.set()
+        release_worker.wait(timeout=5.0)
+        llm = real_create(*args, **kwargs)
+        built_llms.append(llm)
+        return llm
+
+    monkeypatch.setattr(llm_factory, "create_chat_llm", gated_create)
+    try:
+        caller = asyncio.create_task(
+            create_chat_llm_async(
+                "m",
+                "https://late-worker.example.test/v1",
+                "k-late",
+                max_completion_tokens=16,
+                timeout=10.0,
+            )
+        )
+        await asyncio.to_thread(worker_started.wait, 5.0)
+        caller.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await caller
+
+        # Shutdown completes while the cancelled worker thread is still blocked.
+        await close_warm_chat_llms()
+        release_worker.set()
+        # Let the worker thread finish and _close_cancelled_chat_llm_result run.
+        for _ in range(50):
+            if built_llms and built_llms[0].is_closed:
+                break
+            await asyncio.sleep(0.02)
+
+        assert len(built_llms) == 1
+        assert built_llms[0]._borrowed_async_http is False
+        assert built_llms[0]._aclient._client.is_closed is True
+        with http_pool._POOL_LOCK:
+            assert http_pool._http_pools.get(loop) is None
+
+        # A fresh call on the same loop after shutdown picks up the new epoch and pools again.
+        monkeypatch.setattr(llm_factory, "create_chat_llm", real_create)
+        fresh = await create_chat_llm_async(
+            "m",
+            "https://late-worker.example.test/v1",
+            "k-fresh",
+            max_completion_tokens=16,
+            timeout=10.0,
+        )
+        assert fresh._borrowed_async_http is True
+        await fresh.aclose()
+    finally:
+        release_worker.set()
+        await close_warm_chat_llms()
 
 
 def test_per_call_timeout_splitting_symmetry_openai_and_anthropic():

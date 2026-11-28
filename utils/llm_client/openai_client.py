@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 import inspect
+import os
 import weakref
 from typing import TYPE_CHECKING, Any, AsyncIterator
 
@@ -168,15 +169,16 @@ class ChatOpenAI:
         )
         from .http_pool import (
             SHARED_LLM_HTTP_POOL_KEEPALIVE_SECONDS,
-            get_active_shared_http_pool_loop,
-            get_shared_async_http_client,
+            acquire_shared_async_http_client,
+            get_active_shared_http_pool_context,
         )
 
         _api_key = "sk-placeholder" if api_key is None else api_key
+        effective_base_url = base_url if base_url else (os.environ.get("OPENAI_BASE_URL") or "https://api.openai.com/v1")
         _timeout = build_split_http_timeout(timeout)
         if _timeout is None:
             _timeout = build_split_http_timeout(request_timeout)
-        client_kw: dict[str, Any] = dict(base_url=base_url, api_key=_api_key, max_retries=max_retries)
+        client_kw: dict[str, Any] = dict(base_url=effective_base_url, api_key=_api_key, max_retries=max_retries)
         if _timeout is not None:
             client_kw["timeout"] = _timeout
         # Inject neko/<version> User-Agent, overriding SDK UA (AsyncOpenAI/Python x.y.z),
@@ -198,14 +200,17 @@ class ChatOpenAI:
             )
 
         self._borrowed_async_http = False
+        self._borrowed_http_release: Any = None
         self._closed = False
         async_http = None
-        pool_loop = (
-            get_active_shared_http_pool_loop()
+        pool_ctx = (
+            get_active_shared_http_pool_context()
             if (keepalive_expiry is None and use_shared_http_pool)
             else None
         )
-        if pool_loop is not None:
+        if pool_ctx is not None:
+            pool_loop, pool_epoch = pool_ctx
+
             def _make_shared_async_http():
                 import httpx
                 from openai import DEFAULT_CONNECTION_LIMITS
@@ -219,18 +224,20 @@ class ChatOpenAI:
                     ),
                 )
 
-            async_http = get_shared_async_http_client(
+            async_http, release_borrowed = acquire_shared_async_http_client(
                 pool_loop,
                 family="openai",
-                base_url=base_url,
+                base_url=effective_base_url,
                 api_key=_api_key,
                 default_headers=client_kw["default_headers"],
                 ssl_context=ssl_context,
                 make_client=_make_shared_async_http,
                 label="LLM HTTP",
+                expected_epoch=pool_epoch,
             )
             if async_http is not None:
                 self._borrowed_async_http = True
+                self._borrowed_http_release = release_borrowed
 
         if async_http is None:
             async_http = DefaultAsyncHttpxClient(**http_kw)
@@ -252,6 +259,7 @@ class ChatOpenAI:
             _close_chat_openai_clients_best_effort,
             self._client,
             None if self._borrowed_async_http else self._aclient,
+            self._borrowed_http_release,
         )
 
     def _is_anthropic(self) -> bool:
@@ -661,7 +669,18 @@ class ChatOpenAI:
     async def aclose(self) -> None:
         """Close underlying httpx clients (async path)."""
         self._closed = True
-        if not getattr(self, "_borrowed_async_http", False):
+        release = getattr(self, "_borrowed_http_release", None)
+        self._borrowed_http_release = None
+        if getattr(self, "_borrowed_async_http", False):
+            if release is not None:
+                evicted_client = release(defer_close=True)
+                if evicted_client is not None:
+                    try:
+                        await evicted_client.aclose()
+                    except Exception:
+                        # Best-effort teardown of a drained evicted HTTP client.
+                        pass
+        else:
             await self._aclient.close()
         self._client.close()
         self._client_finalizer.detach()
@@ -670,7 +689,12 @@ class ChatOpenAI:
         """Close underlying httpx clients (sync path)."""
         self._closed = True
         self._client.close()
-        if not getattr(self, "_borrowed_async_http", False):
+        release = getattr(self, "_borrowed_http_release", None)
+        self._borrowed_http_release = None
+        if getattr(self, "_borrowed_async_http", False):
+            if release is not None:
+                release()
+        else:
             _close_async_openai_client_from_sync_best_effort(self._aclient)
         self._client_finalizer.detach()
 
