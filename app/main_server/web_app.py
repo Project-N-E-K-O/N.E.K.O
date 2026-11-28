@@ -17,21 +17,24 @@
 
 import asyncio
 import hashlib
+import json
 import os
 import re
 import secrets
 import stat
 from pathlib import Path
-from urllib.parse import parse_qsl
+from urllib.parse import parse_qsl, urlsplit
 
 import httpx
-from fastapi import Request
+from fastapi import Depends, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.datastructures import Headers
 from starlette.responses import RangeNotSatisfiable
 from starlette.staticfiles import NotModifiedResponse
 
+from config import AUTOSTART_ALLOWED_ORIGINS, AUTOSTART_CSRF_TOKEN
+from utils.instance_access import _pinned_origin, _same_origin, is_behind_proxy
 from utils.static_asset_aliases import LegacyStaticAssetAliasMixin
 
 from ._shared import runtime
@@ -380,6 +383,7 @@ from main_routers.capture_router import router as capture_router  # noqa
 from main_routers.characters_router import router as characters_router  # noqa
 from main_routers.cloudsave_router import router as cloudsave_router  # noqa
 from main_routers.config_router import router as config_router  # noqa
+from main_routers.emote_template_router import router as emote_template_router  # noqa
 from main_routers.proactive_router import router as proactive_router  # noqa
 from main_routers.proactive_feedback_router import router as proactive_feedback_router  # noqa
 from main_routers.galgame_router import router as galgame_router  # noqa
@@ -403,6 +407,7 @@ from main_routers.tool_router import router as tool_router  # noqa
 from main_routers.vrm_router import router as vrm_router  # noqa
 from main_routers.vmc_router import router as vmc_router  # noqa
 from main_routers.voice_identity_router import router as voice_identity_router  # noqa
+from main_routers.audio_message_router import router as audio_message_router  # noqa
 from main_routers.websocket_router import router as websocket_router  # noqa
 from main_routers.workshop_router import router as workshop_router  # noqa
 from main_routers.cookies_login_router import router as cookies_login_router  # noqa
@@ -569,9 +574,190 @@ async def get_card_drop_active_character(
     return JSONResponse(payload, headers=cors)
 
 
-@app.post("/api/beacon/shutdown")
+def _parse_beacon_origin_key(
+    raw_value: str | None,
+    *,
+    allow_path_query_fragment: bool = False,
+) -> tuple[str, str, int, int | None] | None:
+    """Parse an Origin, Referer, or allowed origin into (scheme, host, effective_port, explicit_port)."""
+    if not raw_value:
+        return None
+    value = raw_value.strip()
+    if not value or any(ord(ch) <= 0x20 or ch == "\\" for ch in value):
+        return None
+    try:
+        parsed = urlsplit(value)
+        port = parsed.port
+    except ValueError:
+        return None
+    scheme = parsed.scheme.lower()
+    if scheme not in {"http", "https"} or not parsed.netloc or not parsed.hostname:
+        return None
+    if parsed.username is not None or parsed.password is not None or "@" in parsed.netloc:
+        return None
+    if not allow_path_query_fragment and (
+        parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+        or "?" in value
+        or "#" in value
+    ):
+        return None
+    effective_port = port or (443 if scheme == "https" else 80)
+    return scheme, parsed.hostname.lower(), effective_port, port
+
+
+_BEACON_SHUTDOWN_MAX_JSON_BYTES = 4096
+
+
+def _is_valid_beacon_csrf_token(token: str) -> bool:
+    return bool(
+        token
+        and AUTOSTART_CSRF_TOKEN
+        and token.isascii()
+        and AUTOSTART_CSRF_TOKEN.isascii()
+        and secrets.compare_digest(token, AUTOSTART_CSRF_TOKEN)
+    )
+
+
+async def _read_bounded_beacon_csrf_token(
+    request: Request,
+    max_bytes: int = _BEACON_SHUTDOWN_MAX_JSON_BYTES,
+) -> str:
+    """Read an optional small JSON body without unbounded buffering to extract _csrf_token."""
+    content_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+    if content_type != "application/json":
+        return ""
+    raw_content_length = request.headers.get("content-length")
+    if raw_content_length is not None:
+        try:
+            content_length = int(raw_content_length)
+        except ValueError:
+            return ""
+        if content_length < 0 or content_length > max_bytes:
+            return ""
+    buf = bytearray()
+    try:
+        async for chunk in request.stream():
+            if not chunk:
+                continue
+            if len(buf) + len(chunk) > max_bytes:
+                return ""
+            buf.extend(chunk)
+    except Exception:
+        return ""
+    if not buf:
+        return ""
+    try:
+        body = json.loads(buf.decode("utf-8"))
+    except Exception:
+        return ""
+    if isinstance(body, dict) and isinstance(body.get("_csrf_token"), str):
+        return body["_csrf_token"]
+    return ""
+
+
+async def _validate_beacon_shutdown_origin(request: Request) -> None:
+    """Enforce strict exact-same-origin / Fetch-Metadata / CSRF protection on /api/beacon/shutdown."""
+    def _reject() -> None:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "success": False,
+                "error_code": "csrf_validation_failed",
+                "error": "Request could not be verified",
+            },
+        )
+
+    if request.scope.get("neko.instance_identity") and not _same_origin(request):
+        _reject()
+
+    origin_headers = request.headers.getlist("origin")
+    referer_headers = request.headers.getlist("referer")
+    if len(origin_headers) > 1 or len(referer_headers) > 1:
+        _reject()
+
+    sec_fetch_site = (request.headers.get("sec-fetch-site") or "").strip().lower()
+    raw_origin = origin_headers[0] if origin_headers else None
+    raw_referer = referer_headers[0] if referer_headers else None
+
+    allowed_keys = []
+    own_key = _parse_beacon_origin_key(str(request.base_url).rstrip("/"))
+    if own_key is not None:
+        allowed_keys.append(own_key)
+    for item in AUTOSTART_ALLOWED_ORIGINS:
+        if isinstance(item, str):
+            item_key = _parse_beacon_origin_key(item.strip().rstrip("/"))
+            if item_key is not None:
+                allowed_keys.append(item_key)
+
+    if raw_origin is not None:
+        origin_key = _parse_beacon_origin_key(raw_origin, allow_path_query_fragment=False)
+    elif raw_referer is not None:
+        origin_key = _parse_beacon_origin_key(raw_referer, allow_path_query_fragment=True)
+    else:
+        origin_key = None
+
+    # Reject explicit invalid/sandboxed Origin (e.g. Origin: null) or invalid Referer immediately.
+    if (raw_origin is not None or raw_referer is not None) and origin_key is None:
+        _reject()
+
+    # Run all header/origin checks that do not require CSRF before reading any JSON body.
+    if sec_fetch_site:
+        if sec_fetch_site == "cross-site" or sec_fetch_site not in {"same-origin", "same-site"}:
+            _reject()
+        if sec_fetch_site == "same-site" and (
+            origin_key is None or not any(entry[1] == origin_key[1] for entry in allowed_keys)
+        ):
+            _reject()
+
+    has_valid_header_csrf = _is_valid_beacon_csrf_token(request.headers.get("x-csrf-token", ""))
+
+    async def _has_valid_csrf_with_body_fallback() -> bool:
+        if has_valid_header_csrf:
+            return True
+        body_token = await _read_bounded_beacon_csrf_token(request)
+        return _is_valid_beacon_csrf_token(body_token)
+
+    if sec_fetch_site == "same-site":
+        if await _has_valid_csrf_with_body_fallback():
+            return
+        _reject()
+
+    # If Origin or Referer is present, require exact scheme+host+effective_port match (not arbitrary loopback port).
+    if origin_key is not None:
+        if any(entry[:3] == origin_key[:3] for entry in allowed_keys):
+            return
+        if request.scope.get("neko.instance_identity"):
+            if raw_origin is not None and _same_origin(request):
+                return
+            if raw_origin is None:
+                pinned_key = _parse_beacon_origin_key(_pinned_origin())
+                if pinned_key is not None and pinned_key[:3] == origin_key[:3]:
+                    return
+                if (
+                    is_behind_proxy()
+                    and own_key is not None
+                    and own_key[0] == "http"
+                    and origin_key[0] == "https"
+                    and origin_key[1] == own_key[1]
+                    and origin_key[2] == (own_key[3] or 443)
+                ):
+                    return
+        if any(entry[1] == origin_key[1] for entry in allowed_keys) and await _has_valid_csrf_with_body_fallback():
+            return
+        _reject()
+
+    # Headerless requests (no Origin/Referer): allow only with Sec-Fetch-Site: same-origin or valid CSRF token.
+    if sec_fetch_site == "same-origin" or await _has_valid_csrf_with_body_fallback():
+        return
+
+    _reject()
+
+
+@app.post("/api/beacon/shutdown", dependencies=[Depends(_validate_beacon_shutdown_origin)])
 async def beacon_shutdown():
-    """Beacon endpoint: used for graceful server shutdown"""
+    """Beacon endpoint: used for graceful server shutdown."""
     try:
         # Get configuration from app.state.
         current_config = runtime.get_start_config()
@@ -731,42 +917,77 @@ async def proxy_user_plugin_market_bridge(request: Request, path: str = ""):
     # Browser cookies are signed for the public host, not this private HTTP
     # hop. Replace any caller-supplied proof after the main entry guard passed;
     # retain Market's independent Authorization credential unchanged.
-    from utils.instance_access import instance_key, market_internal_proof, remote_instance_identity, request_public_origin
+    from utils.instance_access import (
+        INTERNAL_SERVICE_HEADER,
+        instance_key,
+        internal_service_proof,
+        market_internal_proof,
+        remote_instance_identity,
+        request_public_origin,
+        verify_admitted_internal_service_key,
+    )
     from utils.deployment import has_forwarding_metadata
     from filelock import Timeout as FileLockTimeout
 
-    headers.pop("x-neko-market-internal", None)
-    headers.pop("x-neko-market-public-origin", None)
+    for internal_header in ("x-neko-market-internal", "x-neko-market-public-origin", INTERNAL_SERVICE_HEADER):
+        for hdr_key in [k for k in headers if k.lower() == internal_header]:
+            headers.pop(hdr_key, None)
     # Knowledge calls (manager page -> plugin server's /market/knowledge) are
     # streamed through under their size cap instead; see below.
     knowledge_path = path == "knowledge" or path.startswith("knowledge/")
-    body = b"" if knowledge_path else await request.body()
-    if request.scope.get("neko.instance_identity"):
+    theater_path = path.startswith("theater/")
+    body = b"" if knowledge_path or theater_path else await request.body()
+    scope_identity = request.scope.get("neko.instance_identity")
+    if scope_identity:
         # This is a new authenticated service-to-service hop. The plugin's
         # proxy middleware must observe its real loopback caller, not rewrite
         # it using browser-supplied metadata from the preceding public hop.
         headers = {name: value for name, value in headers.items()
                    if not has_forwarding_metadata({name: value})}
-        public_origin = request_public_origin(request)
         try:
             signing_key = await asyncio.to_thread(instance_key)
         except (OSError, ValueError, FileLockTimeout):
             return JSONResponse(status_code=503, content={"detail": "instance_access_unavailable"})
-        if remote_instance_identity(request, key=signing_key) != request.scope["neko.instance_identity"]:
+        if scope_identity == "internal" and "neko.internal_service_key_digest" in request.scope:
+            if not verify_admitted_internal_service_key(request.scope, signing_key):
+                return JSONResponse(status_code=401, content={"detail": "instance_authorization_required"})
+            upstream_url = httpx.URL(target)
+            upstream_raw_path = upstream_url.raw_path.split(b"?", 1)[0].decode("latin-1")
+            upstream_port = upstream_url.port or (443 if upstream_url.scheme == "https" else 80)
+            headers[INTERNAL_SERVICE_HEADER] = internal_service_proof(
+                signing_key,
+                request.method,
+                upstream_raw_path,
+                port=upstream_port,
+            )
+        elif remote_instance_identity(request, key=signing_key) == scope_identity:
+            public_origin = request_public_origin(request)
+            headers["x-neko-market-public-origin"] = public_origin
+            headers["x-neko-market-internal"] = market_internal_proof(
+                signing_key, request.method, "/market" + ("/" + path if path else ""), public_origin)
+        else:
             return JSONResponse(status_code=401, content={"detail": "instance_authorization_required"})
-        headers["x-neko-market-public-origin"] = public_origin
-        headers["x-neko-market-internal"] = market_internal_proof(
-            signing_key, request.method, "/market" + ("/" + path if path else ""), public_origin)
 
     if knowledge_path:
         refused, body = _knowledge_body(request, path[len("knowledge"):].lstrip("/"))
         if refused is not None:
             return refused
+    elif theater_path and request.method == "POST":
+        from utils.http.knowledge_proxy import capped_body, declared_size_problem
+        limit = 8 * 1024 * 1024 if path.endswith("/import") else 4096
+        problem = declared_size_problem(request.headers.get("content-length"), limit)
+        if problem is not None:
+            return _payload_too_large()
+        body = capped_body(request, limit)
     from utils.http.knowledge_proxy import BodyTooLarge, is_body_too_large
 
     try:
+        # Publication owns a 240-second download/validation/upload deadline.
+        # This exact hop must wait for that result; other Market calls retain
+        # their existing short request budget.
+        market_timeout = 245.0 if request.method == "POST" and path == "knowledge/publish" else 30.0
         async with httpx.AsyncClient(
-            timeout=httpx.Timeout(30.0, connect=3.0), proxy=None, trust_env=False
+            timeout=httpx.Timeout(market_timeout, connect=3.0), proxy=None, trust_env=False
         ) as client:
             upstream = await client.request(
                 request.method,
@@ -806,6 +1027,7 @@ async def proxy_user_plugin_market_bridge(request: Request, path: str = ""):
 
 # Mount all routes.
 app.include_router(config_router)
+app.include_router(emote_template_router)
 app.include_router(proactive_router)
 app.include_router(proactive_feedback_router)
 app.include_router(characters_router)
@@ -841,6 +1063,8 @@ app.include_router(drawing_guess_router)
 app.include_router(card_assist_router)
 app.include_router(capture_router)
 app.include_router(numeric_theater_router)
+from main_routers.theater_market_router import router as theater_market_router
+app.include_router(theater_market_router)
 # Neko visits: /api/visit (including /api/visit/transport/ws); initiation is gated by NEKO_VISIT_ENABLED, data management is not.
 app.include_router(visit_router)
 app.include_router(card_drop_router)  # Must precede the pages fallback router.
@@ -850,6 +1074,7 @@ app.include_router(community_oauth_callback_router)  # Exact /oauth/callback bef
 # WebSocket data plane at /api/vmc/ws (kept off the chat/session channel).
 app.include_router(vmc_router)
 app.include_router(voice_identity_router)
+app.include_router(audio_message_router)
 app.include_router(
     cookies_login_router
 )  # Cookie-login routes go last to avoid conflicts with other API routes.

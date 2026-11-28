@@ -308,6 +308,34 @@ def _derive_binding_asset_display_name(model_ref: str) -> str:
     return parts[-1] if parts else normalized_ref
 
 
+def _is_file_quietly(path: Path) -> bool:
+    """``Path.is_file`` that treats an unreadable path (e.g. permission denied) as absent."""
+    try:
+        return path.is_file()
+    except OSError:
+        return False
+
+
+def _is_readable_file(path: Path) -> bool:
+    """A regular file that can actually be opened, so the search moves on to the
+    next library when this copy exists but cannot be read."""
+    if not _is_file_quietly(path):
+        return False
+    try:
+        with open(path, "rb"):
+            return True
+    except OSError:
+        return False
+
+
+def _is_dir_quietly(path: Path) -> bool:
+    """``Path.is_dir`` that treats an unreadable path (e.g. permission denied) as absent."""
+    try:
+        return path.is_dir()
+    except OSError:
+        return False
+
+
 def _collect_binding_live2d_roots(config_manager) -> list[Path]:
     get_live2d_lookup_roots = getattr(config_manager, "get_live2d_lookup_roots", None)
     if callable(get_live2d_lookup_roots):
@@ -347,6 +375,22 @@ def _collect_binding_workshop_roots(config_manager) -> list[Path]:
             if normalized_root not in seen_roots:
                 seen_roots.add(normalized_root)
                 roots.append(Path(configured_workshop_root))
+
+    # Workshop content folders of the other Steam libraries, in the order /workshop
+    # serves them (right after the configured root), before the local workshop_dir.
+    get_library_roots = getattr(config_manager, "get_steam_workshop_library_roots", None)
+    if callable(get_library_roots):
+        try:
+            library_roots = list(get_library_roots() or [])
+        except Exception:
+            library_roots = []
+        for library_root in library_roots:
+            if not library_root:
+                continue
+            normalized_root = os.path.normcase(os.path.normpath(str(library_root)))
+            if normalized_root not in seen_roots:
+                seen_roots.add(normalized_root)
+                roots.append(Path(library_root))
 
     fallback_workshop_root = getattr(config_manager, "workshop_dir", None)
     if fallback_workshop_root:
@@ -402,7 +446,7 @@ def _collect_workshop_character_origin_candidates(config_manager) -> dict[str, l
     seen_entries: set[tuple[str, str, str, str, str]] = set()
 
     for workshop_root in _collect_binding_workshop_roots(config_manager):
-        if not workshop_root.is_dir():
+        if not _is_dir_quietly(workshop_root):
             continue
         try:
             item_roots = sorted(child for child in workshop_root.iterdir() if child.is_dir())
@@ -622,6 +666,31 @@ def _is_path_within(candidate_path: Path, base_path: Path) -> bool:
         return False
 
 
+def _is_strictly_within(candidate_path: Path, base_path: Path) -> bool:
+    if not _is_path_within(candidate_path, base_path):
+        return False
+    try:
+        candidate_real = os.path.normcase(os.path.realpath(str(candidate_path)))
+        base_real = os.path.normcase(os.path.realpath(str(base_path)))
+        return candidate_real != base_real
+    except Exception:
+        return False
+
+
+def _is_safe_relative_subpath(value: str) -> bool:
+    text = str(value or "").strip().replace("\\", "/")
+    if not text or "\x00" in text or text.startswith("/"):
+        return False
+    if os.path.splitdrive(text)[0] or ":" in text:
+        return False
+    return all(part not in ("", ".", "..") for part in text.split("/"))
+
+
+def _is_plain_component(value: str) -> bool:
+    text = str(value or "")
+    return _is_safe_relative_subpath(text) and "/" not in text and "\\" not in text
+
+
 def _infer_binding_source_from_resolved_path(
     config_manager,
     *,
@@ -629,7 +698,7 @@ def _infer_binding_source_from_resolved_path(
     asset_source: str,
     asset_source_id: str,
 ) -> tuple[str, str]:
-    if resolved_path is None or not resolved_path.is_file():
+    if resolved_path is None or not _is_file_quietly(resolved_path):
         return asset_source, asset_source_id
 
     for workshop_root in _collect_binding_workshop_roots(config_manager):
@@ -665,16 +734,16 @@ def _resolve_binding_file_path(
     asset_source_id: str,
 ) -> Path | None:
     normalized_ref = str(model_ref or "").strip().replace("\\", "/")
-    if not normalized_ref or normalized_ref.startswith(("http://", "https://")):
+    if not normalized_ref or "\x00" in normalized_ref or normalized_ref.startswith(("http://", "https://")):
         return None
 
-    candidates: list[Path] = []
+    candidates: list[tuple[Path, Path]] = []
     live2d_roots = _collect_binding_live2d_roots(config_manager)
     readable_live2d_dir = getattr(config_manager, "readable_live2d_dir", None)
     workshop_roots = _collect_binding_workshop_roots(config_manager)
 
     def _resolve_workshop_live2d_fallback() -> Path | None:
-        if model_type != "live2d" or asset_source != "steam_workshop" or not asset_source_id:
+        if model_type != "live2d" or asset_source != "steam_workshop" or not _is_plain_component(asset_source_id):
             return None
 
         normalized_suffix, relative_parent, expected_filename, expected_folder_name = _build_live2d_model_ref_hints(normalized_ref)
@@ -682,10 +751,13 @@ def _resolve_binding_file_path(
         ranked_candidates: list[tuple[int, int, str, Path]] = []
         for workshop_root in workshop_roots:
             item_root = workshop_root / asset_source_id
-            if not item_root.is_dir():
+            if not _is_strictly_within(item_root, workshop_root) or not _is_dir_quietly(item_root):
                 continue
             try:
-                discovered_files = sorted(path for path in item_root.rglob("*.model3.json") if path.is_file())
+                discovered_files = sorted(
+                    path for path in item_root.rglob("*.model3.json")
+                    if _is_file_quietly(path) and _is_strictly_within(path, item_root)
+                )
             except Exception:
                 continue
 
@@ -710,20 +782,36 @@ def _resolve_binding_file_path(
             return None
 
         ranked_candidates.sort(key=lambda entry: (entry[0], entry[1], entry[2]), reverse=True)
+        # The best-ranked model, from the first library whose copy can be read. Only
+        # copies of that same model (same rank and same path under their own root)
+        # are retried; a different model is never taken in its place.
+        best_key = ranked_candidates[0][:3]
+        for ranked_candidate in ranked_candidates:
+            if ranked_candidate[:3] != best_key:
+                break
+            if _is_readable_file(ranked_candidate[3]):
+                return ranked_candidate[3]
         return ranked_candidates[0][3]
 
     def _resolve_local_live2d_fallback() -> Path | None:
-        if model_type != "live2d" or normalized_ref.startswith("/"):
+        if model_type != "live2d" or normalized_ref.startswith("/") or not _is_safe_relative_subpath(normalized_ref):
             return None
 
         normalized_suffix, relative_parent, expected_filename, expected_folder_name = _build_live2d_model_ref_hints(normalized_ref)
+        if relative_parent and not _is_safe_relative_subpath(relative_parent):
+            return None
+        if expected_folder_name and not _is_safe_relative_subpath(expected_folder_name):
+            return None
         ranked_candidates: list[tuple[int, int, str, Path]] = []
 
         def _append_candidates(search_root: Path, candidate_base: Path) -> None:
-            if not candidate_base.is_dir():
+            if not _is_path_within(candidate_base, search_root) or not _is_dir_quietly(candidate_base):
                 return
             try:
-                discovered_files = sorted(path for path in candidate_base.rglob("*.model3.json") if path.is_file())
+                discovered_files = sorted(
+                    path for path in candidate_base.rglob("*.model3.json")
+                    if _is_file_quietly(path) and _is_strictly_within(path, search_root)
+                )
             except Exception:
                 return
             for discovered_path in discovered_files:
@@ -755,7 +843,11 @@ def _resolve_binding_file_path(
 
         for workshop_root in workshop_roots:
             try:
-                item_roots = sorted(child for child in workshop_root.iterdir() if child.is_dir())
+                item_roots = sorted(
+                    child
+                    for child in workshop_root.iterdir()
+                    if _is_dir_quietly(child) and _is_strictly_within(child, workshop_root)
+                )
             except Exception:
                 continue
             for item_root in item_roots:
@@ -779,64 +871,115 @@ def _resolve_binding_file_path(
             return None
 
         ranked_candidates.sort(key=lambda entry: (entry[0], entry[1], entry[2]), reverse=True)
+        # The best-ranked model, from the first root whose copy can be read. Only
+        # candidates with the same rank and the same path under their own root are
+        # retried; any other model ends the search. This fallback matches by name, so
+        # such a candidate can sit in a different Workshop item (e.g. two items both
+        # shipping Foo/Foo.model3.json), just as it could when the top one is missing.
+        best_key = ranked_candidates[0][:3]
+        for ranked_candidate in ranked_candidates:
+            if ranked_candidate[:3] != best_key:
+                break
+            if _is_readable_file(ranked_candidate[3]):
+                return ranked_candidate[3]
         return ranked_candidates[0][3]
 
     if model_type == "live2d":
         if normalized_ref.startswith("/user_live2d/"):
             relative_part = normalized_ref[len("/user_live2d/"):]
+            if not _is_safe_relative_subpath(relative_part):
+                return None
             if readable_live2d_dir is not None:
-                candidates.append(Path(readable_live2d_dir) / relative_part)
-            candidates.append(Path(config_manager.live2d_dir) / relative_part)
+                root = Path(readable_live2d_dir)
+                candidates.append((root, root / relative_part))
+            live2d_root = Path(config_manager.live2d_dir)
+            candidates.append((live2d_root, live2d_root / relative_part))
         elif normalized_ref.startswith("/user_live2d_local/"):
-            candidates.append(Path(config_manager.live2d_dir) / normalized_ref[len("/user_live2d_local/"):])
+            relative_part = normalized_ref[len("/user_live2d_local/"):]
+            if not _is_safe_relative_subpath(relative_part):
+                return None
+            live2d_root = Path(config_manager.live2d_dir)
+            candidates.append((live2d_root, live2d_root / relative_part))
         elif normalized_ref.startswith("/workshop/"):
             relative_workshop_path = "/".join(normalized_ref.split("/")[2:])
+            if not _is_safe_relative_subpath(relative_workshop_path):
+                return None
             for workshop_root in workshop_roots:
-                candidates.append(workshop_root / relative_workshop_path)
+                candidates.append((workshop_root, workshop_root / relative_workshop_path))
         else:
-            if asset_source == "steam_workshop" and asset_source_id:
-                for workshop_root in workshop_roots:
-                    candidates.append(workshop_root / asset_source_id / normalized_ref)
-                    candidates.append(workshop_root / asset_source_id / Path(normalized_ref).name)
+            if not _is_safe_relative_subpath(normalized_ref):
+                return None
+            if asset_source == "steam_workshop":
+                if asset_source_id and not _is_plain_component(asset_source_id):
+                    return None
+                if _is_plain_component(asset_source_id):
+                    for workshop_root in workshop_roots:
+                        candidates.append((workshop_root, workshop_root / asset_source_id / normalized_ref))
+                        candidates.append((workshop_root, workshop_root / asset_source_id / Path(normalized_ref).name))
             if asset_source == "local_imported":
                 if readable_live2d_dir is not None:
-                    candidates.append(Path(readable_live2d_dir) / normalized_ref)
-                candidates.append(Path(config_manager.live2d_dir) / normalized_ref)
-            candidates.append(Path(config_manager.project_root) / "static" / normalized_ref)
+                    root = Path(readable_live2d_dir)
+                    candidates.append((root, root / normalized_ref))
+                live2d_root = Path(config_manager.live2d_dir)
+                candidates.append((live2d_root, live2d_root / normalized_ref))
+            static_root = Path(config_manager.project_root) / "static"
+            candidates.append((static_root, static_root / normalized_ref))
     elif model_type == "vrm":
         if normalized_ref.startswith("/user_vrm/"):
-            candidates.append(Path(config_manager.vrm_dir) / normalized_ref[len("/user_vrm/"):])
+            relative_part = normalized_ref[len("/user_vrm/"):]
+            if not _is_safe_relative_subpath(relative_part):
+                return None
+            vrm_root = Path(config_manager.vrm_dir)
+            candidates.append((vrm_root, vrm_root / relative_part))
         elif normalized_ref.startswith("/static/vrm/"):
-            candidates.append(Path(config_manager.project_root) / "static" / "vrm" / normalized_ref[len("/static/vrm/"):])
+            relative_part = normalized_ref[len("/static/vrm/"):]
+            if not _is_safe_relative_subpath(relative_part):
+                return None
+            static_vrm_root = Path(config_manager.project_root) / "static" / "vrm"
+            candidates.append((static_vrm_root, static_vrm_root / relative_part))
         elif normalized_ref.startswith("/workshop/"):
             relative_workshop_path = "/".join(normalized_ref.split("/")[2:])
+            if not _is_safe_relative_subpath(relative_workshop_path):
+                return None
             for workshop_root in workshop_roots:
-                candidates.append(workshop_root / relative_workshop_path)
+                candidates.append((workshop_root, workshop_root / relative_workshop_path))
     elif model_type == "mmd":
         if normalized_ref.startswith("/user_mmd/"):
-            candidates.append(Path(config_manager.mmd_dir) / normalized_ref[len("/user_mmd/"):])
+            relative_part = normalized_ref[len("/user_mmd/"):]
+            if not _is_safe_relative_subpath(relative_part):
+                return None
+            mmd_root = Path(config_manager.mmd_dir)
+            candidates.append((mmd_root, mmd_root / relative_part))
         elif normalized_ref.startswith("/static/mmd/"):
-            candidates.append(Path(config_manager.project_root) / "static" / "mmd" / normalized_ref[len("/static/mmd/"):])
+            relative_part = normalized_ref[len("/static/mmd/"):]
+            if not _is_safe_relative_subpath(relative_part):
+                return None
+            static_mmd_root = Path(config_manager.project_root) / "static" / "mmd"
+            candidates.append((static_mmd_root, static_mmd_root / relative_part))
         elif normalized_ref.startswith("/workshop/"):
             relative_workshop_path = "/".join(normalized_ref.split("/")[2:])
+            if not _is_safe_relative_subpath(relative_workshop_path):
+                return None
             for workshop_root in workshop_roots:
-                candidates.append(workshop_root / relative_workshop_path)
+                candidates.append((workshop_root, workshop_root / relative_workshop_path))
 
-    for candidate in candidates:
-        if candidate.is_file():
+    for intended_root, candidate in candidates:
+        if not _is_strictly_within(candidate, intended_root):
+            continue
+        if _is_readable_file(candidate):
             return candidate
 
     fallback_candidate = _resolve_workshop_live2d_fallback()
-    if fallback_candidate is not None and fallback_candidate.is_file():
+    if fallback_candidate is not None and _is_readable_file(fallback_candidate):
         return fallback_candidate
     fallback_candidate = _resolve_local_live2d_fallback()
-    if fallback_candidate is not None and fallback_candidate.is_file():
+    if fallback_candidate is not None and _is_readable_file(fallback_candidate):
         return fallback_candidate
     return None
 
 
 def _derive_binding_asset_state(*, resolved_path: Path | None, asset_source: str, model_ref: str) -> str:
-    if resolved_path is not None and resolved_path.is_file():
+    if resolved_path is not None and _is_file_quietly(resolved_path):
         return "ready"
     if not str(model_ref or "").strip():
         return "missing"
@@ -896,6 +1039,15 @@ def _derive_character_binding_summary(
         asset_source=asset_source,
         asset_source_id=asset_source_id,
     )
+    # Hash before anything relies on the path: a model file that exists but cannot be
+    # read (permissions, locked, vanished) is treated as unresolved, so one unavailable
+    # model does not stop this character's backup or the whole export.
+    asset_fingerprint = ""
+    if resolved_path is not None:
+        try:
+            asset_fingerprint = _sha256_file(resolved_path)
+        except OSError:
+            resolved_path = None
     asset_source, asset_source_id = _infer_binding_source_from_resolved_path(
         config_manager,
         resolved_path=resolved_path,
@@ -914,7 +1066,6 @@ def _derive_character_binding_summary(
         model_type=binding_model_type,
         workshop_origin_index=workshop_origin_index,
     )
-    asset_fingerprint = _sha256_file(resolved_path) if resolved_path is not None else ""
 
     fallback_model_ref = ""
     if asset_state != "ready" and binding_model_type != "live2d":

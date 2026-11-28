@@ -18,6 +18,12 @@ from tests.unit.asr_client.test_candidate_rejection_runtime import (
 )
 
 
+# Deadline for the input boundaries these cases expect to settle. It only
+# bounds a wait that finishes as soon as the dispatcher drains; at 1 s a
+# stalled Windows runner hit it before the drain and failed with TimeoutError.
+_SETTLE_S = 10.0
+
+
 class _BoundaryDetector(_RejectionDetector):
     def __init__(self):
         super().__init__()
@@ -49,7 +55,7 @@ async def _scenario():
     prefix, successor = b"\x01\x00" * 1600, b"\x02\x00" * 1600
     submitted = await runtime.submit(ProcessedVoiceFrame(prefix, 16000, 1.0, True), ingress_token=token.ingress)
     assert submitted.status is AsrSubmitStatus.ACCEPTED
-    await runtime.discontinue_input(ingress_token=token.ingress, deadline=asyncio.get_running_loop().time() + 1)
+    await runtime.discontinue_input(ingress_token=token.ingress, deadline=asyncio.get_running_loop().time() + _SETTLE_S)
     submitted = await runtime.submit(ProcessedVoiceFrame(successor, 16000, 1.0, True), ingress_token=token.ingress)
     assert submitted.status is AsrSubmitStatus.ACCEPTED
     assert lifecycle.has_pending_turn and lifecycle.pending_turn_bytes == len(successor)
@@ -92,7 +98,7 @@ async def test_second_gap_waits_for_old_final_and_prepared_successor_without_spl
 
     callbacks.on_prepare_turn.side_effect = prepare
     boundary = asyncio.create_task(runtime.discontinue_input(
-        ingress_token=token.ingress, deadline=asyncio.get_running_loop().time() + 1,
+        ingress_token=token.ingress, deadline=asyncio.get_running_loop().time() + _SETTLE_S,
     ))
     final = None
     try:
@@ -115,7 +121,7 @@ async def test_second_gap_waits_for_old_final_and_prepared_successor_without_spl
         assert successor_token.ingress == token.ingress
         assert lifecycle.snapshot.state is VoiceLifecycleState.DRAINING
         await runtime._handle_independent_asr_final("successor final", runtime._asr_session_epoch, "glm")
-        await runtime.wait_input_settled(ingress_token=token.ingress, deadline=asyncio.get_running_loop().time() + 1)
+        await runtime.wait_input_settled(ingress_token=token.ingress, deadline=asyncio.get_running_loop().time() + _SETTLE_S)
         envelopes = [item.args[0] for item in callbacks.on_final.await_args_list]
         assert [(item.text, item.turn_token) for item in envelopes] == [
             ("prefix final", token), ("successor final", successor_token),
@@ -143,9 +149,12 @@ async def test_successor_preparation_does_not_refresh_boundary_absolute_deadline
     boundary = asyncio.create_task(runtime.discontinue_input(ingress_token=token.ingress, deadline=deadline))
     final = asyncio.create_task(runtime._handle_independent_asr_final("prefix final", runtime._asr_session_epoch, "glm"))
     try:
-        await asyncio.wait_for(entered.wait(), 1)
+        await asyncio.wait_for(entered.wait(), _SETTLE_S)
+        # Hang guard well past the boundary's own 80 ms deadline, so a stalled
+        # runner cannot let the guard fire first; ``boundary.done()`` below
+        # still tells the two apart.
         with pytest.raises(TimeoutError):
-            await asyncio.wait_for(asyncio.shield(boundary), 0.5)
+            await asyncio.wait_for(asyncio.shield(boundary), _SETTLE_S)
         assert boundary.done()  # The boundary's deadline, not the test timeout.
         assert session.signal_user_activity_end.await_count == 1
         release.set()
@@ -163,7 +172,7 @@ async def test_successor_preparation_does_not_refresh_boundary_absolute_deadline
 async def test_cancelled_second_gap_preserves_pending_audio_and_prior_final():
     runtime, callbacks, _detector, session, lifecycle, token, order, prefix, successor = await _scenario()
     boundary = asyncio.create_task(runtime.discontinue_input(
-        ingress_token=token.ingress, deadline=asyncio.get_running_loop().time() + 1,
+        ingress_token=token.ingress, deadline=asyncio.get_running_loop().time() + _SETTLE_S,
     ))
     try:
         await _assert_waiting(boundary)
@@ -178,7 +187,7 @@ async def test_cancelled_second_gap_preserves_pending_audio_and_prior_final():
         assert callbacks.on_final.await_args.args[0].text == "prefix final"
         assert order == [("pcm", prefix), ("seal", None), ("pcm", successor)]
         assert lifecycle.snapshot.state is VoiceLifecycleState.ACTIVE
-        await runtime.discontinue_input(ingress_token=token.ingress, deadline=asyncio.get_running_loop().time() + 1)
+        await runtime.discontinue_input(ingress_token=token.ingress, deadline=asyncio.get_running_loop().time() + _SETTLE_S)
         assert session.signal_user_activity_end.await_count == 2
     finally:
         await _cleanup(runtime, boundary)
@@ -189,7 +198,7 @@ async def test_waiting_boundary_and_late_final_cannot_seal_replacement_session()
     runtime, callbacks, _detector, old_session, _lifecycle, token, _order, _prefix, _successor = await _scenario()
     old_epoch = runtime._asr_session_epoch
     boundary = asyncio.create_task(runtime.discontinue_input(
-        ingress_token=token.ingress, deadline=asyncio.get_running_loop().time() + 1,
+        ingress_token=token.ingress, deadline=asyncio.get_running_loop().time() + _SETTLE_S,
     ))
     try:
         await _assert_waiting(boundary)
@@ -239,7 +248,7 @@ async def test_second_gap_entering_during_active_successor_preparation_waits_for
         # This boundary starts after the old final has changed the lifecycle;
         # checking only the DRAINING entry state misses this real interleaving.
         boundary = asyncio.create_task(runtime.discontinue_input(
-            ingress_token=token.ingress, deadline=asyncio.get_running_loop().time() + 1,
+            ingress_token=token.ingress, deadline=asyncio.get_running_loop().time() + _SETTLE_S,
         ))
         await _assert_waiting(boundary)
         assert lifecycle.snapshot.state is VoiceLifecycleState.ACTIVE
@@ -329,7 +338,7 @@ async def test_first_tagged_transition_drops_unmapped_local_pcm_and_keeps_regist
     tags = [AudioDeliveryTag(400, receipts[i].append) for i in range(2)]
     try:
         assert (await runtime.submit(ProcessedVoiceFrame(prefix, 16000, 1.0, True), ingress_token=token.ingress)).status is AsrSubmitStatus.ACCEPTED
-        await runtime.discontinue_input(ingress_token=token.ingress, deadline=asyncio.get_running_loop().time() + 1)
+        await runtime.discontinue_input(ingress_token=token.ingress, deadline=asyncio.get_running_loop().time() + _SETTLE_S)
         sealed = runtime._asr_sealed_turn_token
         assert sealed.turn == token
         assert sent == [(prefix, ())]
@@ -400,7 +409,7 @@ async def test_first_tagged_frame_does_not_reset_or_replay_already_accepted_acti
         assert lifecycle.snapshot.state is VoiceLifecycleState.ACTIVE
         assert sent == [(prefix, ()), (protected, (AudioDeliverySpan(tag, 0, 400),))]
         assert tag.settled
-        await runtime.discontinue_input(ingress_token=token.ingress, deadline=asyncio.get_running_loop().time() + 1)
+        await runtime.discontinue_input(ingress_token=token.ingress, deadline=asyncio.get_running_loop().time() + _SETTLE_S)
         await runtime._handle_independent_asr_final("complete accepted turn", runtime._asr_session_epoch, "soniox")
         await runtime.wait_transcript_idle()
         assert callbacks.on_final.await_count == 1
@@ -426,7 +435,7 @@ async def test_first_tagged_frame_refuses_to_erase_promised_untagged_pcm(promise
     preparing = None
     try:
         assert (await runtime.submit(ProcessedVoiceFrame(prefix, 16000, 1.0, True), ingress_token=token.ingress)).status is AsrSubmitStatus.ACCEPTED
-        await runtime.discontinue_input(ingress_token=token.ingress, deadline=asyncio.get_running_loop().time() + 1)
+        await runtime.discontinue_input(ingress_token=token.ingress, deadline=asyncio.get_running_loop().time() + _SETTLE_S)
         sealed = runtime._asr_sealed_turn_token
         if promise == "confirmed_pending":
             assert (await runtime.submit(ProcessedVoiceFrame(promised, 16000, 1.0, True), ingress_token=token.ingress)).status is AsrSubmitStatus.ACCEPTED
@@ -490,7 +499,7 @@ async def test_first_tagged_frame_refuses_to_erase_promised_untagged_pcm(promise
         await runtime._asr_audio_dispatcher.wait_idle()
         assert b"".join(pcm for pcm, _ in sent) == prefix + promised + (b"" if promise == "confirmed_pending" else trigger)
         assert all(spans == () for _, spans in sent)
-        await runtime.discontinue_input(ingress_token=token.ingress, deadline=asyncio.get_running_loop().time() + 1)
+        await runtime.discontinue_input(ingress_token=token.ingress, deadline=asyncio.get_running_loop().time() + _SETTLE_S)
         await runtime._handle_independent_asr_final("promised successor final", runtime._asr_session_epoch, "soniox")
         await runtime.wait_transcript_idle()
         assert [call.args[0].text for call in callbacks.on_final.await_args_list] == ["first accepted final", "promised successor final"]
@@ -546,7 +555,7 @@ async def test_local_boundary_discards_pending_confirmation_before_new_input(con
     prefix, old_pcm, new_pcm = (bytes([value, 0]) * 400 for value in (31, 32, 33))
     try:
         assert (await runtime.submit(ProcessedVoiceFrame(prefix, 16000, 1.0, True), ingress_token=token.ingress)).status is AsrSubmitStatus.ACCEPTED
-        await runtime.discontinue_input(ingress_token=token.ingress, deadline=asyncio.get_running_loop().time() + 1)
+        await runtime.discontinue_input(ingress_token=token.ingress, deadline=asyncio.get_running_loop().time() + _SETTLE_S)
         await runtime._handle_independent_asr_final("accepted prefix", runtime._asr_session_epoch, "soniox")
         await runtime.wait_transcript_idle()
         session.is_ready = False
@@ -557,7 +566,7 @@ async def test_local_boundary_discards_pending_confirmation_before_new_input(con
         if connecting_state == "backoff":
             lifecycle.transition(VoiceLifecycleEvent.CONNECT_FAILED)
             assert lifecycle.snapshot.state is VoiceLifecycleState.BACKOFF
-        await runtime.discontinue_input(ingress_token=token.ingress, deadline=asyncio.get_running_loop().time() + 1)
+        await runtime.discontinue_input(ingress_token=token.ingress, deadline=asyncio.get_running_loop().time() + _SETTLE_S)
         assert lifecycle.snapshot.state is VoiceLifecycleState.LOCAL_LISTEN
         assert not runtime._asr_pending_speech_confirmed
         assert runtime._asr_pending_speech_onset_at is None
@@ -600,7 +609,7 @@ async def test_ingress_ledger_switch_rebinds_discard_without_settling_old_unknow
         assert Stage.UNKNOWN in old_receipts
         assert not old_tag.settled
         await runtime.discontinue_input(
-            ingress_token=token.ingress, deadline=asyncio.get_running_loop().time() + 1,
+            ingress_token=token.ingress, deadline=asyncio.get_running_loop().time() + _SETTLE_S,
         )
         assert lifecycle.snapshot.state is VoiceLifecycleState.DRAINING
         await runtime._handle_independent_asr_final("old uncertain capture", runtime._asr_session_epoch, "soniox")
@@ -624,7 +633,7 @@ async def test_ingress_ledger_switch_rebinds_discard_without_settling_old_unknow
         assert new_ledger is not old_ledger
         assert lifecycle.pre_roll_bytes == 800
         await runtime.discontinue_input(
-            ingress_token=successor_ingress, deadline=asyncio.get_running_loop().time() + 1,
+            ingress_token=successor_ingress, deadline=asyncio.get_running_loop().time() + _SETTLE_S,
         )
         assert lifecycle.snapshot.state is VoiceLifecycleState.LOCAL_LISTEN
         assert old_receipts == old_before
@@ -634,12 +643,187 @@ async def test_ingress_ledger_switch_rebinds_discard_without_settling_old_unknow
         assert result.status is AsrSubmitStatus.ACCEPTED
         assert lifecycle.pre_roll_bytes == 800
         await runtime.discontinue_input(
-            ingress_token=successor_ingress, deadline=asyncio.get_running_loop().time() + 1,
+            ingress_token=successor_ingress, deadline=asyncio.get_running_loop().time() + _SETTLE_S,
         )
         assert new_receipts == [Stage.NOT_SENT]
         assert new_tag.settled
         assert old_receipts == old_before
         assert not old_tag.settled
+        callbacks.on_failure.assert_not_awaited()
+    finally:
+        await _close_delivery_boundary_fixture(runtime)
+
+
+@pytest.mark.asyncio
+async def test_untagged_frame_after_tagged_frame_streams_without_blocking_route():
+    from main_logic.voice_turn.audio_delivery import AudioDeliveryTag, AudioDeliverySpan
+    from main_logic.voice_turn.interception_events import InterceptionDeliveryStage as Stage
+
+    runtime, callbacks, _detector, session, lifecycle, token, sent = await _delivery_boundary_fixture()
+    tagged_pcm = b"\x07\x00" * 400
+    untagged_pcm = b"\x08\x00" * 400
+    receipts = []
+    tag = AudioDeliveryTag(400, receipts.append)
+    try:
+        first = await runtime.submit(
+            ProcessedVoiceFrame(tagged_pcm, 16000, 1.0, True, delivery=tag),
+            ingress_token=token.ingress,
+        )
+        assert first.status is AsrSubmitStatus.ACCEPTED
+        second = await runtime.submit(
+            ProcessedVoiceFrame(untagged_pcm, 16000, 1.0, True, delivery=None),
+            ingress_token=token.ingress,
+        )
+        assert second.status is AsrSubmitStatus.ACCEPTED
+        await runtime._asr_audio_dispatcher.wait_idle()
+        assert sent == [
+            (tagged_pcm, (AudioDeliverySpan(tag, 0, 400),)),
+            (untagged_pcm, ()),
+        ]
+        assert tag.settled
+        assert Stage.TRANSPORT_OWNED in receipts
+        callbacks.on_failure.assert_not_awaited()
+        assert runtime._asr_session is session
+        assert lifecycle.snapshot.state is VoiceLifecycleState.ACTIVE
+    finally:
+        await _close_delivery_boundary_fixture(runtime)
+
+
+@pytest.mark.asyncio
+async def test_mixed_tagged_and_untagged_preroll_splits_into_valid_delivery_segments():
+    from main_logic.voice_turn.audio_delivery import AudioDeliveryTag, AudioDeliverySpan
+    from main_logic.voice_turn.interception_events import InterceptionDeliveryStage as Stage
+
+    runtime, callbacks, detector, session, lifecycle, token, sent = await _delivery_boundary_fixture()
+    prefix = b"\x01\x00" * 1600
+    tagged_pre = b"\x02\x00" * 400
+    untagged_pre = b"\x03\x00" * 400
+    trigger = b"\x04\x00" * 400
+    receipts = []
+    tag = AudioDeliveryTag(400, receipts.append)
+    try:
+        assert (await runtime.submit(
+            ProcessedVoiceFrame(prefix, 16000, 1.0, True), ingress_token=token.ingress
+        )).status is AsrSubmitStatus.ACCEPTED
+        await runtime.discontinue_input(
+            ingress_token=token.ingress, deadline=asyncio.get_running_loop().time() + _SETTLE_S
+        )
+        await runtime._handle_independent_asr_final("first", runtime._asr_session_epoch, "soniox")
+        await runtime.wait_transcript_idle()
+
+        detector.feed.return_value = SimpleNamespace(
+            endpointing_available=True, throttle_available=True,
+            throttle_action=ThrottleAction.PROCESS_PCM, events=(),
+        )
+        assert (await runtime.submit(
+            ProcessedVoiceFrame(tagged_pre, 16000, 1.0, True, delivery=tag),
+            ingress_token=token.ingress,
+        )).status is AsrSubmitStatus.ACCEPTED
+        assert (await runtime.submit(
+            ProcessedVoiceFrame(untagged_pre, 16000, 1.0, True, delivery=None),
+            ingress_token=token.ingress,
+        )).status is AsrSubmitStatus.ACCEPTED
+
+        detector.feed.return_value = SimpleNamespace(
+            endpointing_available=True, throttle_available=True,
+            throttle_action=ThrottleAction.PROCESS_PCM,
+            events=(SpeechActivityEvent.SPEECH_STARTED,),
+        )
+        assert (await runtime.submit(
+            ProcessedVoiceFrame(trigger, 16000, 1.0, True, delivery=None),
+            ingress_token=token.ingress,
+        )).status is AsrSubmitStatus.ACCEPTED
+
+        await runtime._asr_audio_dispatcher.wait_idle()
+        assert b"".join(pcm for pcm, _ in sent) == prefix + tagged_pre + untagged_pre + trigger
+        assert sent[1] == (tagged_pre, (AudioDeliverySpan(tag, 0, 400),))
+        assert sent[2] == (untagged_pre + trigger, ())
+        assert tag.settled
+        assert Stage.TRANSPORT_OWNED in receipts
+        callbacks.on_failure.assert_not_awaited()
+    finally:
+        await _close_delivery_boundary_fixture(runtime)
+
+
+@pytest.mark.asyncio
+async def test_long_session_alternating_tagged_and_untagged_frames_prunes_untagged_history():
+    from main_logic.voice_turn.audio_delivery import AudioDeliveryTag
+
+    runtime, callbacks, _detector, _session, _lifecycle, token, sent = await _delivery_boundary_fixture()
+    try:
+        for i in range(50):
+            tagged_pcm = b"\x05\x00" * 160
+            untagged_pcm = b"\x06\x00" * 160
+            tag = AudioDeliveryTag(160, lambda _stage: None)
+            res1 = await runtime.submit(
+                ProcessedVoiceFrame(tagged_pcm, 16000, 1.0, True, delivery=tag),
+                ingress_token=token.ingress,
+            )
+            res2 = await runtime.submit(
+                ProcessedVoiceFrame(untagged_pcm, 16000, 1.0, True, delivery=None),
+                ingress_token=token.ingress,
+            )
+            assert res1.status is AsrSubmitStatus.ACCEPTED
+            assert res2.status is AsrSubmitStatus.ACCEPTED
+
+        await runtime._asr_audio_dispatcher.wait_idle()
+        assert len(sent) == 100
+        assert runtime._asr_input_delivery._untagged == []
+        callbacks.on_failure.assert_not_awaited()
+    finally:
+        await _close_delivery_boundary_fixture(runtime)
+
+
+@pytest.mark.asyncio
+async def test_buffered_untagged_preroll_survives_pruning_until_forwarded_and_then_prunes():
+    from main_logic.voice_turn.audio_delivery import AudioDeliveryTag, AudioDeliverySpan
+
+    runtime, callbacks, detector, _session, _lifecycle, token, sent = await _delivery_boundary_fixture()
+    prefix = b"\x01\x00" * 1600
+    tagged_pre = b"\x02\x00" * 400
+    untagged_pre = b"\x03\x00" * 400
+    trigger = b"\x04\x00" * 400
+    tag = AudioDeliveryTag(400, lambda _stage: None)
+    try:
+        assert (await runtime.submit(
+            ProcessedVoiceFrame(prefix, 16000, 1.0, True), ingress_token=token.ingress
+        )).status is AsrSubmitStatus.ACCEPTED
+        await runtime.discontinue_input(
+            ingress_token=token.ingress, deadline=asyncio.get_running_loop().time() + _SETTLE_S
+        )
+        await runtime._handle_independent_asr_final("first", runtime._asr_session_epoch, "soniox")
+        await runtime.wait_transcript_idle()
+
+        detector.feed.return_value = SimpleNamespace(
+            endpointing_available=True, throttle_available=True,
+            throttle_action=ThrottleAction.PROCESS_PCM, events=(),
+        )
+        assert (await runtime.submit(
+            ProcessedVoiceFrame(tagged_pre, 16000, 1.0, True, delivery=tag),
+            ingress_token=token.ingress,
+        )).status is AsrSubmitStatus.ACCEPTED
+        assert (await runtime.submit(
+            ProcessedVoiceFrame(untagged_pre, 16000, 1.0, True, delivery=None),
+            ingress_token=token.ingress,
+        )).status is AsrSubmitStatus.ACCEPTED
+
+        # Buffered untagged pre-roll span must still be retained while held in lifecycle buffers.
+        assert runtime._asr_input_delivery._untagged == [(400, 800)]
+
+        detector.feed.return_value = SimpleNamespace(
+            endpointing_available=True, throttle_available=True,
+            throttle_action=ThrottleAction.PROCESS_PCM,
+            events=(SpeechActivityEvent.SPEECH_STARTED,),
+        )
+        assert (await runtime.submit(
+            ProcessedVoiceFrame(trigger, 16000, 1.0, True, delivery=None),
+            ingress_token=token.ingress,
+        )).status is AsrSubmitStatus.ACCEPTED
+
+        await runtime._asr_audio_dispatcher.wait_idle()
+        assert sent[1] == (tagged_pre, (AudioDeliverySpan(tag, 0, 400),))
+        assert sent[2] == (untagged_pre + trigger, ())
+        assert runtime._asr_input_delivery._untagged == []
         callbacks.on_failure.assert_not_awaited()
     finally:
         await _close_delivery_boundary_fixture(runtime)

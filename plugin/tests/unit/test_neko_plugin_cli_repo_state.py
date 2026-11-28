@@ -25,7 +25,10 @@ def _git(cwd: Path, *args: str) -> None:
 
 def _repository(path: Path) -> Path:
     _git(path, "init")
-    (path / "plugin.toml").write_text("[plugin]\n", encoding="utf-8")
+    # Bytes, not write_text: on Windows that writes CRLF, and the committed size
+    # would depend on core.autocrlf (git isolation in conftest drops the system
+    # config, where Git for Windows sets it).
+    (path / "plugin.toml").write_bytes(b"[plugin]\n")
     _git(path, "add", "plugin.toml")
     _git(path, "commit", "-m", "init")
     return path

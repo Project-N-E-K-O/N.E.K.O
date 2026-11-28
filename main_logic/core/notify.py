@@ -67,6 +67,7 @@ from config.prompts.prompts_sys import (
     _loc,
     SESSION_INIT_PROMPT,
     SESSION_INIT_PROMPT_AGENT,
+    SESSION_INIT_NO_NEKOPOWER,
     AGENT_TASKS_HEADER,
     AGENT_TASKS_NOTICE,
     normalize_sys_prompt_locale,
@@ -236,8 +237,13 @@ class NotifyMixin:
                 + self.lanlan_prompt
             )
         else:
+            # With the NekoPower master switch off there is no task tool and no
+            # turn check: say so in the opening, or she promises what nothing will
+            # do. Only the master switch is looked at (owner, 2026-11-26): the task
+            # agent starts with it alone.
             prompt = (
                 _loc(SESSION_INIT_PROMPT, _lang).format(name=self.lanlan_name)
+                + _loc(SESSION_INIT_NO_NEKOPOWER, _lang)
                 + self.lanlan_prompt
             )
         if self._is_agent_enabled():
@@ -462,22 +468,17 @@ class NotifyMixin:
             )
 
     def _is_agent_enabled(self):
-        """Whether NekoClaw is on for this session: the master switch and at least one capability.
+        """Whether NekoPower is on for this session: the master switch alone.
 
         This decides the opening sentence, the two task tools and the list of
         tasks under way together, so a session never has one without the
-        others. The agent model's configuration is not asked for here:
-        plugins need none, and keyboard-and-mouse and browser control cannot
-        be switched on without it in the first place.
+        others. The task brain, host support and task agents run on the master
+        switch alone, even while plugins, the browser and the keyboard and
+        mouse are all switched off; a task agent that needs one of them asks
+        the user to turn it on. The agent model's configuration is not asked
+        for here.
         """
-        return bool(
-            self.agent_flags.get("agent_enabled", False)
-            and (
-                self.agent_flags.get("computer_use_enabled", False)
-                or self.agent_flags.get("browser_use_enabled", False)
-                or self.agent_flags.get("user_plugin_enabled", False)
-            )
-        )
+        return bool((getattr(self, "agent_flags", None) or {}).get("agent_enabled", False))
 
     async def _fetch_active_agent_tasks_prompt(self) -> str:
         """Ask the agent server what is under way and return a prompt snippet.
@@ -495,7 +496,7 @@ class NotifyMixin:
 
             client = get_internal_http_client()
             resp = await client.get(
-                f"http://127.0.0.1:{TOOL_SERVER_PORT}/nekoclaw/brief",
+                f"http://127.0.0.1:{TOOL_SERVER_PORT}/nekopower/brief",
                 params={"lanlan_name": self.lanlan_name, "language": self.user_language or ""},
                 timeout=1.5,
             )

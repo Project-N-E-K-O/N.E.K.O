@@ -1169,7 +1169,7 @@ class CompressedRecentHistoryManager:
         max_retries=0 disables the OpenAI SDK's default 2 automatic retries,
         avoiding a 3× blow-up stacked on the business-level retry.
         """
-        api_config = self._config_manager.get_model_api_config('summary')
+        api_config = self._config_manager.get_model_api_config('memory')
         from config import LLM_OUTPUT_GUARD_MAX_TOKENS
         return create_chat_llm(
             api_config['model'], api_config['base_url'],
@@ -1196,7 +1196,7 @@ class CompressedRecentHistoryManager:
         the safety net.
         """
         from config.providers import memory_thinking_extra_body
-        api_config = self._config_manager.get_model_api_config('correction')
+        api_config = self._config_manager.get_model_api_config('memory')
         return create_chat_llm(
             api_config['model'], api_config['base_url'],
             api_config['api_key'] or None,
@@ -2940,7 +2940,7 @@ class CompressedRecentHistoryManager:
                     )
                     .replace("{MASTER_NAME}", self.name_mapping['human'])
                 )
-                # Review budget exceeds shared guard; custom correction models with lower output limits may return
+                # Review budget exceeds shared guard; custom summary models with lower output limits may return
                 # 400 before generation. Retry once at shared cap, preserving previously working configurations.
                 review_cap = MEMORY_THINKING_OUTPUT_MAX_TOKENS
                 review_llm = self._get_review_llm()
@@ -2951,7 +2951,7 @@ class CompressedRecentHistoryManager:
                         if not output_cap_rejected(cap_error):
                             raise
                         logger.info(
-                            f"[RecentHistory] {lanlan_name} 纠错模型拒绝 {review_cap} 输出额度，"
+                            f"[RecentHistory] {lanlan_name} 记忆整理模型拒绝 {review_cap} 输出额度，"
                             f"改用 {LLM_OUTPUT_GUARD_MAX_TOKENS} 重试"
                         )
                         await aclose_quietly(review_llm, f"{lanlan_name} memory_review")

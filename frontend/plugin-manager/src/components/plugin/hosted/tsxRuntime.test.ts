@@ -118,6 +118,7 @@ function mcpContext(): PluginUiContext {
         entry_id: 'remove_servers',
         label: 'Remove Server',
         tone: 'danger',
+        confirm: 'Remove these MCP Servers?',
       },
     ],
     i18n: {
@@ -731,7 +732,96 @@ import ghost from "./missing"
 
     fireEvent.click(root.querySelector('button[data-tone="danger"]')!)
     await flushMicrotasks()
+    expect(messages.some((message) => message.method === 'call' && message.payload?.actionId === 'remove_servers')).toBe(false)
+    const confirmDialog = document.body.querySelector('[role="dialog"]')
+    expect(confirmDialog).not.toBeNull()
+    fireEvent.click(confirmDialog!.querySelector('button[data-tone="danger"]')!)
+    await flushMicrotasks()
     expect(messages.some((message) => message.method === 'call' && message.payload?.actionId === 'remove_servers')).toBe(true)
+  })
+
+  it('imports MCP JSON with string boolean enabled="false" without coercing to true', async () => {
+    const panelSource = readFileSync(resolve(repoRoot, 'plugin/plugins/mcp_adapter/ui/panel.tsx'), 'utf8')
+    const { root, messages } = executeHostedDocument(panelSource, mcpContext())
+    const textarea = Array.from(root.querySelectorAll<HTMLTextAreaElement>('textarea')).find((item) => item.value.includes('mcp-server-example'))!
+    textarea.value = JSON.stringify({
+      mcpServers: {
+        disabled_false: { command: 'uvx', args: ['mcp-a'], enabled: 'false', inject_to_chat: 'false' },
+        disabled_zero_str: { command: 'uvx', args: ['mcp-b'], enabled: '0' },
+        disabled_off: { command: 'uvx', args: ['mcp-c'], enabled: 'off' },
+        disabled_zero_num: { command: 'uvx', args: ['mcp-d'], enabled: 0, inject_to_chat: 0 },
+        disabled_null: { command: 'uvx', args: ['mcp-e'], enabled: null, inject_to_chat: null },
+        enabled_one_num: { command: 'uvx', args: ['mcp-f'], enabled: 1, inject_to_chat: 1 },
+      },
+    })
+    fireEvent.input(textarea)
+    await flushMicrotasks()
+
+    const importButton = Array.from(root.querySelectorAll<HTMLButtonElement>('button')).find(
+      (btn) => btn.textContent?.includes('Import JSON'),
+    )!
+    expect(importButton).toBeTruthy()
+    fireEvent.click(importButton)
+    await flushMicrotasks()
+    await flushMicrotasks()
+
+    const addCalls = messages.filter(
+      (message) => message.method === 'call' && message.payload?.actionId === 'add_server',
+    )
+    expect(addCalls).toHaveLength(6)
+    expect(addCalls.map((call) => call.payload.args.enabled)).toEqual([false, false, false, false, false, true])
+    expect(addCalls[0].payload.args.inject_to_chat).toBe(false)
+    expect(addCalls[3].payload.args.inject_to_chat).toBe(false)
+    expect(addCalls[4].payload.args.inject_to_chat).toBe(false)
+    expect(addCalls[5].payload.args.inject_to_chat).toBe(true)
+  })
+
+  it('uses ConfirmDialog instead of blocked window.confirm for single-server removal', async () => {
+    const panelSource = readFileSync(resolve(repoRoot, 'plugin/plugins/mcp_adapter/ui/panel.tsx'), 'utf8')
+    const { root, messages } = executeHostedDocument(panelSource, mcpContext())
+    window.confirm = vi.fn(() => false)
+
+    fireEvent.click(root.querySelector('button[data-tone="danger"]')!)
+    await flushMicrotasks()
+    expect(window.confirm).not.toHaveBeenCalled()
+    expect(messages.some((message) => message.method === 'call' && message.payload?.actionId === 'remove_servers')).toBe(false)
+
+    const cancelBtn = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')).find(
+      (btn) => btn.getAttribute('data-tone') !== 'danger',
+    )!
+    fireEvent.click(cancelBtn)
+    await flushMicrotasks()
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull()
+    expect(messages.some((message) => message.method === 'call' && message.payload?.actionId === 'remove_servers')).toBe(false)
+
+    fireEvent.click(root.querySelector('button[data-tone="danger"]')!)
+    await flushMicrotasks()
+    fireEvent.click(document.body.querySelector('[role="dialog"] button[data-tone="danger"]')!)
+    await flushMicrotasks()
+    expect(messages.some((message) => message.method === 'call' && message.payload?.actionId === 'remove_servers' && JSON.stringify(message.payload?.args?.server_names) === JSON.stringify(['alpha']))).toBe(true)
+  })
+
+  it('isolates entry-level function/var declarations so local render does not break state re-renders', async () => {
+    const { root } = executeHostedDocument(`
+      function render(label: string) {
+        return <span id="value">{'local:' + label}</span>
+      }
+      var api = 'shadowed'
+
+      export default function Panel(props) {
+        const [count, setCount] = props.useLocalState('count', 0)
+        void api
+        return <button id="inc" onClick={() => setCount(count + 1)}>{render(String(count))}</button>
+      }
+    `)
+
+    expect(root.querySelector('#value')?.textContent).toBe('local:0')
+    expect((window as any).render).toBe((window as any).NekoUiKit.render)
+
+    fireEvent.click(root.querySelector('#inc')!)
+    await flushMicrotasks()
+
+    expect(root.querySelector('#value')?.textContent).toBe('local:1')
   })
 
   it('renders fatal fallback when the component throws', () => {
@@ -743,6 +833,42 @@ import ghost from "./missing"
 
     expect(root.textContent).toContain('boom')
     expect(messages.some((message) => message.type === 'neko-hosted-surface-error' && message.payload?.scope === 'component.render')).toBe(true)
+  })
+
+  it('prevents case-insensitive script breakout in payload and compiled TSX', () => {
+    const context = baseContext()
+    context.plugin = { id: 'demo', name: '</SCRIPT><img src=x onerror=alert(1)>', description: '', version: '0.1.0' }
+    context.state = { note: '</ScRiPt><!-- -->' }
+    context.i18n = {
+      locale: 'en',
+      default_locale: 'en',
+      messages: { en: { title: '</script><svg onload=alert(1)>' } },
+    }
+    const tsxSource = `
+      export default function Panel(props) {
+        const marker = "</SCRIPT><script>window.__xss=1</script>";
+        return <div id="safe">{props.plugin.name}|{props.state.note}|{props.t("title")}|{marker}</div>
+      }
+    `
+    const html = buildHostedTsxDocument({
+      source: tsxSource,
+      dependencies: [],
+      pluginId: 'demo',
+      surface: baseSurface(),
+      context,
+      locale: 'en\'"><script>',
+    })
+
+    const scriptCloseMatches = html.match(/<\/script/gi) || []
+    expect(scriptCloseMatches).toHaveLength(1)
+    const parsedDoc = new DOMParser().parseFromString(html, 'text/html')
+    expect(parsedDoc.querySelectorAll('script')).toHaveLength(1)
+    expect(html).toContain('<html lang="en&#39;&quot;&gt;&lt;script&gt;">')
+
+    const { root } = executeHostedDocument(tsxSource, context)
+    expect(root.querySelector('#safe')?.textContent).toBe(
+      '</SCRIPT><img src=x onerror=alert(1)>|</ScRiPt><!-- -->|</script><svg onload=alert(1)>|</SCRIPT><script>window.__xss=1</script>',
+    )
   })
 })
 

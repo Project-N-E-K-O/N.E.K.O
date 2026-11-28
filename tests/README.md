@@ -45,6 +45,9 @@ contracts stay separate from runtime/subprocess tests to preserve their CI marke
     ```bash
     uv run playwright install
     ```
+    `tests/conftest.py` also tries to install Chromium when it is missing, except
+    when pytest is given only `tests/unit` files that never mention Playwright
+    (that install takes minutes on a fresh CI runner).
 
 3.  **Prepare API Keys**:
     -   Copy `tests/api_keys.json.template` to `tests/api_keys.json`.
@@ -201,6 +204,26 @@ Pull requests run the four behavior markers in `unit-test-shards.yml`, while
 `unit_fast`, `runtime`, `integration_serial`, and `frontend_contract`, plus the
 Node frontend contract test. The same shard job also runs the root-level
 `tests/unit/*.test.js` node:test suites, which pytest never collects. Each
-Python shard performs a non-empty collection check before execution. The full
-`tests/unit` gate runs on pushes to `main` and
-manual dispatch, avoiding duplicate 45-minute execution on pull requests.
+Python shard fails if its marker selects no tests (pytest exit code 5).
+
+A shard does not collect all of `tests/unit`:
+`scripts/ci/select_shard_files.py` passes pytest only the test files whose
+source contains `mark.<marker>`, and the shard still filters with `-m`. Write
+the marker in the test file itself (module `pytestmark`, a class or function
+decorator, or `pytest.param(..., marks=...)`). A marker that only arrives
+through another module (an imported base class or decorator, a conftest hook)
+is invisible to the selector; the `shard selection audit` job compares every
+selection with a full collection on each push to `main` and fails when the
+test ids differ.
+
+The unmarked remainder of `tests/unit` is too slow (30+ minutes) for every
+pull request. `unit-tests.yml` runs all of it only on pushes to `main` and on
+manual dispatch; on a pull request, `scripts/ci/select_related_tests.py`
+picks the files that import (directly, or through test helpers) or name a
+changed file, and runs them in up to four Windows shards summarised by the
+`Unit pytest (related)` check. When a test workflow fails on `main`,
+`main-red-reporter.yml` opens or updates a `main-red` issue listing the
+failed tests and the suspect commits. A new test helper that tests import is
+picked up automatically; a test that reaches code some other way (a path
+built at runtime, a subprocess) should name the file it covers so the
+selector can find it.

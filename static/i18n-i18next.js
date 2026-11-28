@@ -29,9 +29,8 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // 猫爪任务悬浮窗新增「等你回话 / 卡住了」两个状态和「使魔 / 委托」两个类型的文案，
-    // 并删掉 OpenClaw、MCP 开关的文案（八语言），刷新客户端缓存。
-    const LOCALE_VERSION = '2026-11-12-nekoclaw-task-hud-statuses';
+    // 删去喵能力面板已不再使用的 agent.status.noCapability 文案，刷新语言包缓存。
+    const LOCALE_VERSION = '2026-11-28-nekopower-no-capability-removed';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

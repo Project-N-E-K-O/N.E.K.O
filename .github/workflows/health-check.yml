@@ -2,8 +2,8 @@ name: Server Health Check
 
 on:
   schedule:
-    # 每 5 分钟运行一次
-    - cron: "*/5 * * * *"
+    # 每 15 分钟运行一次（原 5 分钟一次，一天 288 次，长期占 Actions 并发名额）
+    - cron: "*/15 * * * *"
   workflow_dispatch: # 允许手动触发
 
 jobs:

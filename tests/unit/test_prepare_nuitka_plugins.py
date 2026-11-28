@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 import os
 from pathlib import Path
@@ -12,11 +13,12 @@ import pytest
 from plugin.neko_plugin_cli.core.build_rules import _DEFAULT_EXCLUDE_DIR_NAMES
 from scripts.check_nuitka_dist import (
     _MARKETPLACE_ONLY_PLUGIN_IDS,
+    _check_plugin_tool_python,
     _check_plugin_stage,
     _check_plugin_tomls,
     _plugin_manifest_id,
 )
-from scripts.prepare_nuitka_plugins import install_plugins, prepare_plugins
+from scripts.prepare_nuitka_plugins import install_plugins, prepare_plugins, stage_agent_kit
 
 
 def _write(path: Path, content: str = "runtime\n") -> None:
@@ -325,6 +327,52 @@ def test_desktop_workflows_use_filtered_plugin_stage() -> None:
         assert "set NUITKA_OPTS=%NUITKA_OPTS% --nofollow-import-to=plugin.plugins" not in workflow_lines
 
 
+def test_desktop_workflows_bundle_the_staged_agent_kit() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    include_lines = (
+        "--include-data-dir=plugin/neko_plugin_cli/agent_kit=plugin/neko_plugin_cli/agent_kit",
+        "--include-data-dir=plugin/neko_plugin_cli/templates/agent_guides="
+        "plugin/neko_plugin_cli/templates/agent_guides",
+    )
+    expectations = {
+        ".github/workflows/build-desktop.yml": 2,  # unix and windows legs
+        ".github/workflows/build-desktop-linux.yml": 1,
+    }
+
+    for relative, count in expectations.items():
+        workflow = (repo_root / relative).read_text(encoding="utf-8")
+        assert "scripts/prepare_nuitka_plugins.py prepare" in workflow
+        for include_line in include_lines:
+            assert workflow.count(include_line) == count
+
+
+def test_stage_agent_kit_copies_authored_skill_without_caches(tmp_path: Path) -> None:
+    project_root = tmp_path / "repo"
+    source = project_root / ".agent" / "skills" / "neko-plugin"
+    _write(source / "SKILL.md", "skill\n")
+    _write(source / "references" / "topic.md", "reference\n")
+    _write(source / "__pycache__" / "junk.pyc", "cache\n")
+    _write(source / ".DS_Store", "finder metadata\n")
+    _write(source / "references" / ".topic.md.swp", "swap\n")
+    staged_before = project_root / "plugin" / "neko_plugin_cli" / "agent_kit"
+    _write(staged_before / "stale.md", "stale\n")
+
+    destination = stage_agent_kit(project_root=project_root)
+
+    assert destination == staged_before.resolve()
+    assert (destination / "SKILL.md").read_text(encoding="utf-8") == "skill\n"
+    assert (destination / "references" / "topic.md").is_file()
+    assert not (destination / "stale.md").exists()
+    assert not (destination / "__pycache__").exists()
+    assert not (destination / ".DS_Store").exists()
+    assert not (destination / "references" / ".topic.md.swp").exists()
+
+
+def test_stage_agent_kit_requires_authored_source(tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError, match="agent kit source"):
+        stage_agent_kit(project_root=tmp_path)
+
+
 def test_prepare_helper_is_directly_executable_without_pythonpath(tmp_path: Path) -> None:
     repo_root = Path(__file__).resolve().parents[2]
     helper = repo_root / "scripts" / "prepare_nuitka_plugins.py"
@@ -417,3 +465,97 @@ def test_no_bundled_plugin_ships_a_dotted_directory_besides_github() -> None:
         "dotted directories under plugin/plugins/ break `codesign --deep` on the "
         f"macOS backend bundle; add them to _DEFAULT_EXCLUDE_DIR_NAMES: {offenders}"
     )
+
+
+@pytest.mark.parametrize(
+    ("listed_version", "expect_issue"),
+    [(".".join(map(str, sys.version_info[:3])), False), ("3.0.0", True)],
+)
+def test_dist_check_requires_pinned_uv_to_list_build_python(
+    monkeypatch: pytest.MonkeyPatch, listed_version: str, expect_issue: bool,
+) -> None:
+    from plugin.server.infrastructure import plugin_tool_runtime as tools
+
+    calls: list[list[str]] = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        payload = [{"implementation": "cpython", "version": listed_version}]
+        return subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
+
+    monkeypatch.setattr(shutil, "which", lambda name: "/fake/uv" if name == "uv" else None)
+    monkeypatch.setattr(subprocess, "run", run)
+
+    issues = _check_plugin_tool_python()
+
+    assert bool(issues) is expect_issue
+    assert calls and f"uv=={tools.pinned_uv_version()}" in calls[0]
+    assert tools.packaged_python_request() in calls[0]
+
+
+def test_dist_check_skips_python_download_check_without_uv(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    monkeypatch.setattr(
+        subprocess, "run", lambda *args, **kwargs: pytest.fail("uv must not run"),
+    )
+
+    assert _check_plugin_tool_python() == []
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [OSError("uv vanished"), subprocess.CompletedProcess([], 2, "", "error: network unreachable"),
+     subprocess.CompletedProcess([], 0, "not json", "")],
+)
+def test_dist_check_only_warns_when_the_download_list_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch, outcome,
+) -> None:
+    def run(command, **kwargs):
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr(shutil, "which", lambda name: "/fake/uv" if name == "uv" else None)
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr("scripts.check_nuitka_dist._pypi_lacks_uv_release", lambda _version: False)
+
+    assert _check_plugin_tool_python() == []
+
+
+def test_dist_check_fails_when_the_pinned_uv_is_not_on_pypi(monkeypatch: pytest.MonkeyPatch) -> None:
+    import urllib.error
+    import urllib.request
+
+    def urlopen(url, **_kwargs):
+        raise urllib.error.HTTPError(url, 404, "Not Found", None, io.BytesIO(b'{"message": "Not Found"}'))
+
+    monkeypatch.setattr(shutil, "which", lambda name: "/fake/uv" if name == "uv" else None)
+    monkeypatch.setattr(
+        subprocess, "run", lambda command, **_kwargs: subprocess.CompletedProcess(command, 2, "", "error: not found"),
+    )
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    issues = _check_plugin_tool_python()
+    assert len(issues) == 1 and "not published on PyPI" in issues[0]
+
+
+@pytest.mark.parametrize("failure", ["unreachable", "server_error", "proxy_404", "empty_404"])
+def test_dist_check_warns_when_pypi_cannot_answer(monkeypatch: pytest.MonkeyPatch, failure: str) -> None:
+    import urllib.error
+    import urllib.request
+
+    def urlopen(url, **_kwargs):
+        if failure == "unreachable":
+            raise urllib.error.URLError("network unreachable")
+        if failure == "proxy_404":
+            # A proxy in front of the build machine answering with its own page.
+            raise urllib.error.HTTPError(url, 404, "Not Found", None, io.BytesIO(b"<html>Not Found</html>"))
+        if failure == "empty_404":
+            raise urllib.error.HTTPError(url, 404, "Not Found", None, None)
+        raise urllib.error.HTTPError(url, 503, "Unavailable", None, None)
+
+    monkeypatch.setattr(shutil, "which", lambda name: "/fake/uv" if name == "uv" else None)
+    monkeypatch.setattr(
+        subprocess, "run", lambda command, **_kwargs: subprocess.CompletedProcess(command, 2, "", "error: offline"),
+    )
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    assert _check_plugin_tool_python() == []

@@ -14,10 +14,13 @@ from plugin._types.plugin_types import SCAFFOLDABLE_PLUGIN_TYPES
 
 from ..paths import CliDefaults
 from ..repo_action_migration import ActionFileStatus, migrate_github_actions
+from ..git_env import git_env
 from ..repo_state import git_output
+from ..templates import agent_kit
 from ..templates.generator import PluginSpec, generate_repo_support_files
 from ..core.plugin_source import load_plugin_source
 from ..core.project import create_project
+from . import release_cmd
 from ._resolve import parse_github_repository_remote
 
 _MARKET_PLUGIN_ID_RE = re.compile(r"^[a-z][a-z0-9_]*$")
@@ -93,7 +96,11 @@ def register(subparsers: argparse._SubParsersAction, *, defaults: CliDefaults) -
             "プレビューのみ（書き込みなし）"
         ),
     )
-    setup_parser.add_argument("--overwrite", action="store_true", help="Overwrite existing support files")
+    setup_parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Overwrite existing support files, including AGENTS.md, CLAUDE.md and the skill snapshot",
+    )
     setup_parser.add_argument("--git", action="store_true", help="Initialize a git repository if this plugin directory does not have its own")
     setup_parser.add_argument("--remote", help="Add a git remote named origin after --git initialization")
     setup_parser.add_argument("--no-readme", action="store_true", help="Do not generate README.md")
@@ -331,11 +338,13 @@ def handle_setup_repo(args: argparse.Namespace) -> int:
                 )
             return 0
         _preflight_git_request(plugin_dir, initialize_git=args.git, remote=args.remote)
+        skipped_agent_kit: list[Path] = []
         created = generate_repo_support_files(
             spec,
             plugin_dir,
             repo_root=defaults.repo_root,
             overwrite=args.overwrite,
+            skipped_agent_kit=skipped_agent_kit,
         )
         git_initialized = False
         if args.git:
@@ -350,6 +359,7 @@ def handle_setup_repo(args: argparse.Namespace) -> int:
             print(f"  └── {path.relative_to(plugin_dir)}")
     else:
         print("  support files already exist; use --overwrite to regenerate them")
+    _print_skipped_agent_kit(skipped_agent_kit)
     print(f"\n  plugin: {source.plugin_id}")
     print(f"  entry:  {source.entry_point}")
     if git_initialized:
@@ -368,6 +378,30 @@ def _market_repo_name(plugin_id: str) -> str:
 # Exit code the UI reads as "gh cannot do this; show the manual steps" rather
 # than a hard failure. 0 = done, 1 = failed, 3 = manual fallback needed.
 MANUAL_FALLBACK_EXIT = 3
+
+
+def _print_skipped_agent_kit(skipped: list[Path]) -> None:
+    """One line per kept agent kit file, then how to bring in the official text."""
+    if not skipped:
+        return
+    print()
+    for relative in skipped:
+        print(f"  [SKIPPED] {relative.as_posix()} -> {agent_kit.source_url(relative)}")
+    print(
+        "  "
+        + _tri(
+            "These files already existed and were kept. Compare them with the official "
+            "versions above and merge what you need by hand (hard constraints, sync/async "
+            "rules, Verify commands), or rerun with --overwrite to replace them with the "
+            "official versions (this discards your edits).",
+            "这些文件已存在，已保留原样。请对照上面的官方版本，手动并入需要的内容"
+            "（硬约束、同步与异步规则、Verify 命令）；也可以加 --overwrite 重新运行，"
+            "用官方版本整体替换（会覆盖你的修改）。",
+            "これらのファイルは既に存在するため、そのまま残しました。上の公式版と見比べて、"
+            "必要な内容（ハード制約、同期・非同期のルール、Verify コマンド）を手動で取り込むか、"
+            "--overwrite を付けて再実行し公式版で置き換えてください（あなたの変更は上書きされます）。",
+        )
+    )
 
 
 def handle_create_repo(args: argparse.Namespace) -> int:
@@ -486,7 +520,21 @@ def _existing_origin_url(plugin_dir: Path) -> str | None:
 
 
 def _git_command(plugin_dir: Path, arguments: str) -> str:
-    return f'git -C "{plugin_dir}" {arguments}'
+    return f"git -C {release_cmd._plugin_dir_argument(plugin_dir, '')} {arguments}"
+
+
+def _branch_argument(branch: str) -> str:
+    # Branch names may hold $ ; ( & and the like; quote them like the directory.
+    return release_cmd._shell_argument(branch, release_cmd._BRANCH_PLACEHOLDER)
+
+
+def _push_step(plugin_dir: Path) -> tuple[str, str | None]:
+    """The push command, and what to fill in when it shows the branch placeholder."""
+    refspec = release_cmd._push_refspec(_current_branch(plugin_dir))
+    argument = _branch_argument(refspec)
+    # The refspec, not the raw branch: a leading + typed back in would force.
+    hidden = refspec if argument == release_cmd._BRANCH_PLACEHOLDER else None
+    return _git_command(plugin_dir, f"push -u origin {argument}"), hidden
 
 
 def _current_branch(plugin_dir: Path) -> str:
@@ -533,11 +581,40 @@ def _print_push_next_step(plugin_dir: Path) -> None:
             "ブランチを push して上流ブランチを設定します：",
         )
     )
-    for command in [
-        *_first_commit_steps(plugin_dir),
-        _git_command(plugin_dir, f"push -u origin {_current_branch(plugin_dir)}"),
-    ]:
+    push, hidden_branch = _push_step(plugin_dir)
+    _print_git_commands(
+        plugin_dir,
+        [*_first_commit_steps(plugin_dir), push],
+        hidden_branch=hidden_branch,
+    )
+
+
+def _print_git_commands(
+    plugin_dir: Path, commands: list[str], *, hidden_branch: str | None = None
+) -> None:
+    for command in commands:
         print(f"       {command}")
+    fill_in = release_cmd._placeholder_path(plugin_dir)
+    if fill_in and commands:
+        # The commands show "<plugin directory>": say which one it is.
+        print(
+            "       "
+            + _tri(
+                f"(plugin directory: {fill_in})",
+                f"（插件目录：{fill_in}）",
+                f"（プラグインディレクトリ：{fill_in}）",
+            )
+        )
+    if hidden_branch is not None:
+        # Likewise for a branch name no Windows quoting keeps literal.
+        print(
+            "       "
+            + _tri(
+                f"(branch: {hidden_branch})",
+                f"（分支：{hidden_branch}）",
+                f"（ブランチ：{hidden_branch}）",
+            )
+        )
 
 
 def _gh_available() -> bool:
@@ -626,6 +703,8 @@ def _gh_create_repository(plugin_dir: Path, *, slug: str, private: bool) -> None
         completed = subprocess.run(
             ["gh", "repo", "create", slug, visibility, "--source", ".", "--remote", "origin"],
             cwd=plugin_dir,
+            # gh runs git in --source to add the remote.
+            env=git_env(),
             encoding="utf-8",
             errors="replace",
             stdout=subprocess.PIPE,
@@ -670,12 +749,16 @@ def _print_manual_repo_steps(plugin_dir: Path, *, repo_name: str) -> None:
             "その URL をコピーして origin に設定し、push します：",
         )
     )
-    for command in [
-        *_first_commit_steps(plugin_dir),
-        _git_command(plugin_dir, "remote add origin <repository-url>"),
-        _git_command(plugin_dir, f"push -u origin {_current_branch(plugin_dir)}"),
-    ]:
-        print(f"       {command}")
+    push, hidden_branch = _push_step(plugin_dir)
+    _print_git_commands(
+        plugin_dir,
+        [
+            *_first_commit_steps(plugin_dir),
+            _git_command(plugin_dir, f"remote add origin {release_cmd._REMOTE_PLACEHOLDER}"),
+            push,
+        ],
+        hidden_branch=hidden_branch,
+    )
 
 
 def _resolve_plugins_root(args: argparse.Namespace, *, defaults: CliDefaults) -> Path:
@@ -722,9 +805,14 @@ def _preflight_git_request(target_dir: Path, *, initialize_git: bool, remote: st
 
 
 def _existing_repository_remote_message(target_dir: Path, remote: str) -> str:
+    remote_argument = release_cmd._shell_argument(remote, release_cmd._REMOTE_PLACEHOLDER)
+    # Name what a placeholder stands for, as for the directory.
+    remote_note = f" (repository URL: {remote})" if remote_argument == release_cmd._REMOTE_PLACEHOLDER else ""
     return (
         "--remote can only be used when initializing a new git repository; "
-        f"to add origin to the existing one run: {_git_command(target_dir, f'remote add origin {remote}')}"
+        "to add origin to the existing one run: "
+        f"{_git_command(target_dir, f'remote add origin {remote_argument}')}"
+        f"{release_cmd._placeholder_note(target_dir)}{remote_note}"
     )
 
 
@@ -733,6 +821,7 @@ def _run_git(command: list[str], *, cwd: Path) -> None:
         subprocess.run(
             ["git", *command],
             cwd=cwd,
+            env=git_env(),
             check=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,

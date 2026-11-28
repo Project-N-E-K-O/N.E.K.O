@@ -33,13 +33,15 @@ These documents preserve design intent and implementation context. They are grou
 
 ## N.E.K.O 小剧场与剧本工坊
 
-- [小剧场架构](./neko-theater-architecture)：当前唯一的实现合同——模块与权限、Story Package／Session／Ledger／记忆归档数据合同、回合流水线、复核与确定性检查、生命周期事务、胶囊展示合同与可选模块开关。
+- [小剧场体验目标与设计约束](./neko-theater-optimization-plan)：当前产品目标、职责与事实权限、运行交付与工坊发布边界、验证方法及维护责任。
+- [小剧场架构](./neko-theater-architecture)：当前唯一的实现合同——模块与权限、Story Package／Session／Ledger／记忆归档数据合同、回合流水线、复核与确定性检查、生命周期事务、胶囊展示合同与当前固定模块配置。
 - [小剧场设计决策记录](./neko-theater-decisions)：关键取舍、被否决方案及已知风险与未验证范围。
 
-剧本工坊 SDK 的调用、宿主与发布合同见仓库 `theater_workshop/README.md`。
+剧本工坊 SDK 的调用、宿主与发布合同见仓库 `services/theater_workshop/README.md`。
 
 ## Product-flow and interaction records
 
+- [Unified knowledge base and ready-to-use package sharing](./personal-knowledge-base-and-pack-sharing) — Chinese-only implementation plan and verification record. Personal documents use the existing knowledge packs, search and task pipeline; the plugin manager provides the single interface for documents, history, export and market sharing.
 - [Seven-day floating avatar guide](./avatar-floating-7day-complete-guide-dev)
 - [Floating avatar panel functions](./avatar-floating-panel-functions)
 - [Post-tutorial low-disruption chat branches](./avatar-floating-post-theater-chat-branches)
@@ -61,6 +63,7 @@ These documents preserve design intent and implementation context. They are grou
 - [Neko visiting infrastructure (v3, all decisions approved)](./visit-infrastructure)
 - [Neko visiting: Servers contract](./visit-servers-contract) — Chinese-only. Current contract for the closed-source Servers endpoints; generated from §4.7 of the design record and pinned to it by a unit test.
 - [Neko visiting: field tests T1–T15](./visit-field-tests) — Chinese-only. Result table and `chrome://webrtc-internals` acceptance fields for the design record's field-test list.
-- [NekoClaw rewrite](./nekoclaw-rewrite) — Chinese-only. Replaces the agent module: a resident task brain that routes what the main dialogue dispatches (plugins first, task agent sessions for multi-step work), a built-in Python runtime with optional dsh, one capability gateway, and a per-project work memory.
+- [Plugin call chains and capability checks](./plugin-call-chain) — Chinese-only, with an English summary. Host-maintained call chains between plugins, chain-wide capability checks against user consent, and an audit trail; P0–P4 plan, P0 and P1 (observe only) implemented first.
+- [NekoPower rewrite](./nekopower-rewrite) — Chinese-only. Replaces the agent module: a resident task brain that routes what the main dialogue dispatches (plugins first, task agent sessions for multi-step work), a built-in Python runtime with optional dsh, one capability gateway, and a per-project work memory.
 
 New records should state whether they are a current contract, implemented record, proposal, historical snapshot, or deprecated document near the beginning.

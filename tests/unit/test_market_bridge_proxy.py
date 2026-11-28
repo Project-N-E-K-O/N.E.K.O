@@ -11,6 +11,35 @@ from app.main_server import web_app
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('method,path,timeout', [('POST', 'knowledge/publish', 245.0),
+                                               ('GET', 'knowledge/status', 30.0), ('POST', 'oauth/start', 30.0)])
+async def test_only_knowledge_publication_proxy_waits_for_its_full_operation(monkeypatch, method, path, timeout):
+    real_client = httpx.AsyncClient
+    timeouts = []
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *_args):
+            return None
+        async def request(self, *_args, **kwargs):
+            content = kwargs['content']
+            if not isinstance(content, bytes):
+                async for _block in content:
+                    pass
+            return httpx.Response(200, content=b'{}')
+    def upstream(**kwargs):
+        timeouts.append(kwargs['timeout'].read)
+        return FakeClient()
+    monkeypatch.setattr(web_app.httpx, 'AsyncClient', upstream)
+    monkeypatch.setattr(web_app, '_resolve_user_plugin_base', lambda: 'http://127.0.0.1:48916')
+    app = FastAPI()
+    app.add_api_route('/market/{path:path}', web_app.proxy_user_plugin_market_bridge, methods=['GET', 'POST'])
+    async with real_client(transport=httpx.ASGITransport(app=app), base_url='http://127.0.0.1') as client:
+        response = await client.request(method, '/market/' + path, content=b'{}' if method == 'POST' else b'')
+    assert response.status_code == 200 and timeouts == [timeout]
+
+
+@pytest.mark.asyncio
 async def test_market_proxy_preserves_query_token_and_authorization(monkeypatch):
     import utils.instance_access as access
 
@@ -326,3 +355,523 @@ async def test_remote_market_pairing_through_main_keeps_plugin_cors_headers(monk
         # The remote page itself can never mint a code.
         refused = await main.post("/market/pair-code", headers={"Origin": market_origin})
         assert refused.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_market_proxy_strips_client_internal_service_header(monkeypatch):
+    """proxy_user_plugin_market_bridge must strip any client-supplied X-Neko-Internal-Service header."""
+    seen_headers: dict[str, str] = {}
+    asgi_client = httpx.AsyncClient
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def request(self, _method, _url, *, content, headers):
+            seen_headers.update(headers)
+            return httpx.Response(200, content=b"{}", headers={"content-type": "application/json"})
+
+    monkeypatch.setattr(web_app, "_resolve_user_plugin_base", lambda: "http://127.0.0.1:48916")
+    monkeypatch.setattr(web_app.httpx, "AsyncClient", lambda **_kwargs: FakeClient())
+
+    app = FastAPI()
+    app.add_api_route("/market/{path:path}", web_app.proxy_user_plugin_market_bridge, methods=["POST"])
+    async with asgi_client(transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1:48911") as client:
+        resp = await client.post(
+            "/market/ordinary",
+            headers={
+                "X-Neko-Internal-Service": "attacker-forged-proof",
+                "X-Neko-Market-Internal": "attacker-market-proof",
+                "Origin": "http://localhost:48911",
+            },
+            content=b"{}",
+        )
+
+    assert resp.status_code == 200
+    lowered = {k.lower(): v for k, v in seen_headers.items()}
+    assert "x-neko-internal-service" not in lowered
+    assert "x-neko-market-internal" not in lowered
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "mode_env",
+    ["NEKO_BEHIND_PROXY", "NEKO_ACTIVITY_TRACKER_REMOTE"],
+    ids=["behind-proxy", "activity-tracker-remote"],
+)
+async def test_market_proxy_preserves_internal_service_installer_auth_and_blocks_browser_escalation(
+    monkeypatch,
+    mode_env: str,
+):
+    """Main /market proxy must re-sign internal-service installer calls across hops while keeping browser sessions confined to market remote identity."""
+    import time
+    import config as cfg
+    from utils.http.internal_client import internal_service_event_hooks
+    from utils.instance_access import COOKIE, INTERNAL_SERVICE_HEADER, InstanceAccessMiddleware, _signed
+
+    key = "market-installer-internal-key-" + "y" * 40
+    for env_name in ("NEKO_BEHIND_PROXY", "NEKO_ACTIVITY_TRACKER_REMOTE", "ACTIVITY_TRACKER_REMOTE"):
+        monkeypatch.delenv(env_name, raising=False)
+    monkeypatch.setenv("NEKO_INSTANCE_ACCESS_KEY", key)
+    monkeypatch.setenv(mode_env, "true")
+
+    main_port = int(cfg.MAIN_SERVER_PORT)
+    plugin_port = int(cfg.USER_PLUGIN_SERVER_PORT)
+    monkeypatch.setattr(cfg, "MAIN_SERVER_PORT", main_port, raising=False)
+    monkeypatch.setattr(cfg, "USER_PLUGIN_SERVER_PORT", plugin_port, raising=False)
+    monkeypatch.setattr(cfg, "USER_PLUGIN_BASE", f"http://127.0.0.1:{plugin_port}", raising=False)
+
+    real_client = httpx.AsyncClient
+    plugin = FastAPI()
+
+    @plugin.post("/market/install")
+    @plugin.get("/market/tasks/{task_id}")
+    async def market_install_or_task(request: Request, task_id: str | None = None, token: str = ""):
+        lowered = {k.lower() for k in request.headers.keys()}
+        return {
+            "identity": request.scope.get("neko.instance_identity"),
+            "market_remote": bool(request.scope.get("neko.market_remote_authorized")),
+            "has_internal_header": INTERNAL_SERVICE_HEADER in lowered,
+            "has_market_internal_header": "x-neko-market-internal" in lowered,
+            "token": token,
+            "task_id": task_id,
+        }
+
+    @plugin.get("/market/bridge-token")
+    async def market_bridge_token(request: Request):
+        from plugin.server.routes.market_bridge import _require_local_bridge_token_access
+
+        _require_local_bridge_token_access(request)
+        return {"bridge_token": "secret"}
+
+    plugin.add_middleware(InstanceAccessMiddleware)
+    plugin_hop = ProxyHeadersMiddleware(plugin, trusted_hosts="127.0.0.1,::1")
+
+    def upstream_client(**_kwargs):
+        return real_client(
+            transport=httpx.ASGITransport(app=plugin_hop, client=("127.0.0.1", 50000)),
+        )
+
+    monkeypatch.setattr(web_app, "_resolve_user_plugin_base", lambda: f"http://127.0.0.1:{plugin_port}")
+    monkeypatch.setattr(web_app.httpx, "AsyncClient", upstream_client)
+
+    main = FastAPI()
+    main.add_api_route("/market/{path:path}", web_app.proxy_user_plugin_market_bridge, methods=["GET", "POST"])
+    main.add_middleware(InstanceAccessMiddleware)
+    main_hop = ProxyHeadersMiddleware(main, trusted_hosts="127.0.0.1,::1")
+
+    # 1. Internal installer hop with internal_service_event_hooks() succeeds on both POST and GET.
+    async with real_client(
+        transport=httpx.ASGITransport(app=main_hop, client=("127.0.0.1", 50001)),
+        base_url=f"http://127.0.0.1:{main_port}",
+        event_hooks=internal_service_event_hooks(),
+    ) as installer_client:
+        install_resp = await installer_client.post(
+            f"http://127.0.0.1:{main_port}/market/install",
+            params={"token": "bridge-tok"},
+            json={"plugin_id": "demo"},
+        )
+        assert install_resp.status_code == 200
+        assert install_resp.json() == {
+            "identity": "internal",
+            "market_remote": False,
+            "has_internal_header": True,
+            "has_market_internal_header": False,
+            "token": "bridge-tok",
+            "task_id": None,
+        }
+
+        poll_resp = await installer_client.get(
+            f"http://127.0.0.1:{main_port}/market/tasks/task-1",
+            params={"token": "bridge-tok"},
+        )
+        assert poll_resp.status_code == 200
+        assert poll_resp.json() == {
+            "identity": "internal",
+            "market_remote": False,
+            "has_internal_header": True,
+            "has_market_internal_header": False,
+            "token": "bridge-tok",
+            "task_id": "task-1",
+        }
+
+    # 2. Unsigned loopback caller without internal proof is rejected with 401.
+    async with real_client(
+        transport=httpx.ASGITransport(app=main_hop, client=("127.0.0.1", 50002)),
+        base_url=f"http://127.0.0.1:{main_port}",
+    ) as unsigned_client:
+        denied = await unsigned_client.post("/market/install?token=bridge-tok", json={})
+        assert denied.status_code == 401
+
+    # 3. Remote browser session cookie + forged X-Neko-Internal-Service cannot escalate to internal identity.
+    cookie = _signed(key, "session", "public.example", "owner-session", int(time.time()) + 600)
+    async with real_client(
+        transport=httpx.ASGITransport(app=main_hop, client=("127.0.0.1", 40000)),
+        base_url="https://public.example",
+    ) as browser_client:
+        browser_headers = {
+            "Cookie": f"{COOKIE}={cookie}",
+            "Origin": "https://public.example",
+            "Sec-Fetch-Site": "same-origin",
+            "X-Neko-Internal-Service": "attacker-forged-proof",
+        }
+        bridge_denied = await browser_client.get("/market/bridge-token", headers=browser_headers)
+        assert bridge_denied.status_code == 403
+
+        install_browser = await browser_client.post(
+            "/market/install?token=bridge-tok",
+            headers=browser_headers,
+            json={"plugin_id": "demo"},
+        )
+        assert install_browser.status_code == 200
+        assert install_browser.json() == {
+            "identity": "market",
+            "market_remote": True,
+            "has_internal_header": False,
+            "has_market_internal_header": True,
+            "token": "bridge-tok",
+            "task_id": None,
+        }
+
+
+@pytest.mark.asyncio
+async def test_market_proxy_slow_internal_upload_survives_proof_expiry_and_revokes_on_key_rotation(monkeypatch):
+    """Slow internal uploads must survive 60s inbound proof expiry while key rotation or missing admission grant fails closed."""
+    import time
+    from starlette.requests import ClientDisconnect
+    import config as cfg
+    import utils.instance_access as access
+    from tests.fake_clock import patch_module_clock
+    from utils.http.internal_client import internal_service_event_hooks
+    from utils.instance_access import INTERNAL_SERVICE_HEADER, InstanceAccessMiddleware
+
+    key1 = "market-slow-upload-key-one-" + "a" * 40
+    key2 = "market-slow-upload-key-two-" + "b" * 40
+    current_key = [key1]
+    now = [time.time()]
+    mono = [1000.0]
+
+    for env_name in ("NEKO_BEHIND_PROXY", "NEKO_ACTIVITY_TRACKER_REMOTE", "ACTIVITY_TRACKER_REMOTE", "NEKO_INSTANCE_ACCESS_KEY"):
+        monkeypatch.delenv(env_name, raising=False)
+    monkeypatch.setenv("NEKO_BEHIND_PROXY", "true")
+    monkeypatch.setattr(access, "instance_key", lambda: current_key[0])
+    patch_module_clock(monkeypatch, access, time=lambda: now[0], monotonic=lambda: mono[0])
+
+    main_port = int(cfg.MAIN_SERVER_PORT)
+    plugin_port = int(cfg.USER_PLUGIN_SERVER_PORT)
+    monkeypatch.setattr(cfg, "MAIN_SERVER_PORT", main_port, raising=False)
+    monkeypatch.setattr(cfg, "USER_PLUGIN_SERVER_PORT", plugin_port, raising=False)
+    monkeypatch.setattr(cfg, "USER_PLUGIN_BASE", f"http://127.0.0.1:{plugin_port}", raising=False)
+
+    real_client = httpx.AsyncClient
+    plugin_hits: list[str] = []
+    plugin = FastAPI()
+
+    @plugin.post("/market/install")
+    async def market_install(request: Request):
+        plugin_hits.append(request.url.path)
+        lowered = {k.lower() for k in request.headers.keys()}
+        return {
+            "identity": request.scope.get("neko.instance_identity"),
+            "market_remote": bool(request.scope.get("neko.market_remote_authorized")),
+            "has_internal_header": INTERNAL_SERVICE_HEADER in lowered,
+            "body_size": len(await request.body()),
+        }
+
+    plugin.add_middleware(InstanceAccessMiddleware)
+    plugin_hop = ProxyHeadersMiddleware(plugin, trusted_hosts="127.0.0.1,::1")
+
+    def upstream_client(**_kwargs):
+        return real_client(
+            transport=httpx.ASGITransport(app=plugin_hop, client=("127.0.0.1", 50000)),
+        )
+
+    monkeypatch.setattr(web_app, "_resolve_user_plugin_base", lambda: f"http://127.0.0.1:{plugin_port}")
+    monkeypatch.setattr(web_app.httpx, "AsyncClient", upstream_client)
+
+    observed_digests: list[object] = []
+    main = FastAPI()
+
+    @main.middleware("http")
+    async def capture_digest(request: Request, call_next):
+        if "neko.internal_service_key_digest" in request.scope:
+            observed_digests.append(request.scope["neko.internal_service_key_digest"])
+        return await call_next(request)
+
+    main.add_api_route("/market/{path:path}", web_app.proxy_user_plugin_market_bridge, methods=["POST"])
+    main.add_middleware(InstanceAccessMiddleware)
+    main_hop = ProxyHeadersMiddleware(main, trusted_hosts="127.0.0.1,::1")
+
+    # 1. Slow upload exceeding 60s inbound proof TTL and 1s monotonic recheck interval still succeeds.
+    async def slow_upload():
+        yield b'{"plugin_id":'
+        now[0] += 120.0
+        mono[0] += 120.0
+        yield b'"demo"}'
+
+    async with real_client(
+        transport=httpx.ASGITransport(app=main_hop, client=("127.0.0.1", 50001)),
+        base_url=f"http://127.0.0.1:{main_port}",
+        event_hooks=internal_service_event_hooks(),
+    ) as installer_client:
+        slow_resp = await installer_client.post(
+            f"http://127.0.0.1:{main_port}/market/install",
+            content=slow_upload(),
+            headers={"content-type": "application/json"},
+        )
+    assert slow_resp.status_code == 200
+    assert slow_resp.json() == {
+        "identity": "internal",
+        "market_remote": False,
+        "has_internal_header": True,
+        "body_size": len(b'{"plugin_id":"demo"}'),
+    }
+    assert plugin_hits == ["/market/install"]
+    assert len(observed_digests) == 1
+    assert isinstance(observed_digests[0], bytes)
+    assert len(observed_digests[0]) == 32
+    assert key1.encode("utf-8") not in observed_digests[0]
+
+    # 2a. Rotating the instance key before the monotonic recheck deadline fails at proxy digest check with 401.
+    plugin_hits.clear()
+
+    async def pre_deadline_rotated_upload():
+        yield b'{"plugin_id":'
+        current_key[0] = key2
+        yield b'"demo"}'
+
+    async with real_client(
+        transport=httpx.ASGITransport(app=main_hop, client=("127.0.0.1", 50002)),
+        base_url=f"http://127.0.0.1:{main_port}",
+        event_hooks=internal_service_event_hooks(),
+    ) as installer_client:
+        rotated_resp = await installer_client.post(
+            f"http://127.0.0.1:{main_port}/market/install",
+            content=pre_deadline_rotated_upload(),
+            headers={"content-type": "application/json"},
+        )
+    assert rotated_resp.status_code == 401
+    assert rotated_resp.json() == {"detail": "instance_authorization_required"}
+    assert plugin_hits == []
+
+    # 2b. Rotating the instance key after the monotonic recheck deadline returns clean 401 (never 500) and never forwards.
+    plugin_hits.clear()
+    current_key[0] = key1
+
+    async def post_deadline_rotated_upload():
+        yield b'{"plugin_id":'
+        current_key[0] = key2
+        mono[0] += 2.0
+        yield b'"demo"}'
+
+    async with real_client(
+        transport=httpx.ASGITransport(app=main_hop, client=("127.0.0.1", 50003)),
+        base_url=f"http://127.0.0.1:{main_port}",
+        event_hooks=internal_service_event_hooks(),
+    ) as installer_client:
+        post_deadline_resp = await installer_client.post(
+            f"http://127.0.0.1:{main_port}/market/install",
+            content=post_deadline_rotated_upload(),
+            headers={"content-type": "application/json"},
+        )
+    assert post_deadline_resp.status_code == 401
+    assert post_deadline_resp.json() == {"detail": "instance_authorization_required"}
+    assert plugin_hits == []
+
+    # 2c. Genuine mid-upload client disconnect without key rotation must still propagate ClientDisconnect, never 401.
+    from utils.instance_access import internal_service_proof
+
+    plugin_hits.clear()
+    current_key[0] = key1
+    proof = internal_service_proof(key1, "POST", "/market/install", port=main_port)
+    raw_headers = [
+        (INTERNAL_SERVICE_HEADER.lower().encode("latin-1"), proof.encode("latin-1")),
+        (b"host", f"127.0.0.1:{main_port}".encode("latin-1")),
+        (b"content-type", b"application/json"),
+    ]
+    disconnect_scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": "/market/install",
+        "raw_path": b"/market/install",
+        "query_string": b"",
+        "headers": raw_headers,
+        "client": ("127.0.0.1", 50005),
+        "server": ("127.0.0.1", main_port),
+    }
+    incoming = [
+        {"type": "http.request", "body": b'{"plugin_id":', "more_body": True},
+        {"type": "http.disconnect"},
+    ]
+    sent_messages: list[dict] = []
+
+    async def disconnect_receive():
+        return incoming.pop(0)
+
+    async def capture_send(message):
+        sent_messages.append(message)
+
+    with pytest.raises(ClientDisconnect):
+        await main_hop(disconnect_scope, disconnect_receive, capture_send)
+    assert [m.get("status") for m in sent_messages if m.get("type") == "http.response.start"] == [500]
+    assert plugin_hits == []
+
+    # 3. Spoofed scope identity without a matching middleware digest fails closed.
+    plugin_hits.clear()
+    current_key[0] = key1
+    for extra_digest in (None, b"wrong-digest", "wrong-type"):
+        spoofed_app = FastAPI()
+
+        @spoofed_app.middleware("http")
+        async def inject_only_identity(request, call_next, digest=extra_digest):
+            request.scope["neko.instance_identity"] = "internal"
+            if digest is not None:
+                request.scope["neko.internal_service_key_digest"] = digest
+            return await call_next(request)
+
+        spoofed_app.add_api_route("/market/{path:path}", web_app.proxy_user_plugin_market_bridge, methods=["POST"])
+        async with real_client(
+            transport=httpx.ASGITransport(app=spoofed_app, client=("127.0.0.1", 50004)),
+            base_url=f"http://127.0.0.1:{main_port}",
+        ) as spoofed_client:
+            spoofed_resp = await spoofed_client.post("/market/install", json={"plugin_id": "demo"})
+        assert spoofed_resp.status_code == 401
+        assert spoofed_resp.json() == {"detail": "instance_authorization_required"}
+        assert plugin_hits == []
+
+
+def _proxy_only_app(methods: list[str]) -> FastAPI:
+    app = FastAPI()
+    app.add_api_route("/market/{path:path}", web_app.proxy_user_plugin_market_bridge, methods=methods)
+    return app
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "body",
+    [b'{"ok":true}', bytes(range(256)), b"x" * 4096],
+    ids=["json", "non-utf8-binary", "4k"],
+)
+async def test_market_proxy_drops_content_encoding_of_the_decompressed_upstream_body(monkeypatch, body):
+    # httpx decompresses the upstream gzip body, so forwarding the upstream
+    # Content-Encoding would make the browser decode it a second time
+    # (ERR_CONTENT_DECODING_FAILED).
+    import gzip
+
+    real_client = httpx.AsyncClient
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=gzip.compress(body),
+            headers={"Content-Encoding": "gzip", "Content-Type": "application/json", "Cache-Control": "no-store"},
+        )
+
+    def client_factory(*args, **kwargs):
+        kwargs["transport"] = httpx.MockTransport(upstream)
+        return real_client(*args, **kwargs)
+
+    monkeypatch.setattr(web_app, "_resolve_user_plugin_base", lambda: "http://127.0.0.1:48916")
+    monkeypatch.setattr(web_app.httpx, "AsyncClient", client_factory)
+    async with real_client(
+        transport=httpx.ASGITransport(app=_proxy_only_app(["GET"])),
+        base_url="http://127.0.0.1:48911",
+    ) as client:
+        # Read raw bytes: letting the test client auto-decode would turn a
+        # regression into a DecodingError instead of a readable assertion.
+        async with client.stream("GET", "/market/encoding-probe") as response:
+            raw_body = b"".join([chunk async for chunk in response.aiter_raw()])
+
+    assert response.status_code == 200
+    assert raw_body == body
+    assert "content-encoding" not in response.headers
+    assert response.headers["cache-control"] == "no-store"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("path", "request_headers", "upstream_headers"),
+    [
+        ("/market/status?x=1", {}, {}),
+        (
+            "/market/feedback?kind=issue",
+            {"Authorization": "Bearer bridge-token", "X-Market-Feedback-Session": "test-session"},
+            {
+                "X-Market-Feedback-Session": "test-session",
+                "X-Market-Web-Url": "https://market.example.com",
+                "Cache-Control": "no-store",
+            },
+        ),
+    ],
+)
+async def test_market_proxy_uses_runtime_user_plugin_server_port(monkeypatch, path, request_headers, upstream_headers):
+    real_client = httpx.AsyncClient
+    seen_urls: list[str] = []
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        seen_urls.append(str(request.url))
+        for name, value in request_headers.items():
+            assert request.headers[name] == value
+        return httpx.Response(200, json={"ok": True}, headers=upstream_headers)
+
+    def client_factory(*args, **kwargs):
+        kwargs["transport"] = httpx.MockTransport(upstream)
+        return real_client(*args, **kwargs)
+
+    # The real resolver, not a stub: the port comes from the environment at
+    # request time.
+    monkeypatch.setenv("NEKO_USER_PLUGIN_SERVER_PORT", "49123")
+    monkeypatch.setattr(web_app.httpx, "AsyncClient", client_factory)
+    async with real_client(
+        transport=httpx.ASGITransport(app=_proxy_only_app(["GET"])),
+        base_url="http://127.0.0.1:48911",
+    ) as client:
+        response = await client.get(path, headers=request_headers)
+
+    assert response.status_code == 200
+    assert seen_urls == [f"http://127.0.0.1:49123{path}"]
+    for name, value in upstream_headers.items():
+        assert response.headers[name] == value
+
+
+@pytest.mark.asyncio
+async def test_market_proxy_through_the_real_app_drops_content_encoding(monkeypatch):
+    # Same check as above, but through app.main_server.app and its middleware
+    # stack (host/origin guard, body limits): nothing on the way may put a
+    # Content-Encoding header back on the already-decompressed body.
+    import gzip
+
+    from app.main_server import app as main_app
+
+    real_client = httpx.AsyncClient
+    body = b'{"ok":true}'
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=gzip.compress(body),
+            headers={"Content-Encoding": "gzip", "Content-Type": "application/json"},
+        )
+
+    def client_factory(*args, **kwargs):
+        kwargs["transport"] = httpx.MockTransport(upstream)
+        return real_client(*args, **kwargs)
+
+    monkeypatch.setattr(web_app, "_resolve_user_plugin_base", lambda: "http://127.0.0.1:48916")
+    monkeypatch.setattr(web_app.httpx, "AsyncClient", client_factory)
+    async with real_client(
+        transport=httpx.ASGITransport(app=main_app),
+        base_url="http://127.0.0.1:48911",
+    ) as client:
+        async with client.stream("GET", "/market/encoding-probe") as response:
+            raw_body = b"".join([chunk async for chunk in response.aiter_raw()])
+
+    assert response.status_code == 200
+    assert raw_body == body
+    assert "content-encoding" not in response.headers

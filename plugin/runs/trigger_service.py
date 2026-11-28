@@ -8,7 +8,8 @@ from typing import Protocol, runtime_checkable
 from pydantic import BaseModel, Field
 
 from plugin._types.errors import ErrorCode
-from plugin._types.exceptions import PluginError
+from plugin._types.exceptions import RUNS_PASSTHROUGH_ERROR_CODES, PluginError
+from plugin.core.rpc import RpcRemoteError, remote_error_details
 from plugin.core.state import state
 from plugin.logging_config import get_logger
 from plugin.utils.time_utils import now_iso
@@ -332,15 +333,13 @@ def _resolve_host(
     return host_obj, None
 
 
-async def _execute_trigger(
-    *,
-    host: TriggerHostContract,
+def resolve_entry_execution_timeout(
     plugin_id: str,
     entry_id: str,
-    args: dict[str, object],
-    trace_id: str,
-) -> object:
-    resolved_timeout: float | None = PLUGIN_EXECUTION_TIMEOUT
+    default_timeout: float | None,
+) -> float | None:
+    """Resolve per-entry timeout from the cached event-handlers snapshot."""
+    resolved_timeout: float | None = default_timeout
     try:
         handlers_snapshot = state.get_event_handlers_snapshot_cached(timeout=1.0)
         prefix_dot = f"{plugin_id}."
@@ -375,6 +374,22 @@ async def _execute_trigger(
             type(exc).__name__,
             str(exc),
         )
+    return resolved_timeout
+
+
+async def _execute_trigger(
+    *,
+    host: TriggerHostContract,
+    plugin_id: str,
+    entry_id: str,
+    args: dict[str, object],
+    trace_id: str,
+) -> object:
+    resolved_timeout = resolve_entry_execution_timeout(
+        plugin_id,
+        entry_id,
+        PLUGIN_EXECUTION_TIMEOUT,
+    )
 
     try:
         ctx_obj = args.get("_ctx")
@@ -408,6 +423,31 @@ async def _execute_trigger(
             trace_id=trace_id,
         )
     except PluginError as exc:
+        cause = exc.__cause__
+        if isinstance(cause, RpcRemoteError) and cause.code in RUNS_PASSTHROUGH_ERROR_CODES:
+            return fail(
+                cause.code,
+                str(exc),
+                details={
+                    **remote_error_details(exc),
+                    "plugin_id": plugin_id,
+                    "entry_id": entry_id,
+                    "event_id": entry_id,
+                    "type": type(exc).__name__,
+                },
+                trace_id=trace_id,
+            )
+        if isinstance(cause, RpcRemoteError) and cause.code in ("CANCELLED", "CANCELED", "CANCELLED_BY_USER"):
+            return fail(
+                "CANCELLED",
+                str(exc),
+                details={
+                    "plugin_id": plugin_id,
+                    "entry_id": entry_id,
+                    "type": type(exc).__name__,
+                },
+                trace_id=trace_id,
+            )
         return fail(
             ErrorCode.INTERNAL,
             str(exc),

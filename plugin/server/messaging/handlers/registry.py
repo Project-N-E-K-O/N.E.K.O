@@ -10,7 +10,10 @@ def build_request_handlers() -> dict[str, RequestHandler]:
         handle_plugin_config_base_get,
         handle_plugin_config_effective_get,
         handle_plugin_config_get,
+        handle_plugin_config_profile_activate,
+        handle_plugin_config_profile_delete,
         handle_plugin_config_profile_get,
+        handle_plugin_config_profile_upsert,
         handle_plugin_config_profiles_get,
         handle_plugin_config_replace,
         handle_plugin_config_update,
@@ -30,6 +33,10 @@ def build_request_handlers() -> dict[str, RequestHandler]:
     from plugin.server.messaging.handlers.run_update import handle_run_update
     from plugin.server.messaging.handlers.events import handle_event_get
     from plugin.server.messaging.handlers.lifecycle import handle_lifecycle_get
+    from plugin.server.messaging.handlers.llm_tools import (
+        handle_llm_tool_register,
+        handle_llm_tool_unregister,
+    )
     from plugin.server.messaging.handlers.bus_delete import (
         handle_event_del,
         handle_lifecycle_del,
@@ -40,13 +47,21 @@ def build_request_handlers() -> dict[str, RequestHandler]:
         handle_bus_unsubscribe,
     )
 
-    return {
+    from plugin.server.application.plugins.capability_gate import (
+        CAPABILITY_BY_OPERATION,
+        capability_checked,
+    )
+
+    handlers: dict[str, RequestHandler] = {
         "PLUGIN_TO_PLUGIN": handle_plugin_to_plugin,
         "PLUGIN_QUERY": handle_plugin_query,
         "PLUGIN_CONFIG_GET": handle_plugin_config_get,
         "PLUGIN_CONFIG_BASE_GET": handle_plugin_config_base_get,
         "PLUGIN_CONFIG_PROFILES_GET": handle_plugin_config_profiles_get,
         "PLUGIN_CONFIG_PROFILE_GET": handle_plugin_config_profile_get,
+        "PLUGIN_CONFIG_PROFILE_UPSERT": handle_plugin_config_profile_upsert,
+        "PLUGIN_CONFIG_PROFILE_DELETE": handle_plugin_config_profile_delete,
+        "PLUGIN_CONFIG_PROFILE_ACTIVATE": handle_plugin_config_profile_activate,
         "PLUGIN_CONFIG_EFFECTIVE_GET": handle_plugin_config_effective_get,
         "PLUGIN_CONFIG_UPDATE": handle_plugin_config_update,
         "PLUGIN_CONFIG_REPLACE": handle_plugin_config_replace,
@@ -66,4 +81,12 @@ def build_request_handlers() -> dict[str, RequestHandler]:
         "LIFECYCLE_DEL": handle_lifecycle_del,
         "BUS_SUBSCRIBE": handle_bus_subscribe,
         "BUS_UNSUBSCRIBE": handle_bus_unsubscribe,
+        # Request-response counterparts of the LLM_TOOL_REGISTER/UNREGISTER
+        # notifications; distinct names so the two delivery paths never mix.
+        "LLM_TOOL_REGISTER_REQUEST": handle_llm_tool_register,
+        "LLM_TOOL_UNREGISTER_REQUEST": handle_llm_tool_unregister,
     }
+    # Every judged operation gets the same decision entry point (one table).
+    for operation, capability in CAPABILITY_BY_OPERATION.items():
+        handlers[operation] = capability_checked(capability, handlers[operation])
+    return handlers

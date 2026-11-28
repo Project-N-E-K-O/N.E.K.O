@@ -1038,3 +1038,84 @@ async def test_terminal_fact_counters_inconsistent_with_the_request_are_not_trus
     assert body["duplicate"] is True and body["written"] == 2
     record = await _key_record(f"visit-facts:{VISIT}")
     assert (record["written"], record["deduped"]) == (2, 0)
+
+
+def test_store_conversation_inserts_timestamp_atomically_in_one_transaction(tmp_path, monkeypatch):
+    """store_conversation must insert (session_id, message, timestamp) atomically without a second-pass UPDATE."""
+    from datetime import datetime
+    from sqlalchemy import create_engine, text
+
+    from config import TIME_ORIGINAL_TABLE_NAME
+    from memory.timeindex import TimeIndexedMemory
+
+    monkeypatch.setattr("memory.timeindex.assert_cloudsave_writable", lambda *a, **k: None)
+    db_path = tmp_path / "ti_atomic.db"
+    engine = create_engine(f"sqlite:///{db_path.as_posix()}")
+    with engine.connect() as conn:
+        conn.execute(text(
+            f"CREATE TABLE {TIME_ORIGINAL_TABLE_NAME} "
+            "(id INTEGER PRIMARY KEY, session_id TEXT, message TEXT, timestamp DATETIME)"
+        ))
+        conn.commit()
+
+    tim = object.__new__(TimeIndexedMemory)
+    tim.engines = {NAME: engine}
+    tim.db_paths = {NAME: str(db_path)}
+    tim._engine_locks = {}
+    tim._lock = __import__("threading").RLock()
+    monkeypatch.setattr(tim, "_ensure_engine_exists", lambda *_a, **_k: True, raising=False)
+
+    t1 = datetime(2026, 11, 1, 10, 0, 0)
+    t2 = datetime(2026, 11, 2, 12, 0, 0)
+    tim.store_conversation("sess_shared", [HumanMessage(content="first")], NAME, timestamp=t1)
+    tim.store_conversation("sess_shared", [AIMessage(content="second")], NAME, timestamp=t2)
+
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text(f"SELECT id, session_id, timestamp FROM {TIME_ORIGINAL_TABLE_NAME} ORDER BY id")
+        ).fetchall()
+    assert len(rows) == 2
+    assert all(r[2] is not None for r in rows)
+    # Reused session_id must keep each row's original timestamp instead of overwriting prior rows.
+    assert rows[0][2].startswith("2026-11-01")
+    assert rows[1][2].startswith("2026-11-02")
+
+    # Failure during insert must roll back cleanly leaving zero timestamp IS NULL rows.
+    class _BrokenMessage:
+        def __str__(self):
+            raise RuntimeError("serialize boom")
+
+    with pytest.raises(RuntimeError, match="serialize boom"):
+        tim.store_conversation("sess_fail", [HumanMessage(content="ok"), _BrokenMessage()], NAME, timestamp=t2)
+    with engine.connect() as conn:
+        null_rows = conn.execute(
+            text(f"SELECT COUNT(*) FROM {TIME_ORIGINAL_TABLE_NAME} WHERE timestamp IS NULL")
+        ).fetchone()[0]
+    assert null_rows == 0
+
+    # Database execution failure after the first INSERT must roll back the entire batch.
+    with engine.connect() as conn:
+        conn.execute(text(
+            f"CREATE TRIGGER reject_second_msg BEFORE INSERT ON {TIME_ORIGINAL_TABLE_NAME} "
+            "WHEN NEW.session_id = 'sess_db_fail' AND NEW.message LIKE '%trigger_boom%' "
+            "BEGIN SELECT RAISE(ABORT, 'db constraint boom'); END;"
+        ))
+        conn.commit()
+    with pytest.raises(Exception, match="db constraint boom"):
+        tim.store_conversation(
+            "sess_db_fail",
+            [HumanMessage(content="first_ok"), AIMessage(content="trigger_boom")],
+            NAME,
+            timestamp=t2,
+        )
+    with engine.connect() as conn:
+        failed_rows = conn.execute(
+            text(f"SELECT COUNT(*) FROM {TIME_ORIGINAL_TABLE_NAME} WHERE session_id = 'sess_db_fail'")
+        ).fetchone()[0]
+        shared_rows = conn.execute(
+            text(f"SELECT id, session_id, timestamp FROM {TIME_ORIGINAL_TABLE_NAME} ORDER BY id")
+        ).fetchall()
+    assert failed_rows == 0
+    assert len(shared_rows) == 2
+    assert shared_rows[0][2].startswith("2026-11-01")
+    assert shared_rows[1][2].startswith("2026-11-02")

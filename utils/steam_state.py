@@ -19,8 +19,7 @@ Steamworks process-global handle.
 The Steamworks SDK is initialized once during app startup (``app/main_server/__init__.py``)
 and consumed by code at every layer of the dependency stack:
 
-* high-level routers / brain agents (e.g. ``main_routers/workshop_router.py``,
-  ``brain/browser_use_adapter.py``)
+* high-level routers (e.g. ``main_routers/workshop_router.py``)
 * mid-level helpers (e.g. ``utils/config_manager.py``'s GeoIP probe,
   ``utils/language_utils.py``'s Steam-language detection)
 
@@ -50,6 +49,14 @@ _steamworks: Optional[Any] = None
 _steamworks_initializer: Optional[Callable[[], Optional[Any]]] = None
 _steamworks_lock = threading.RLock()
 _last_init_attempt_monotonic = 0.0
+# True while an initializer call is running. The initializer itself runs
+# outside ``_steamworks_lock`` so a hung ``SteamAPI_Init`` never blocks other
+# callers; this flag keeps the "one init at a time" guarantee instead.
+_init_in_flight = False
+# Bumped by every explicit install/reset. ``ensure_steamworks`` only installs
+# its result if nothing else changed the handle while the initializer ran, so a
+# late init that finishes after shutdown/reset cannot resurrect the handle.
+_steamworks_generation = 0
 
 
 def get_steamworks() -> Optional[Any]:
@@ -67,9 +74,34 @@ def set_steamworks(steamworks: Optional[Any]) -> None:
 
     Pass ``None`` to clear (e.g. on shutdown / failed init).
     """
-    global _steamworks
+    global _steamworks, _steamworks_generation
     with _steamworks_lock:
         _steamworks = steamworks
+        _steamworks_generation += 1
+
+
+def get_steamworks_generation() -> int:
+    """Return the current install/reset generation.
+
+    An initializer that keeps its own copy of the handle reads this before
+    running the SDK init and passes it to ``publish_if_generation_unchanged``.
+    """
+    return _steamworks_generation
+
+
+def publish_if_generation_unchanged(generation: int, publish: Callable[[], None]) -> bool:
+    """Run ``publish`` under the state lock only if no install/reset happened since ``generation``.
+
+    Lets the initializer update its own module-level copy of the handle with
+    the same guard ``ensure_steamworks`` applies to the shared cache, so a
+    late init that finishes after shutdown/reset leaves no stale handle behind.
+    Returns whether ``publish`` ran.
+    """
+    with _steamworks_lock:
+        if _steamworks_generation != generation:
+            return False
+        publish()
+        return True
 
 
 def can_probe_steamworks() -> bool:
@@ -88,9 +120,10 @@ def set_steamworks_initializer(initializer: Optional[Callable[[], Optional[Any]]
     knows how to create and wire the SDK instance. Keeping the callback here
     lets routers ask for a retry without importing ``main_server``.
     """
-    global _steamworks_initializer
+    global _steamworks_initializer, _steamworks_generation
     with _steamworks_lock:
         _steamworks_initializer = initializer
+        _steamworks_generation += 1
 
 
 def ensure_steamworks(*, force: bool = False, min_retry_interval_seconds: float = 5.0) -> Optional[Any]:
@@ -100,12 +133,17 @@ def ensure_steamworks(*, force: bool = False, min_retry_interval_seconds: float 
     helpers can keep doing cheap read-only probes. Steam-facing API endpoints
     call this function to support the common flow "start N.E.K.O first, open
     Steam later".
+
+    Only one initializer call runs at a time. While it runs, other callers get
+    ``None`` immediately instead of waiting on it, so a hung SDK init cannot
+    stall them.
     """
-    global _steamworks, _last_init_attempt_monotonic
+    global _steamworks, _last_init_attempt_monotonic, _init_in_flight
     with _steamworks_lock:
         if _steamworks is not None:
             return _steamworks
-        if _steamworks_initializer is None:
+        initializer = _steamworks_initializer
+        if initializer is None or _init_in_flight:
             return None
 
         now = time.monotonic()
@@ -117,5 +155,21 @@ def ensure_steamworks(*, force: bool = False, min_retry_interval_seconds: float 
             return None
 
         _last_init_attempt_monotonic = now
-        _steamworks = _steamworks_initializer()
+        _init_in_flight = True
+        generation = _steamworks_generation
+
+    try:
+        result = initializer()
+    except BaseException:
+        with _steamworks_lock:
+            _init_in_flight = False
+        raise
+
+    with _steamworks_lock:
+        _init_in_flight = False
+        # The initializer may install the handle itself via set_steamworks(),
+        # and shutdown/reset may have cleared it meanwhile. Either way the
+        # generation moved and the current handle wins over this result.
+        if _steamworks_generation == generation:
+            _steamworks = result
         return _steamworks

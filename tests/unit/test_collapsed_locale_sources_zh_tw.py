@@ -262,3 +262,46 @@ def test_no_callback_call_site_shortens_the_locale(module_name):
     assert not offenders, (
         f"{module_name} 这些行还在把 locale 砍成短码，字形到不了渲染函数：{offenders}"
     )
+
+
+@pytest.mark.parametrize("spelling", TRADITIONAL_SPELLINGS)
+def test_context_summary_ready_and_pending_extra_replies_preserve_traditional(spelling):
+    from config.prompts.prompts_sys import get_context_summary_ready
+    from main_logic.core.callback_render import _render_pending_extra_replies_by_origin
+
+    summary_ready = get_context_summary_ready(spelling, input_mode="audio").format(name="YUI", master="Player")
+    assert "前情概要" in summary_ready
+    assert "準備" in summary_ready
+
+    rendered = _render_pending_extra_replies_by_origin(
+        CALLBACKS,
+        lang=spelling,
+        lanlan_name="YUI",
+        master_name="Player",
+    )
+    assert "後台任務彙報" in rendered or "外掛" in rendered
+
+
+def test_lifecycle_sys_prompt_call_sites_do_not_shorten_user_language():
+    tree = _tree("main_logic.core.lifecycle")
+    short_targets = {"get_context_summary_ready", "_render_pending_extra_replies_by_origin"}
+    offenders = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if not any(
+            isinstance(call, ast.Call) and _callee_name(call) in short_targets
+            for call in ast.walk(node)
+        ):
+            continue
+        for sub in ast.walk(node):
+            if (
+                isinstance(sub, ast.Call)
+                and _callee_name(sub) == "normalize_language_code"
+                and any(
+                    kw.arg == "format" and getattr(kw.value, "value", None) == "short"
+                    for kw in sub.keywords
+                )
+            ):
+                offenders.append(sub.lineno)
+    assert not offenders, f"lifecycle.py still collapses locale via format='short' at lines: {offenders}"

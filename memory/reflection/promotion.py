@@ -491,8 +491,7 @@ class PromotionMixin:
                 #     consumed): stays confirmed and retries next pass.
                 rid = r.get('id')
                 already_applied = bool(
-                    promote_subject is not None
-                    and rid
+                    rid
                     and await self._ascoped_promotion_already_applied(
                         lanlan_name, rid, promote_subject,
                     )
@@ -533,7 +532,6 @@ class PromotionMixin:
 
                 if (
                     code == PersonaManager.FACT_QUEUED_CORRECTION
-                    and promote_subject is not None
                     and rid
                     and await self._ascoped_promotion_already_applied(
                         lanlan_name, rid, promote_subject,
@@ -602,9 +600,9 @@ class PromotionMixin:
         return transitions
 
     async def _ascoped_promotion_already_applied(
-        self, lanlan_name: str, reflection_id: str, subject,
+        self, lanlan_name: str, reflection_id: str, subject=None,
     ) -> bool:
-        """True when this reflection already produced a scoped persona entry.
+        """True when this reflection already produced a persona entry in scope.
 
         The persona write and the reflection status flip are two stores; a
         failure between them leaves a durable entry whose retry would be
@@ -617,6 +615,7 @@ class PromotionMixin:
             return False
         from memory.scopes import entry_matches_subject
 
+        expected_prom_id = f"prom_{reflection_id}"
         for section in persona.values():
             if not isinstance(section, dict):
                 continue
@@ -625,11 +624,11 @@ class PromotionMixin:
                     continue
                 # Scoped refinement merges multiple promoted entries into one; output
                 # source_id inherits only the first, storing other reflection IDs in
-                # merged_source_ids. Check both for idempotence, or half-commits where persona
-                # persisted but reflection status failed will repromote duplicates
-                # after merging.
+                # merged_source_ids. Check id == f"prom_{reflection_id}", source_id, and
+                # merged_source_ids for idempotence.
                 if (
-                    fact.get('source_id') != reflection_id
+                    fact.get('id') != expected_prom_id
+                    and fact.get('source_id') != reflection_id
                     and reflection_id not in (fact.get('merged_source_ids') or [])
                 ):
                     continue
@@ -785,7 +784,7 @@ class PromotionMixin:
         try:
             from utils.llm_client import create_chat_llm_async
             set_call_type("memory_recheck_reflection")
-            api_config = await self._config_manager.aget_model_api_config('summary')
+            api_config = await self._config_manager.aget_model_api_config('memory')
             from config import LLM_OUTPUT_GUARD_MAX_TOKENS
             # Disable thinking, like memory_recheck_fact: annotate two fields on one legacy entry.
             # New reflections get identical temporal_scope/event_when during synthesis;

@@ -910,36 +910,38 @@ class TimeIndexedMemory:
             )
 
     def store_conversation(self, event_id, messages, lanlan_name, timestamp=None):
-        self._assert_timeindex_writable(lanlan_name)
-        # Ensure the database engine and path exist.
-        if not self._ensure_engine_exists(lanlan_name):
-            logger.error(f"严重错误：无法为角色 {lanlan_name} 创建任何数据库连接")
-            return
+        with self._get_engine_lock(lanlan_name):
+            self._assert_timeindex_writable(lanlan_name)
+            # Ensure the database engine and path exist.
+            if not self._ensure_engine_exists(lanlan_name):
+                logger.error(f"严重错误：无法为角色 {lanlan_name} 创建任何数据库连接")
+                return
 
-        if timestamp is None:
-            timestamp = datetime.now()
+            if not messages:
+                return
 
-        db_path = self.db_paths[lanlan_name]
-        uri_path = db_path.replace("\\", "/")
-        connection_string = f"sqlite:///{uri_path}"
+            if timestamp is None:
+                timestamp = datetime.now()
 
-        original_table = self._validate_table_name(TIME_ORIGINAL_TABLE_NAME)
-
-        origin_history = SQLChatMessageHistory(
-            connection_string=connection_string,
-            session_id=event_id,
-            table_name=original_table,
-        )
-
-        origin_history.add_messages(messages)
-        # NOTE: compressed table writes are deprecated; the fact/reflection layer replaces their functionality.
-
-        with self.engines[lanlan_name].connect() as conn:
-            conn.execute(
-                text(f"UPDATE {original_table} SET timestamp = :timestamp WHERE session_id = :session_id"),
-                {"timestamp": timestamp, "session_id": event_id}
-            )
-            conn.commit()
+            original_table = self._validate_table_name(TIME_ORIGINAL_TABLE_NAME)
+            rows = [
+                {
+                    "session_id": event_id,
+                    "message": SQLChatMessageHistory.serialize_message(msg),
+                    "timestamp": timestamp,
+                }
+                for msg in messages
+            ]
+            # NOTE: compressed table writes are deprecated; the fact/reflection layer replaces their functionality.
+            with self.engines[lanlan_name].connect() as conn:
+                conn.execute(
+                    text(
+                        f"INSERT INTO {original_table} (session_id, message, timestamp) "
+                        "VALUES (:session_id, :message, :timestamp)"
+                    ),
+                    rows,
+                )
+                conn.commit()
 
     async def astore_conversation(self, event_id, messages, lanlan_name, timestamp=None):
         await asyncio.to_thread(
@@ -1266,10 +1268,16 @@ class TimeIndexedMemory:
 
     def get_original_source_evidence(self, lanlan_name: str, source_ids: list[str]) -> dict[str, tuple[str, int | float]]:
         """Read original role/time evidence by identity, without interpreting message text."""
+        if not source_ids:
+            return {}
         from memory.long_term_sync import original_message_source
         from memory.message_sources import is_theater_memory_message
         import re
-        wanted = {value for value in source_ids if re.fullmatch(r'(?:sync:[0-9a-f]{32}|desktop:[0-9a-f]{64})', value)}
+        wanted = {
+            value
+            for value in source_ids
+            if isinstance(value, str) and re.fullmatch(r'(?:sync:[0-9a-f]{32}|desktop:[0-9a-f]{64})', value)
+        }
         if not wanted:
             return {}
         table = self._validate_table_name(TIME_ORIGINAL_TABLE_NAME)
@@ -1289,12 +1297,16 @@ class TimeIndexedMemory:
                     for original_time, session_id, serialized in rows:
                         try:
                             stored = json.loads(serialized)
-                        except (json.JSONDecodeError, TypeError):
+                        except (ValueError, TypeError):
+                            # JSONDecodeError subclasses ValueError; this also catches Python 3.11+ int-digit limit ValueError.
                             continue
                         if (not isinstance(stored, dict) or stored.get('type') not in ('human', 'ai')
                                 or is_theater_memory_message(stored)):
                             continue
-                        identity, at = original_message_source(stored, session_id, original_time)
+                        try:
+                            identity, at = original_message_source(stored, session_id, original_time)
+                        except (TypeError, ValueError):
+                            continue
                         if identity in wanted and at is not None:
                             found.setdefault(identity, set()).add((stored['type'], at))
         return {identity: next(iter(times)) for identity, times in found.items() if len(times) == 1}
@@ -1832,40 +1844,54 @@ class TimeIndexedMemory:
     async def a_ensure_fts_table(self, lanlan_name: str) -> None:
         await asyncio.to_thread(self._ensure_fts_table, lanlan_name)
 
-    def index_fact(self, lanlan_name: str, fact_id: str, content: str) -> None:
-        """Insert a fact into the FTS5 index.
+    def index_fact(
+        self, lanlan_name: str, fact_id: str, content: str, *, replace: bool = False,
+    ) -> bool:
+        """Insert (or replace when ``replace=True``) a fact in the FTS5 index.
 
         What lands in the ``content`` column is the token list from
         ``fts_tokens``, space-joined — never the raw fact text. Nothing
         reads this column back as prose (search returns ids), so the
         stored form is free to be whatever makes matching work.
+        Returns True when the index reflects the fact (or already had it in
+        insert mode), False when engine/table was unavailable or DB write failed.
         """
         self._assert_timeindex_writable(lanlan_name)
         if not self._ensure_engine_exists(lanlan_name):
-            return
+            return False
         if not self._ensure_fts_table(lanlan_name):
-            return
+            return False
         stop_names = collect_stop_names(get_config_manager(), lanlan_name)
         indexed_content = " ".join(fts_tokens(content, stop_names))
         try:
             with self.engines[lanlan_name].connect() as conn:
-                # Check for existence first.
-                result = conn.execute(
-                    text(f"SELECT fact_id FROM {self.FACTS_FTS_TABLE} WHERE fact_id = :fid"),
-                    {"fid": fact_id}
-                )
-                if result.fetchone():
-                    return  # Already indexed.
+                if replace:
+                    conn.execute(
+                        text(f"DELETE FROM {self.FACTS_FTS_TABLE} WHERE fact_id = :fid"),
+                        {"fid": fact_id}
+                    )
+                else:
+                    # Check for existence first.
+                    result = conn.execute(
+                        text(f"SELECT fact_id FROM {self.FACTS_FTS_TABLE} WHERE fact_id = :fid"),
+                        {"fid": fact_id}
+                    )
+                    if result.fetchone():
+                        return True  # Already indexed.
                 conn.execute(
                     text(f"INSERT INTO {self.FACTS_FTS_TABLE}(fact_id, content) VALUES(:fid, :content)"),
                     {"fid": fact_id, "content": indexed_content}
                 )
                 conn.commit()
+            return True
         except Exception as e:
             logger.warning(f"[TimeIndexedMemory] 索引事实失败: {e}")
+            return False
 
-    async def aindex_fact(self, lanlan_name: str, fact_id: str, content: str) -> None:
-        await asyncio.to_thread(self.index_fact, lanlan_name, fact_id, content)
+    async def aindex_fact(
+        self, lanlan_name: str, fact_id: str, content: str, *, replace: bool = False,
+    ) -> bool:
+        return await asyncio.to_thread(self.index_fact, lanlan_name, fact_id, content, replace=replace)
 
     # ── v1 → v2 index backfill ──────────────────────────────────────────
 
@@ -2147,3 +2173,56 @@ class TimeIndexedMemory:
             fact_id,
             strict=strict,
         )
+
+    def rebuild_fact_index(
+        self, lanlan_name: str, facts: list[dict],
+    ) -> int:
+        """Atomically rebuild ``facts_fts_v2`` for ``lanlan_name`` from ``facts``.
+
+        Used after snapshot restore so restored, un-archived, or reverted facts
+        immediately match the on-disk ``facts.json`` state for near-duplicate
+        checks (instead of retaining stale pre-restore tokens or missing deleted rows).
+        """
+        self._assert_timeindex_writable(lanlan_name)
+        if not self._ensure_engine_exists(lanlan_name):
+            return 0
+        if not self._ensure_fts_table(lanlan_name):
+            return 0
+        stop_names = collect_stop_names(get_config_manager(), lanlan_name)
+        rows: list[tuple[object, str]] = []
+        seen_ids: set[tuple[type, object]] = set()
+        for f in facts:
+            if not isinstance(f, dict):
+                continue
+            fid = f.get("id")
+            if not isinstance(fid, (str, int, float)) or isinstance(fid, bool) or fid == "":
+                continue
+            content = str(f.get("text") or "").strip()
+            if not content:
+                continue
+            dedup_key = (type(fid), fid)
+            if dedup_key in seen_ids:
+                continue
+            seen_ids.add(dedup_key)
+            rows.append((fid, " ".join(fts_tokens(content, stop_names))))
+        try:
+            with self.engines[lanlan_name].connect() as conn:
+                conn.execute(text(f"DELETE FROM {self.FACTS_FTS_TABLE}"))
+                for fid, indexed_content in rows:
+                    conn.execute(
+                        text(
+                            f"INSERT INTO {self.FACTS_FTS_TABLE}(fact_id, content) "
+                            "VALUES(:fid, :content)"
+                        ),
+                        {"fid": fid, "content": indexed_content},
+                    )
+                conn.commit()
+            return len(rows)
+        except Exception as e:
+            logger.warning(f"[TimeIndexedMemory] 重建 FTS5 索引失败: {e}")
+            return 0
+
+    async def arebuild_fact_index(
+        self, lanlan_name: str, facts: list[dict],
+    ) -> int:
+        return await asyncio.to_thread(self.rebuild_fact_index, lanlan_name, facts)

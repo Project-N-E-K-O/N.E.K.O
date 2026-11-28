@@ -73,7 +73,7 @@ export default function MessageBubble({
         data-guide-message={isGuideMessage(message) ? 'true' : undefined}
         data-message-sort-key={message.sortKey ?? ''}
       >
-        <div className={clsx("system-chip", { "system-chip-card": message.blocks.some(block => block.type === "html_card") })}>
+        <div className={clsx("system-chip", { "system-chip-card": message.blocks.some(block => block.type === "html_card" || block.type === "nekopower_ask") })}>
           <span className="system-chip-time">{message.time}</span>
           {message.author ? (
             // Where this came from. A plugin may phrase its text in the

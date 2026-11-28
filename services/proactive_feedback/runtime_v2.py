@@ -283,13 +283,7 @@ class ProactiveFeedbackRuntimeV2(ProactiveFeedbackRuntime):
                 return {"state": "stopped"}
             batch, owner = None, None
             try:
-                owner, token = await self._session()
-                # Always refresh control, including an empty/paused/blocked
-                # telemetry queue. Journal import and freezing happen later.
-                if not await self._refresh_control(owner, token):
-                    return {"state": self._control_state}
-                if self.upload_paused:
-                    return {"state": "paused", "error_code": "upload_paused"}
+                settings_ack_pending = False
                 if self.settings_drain is not None:
                     async with self._settings_lock:
                         try:
@@ -297,10 +291,21 @@ class ProactiveFeedbackRuntimeV2(ProactiveFeedbackRuntime):
                             self._settings_import_error = ""
                         except SettingsAcknowledgementPending:
                             self._settings_import_error = "settings_import_unavailable"
-                            await self._guard(owner, token)
-                            return {"state": "retry_wait", "error_code": self._settings_import_error}
+                            settings_ack_pending = True
                         except (OSError, sqlite3.Error, ValueError, LockException):
                             self._settings_import_error = "settings_import_unavailable"
+                if self._closing:
+                    return {"state": "stopped"}
+                owner, token = await self._session()
+                # Always refresh control, including an empty/paused/blocked
+                # telemetry queue. Journal import happened above.
+                if not await self._refresh_control(owner, token):
+                    return {"state": self._control_state}
+                if self.upload_paused:
+                    return {"state": "paused", "error_code": "upload_paused"}
+                if settings_ack_pending:
+                    await self._guard(owner, token)
+                    return {"state": "retry_wait", "error_code": self._settings_import_error}
                 if self.current_settings_provider is not None:
                     async with self._settings_lock:
                         try:

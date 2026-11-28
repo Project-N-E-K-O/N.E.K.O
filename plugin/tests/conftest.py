@@ -15,11 +15,28 @@ _REPO_ROOT = str(_Path(__file__).resolve().parents[2])
 if _sys.path[:1] != [_REPO_ROOT]:
     _sys.path.insert(0, _REPO_ROOT)
 
-# pytest discovers hooks by name in the conftest namespace, so this import has no explicit call site;
-# it is not dead code: deleting it disables the entire process-wide clock guard.
+# Before ANY product module is imported (this file's own imports below build the
+# ConfigManager singleton during collection): telemetry opt-out, inherited storage-root
+# variables dropped, logs redirected, ConfigManager root resolution pointed at a
+# throwaway root. Same call as tests/conftest.py; see tests/process_isolation.py.
+from tests.process_isolation import isolate_test_process as _isolate_test_process  # noqa: E402
+
+_isolate_test_process()
+
+# pytest discovers hooks by name in the conftest namespace, so these imports have no explicit call site;
+# they are not dead code: deleting one disables that process-wide guard.
 from tests.clock_guard import pytest_runtest_call  # noqa: F401,E402
+# Storage-root environment guard (tests/storage_root_env_guard.py): a test that leaves
+# NEKO_STORAGE_ANCHOR_ROOT / NEKO_STORAGE_CLOUDSAVE_ROOT behind (the autouse fixture below
+# only resets SELECTED) would steer every later ConfigManager toward the real root.
+from tests.storage_root_env_guard import (  # noqa: E402
+    pytest_runtest_setup,  # noqa: F401
+    pytest_runtest_teardown,  # noqa: F401
+    pytest_sessionstart,  # noqa: F401
+)
 
 import asyncio.events as _events
+import os
 from collections.abc import AsyncIterator
 from pathlib import Path
 
@@ -58,9 +75,19 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
 def _isolate_plugin_runtime_root(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
-) -> None:
+):
+    from tests.storage_root_env_guard import restore_storage_root_env, snapshot_storage_root_env
+
+    before = snapshot_storage_root_env()
     monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path / "runtime_data"))
     monkeypatch.delenv("NEKO_STORAGE_ANCHOR_ROOT", raising=False)
+    yield
+    # Starting a plugin process makes the host export its whole storage layout
+    # into os.environ for the child (plugin/core/host.py:
+    # _refresh_child_storage_layout_env). monkeypatch only undoes keys it saw,
+    # so ANCHOR / CLOUDSAVE stayed set for the rest of the session -- and before
+    # the ConfigManager singleton was isolated they named the real root.
+    restore_storage_root_env(before)
 
 
 @pytest.fixture(autouse=True)
@@ -90,7 +117,7 @@ def _isolate_runtime_overrides(monkeypatch: pytest.MonkeyPatch):
 
 @pytest.fixture(autouse=True)
 def isolated_plugin_consent(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
-    """Real consent and report stores, isolated in a temporary directory."""
+    """Real consent, permission and report stores, isolated in a temporary directory."""
     import json
     from plugin.server.infrastructure import plugin_consent
     from plugin.server.application.plugins import (
@@ -110,12 +137,82 @@ def isolated_plugin_consent(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     store = plugin_consent.PluginConsentStore(Manager())
     monkeypatch.setattr(plugin_consent, "consent_store", store)
     monkeypatch.setattr(consent_service, "consent_store", store)
+    from plugin.server.application.plugins import permission_service
+    from plugin.server.infrastructure.plugin_permissions import PluginPermissionStore
+
+    monkeypatch.setattr(
+        permission_service,
+        "permission_store",
+        PluginPermissionStore(
+            Manager(), source_resolver=permission_service.current_source
+        ),
+    )
     runner = capability_analysis_service.CapabilityAnalysisService(
         CapabilityReportStore(tmp_path / "reports")
     )
     monkeypatch.setattr(capability_analysis_service, "analysis_service", runner)
     yield store
     runner.shutdown()
+
+
+@pytest.fixture(autouse=True)
+def _no_background_host_model_autobind(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch):
+    """Keep the install hook's auto-bind thread out of unrelated tests.
+
+    The daemon thread reads the freshly installed plugin directory; tests that
+    rename or remove that directory right after install() would race it
+    (Windows: WinError 5 on open handles). Tests exercising auto-bind itself
+    opt out with @pytest.mark.host_model_autobind.
+    """
+    if request.node.get_closest_marker("host_model_autobind"):
+        return
+    from plugin.server.application.plugins import capability_analysis_service
+
+    monkeypatch.setattr(
+        capability_analysis_service, "_auto_bind_host_models_safe", lambda *_a, **_k: None
+    )
+
+
+_GIT_IDENTITY_ENV = (
+    "GIT_AUTHOR_NAME",
+    "GIT_AUTHOR_EMAIL",
+    "GIT_AUTHOR_DATE",
+    "GIT_COMMITTER_NAME",
+    "GIT_COMMITTER_EMAIL",
+    "GIT_COMMITTER_DATE",
+)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_git_environment(
+    monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory
+):
+    """Keep the developer's git identity and config out of test repos.
+
+    Identity variables beat ``git -c user.name=...``, and a global or system
+    config (signing, hooks, default branch, aliases) changes what the CLI's
+    git calls see. Configuration passed through the environment
+    (``GIT_CONFIG_COUNT`` with ``GIT_CONFIG_KEY_<n>`` / ``_VALUE_<n>``,
+    ``GIT_CONFIG_PARAMETERS``, e.g. a ``url.*.insteadOf`` rewrite) does the
+    same; the CLI forwards it on purpose, so tests must drop it here.
+    Repository-locating variables exported by a git hook (``GIT_DIR``,
+    ``GIT_INDEX_FILE`` ...) would point the tests' own bare git helpers at
+    the outer repository. CI runners have none of these, so a test that passed
+    there could fail on a developer machine.
+    """
+    from plugin.neko_plugin_cli.git_env import REPOSITORY_ENV_VARS
+
+    for name in (*_GIT_IDENTITY_ENV, *REPOSITORY_ENV_VARS, "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT"):
+        monkeypatch.delenv(name, raising=False)
+    for name in list(os.environ):
+        if name.startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_")):
+            monkeypatch.delenv(name)
+    # Not under tmp_path: many tests turn tmp_path itself into the repository.
+    empty_config = tmp_path_factory.getbasetemp() / "gitconfig-isolated"
+    if not empty_config.exists():
+        empty_config.write_text("", encoding="utf-8")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(empty_config))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
 
 
 @pytest.fixture(autouse=True)

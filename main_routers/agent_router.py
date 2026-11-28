@@ -28,6 +28,7 @@ See ``main_routers/characters_router.py`` docstring or
 enforced by ``scripts/check_api_trailing_slash.py``.
 """
 
+import json
 import os
 import time
 import uuid
@@ -37,13 +38,102 @@ from urllib.parse import urlencode, urlparse
 from utils.logger_config import get_module_logger
 from fastapi import APIRouter, Body, Request
 from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.routing import APIRoute
 import httpx
 from .shared_state import get_session_manager, get_config_manager
+from .system_router._shared import _validate_local_mutation_request
 from config import TOOL_SERVER_PORT, USER_PLUGIN_BASE
+from main_logic import nekopower_enable
 from main_logic.activity.system_signals import is_remote_backend_deployment
 from utils.desktop_capture import native_wayland_capture_available
 
-router = APIRouter(prefix="/api/agent", tags=["agent"])
+
+class _AgentMutationRoute(APIRoute):
+    """Enforce remote-mode block, JSON Content-Type, and local CSRF/Origin checks."""
+
+    def get_route_handler(self):
+        downstream = super().get_route_handler()
+
+        async def guarded(request: Request):
+            if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+                blocked = _remote_backend_block()
+                if blocked is not None:
+                    return blocked
+
+                path = request.url.path
+                requires_json = any(
+                    path.endswith(suffix)
+                    for suffix in (
+                        "/flags",
+                        "/command",
+                        "/builtin/browser/settings",
+                        "/admin/control",
+                    )
+                )
+                media_type = (
+                    request.headers.get("content-type", "")
+                    .split(";", 1)[0]
+                    .strip()
+                    .lower()
+                )
+                parsed_payload: dict | None = None
+                if requires_json or media_type:
+                    if media_type != "application/json":
+                        return JSONResponse(
+                            {"success": False, "error": "Content-Type must be application/json"},
+                            status_code=415,
+                        )
+                else:
+                    raw_content_length = request.headers.get("content-length")
+                    if raw_content_length is not None:
+                        try:
+                            content_length = int(raw_content_length)
+                        except ValueError:
+                            return JSONResponse(
+                                {"success": False, "error": "Content-Type must be application/json"},
+                                status_code=415,
+                            )
+                        if content_length != 0:
+                            return JSONResponse(
+                                {"success": False, "error": "Content-Type must be application/json"},
+                                status_code=415,
+                            )
+
+                if media_type == "application/json":
+                    raw_body = await request.body()
+                    if requires_json or raw_body:
+                        try:
+                            decoded = json.loads(raw_body.decode("utf-8")) if raw_body else None
+                        except (UnicodeDecodeError, ValueError, RecursionError):
+                            return JSONResponse(
+                                {"success": False, "error": "Invalid JSON body"},
+                                status_code=400,
+                            )
+                        if not isinstance(decoded, dict):
+                            return JSONResponse(
+                                {"success": False, "error": "JSON body must be an object"},
+                                status_code=400,
+                            )
+                        parsed_payload = decoded
+
+                is_emergency_stop = path == "/api/agent/builtin/stop"
+                is_json_emergency_stop = is_emergency_stop and media_type == "application/json"
+                rejected = _validate_local_mutation_request(
+                    request,
+                    payload=parsed_payload,
+                    error_defaults={"success": False},
+                    require_csrf=not is_json_emergency_stop,
+                    allow_stale_csrf=is_json_emergency_stop,
+                )
+                if rejected is not None:
+                    return rejected
+
+            return await downstream(request)
+
+        return guarded
+
+
+router = APIRouter(prefix="/api/agent", tags=["agent"], route_class=_AgentMutationRoute)
 logger = get_module_logger(__name__, "Main")
 TOOL_SERVER_BASE = f"http://127.0.0.1:{TOOL_SERVER_PORT}"
 _HTTP_CLIENT: httpx.AsyncClient | None = None
@@ -89,6 +179,85 @@ def _remote_backend_block() -> JSONResponse | None:
     return None
 
 
+class _Unconfirmed:
+    """The switches of the sessions that commands wrote and the agent process has not answered for yet.
+
+    A command writes the session's copy of a switch before it is sent
+    on, and what it wrote is taken back when the agent process did not
+    take it. Commands are not held back for one another (one that takes
+    seconds would make the next time out in the page), so several may
+    have written the same switch, and other things write it too (the
+    flags route, a character switch).
+
+    One rule covers all of it: **a switch says what was written last
+    among the writes that are not known to have failed.** Every write
+    gets a number in the order it was made. Kept for a switch, while
+    commands are under way for it, are the last write that stands
+    (``base``: what it was before them, then whatever a command that was
+    taken or another route wrote since) and what each command under way
+    wrote. A command that was not taken takes its write out, and the
+    switch is set to the latest of what is left. A command that was
+    taken makes its write the base unless a later one stands already.
+    """
+
+    def __init__(self) -> None:
+        # (id of the manager, switch) -> [(number, value) that stands, {command: (number, value)}]
+        self._switches: dict[tuple[int, str], list] = {}
+        self._written = 0
+
+    def _number(self) -> int:
+        self._written += 1
+        return self._written
+
+    def write(self, mgr, command: object, flags: dict) -> None:
+        now = getattr(mgr, "agent_flags", {}) or {}
+        for key, value in flags.items():
+            entry = self._switches.get((id(mgr), key))
+            if entry is None:
+                entry = self._switches[(id(mgr), key)] = [(self._number(), bool(now.get(key, False))), {}]
+            entry[1][command] = (self._number(), value)
+        mgr.update_agent_flags(flags)
+
+    def written_elsewhere(self, mgr, flags: dict) -> None:
+        """Note switches that were written by another way than a command (the flags route, a character switch).
+
+        It is a write that stands, later than every write so far. Only
+        what the session takes for a switch (``update_agent_flags``
+        leaves out whatever is not true or false): what it did not
+        write is not noted as written.
+        """
+        for key, value in flags.items():
+            entry = self._switches.get((id(mgr), key))
+            if entry is not None and isinstance(value, bool):
+                entry[0] = (self._number(), value)
+
+    def settle(self, mgr, command: object, *, taken: bool) -> None:
+        """A command is over: ``taken`` unless it is known that the agent process did not take it.
+
+        One whose answer never came (a timeout, a request given up)
+        counts as taken: it may well have been, and the switch stays
+        as it wrote it, as it always did. Called again for a command
+        that is over already, it does nothing.
+        """
+        back: dict = {}
+        for (owner, key), entry in list(self._switches.items()):
+            if owner != id(mgr) or command not in entry[1]:
+                continue
+            wrote = entry[1].pop(command)
+            if taken:
+                entry[0] = max(entry[0], wrote, key=lambda write: write[0])
+            else:
+                # What it wrote is not so: the switch says the latest of the writes that are left.
+                back[key] = max([entry[0], *entry[1].values()], key=lambda write: write[0])[1]
+            if not entry[1]:
+                del self._switches[(owner, key)]
+        if back:
+            mgr.update_agent_flags(back)
+
+
+_unconfirmed = _Unconfirmed()
+
+
 async def force_disable_agent_for_character_switch(current_lanlan: str, previous_lanlan: str | None = None) -> bool:
     """Force-disable the agent (cat paw) after a character switch so stale global tool-service state cannot leak into the new character."""
     names = {
@@ -101,6 +270,7 @@ async def force_disable_agent_for_character_switch(current_lanlan: str, previous
         mgr = session_manager.get(name)
         if mgr:
             mgr.update_agent_flags(dict(_AGENT_OFF_FLAGS))
+            _unconfirmed.written_elsewhere(mgr, _AGENT_OFF_FLAGS)
 
     if not current_lanlan:
         return False
@@ -118,12 +288,12 @@ async def force_disable_agent_for_character_switch(current_lanlan: str, previous
         if response.is_success:
             return True
         logger.warning(
-            "角色切换关闭猫爪失败: lanlan=%s status=%s",
+            "角色切换关闭喵能力失败: lanlan=%s status=%s",
             current_lanlan,
             response.status_code,
         )
     except Exception as exc:
-        logger.warning("角色切换关闭猫爪异常: lanlan=%s err=%s", current_lanlan, exc)
+        logger.warning("角色切换关闭喵能力异常: lanlan=%s err=%s", current_lanlan, exc)
     return False
 
 
@@ -170,11 +340,14 @@ async def _resolve_user_plugin_base() -> str:
 def _get_http_client() -> httpx.AsyncClient:
     global _HTTP_CLIENT
     if _HTTP_CLIENT is None:
+        from utils.internal_http_client import internal_service_event_hooks
+
         _HTTP_CLIENT = httpx.AsyncClient(
             timeout=httpx.Timeout(2.5, connect=0.5),
             limits=httpx.Limits(max_connections=64, max_keepalive_connections=16),
             proxy=None,
             trust_env=False,
+            event_hooks=internal_service_event_hooks(),
         )
     return _HTTP_CLIENT
 
@@ -213,6 +386,7 @@ async def update_agent_flags(request: Request):
             return JSONResponse({"success": False, "error": "lanlan not found"}, status_code=404)
         # Update core flags first
         mgr.update_agent_flags(flags)
+        _unconfirmed.written_elsewhere(mgr, flags)
         # Forward to tool server for Computer-Use/Browser-Use/Plugin flags
         try:
             forward_payload = {}
@@ -232,12 +406,14 @@ async def update_agent_flags(request: Request):
                     raise Exception(f"tool_server responded {r.status_code}")
         except Exception as e:
             # On failure, reset flags in core to safe state (include user_plugin flag)
-            mgr.update_agent_flags({
+            off = {
                 'agent_enabled': False,
                 'computer_use_enabled': False,
                 'browser_use_enabled': False,
                 'user_plugin_enabled': False,
-            })
+            }
+            mgr.update_agent_flags(off)
+            _unconfirmed.written_elsewhere(mgr, off)
             return JSONResponse({"success": False, "error": f"tool_server forward failed: {e}"}, status_code=502)
         return {"success": True, "is_free_version": _config_manager.is_agent_free()}
     except Exception as e:
@@ -287,6 +463,9 @@ async def post_agent_command(request: Request):
     if blocked is not None:
         return blocked
     t0 = time.perf_counter()
+    mgr = None
+    # This command, for what it writes of the session's switches (``_Unconfirmed``).
+    mine = object()
     try:
         data = await request.json()
         request_id = data.get("request_id")
@@ -302,15 +481,22 @@ async def post_agent_command(request: Request):
             except Exception:
                 lanlan = None
         mgr = session_manager.get(lanlan) if lanlan else None
-        old_flags = dict(getattr(mgr, "agent_flags", {}) or {}) if mgr else None
+
+        def write(flags: dict) -> None:
+            _unconfirmed.write(mgr, mine, flags)
+
+        def take_back() -> None:
+            if mgr:
+                _unconfirmed.settle(mgr, mine, taken=False)
 
         # Keep main_server core flags in sync with command path.
         if mgr and command == "set_agent_enabled":
             enabled = bool(data.get("enabled"))
             if enabled:
-                mgr.update_agent_flags({"agent_enabled": True})
+                # Plugins come on with the switch, as in the agent process.
+                write({"agent_enabled": True, "user_plugin_enabled": True})
             else:
-                mgr.update_agent_flags({
+                write({
                     "agent_enabled": False,
                     "computer_use_enabled": False,
                     "browser_use_enabled": False,
@@ -319,18 +505,27 @@ async def post_agent_command(request: Request):
         elif mgr and command == "set_flag":
             key = data.get("key")
             if key in {"computer_use_enabled", "browser_use_enabled", "user_plugin_enabled"}:
-                mgr.update_agent_flags({key: bool(data.get("value"))})
+                write({key: bool(data.get("value"))})
+
+        from utils.internal_http_client import InternalServiceSigningError
 
         t_proxy = time.perf_counter()
         client = _get_http_client()
-        r = await client.post(f"{TOOL_SERVER_BASE}/agent/command", json=data, timeout=8.0)
+        try:
+            r = await client.post(f"{TOOL_SERVER_BASE}/agent/command", json=data, timeout=8.0)
+        except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout, InternalServiceSigningError):
+            # It was never sent: the session's switches go back to what they were.
+            # (After a timeout of the answer it is not known whether it was taken; they are left.)
+            take_back()
+            raise
         proxy_ms = round((time.perf_counter() - t_proxy) * 1000, 2)
         if not r.is_success:
             # Rollback local state on upstream failure.
-            if mgr and old_flags is not None:
-                mgr.update_agent_flags(old_flags)
+            take_back()
             logger.warning("[MainAgentTiming] request_id=%s upstream_status=%s proxy_ms=%s", request_id, r.status_code, proxy_ms)
             return JSONResponse({"success": False, "error": f"tool_server responded {r.status_code}"}, status_code=502)
+        if mgr:
+            _unconfirmed.settle(mgr, mine, taken=True)
         payload = r.json()
         total_ms = round((time.perf_counter() - t0) * 1000, 2)
         logger.info("[MainAgentTiming] request_id=%s proxy_ms=%s total_ms=%s", request_id or payload.get("request_id"), proxy_ms, total_ms)
@@ -346,6 +541,11 @@ async def post_agent_command(request: Request):
         total_ms = round((time.perf_counter() - t0) * 1000, 2)
         logger.warning("[MainAgentTiming] proxy_exception total_ms=%s error=%s", total_ms, e)
         return JSONResponse({"success": False, "error": str(e)}, status_code=502)
+    finally:
+        # However it ended (an answer that never came, a request given up): nothing is kept of
+        # it, so that a later command is not held to be one of several under way for ever.
+        if mgr:
+            _unconfirmed.settle(mgr, mine, taken=True)
 
 
 @router.get('/health')
@@ -390,8 +590,11 @@ async def redirect_plugin_dashboard(request: Request):
     else:
         user_plugin_base = await _resolve_user_plugin_base()
         target_url = f"{user_plugin_base}/ui"
-    if request.query_params.get("page") == "model-api":
-        target_url += "/model-api"
+    # Only named built-in manager pages may influence this redirect. Reuse the
+    # same runtime endpoint for desktop knowledge entry without a fixed port.
+    page = {"model-api": "/model-api", "knowledge": "/knowledge"}.get(request.query_params.get("page"))
+    if page:
+        target_url += page
     query_params: dict[str, str] = {}
     if "v" in request.query_params:
         v = request.query_params["v"].strip()
@@ -483,6 +686,219 @@ async def proxy_task_cancel(task_id: str):
         # Connect failure or connect/write/pool timeout: the request cannot
         # be proven to have reached the tool server.
         return JSONResponse({"success": False, "error": f"proxy error: {e}"}, status_code=502)
+    except Exception as e:
+        return JSONResponse({"success": False, "error": f"proxy error: {e}"}, status_code=502)
+
+
+@router.get('/questions')
+async def proxy_questions():
+    """Return what NekoPower commissions ask the user right now, for the chat window to show.
+
+    A page that opens, or comes back after its connection was away, missed
+    the questions put meanwhile; and a task agent's own task agent is not
+    among the tasks of the HUD. Read from the agent process's
+    ``/console/questions``; the cards of ``enable_nekopower`` that wait
+    (``main_logic/nekopower_enable.py``) are added, or a page that comes back
+    would take them down.
+    """
+    from config import AUTOSTART_CSRF_TOKEN
+
+    try:
+        client = _get_http_client()
+        r = await client.get(
+            f"{TOOL_SERVER_BASE}/console/questions",
+            headers={"X-CSRF-Token": AUTOSTART_CSRF_TOKEN},
+            timeout=httpx.Timeout(5.0, connect=1.0),
+        )
+        if not r.is_success:
+            return JSONResponse({"questions": [], "error": f"tool_server responded {r.status_code}"}, status_code=502)
+        return {"questions": (r.json().get("questions") or []) + nekopower_enable.waiting_rows()}
+    except Exception as e:
+        return JSONResponse({"questions": [], "error": f"proxy error: {e}"}, status_code=502)
+
+
+async def _switch_nekopower_on(mgr, lanlan: str) -> str:
+    """Switch NekoPower on as the panel switch does (``post_agent_command``, ``set_agent_enabled``).
+
+    The session's switches are written first and taken back if the command never
+    reached the agent process; after a timeout of its answer they are left, as the
+    panel switch leaves them. Returns "" once the agent process took it, else why
+    not: "unreachable", "refused" or "unknown" (``ENABLE_FAILURE_REASONS``).
+    """
+    from utils.internal_http_client import InternalServiceSigningError
+
+    mine = object()
+    taken = True
+    _unconfirmed.write(mgr, mine, {"agent_enabled": True, "user_plugin_enabled": True})
+    try:
+        r = await _get_http_client().post(
+            f"{TOOL_SERVER_BASE}/agent/command",
+            json={
+                "request_id": f"enable-card-{uuid.uuid4().hex[:12]}",
+                "command": "set_agent_enabled",
+                "enabled": True,
+                "lanlan_name": lanlan,
+            },
+            timeout=8.0,
+        )
+        taken = r.is_success
+        return "" if taken else "refused"
+    except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout, InternalServiceSigningError):
+        taken = False
+        return "unreachable"
+    except Exception as e:
+        logger.warning("[%s] enable_nekopower: switching on not known to be taken: %s", lanlan, type(e).__name__)
+        return "unknown"
+    finally:
+        _unconfirmed.settle(mgr, mine, taken=taken)
+
+
+async def _answer_enable_nekopower_card(task_id: str, payload: dict):
+    """The user answered the card of ``enable_nekopower``; on "yes", NekoPower is switched on here."""
+    lanlan = nekopower_enable.lanlan_of(task_id)
+    mgr = get_session_manager().get(lanlan) if lanlan else None
+    not_taken = JSONResponse({"success": False, "detail": {"code": "not_taken"}}, status_code=409)
+    if mgr is None or not isinstance(payload, dict):
+        return not_taken
+    text = str(payload.get("text") or payload.get("note") or "")
+    outcome = await mgr.answer_enable_nekopower_card(
+        str(payload.get("question_id") or ""),
+        choice=str(payload.get("choice") or ""),
+        text=text,
+    )
+    if outcome == nekopower_enable.STALE:
+        return not_taken
+    if outcome == nekopower_enable.ACCEPTED:
+        failure = await _switch_nekopower_on(mgr, lanlan)
+        mgr._fire_task(mgr.after_nekopower_enabled(failure, note=text))
+    return {"success": True, "outcome": outcome}
+
+
+@router.post('/commissions/{commission_id}/answer')
+async def proxy_commission_answer(commission_id: str, payload: dict = Body(...)):
+    """Give the user's answer to a NekoPower commission that waits for one, as the console pages do.
+
+    The chat window and the task HUD are pages of this server; the route
+    that takes the answer is the agent process's
+    ``/console/commissions/{id}/answer``, which asks for the token of this
+    launch. What that route answers is passed back as it is: 409 with
+    ``detail.code`` ``not_taken`` says the question was answered, withdrawn
+    or replaced by another meanwhile. 502 says the answer never got there;
+    504 that it was sent and nothing is known of what came of it.
+
+    The card of ``enable_nekopower`` (its id starts with
+    ``nekopower_enable.TASK_ID_PREFIX``) is no commission: it is answered
+    here, in this process.
+    """
+    if nekopower_enable.is_task_id(commission_id):
+        return await _answer_enable_nekopower_card(commission_id, payload)
+
+    from urllib.parse import quote
+
+    from config import AUTOSTART_CSRF_TOKEN
+    from utils.internal_http_client import InternalServiceSigningError
+
+    try:
+        client = _get_http_client()
+        r = await client.post(
+            f"{TOOL_SERVER_BASE}/console/commissions/{quote(commission_id, safe='')}/answer",
+            json=payload,
+            headers={"X-CSRF-Token": AUTOSTART_CSRF_TOKEN},
+            # Taking an answer writes the ledger and may hand the task agent a sentence.
+            timeout=httpx.Timeout(10.0, connect=1.0),
+        )
+        try:
+            content = r.json()
+        except ValueError:
+            # Something else than the route answered. A refusal of the request (4xx) took
+            # nothing; anything else leaves it open whether the answer was taken.
+            unknown = not 400 <= r.status_code < 500
+            return JSONResponse(
+                {"success": False, "error": f"tool_server responded {r.status_code}"},
+                status_code=504 if unknown else 502,
+            )
+        return JSONResponse(content, status_code=r.status_code)
+    except (
+        httpx.ConnectError,
+        httpx.ConnectTimeout,
+        httpx.PoolTimeout,
+        httpx.WriteError,
+        httpx.WriteTimeout,
+        httpx.LocalProtocolError,
+        InternalServiceSigningError,
+    ) as e:
+        # It never reached the agent process, or not all of it: plainly not taken, and can be given again.
+        return JSONResponse({"success": False, "error": f"proxy error: {e}"}, status_code=502)
+    except Exception as e:
+        # It was sent, and what came of it is not known (no answer in time, the connection
+        # broke): it may have been taken all the same. 504 has the page read how things
+        # stand before it says anything of it, and not offer to send it again meanwhile.
+        return JSONResponse({"success": False, "error": f"proxy error: {e}"}, status_code=504)
+
+
+@router.get('/builtin/activity')
+async def proxy_builtin_activity():
+    """Which commission is using the keyboard and mouse or the browser right now; for the banner."""
+    blocked = _remote_backend_block()
+    if blocked is not None:
+        return blocked
+    try:
+        client = _get_http_client()
+        r = await client.get(f"{TOOL_SERVER_BASE}/builtin/activity", timeout=1.5)
+        if not r.is_success:
+            return JSONResponse({"activity": [], "error": f"tool_server responded {r.status_code}"}, status_code=502)
+        return r.json()
+    except Exception as e:
+        return JSONResponse({"activity": [], "error": f"proxy error: {e}"}, status_code=502)
+
+
+@router.post('/builtin/stop')
+async def proxy_builtin_stop(payload: dict = Body(default={})):
+    """Stop the task that is using the keyboard and mouse or the browser: what Esc on the banner calls."""
+    blocked = _remote_backend_block()
+    if blocked is not None:
+        return blocked
+    try:
+        client = _get_http_client()
+        r = await client.post(f"{TOOL_SERVER_BASE}/builtin/stop", json=payload or {}, timeout=5.0)
+        if not r.is_success:
+            return JSONResponse({"success": False, "error": f"tool_server responded {r.status_code}"}, status_code=r.status_code)
+        return r.json()
+    except httpx.ReadTimeout as e:
+        # The request reached the tool server; stopping took longer than this waits.
+        return JSONResponse({"success": False, "error": f"proxy timeout: {e}"}, status_code=504)
+    except Exception as e:
+        return JSONResponse({"success": False, "error": f"proxy error: {e}"}, status_code=502)
+
+
+@router.get('/builtin/browser/settings')
+async def proxy_get_browser_settings():
+    """Which browser the browser tools use and how, with the browsers found on this computer."""
+    blocked = _remote_backend_block()
+    if blocked is not None:
+        return blocked
+    try:
+        client = _get_http_client()
+        r = await client.get(f"{TOOL_SERVER_BASE}/builtin/browser/settings", timeout=2.5)
+        if not r.is_success:
+            return JSONResponse({"success": False, "error": f"tool_server responded {r.status_code}"}, status_code=502)
+        return r.json()
+    except Exception as e:
+        return JSONResponse({"success": False, "error": f"proxy error: {e}"}, status_code=502)
+
+
+@router.post('/builtin/browser/settings')
+async def proxy_set_browser_settings(payload: dict = Body(...)):
+    """Change which browser the browser tools use and how (own profile, or the browser in use)."""
+    blocked = _remote_backend_block()
+    if blocked is not None:
+        return blocked
+    try:
+        client = _get_http_client()
+        r = await client.post(f"{TOOL_SERVER_BASE}/builtin/browser/settings", json=payload, timeout=5.0)
+        if not r.is_success:
+            return JSONResponse({"success": False, "error": f"tool_server responded {r.status_code}"}, status_code=r.status_code)
+        return r.json()
     except Exception as e:
         return JSONResponse({"success": False, "error": f"proxy error: {e}"}, status_code=502)
 

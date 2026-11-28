@@ -1,4 +1,72 @@
 
+let _modelManagerCardFaceCsrfToken = '';
+
+function _createAbortError() {
+    const error = new Error('Aborted');
+    error.name = 'AbortError';
+    return error;
+}
+
+function _awaitWithAbortSignal(promise, signal) {
+    if (!signal) {
+        return promise;
+    }
+    if (signal.aborted) {
+        return Promise.reject(_createAbortError());
+    }
+    return new Promise((resolve, reject) => {
+        const onAbort = () => reject(_createAbortError());
+        signal.addEventListener('abort', onAbort, { once: true });
+        Promise.resolve(promise)
+            .then(resolve, reject)
+            .finally(() => {
+                signal.removeEventListener('abort', onAbort);
+            });
+    });
+}
+
+async function _getModelManagerCardFaceHeaders(forceRefresh, signal) {
+    if (signal?.aborted) {
+        throw _createAbortError();
+    }
+    try {
+        const security = window.nekoLocalMutationSecurity;
+        if (security && typeof security.getMutationHeaders === 'function') {
+            if (forceRefresh && typeof security.refreshToken === 'function') {
+                await _awaitWithAbortSignal(Promise.resolve(security.refreshToken()), signal);
+            }
+            const headers = await _awaitWithAbortSignal(Promise.resolve(security.getMutationHeaders()), signal);
+            if (headers && typeof headers === 'object') {
+                return headers;
+            }
+        }
+    } catch (error) {
+        if (error?.name === 'AbortError' || signal?.aborted) {
+            throw error?.name === 'AbortError' ? error : _createAbortError();
+        }
+        /* fall back to page_config */
+    }
+    if (forceRefresh) _modelManagerCardFaceCsrfToken = '';
+    if (_modelManagerCardFaceCsrfToken) {
+        return { 'X-CSRF-Token': _modelManagerCardFaceCsrfToken };
+    }
+    try {
+        const resp = await fetch('/api/config/page_config', { cache: 'no-store', signal });
+        const cfg = resp && resp.ok ? await _awaitWithAbortSignal(resp.json(), signal) : null;
+        const token = cfg && cfg.autostart_csrf_token;
+        if (typeof token === 'string' && token) {
+            _modelManagerCardFaceCsrfToken = token;
+            return { 'X-CSRF-Token': token };
+        }
+    } catch (error) {
+        if (error?.name === 'AbortError' || signal?.aborted) {
+            throw error?.name === 'AbortError' ? error : _createAbortError();
+        }
+        /* guarded PUT will surface rejection */
+    }
+    return {};
+}
+
 function canvasToPngBlob(canvas) {
     return new Promise((resolve, reject) => {
         canvas.toBlob(blob => {
@@ -406,10 +474,34 @@ async function generateDefaultCardFaceFromModelManager(lanlanName, state = {}, o
         let response;
         try {
             throwIfCancelled();
-            response = await fetch(
-                `/api/characters/catgirl/${encodeURIComponent(lanlanName)}/card-face`,
-                { method: 'PUT', body: formData, signal: controller.signal }
-            );
+            async function putCardFaceOnce(forceRefresh) {
+                const csrfHeaders = await _getModelManagerCardFaceHeaders(forceRefresh, controller.signal);
+                return fetch(
+                    `/api/characters/catgirl/${encodeURIComponent(lanlanName)}/card-face`,
+                    { method: 'PUT', headers: csrfHeaders, body: formData, signal: controller.signal }
+                );
+            }
+            response = await putCardFaceOnce(false);
+            if (response.status === 403 && typeof response.clone === 'function') {
+                let shouldRetryCsrf = false;
+                try {
+                    const errPayload = await response.clone().json();
+                    shouldRetryCsrf = Boolean(errPayload && errPayload.error_code === 'csrf_validation_failed');
+                } catch (parseErr) {
+                    if (controller.signal.aborted) {
+                        const abortErr = new Error('Aborted');
+                        abortErr.name = 'AbortError';
+                        throw abortErr;
+                    }
+                    if (parseErr && parseErr.name === 'AbortError') {
+                        throw parseErr;
+                    }
+                    /* keep original 403 */
+                }
+                if (shouldRetryCsrf) {
+                    response = await putCardFaceOnce(true);
+                }
+            }
         } catch (error) {
             if (error && error.name === 'AbortError') {
                 if ((shouldCancel && shouldCancel()) || abortSignal?.aborted) {

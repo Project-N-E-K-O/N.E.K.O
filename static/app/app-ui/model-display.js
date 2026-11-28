@@ -284,7 +284,7 @@
     }
 
     // --- showLive2d ---
-    I.showLive2d = function showLive2d() {
+    I.showLive2d = function showLive2d(options = {}) {
         console.log('[App] showLive2d函数被调用');
 
         if ((window.lanlan_config?.model_type || '').toLowerCase() === 'pngtuber') {
@@ -460,7 +460,7 @@
         }
 
         container.style.transition = '';
-        if (modelReturnEnterRect) {
+        if (modelReturnEnterRect || (options.prepareModelForm === true && !I.shouldAnimateModelCatTransition())) {
             I.playModelReturnEnter(container, modelReturnEnterRect);
         }
 
@@ -626,7 +626,9 @@
         return null;
     }
 
-    I.ensureModelViewportReadyBeforeShowCurrentModel = async function ensureModelViewportReadyBeforeShowCurrentModel() {
+    I.ensureModelViewportReadyBeforeShowCurrentModel = async function ensureModelViewportReadyBeforeShowCurrentModel(options = {}) {
+        const isCurrent = typeof options.isCurrent === 'function' ? options.isCurrent : () => true;
+        if (!isCurrent()) return { ready: false, cancelled: true };
         const restoreBounds = I.getPendingModelViewportRestoreBounds();
         if (!restoreBounds) {
             if (I.isNativeReturnBallViewportSize(window.innerWidth, window.innerHeight)) {
@@ -649,6 +651,7 @@
         if (window.nekoPetDrag && typeof window.nekoPetDrag.reveal === 'function') {
             try {
                 const revealResult = await Promise.resolve(window.nekoPetDrag.reveal());
+                if (!isCurrent()) return { ready: false, cancelled: true };
                 if (revealResult === false) {
                     await waitForModelViewportRestore(restoreBounds, {
                         timeoutMs: NEKO_MODEL_VIEWPORT_RESTORE_RETRY_MS
@@ -660,6 +663,7 @@
         }
 
         const viewportWait = await waitForModelViewportRestore(restoreBounds);
+        if (!isCurrent()) return { ready: false, cancelled: true };
         if (viewportWait.restored) {
             pendingNativeModelViewportRestoreBounds = null;
             recoverLive2DRendererFromReturnBallViewport('ensure-model-viewport-ready:after-wait');
@@ -678,7 +682,9 @@
     }
 
     // --- showCurrentModel ---
-    I.showCurrentModel = async function showCurrentModel() {
+    I.showCurrentModel = async function showCurrentModel(options = {}) {
+        const isCurrent = typeof options.isCurrent === 'function' ? options.isCurrent : () => true;
+        if (!isCurrent()) return false;
         // 检查"请她离开"状态
         if (window.live2dManager && window.live2dManager._goodbyeClicked) {
             console.log('[showCurrentModel] 当前处于"请她离开"状态，跳过显示逻辑');
@@ -701,7 +707,8 @@
             return;
         }
 
-        const modelViewportReady = await I.ensureModelViewportReadyBeforeShowCurrentModel();
+        const modelViewportReady = await I.ensureModelViewportReadyBeforeShowCurrentModel({ isCurrent });
+        if (!isCurrent()) return false;
         if (!modelViewportReady.ready) {
             return false;
         }
@@ -731,6 +738,7 @@
                 && _mmdEl && _mmdEl.style.display !== 'none' && !_mmdEl.classList.contains('hidden');
 
             const charResponse = await fetch('/api/characters');
+            if (!isCurrent()) return false;
             if (!charResponse.ok) {
                 console.warn('[showCurrentModel] 无法获取角色配置');
                 // 如果当前已有 VRM/MMD 模型在运行，保持当前状态而非回退到 Live2D
@@ -738,11 +746,12 @@
                     console.log('[showCurrentModel] 保持当前已加载的模型');
                     return;
                 }
-                I.showLive2d();
+                I.showLive2d(options);
                 return;
             }
 
             const charactersData = await charResponse.json();
+            if (!isCurrent()) return false;
             const currentCatgirl = lanlan_config.lanlan_name;
             const catgirlConfig = charactersData['猫娘']?.[currentCatgirl];
 
@@ -752,7 +761,7 @@
                     console.log('[showCurrentModel] 保持当前已加载的模型');
                     return;
                 }
-                I.showLive2d();
+                I.showLive2d(options);
                 return;
             }
 
@@ -837,7 +846,7 @@
 
                     void vrmContainer.offsetWidth;
                     vrmContainer.style.transition = '';
-                    if (modelReturnEnterRect) {
+                    if (modelReturnEnterRect || (options.prepareModelForm === true && !I.shouldAnimateModelCatTransition())) {
                         I.playModelReturnEnter(vrmContainer, modelReturnEnterRect);
                     }
 
@@ -978,7 +987,7 @@
                 if (mmdContainer) {
                     I.prepareModelReturnContainer(mmdContainer, modelReturnEnterRect, { clearPointerEvents: true });
                     mmdContainer.style.transition = '';
-                    if (modelReturnEnterRect) {
+                    if (modelReturnEnterRect || (options.prepareModelForm === true && !I.shouldAnimateModelCatTransition())) {
                         I.playModelReturnEnter(mmdContainer, modelReturnEnterRect);
                     }
                 }
@@ -1080,7 +1089,8 @@
                 I.pendingPngtuberReturnConfig = null;
 
                 if (shouldLoadPngtuber && window.loadPNGTuberAvatar) {
-                    await window.loadPNGTuberAvatar(pngtuberConfig);
+                    await window.loadPNGTuberAvatar(pngtuberConfig, { isCurrent });
+                    if (!isCurrent()) return false;
                 }
                 if (window.pngtuberManager && typeof window.pngtuberManager.show === 'function') {
                     window.pngtuberManager.show();
@@ -1094,7 +1104,7 @@
                 const modelReturnEnterRect = pngtuberContainer ? I.consumeModelReturnEnterRect() : null;
                 if (pngtuberContainer) {
                     I.prepareModelReturnContainer(pngtuberContainer, modelReturnEnterRect, { clearPointerEvents: true });
-                    if (modelReturnEnterRect) {
+                    if (modelReturnEnterRect || (options.prepareModelForm === true && !I.shouldAnimateModelCatTransition())) {
                         I.playModelReturnEnter(pngtuberContainer, modelReturnEnterRect);
                     } else {
                         // 无回归动画时清掉 prepare 留下的内联 opacity/transition（有动画时由
@@ -1134,7 +1144,7 @@
                 I.ensureActiveModelOverlayControls('pngtuber');
             } else {
                 // 显示 Live2D 模型
-                I.showLive2d();
+                I.showLive2d(options);
 
                 // 确保VRM隐藏
                 const vrmContainer = document.getElementById('vrm-container');
@@ -1169,6 +1179,7 @@
                 if (mmdLockIconL2d) { mmdLockIconL2d.style.display = 'none'; }
             }
         } catch (error) {
+            if (!isCurrent()) return false;
             console.error('[showCurrentModel] 失败:', error);
             // 出错时检查是否有 VRM/MMD 正在运行且可见，如果有则保持当前状态
             const vrmEl = document.getElementById('vrm-container');
@@ -1181,7 +1192,7 @@
                 console.log('[showCurrentModel] 保持当前已加载的模型');
                 return;
             }
-            I.showLive2d();
+            I.showLive2d(options);
         }
     }
 

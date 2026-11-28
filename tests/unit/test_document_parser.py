@@ -853,6 +853,22 @@ def test_marks_extracted_text_truncated_when_document_exceeds_budget():
 
 
 @pytest.mark.unit
+# Builders, not bytes: ZIP members carry the current time, so byte parameters
+# could differ between xdist workers and break collection.
+@pytest.mark.parametrize("filename,build", [
+    ("small.xlsx", lambda: _xlsx_bytes("A" * 100)),
+    ("small.pptx", lambda: _pptx_bytes("A" * 100)),
+], ids=["xlsx", "pptx"])
+def test_explicit_character_budget_applies_to_all_office_formats(filename, build):
+    from utils.document_parser import DocumentLimits
+
+    data = build()
+    parsed = parse_document(filename, "", data, limits=DocumentLimits(max_extracted_chars=20))
+    assert parsed["truncated"] is True
+    assert parsed["chars"] <= 20
+
+
+@pytest.mark.unit
 def test_marks_pdf_truncated_after_first_40_pages():
     parsed = parse_document("many.pdf", "", _many_pdf_bytes(41))
 

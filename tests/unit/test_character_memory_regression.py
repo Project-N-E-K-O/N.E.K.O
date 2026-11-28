@@ -3007,11 +3007,22 @@ async def test_rename_catgirl_moves_runtime_and_legacy_memory_storage(monkeypatc
                 },
             )
 
-            with patch("main_routers.characters_router.notify.httpx.AsyncClient", return_value=fake_client):
+            before = json.loads((await characters_router_module.get_current_catgirl()).body)
+            websocket = AsyncMock()
+            sessions = {"旧角色": SimpleNamespace(is_active=False, session=None, websocket=websocket)}
+            with (
+                patch("main_routers.characters_router.notify.httpx.AsyncClient", return_value=fake_client),
+                patch.object(characters_router_module, "get_session_manager", return_value=sessions),
+            ):
                 rename_result = await characters_router_module.rename_catgirl(
                     "旧角色",
                     _DummyRequest({"new_name": "新角色"}),
                 )
+            websocket.send_text.assert_awaited_once()
+            frame = json.loads(websocket.send_text.await_args.args[0])
+            after = json.loads((await characters_router_module.get_current_catgirl()).body)
+            assert before["switch_revision"] < frame["switch_revision"] == after["switch_revision"]
+            assert frame["new_catgirl"] == after["current_catgirl"] == "新角色"
 
             assert rename_result["success"] is True
             assert rename_result["memory_renamed"] is True
@@ -5888,6 +5899,679 @@ async def test_delete_catgirl_maintenance_error_preserves_original_exception_typ
 
 
 @pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("cancel_save", "fail_save"),
+    [(True, False), (True, True), (False, True)],
+    ids=["cancel-late-write", "cancel-and-write-error", "write-error-without-cancel"],
+)
+async def test_synced_delete_settles_provisional_save_before_returning(tmp_path, monkeypatch, cancel_save, fail_save):
+    from main_routers.characters_router import crud
+
+    cm = _make_config_manager(tmp_path)
+    bootstrap_local_cloudsave_environment(cm)
+    old, fallback, uid = 'ProvisionalPrimary', 'ProvisionalSpare', 'a' * 32
+    roles = cm.load_characters()
+    roles['当前猫娘'] = old
+    roles['猫娘'] = {old: {'昵称': old, '_reserved': {'character_uid': uid}}, fallback: {'昵称': fallback}}
+    cm.save_characters(roles, bypass_write_fence=True)
+    actual_save = cm.save_characters
+    save_error = OSError('synthetic provisional save failure')
+    entered, landed = asyncio.Event(), asyncio.Event()
+    do_save = threading.Event()
+    loop = asyncio.get_running_loop()
+    paused = False
+
+    def save(value, *args, **kwargs):
+        nonlocal paused
+        if value['当前猫娘'] == fallback and old in value['猫娘'] and not paused:
+            paused = True
+            loop.call_soon_threadsafe(entered.set)
+            if not do_save.wait(8):
+                raise TimeoutError('test release of the real writer')
+            try:
+                if fail_save:
+                    raise save_error
+                return actual_save(value, *args, **kwargs)
+            finally:
+                loop.call_soon_threadsafe(landed.set)
+        return actual_save(value, *args, **kwargs)
+
+    socket = SimpleNamespace(send_text=AsyncMock())
+    monkeypatch.setattr(cm, 'save_characters', save)
+    monkeypatch.setattr(crud, 'get_config_manager', lambda: cm)
+    monkeypatch.setattr(crud, 'character_config_mutation_lock', asyncio.Lock())
+    monkeypatch.setattr(crud, '_catgirl_switch_revision', 71)
+    monkeypatch.setattr(crud, '_catgirl_switch_revision_target', old)
+    monkeypatch.setattr(crud, 'get_session_manager', lambda: {old: SimpleNamespace(websocket=socket)})
+    monkeypatch.setattr(crud, 'get_switch_current_catgirl_fast', lambda: AsyncMock())
+    monkeypatch.setattr(crud, 'force_disable_agent_for_character_switch', AsyncMock())
+    monkeypatch.setattr(crud, 'is_character_lifecycle_locked', lambda _: False)
+    monkeypatch.setattr(crud._chat_sync_host, 'conversation_busy', lambda _: False)
+    delete = AsyncMock()
+    monkeypatch.setattr(crud, '_delete_catgirl_by_name_serialized', delete)
+
+    task = asyncio.create_task(crud._delete_synced_character(uid, AsyncMock()))
+    writer_entered = False
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        writer_entered = True
+        if cancel_save:
+            task.cancel()
+            # Cancellation must not outrun the real ConfigManager writer thread.
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(asyncio.shield(task), timeout=1.5)
+            assert crud.character_config_mutation_lock.locked()
+    finally:
+        do_save.set()
+        if writer_entered:
+            await asyncio.wait_for(landed.wait(), timeout=5)
+            expected_error = asyncio.CancelledError if cancel_save else OSError
+            with pytest.raises(expected_error) as exc_info:
+                await asyncio.wait_for(task, timeout=5)
+            if not cancel_save:
+                assert exc_info.value is save_error
+        elif task.done() and not task.cancelled():
+            task.result()  # surface the original early failure instead of masking it with cleanup timeout
+        elif not task.done():
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+    assert not crud.character_config_mutation_lock.locked()
+    stored = cm.load_characters()
+    response = json.loads((await crud.get_current_catgirl()).body)
+    delete.assert_not_awaited()
+    socket.send_text.assert_not_awaited()
+    assert old in stored['猫娘']
+    assert stored['当前猫娘'] == old
+    assert response == {'current_catgirl': old, 'switch_revision': 71}
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("initial", [".", "B"])
+async def test_synced_legacy_delete_cancel_after_save_notifies_only_a_changed_selection(tmp_path, monkeypatch, initial):
+    from main_routers.characters_router import crud
+
+    cm = _make_config_manager(tmp_path)
+    bootstrap_local_cloudsave_environment(cm)
+    uid = "a" * 32
+    chars = cm.load_characters()
+    chars["猫娘"] = {".": {"昵称": "legacy", "_reserved": {"character_uid": uid}}, "B": {"昵称": "fallback"}}
+    chars["当前猫娘"] = initial
+    cm.save_characters(chars, bypass_write_fence=True)
+    entered = asyncio.Event()
+
+    async def paused_reload(*args, **kwargs):
+        entered.set()
+        await asyncio.Future()
+
+    socket = SimpleNamespace(send_text=AsyncMock())
+    monkeypatch.setattr(crud, "character_config_mutation_lock", asyncio.Lock())
+    monkeypatch.setattr(crud, "_catgirl_switch_revision", 71)
+    monkeypatch.setattr(crud, "_catgirl_switch_revision_target", initial)
+    monkeypatch.setattr(crud, "get_config_manager", lambda: cm)
+    monkeypatch.setattr(crud, "get_session_manager", lambda: {initial: SimpleNamespace(websocket=socket)})
+    monkeypatch.setattr(crud, "get_switch_current_catgirl_fast", lambda: AsyncMock())
+    monkeypatch.setattr(crud, "get_remove_one_catgirl", lambda: AsyncMock())
+    monkeypatch.setattr(crud, "force_disable_agent_for_character_switch", AsyncMock())
+    monkeypatch.setattr(crud, "is_character_lifecycle_locked", lambda _: False)
+    monkeypatch.setattr(crud, "notify_memory_server_reload", paused_reload)
+    monkeypatch.setattr(crud._chat_sync_host, "conversation_busy", lambda _: False)
+
+    deletion = asyncio.create_task(crud._delete_synced_character(uid, AsyncMock()))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=5)
+    finally:
+        deletion.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await deletion
+
+    stored = cm.load_characters()
+    assert stored["当前猫娘"] == "B" and "." not in stored["猫娘"]
+    if initial == "B":
+        socket.send_text.assert_not_awaited()
+        assert crud._catgirl_switch_revision == 71
+    else:
+        socket.send_text.assert_awaited_once()
+        frame = json.loads(socket.send_text.await_args.args[0])
+        assert (frame["old_catgirl"], frame["new_catgirl"]) == (".", "B")
+        assert frame["switch_revision"] == crud._catgirl_switch_revision > 71
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("maintenance", [False, True])
+@pytest.mark.parametrize("create_fallback", [False, True])
+async def test_synced_delete_keeps_finalize_failure_fallback_provisional_during_rollback_cleanup(tmp_path, monkeypatch, maintenance, create_fallback):
+    from main_routers.characters_router import crud
+    from utils.cloudsave_runtime import MaintenanceModeError
+    from utils.config_manager import get_character_uid
+
+    cm = _make_config_manager(tmp_path)
+    bootstrap_local_cloudsave_environment(cm)
+    uid = "a" * 32
+    name, other = "RollbackPrimary", "RollbackSpare"
+    chars = cm.load_characters()
+    chars["当前猫娘"] = name
+    chars["猫娘"] = {name: {"昵称": "A", "_reserved": {"character_uid": uid}}}
+    if not create_fallback:
+        chars["猫娘"][other] = {"昵称": "B"}
+    cm.save_characters(chars, bypass_write_fence=True)
+    recent = cm.memory_dir / name / "recent.json"
+    recent.parent.mkdir(parents=True, exist_ok=True)
+    recent.write_text("[]", encoding="utf-8")
+    socket = SimpleNamespace(send_text=AsyncMock())
+    provisional = {}
+    entered_cleanup, release_cleanup = asyncio.Event(), asyncio.Event()
+
+    def fail_finalize(_result):
+        stored = cm.load_characters()
+        assert name not in stored["猫娘"]
+        assert stored["当前猫娘"] != name
+        # Persisted B is still provisional until recent-delete finalization
+        # succeeds; readers/order evidence remain on A.
+        assert crud._catgirl_switch_revision_target == name
+        provisional.update(name=stored["当前猫娘"], revision=crud._catgirl_switch_revision)
+        if maintenance:
+            raise MaintenanceModeError("maintenance_readonly", operation="delete", target=f"characters/{name}")
+        raise OSError("recent archive finalization failed")
+
+    async def reload_memory(*, reason, **kwargs):
+        return "回滚" not in reason
+
+    async def remove_runtime(deleted_name):
+        if deleted_name != name:  # runtime cleanup for the temporary fallback
+            assert deleted_name == provisional["name"]
+            entered_cleanup.set()
+            await release_cleanup.wait()
+
+    monkeypatch.setattr(crud, "character_config_mutation_lock", asyncio.Lock())
+    monkeypatch.setattr(crud, "_catgirl_switch_revision", 71)
+    monkeypatch.setattr(crud, "_catgirl_switch_revision_target", name)
+    monkeypatch.setattr(crud, "get_config_manager", lambda: cm)
+    monkeypatch.setattr(crud, "get_session_manager", lambda: {name: SimpleNamespace(websocket=socket)})
+    monkeypatch.setattr(crud, "get_switch_current_catgirl_fast", lambda: AsyncMock())
+    monkeypatch.setattr(crud, "get_init_one_catgirl", lambda: AsyncMock())
+    monkeypatch.setattr(crud, "get_remove_one_catgirl", lambda: remove_runtime)
+    monkeypatch.setattr(crud, "force_disable_agent_for_character_switch", AsyncMock())
+    monkeypatch.setattr(crud, "is_character_lifecycle_locked", lambda _: False)
+    monkeypatch.setattr(crud._chat_sync_host, "conversation_busy", lambda _: False)
+    monkeypatch.setattr(crud, "release_memory_server_character", AsyncMock(return_value=True))
+    monkeypatch.setattr(crud, "notify_memory_server_reload", reload_memory)
+    monkeypatch.setattr(crud, "finalize_character_recent_delete", fail_finalize)
+
+    async def delete():
+        if maintenance:
+            with pytest.raises(MaintenanceModeError):
+                await crud._delete_synced_character(uid, AsyncMock())
+        else:
+            assert await crud._delete_synced_character(uid, AsyncMock()) is False
+
+    deletion = asyncio.create_task(delete())
+    try:
+        if create_fallback:
+            await asyncio.wait_for(entered_cleanup.wait(), timeout=5)
+            assert set(cm.load_characters()["猫娘"]) == {name}
+            # While rollback cleanup still owns the mutation lock, stable public reads
+            # intentionally wait. Verify transaction publication directly instead:
+            # the provisional fallback never becomes the public revision target.
+            assert crud._catgirl_switch_revision_target == name
+            assert crud._catgirl_switch_revision == provisional["revision"]
+    finally:
+        release_cleanup.set()
+        await asyncio.wait_for(deletion, timeout=5)
+
+    restored = cm.load_characters()
+    assert restored["当前猫娘"] == name and get_character_uid(restored["猫娘"][name]) == uid
+    socket.send_text.assert_not_awaited()
+    current = json.loads((await crud.get_current_catgirl()).body)
+    assert current == {
+        "current_catgirl": name,
+        "switch_revision": provisional["revision"],
+    }
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_synced_delete_cancel_during_successful_finalize_publishes_fallback_before_cancel(tmp_path, monkeypatch):
+    from main_routers.characters_router import crud
+
+    cm = _make_config_manager(tmp_path)
+    bootstrap_local_cloudsave_environment(cm)
+    uid = "a" * 32
+    name, fallback = "FinalizeCancelPrimary", "FinalizeCancelSpare"
+    chars = cm.load_characters()
+    chars["当前猫娘"] = name
+    chars["猫娘"] = {
+        name: {"昵称": "A", "_reserved": {"character_uid": uid}},
+        fallback: {"昵称": "B"},
+    }
+    cm.save_characters(chars, bypass_write_fence=True)
+    recent = cm.memory_dir / name / "recent.json"
+    recent.parent.mkdir(parents=True, exist_ok=True)
+    recent.write_text("[]", encoding="utf-8")
+
+    socket = SimpleNamespace(send_text=AsyncMock())
+    loop = asyncio.get_running_loop()
+    finalize_entered = asyncio.Event()
+    release_finalize = threading.Event()
+
+    def finalize_success(_result):
+        loop.call_soon_threadsafe(finalize_entered.set)
+        if not release_finalize.wait(8):
+            raise TimeoutError("test release of finalize")
+        return None
+
+    monkeypatch.setattr(crud, "character_config_mutation_lock", asyncio.Lock())
+    monkeypatch.setattr(crud, "_catgirl_switch_revision", 71)
+    monkeypatch.setattr(crud, "_catgirl_switch_revision_target", name)
+    monkeypatch.setattr(crud, "get_config_manager", lambda: cm)
+    monkeypatch.setattr(crud, "get_session_manager", lambda: {name: SimpleNamespace(websocket=socket)})
+    monkeypatch.setattr(crud, "get_switch_current_catgirl_fast", lambda: AsyncMock())
+    monkeypatch.setattr(crud, "get_remove_one_catgirl", lambda: AsyncMock())
+    monkeypatch.setattr(crud, "force_disable_agent_for_character_switch", AsyncMock())
+    monkeypatch.setattr(crud, "is_character_lifecycle_locked", lambda _: False)
+    monkeypatch.setattr(crud._chat_sync_host, "conversation_busy", lambda _: False)
+    monkeypatch.setattr(crud, "release_memory_server_character", AsyncMock(return_value=True))
+    monkeypatch.setattr(crud, "notify_memory_server_reload", AsyncMock(return_value=True))
+    monkeypatch.setattr(crud, "finalize_character_recent_delete", finalize_success)
+
+    deletion = asyncio.create_task(crud._delete_synced_character(uid, AsyncMock()))
+    try:
+        await asyncio.wait_for(finalize_entered.wait(), timeout=5)
+        # The persisted fallback is still provisional while finalization is in flight.
+        assert cm.load_characters()["当前猫娘"] == fallback
+        assert crud._catgirl_switch_revision_target == name
+        socket.send_text.assert_not_awaited()
+
+        deletion.cancel()
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(asyncio.shield(deletion), timeout=1)
+        release_finalize.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(deletion, timeout=5)
+    finally:
+        release_finalize.set()
+        if not deletion.done():
+            deletion.cancel()
+        try:
+            await deletion
+        except asyncio.CancelledError:
+            pass
+
+    stored = cm.load_characters()
+    assert stored["当前猫娘"] == fallback
+    assert name not in stored["猫娘"]
+    socket.send_text.assert_awaited_once()
+    frame = json.loads(socket.send_text.await_args.args[0])
+    assert (frame["old_catgirl"], frame["new_catgirl"]) == (name, fallback)
+    assert frame["switch_revision"] == crud._catgirl_switch_revision > 71
+    assert crud._catgirl_switch_revision_target == fallback
+    current = json.loads((await crud.get_current_catgirl()).body)
+    assert current == {"current_catgirl": fallback, "switch_revision": frame["switch_revision"]}
+
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_coroutine_outcome_retains_caller_cancel_when_inner_operation_fails(monkeypatch):
+    from main_routers.characters_router import crud
+
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def fail_after_cancel():
+        entered.set()
+        await release.wait()
+        raise OSError("authoritative read failed")
+
+    task = asyncio.create_task(
+        crud._await_coroutine_outcome_to_completion(fail_after_cancel())
+    )
+    await asyncio.wait_for(entered.wait(), timeout=5)
+    task.cancel()
+    release.set()
+
+    result, error, caller_cancelled = await asyncio.wait_for(task, timeout=5)
+    assert result is None
+    assert isinstance(error, OSError)
+    assert str(error) == "authoritative read failed"
+    assert caller_cancelled is True
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_synced_delete_cancel_during_committed_notification_finishes_send_then_propagates(tmp_path, monkeypatch):
+    from main_routers.characters_router import crud
+
+    cm = _make_config_manager(tmp_path)
+    bootstrap_local_cloudsave_environment(cm)
+    uid = "d" * 32
+    name, fallback = "NotifyCancelPrimary", "NotifyCancelSpare"
+    chars = cm.load_characters()
+    chars["当前猫娘"] = name
+    chars["猫娘"] = {
+        name: {"昵称": "A", "_reserved": {"character_uid": uid}},
+        fallback: {"昵称": "B"},
+    }
+    cm.save_characters(chars, bypass_write_fence=True)
+    recent = cm.memory_dir / name / "recent.json"
+    recent.parent.mkdir(parents=True, exist_ok=True)
+    recent.write_text("[]", encoding="utf-8")
+
+    notify_entered = asyncio.Event()
+    release_notify = asyncio.Event()
+    sent_frames = []
+
+    async def slow_send(frame):
+        notify_entered.set()
+        await release_notify.wait()
+        sent_frames.append(json.loads(frame))
+
+    socket = SimpleNamespace(send_text=slow_send)
+    monkeypatch.setattr(crud, "character_config_mutation_lock", asyncio.Lock())
+    monkeypatch.setattr(crud, "_catgirl_switch_revision", 71)
+    monkeypatch.setattr(crud, "_catgirl_switch_revision_target", name)
+    monkeypatch.setattr(crud, "get_config_manager", lambda: cm)
+    monkeypatch.setattr(crud, "get_session_manager", lambda: {name: SimpleNamespace(websocket=socket)})
+    monkeypatch.setattr(crud, "get_switch_current_catgirl_fast", lambda: AsyncMock())
+    monkeypatch.setattr(crud, "get_remove_one_catgirl", lambda: AsyncMock())
+    monkeypatch.setattr(crud, "force_disable_agent_for_character_switch", AsyncMock())
+    monkeypatch.setattr(crud, "is_character_lifecycle_locked", lambda _: False)
+    monkeypatch.setattr(crud._chat_sync_host, "conversation_busy", lambda _: False)
+    monkeypatch.setattr(crud, "release_memory_server_character", AsyncMock(return_value=True))
+    monkeypatch.setattr(crud, "notify_memory_server_reload", AsyncMock(return_value=True))
+
+    deletion = asyncio.create_task(crud._delete_synced_character(uid, AsyncMock()))
+    await asyncio.wait_for(notify_entered.wait(), timeout=5)
+    deletion.cancel()
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(asyncio.shield(deletion), timeout=0.1)
+
+    release_notify.set()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(deletion, timeout=5)
+
+    stored = cm.load_characters()
+    assert stored["当前猫娘"] == fallback
+    assert name not in stored["猫娘"]
+    assert len(sent_frames) == 1
+    frame = sent_frames[0]
+    assert (frame["old_catgirl"], frame["new_catgirl"]) == (name, fallback)
+    assert frame["switch_revision"] == crud._catgirl_switch_revision > 71
+    assert crud._catgirl_switch_revision_target == fallback
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_current_rename_cancel_after_finalize_notifies_all_pages_before_propagating(tmp_path, monkeypatch):
+    cm = _make_config_manager(tmp_path)
+    bootstrap_local_cloudsave_environment(cm)
+
+    old_socket = SimpleNamespace(send_text=AsyncMock())
+    watcher_socket = SimpleNamespace(send_text=AsyncMock())
+    reconnected_watcher_socket = SimpleNamespace(send_text=AsyncMock())
+    old_manager = SimpleNamespace(websocket=old_socket, is_active=False, session=None)
+    watcher_manager = SimpleNamespace(websocket=watcher_socket, is_active=False, session=None)
+
+    async def _noop(*_args, **_kwargs):
+        return None
+
+    with patch("utils.config_manager._config_manager", cm):
+        init_shared_state(
+            role_state=_make_role_state_for_test({"Old": old_manager, "Watcher": watcher_manager}),
+            steamworks=None,
+            templates=None,
+            config_manager=cm,
+            initialize_character_data=_noop,
+            switch_current_catgirl_fast=_noop,
+            init_one_catgirl=_noop,
+            remove_one_catgirl=_noop,
+        )
+        from main_routers.characters_router import crud
+        crud = reload_module("main_routers.characters_router.crud")
+
+        chars = cm.load_characters()
+        chars.setdefault("猫娘", {})["Old"] = {
+            "昵称": "Old",
+            "_reserved": {"character_id": "character_" + "8" * 32},
+        }
+        chars["猫娘"]["Watcher"] = {
+            "昵称": "Watcher",
+            "_reserved": {"character_id": "character_" + "9" * 32},
+        }
+        chars["当前猫娘"] = "Old"
+        cm.save_characters(chars, bypass_write_fence=True)
+        recent = Path(cm.memory_dir) / "Old" / "recent.json"
+        recent.parent.mkdir(parents=True, exist_ok=True)
+        recent.write_text("[]", encoding="utf-8")
+
+        monkeypatch.setattr(crud, "_catgirl_switch_revision", 71)
+        monkeypatch.setattr(crud, "_catgirl_switch_revision_target", "Old")
+        finalize_entered = asyncio.Event()
+        release_finalize = threading.Event()
+        loop = asyncio.get_running_loop()
+
+        def finalize_success(_result):
+            loop.call_soon_threadsafe(finalize_entered.set)
+            if not release_finalize.wait(8):
+                raise TimeoutError("release rename finalize")
+            return None
+
+        with (
+            patch.object(crud, "release_memory_server_character", AsyncMock(return_value=True)),
+            patch.object(crud, "notify_memory_server_reload", AsyncMock(return_value=True)),
+            patch.object(crud, "finalize_character_recent_rename", side_effect=finalize_success),
+        ):
+            rename = asyncio.create_task(
+                crud.rename_catgirl("Old", _DummyRequest({"new_name": "New"}))
+            )
+            await asyncio.wait_for(finalize_entered.wait(), timeout=5)
+            # The notification code must retain sockets captured before the
+            # rename and also discover a manager socket replaced during finalize.
+            watcher_manager.websocket = reconnected_watcher_socket
+            rename.cancel()
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(asyncio.shield(rename), timeout=0.1)
+            release_finalize.set()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(rename, timeout=5)
+
+        stored = cm.load_characters()
+        assert stored["当前猫娘"] == "New"
+        assert "New" in stored["猫娘"] and "Old" not in stored["猫娘"]
+        assert crud._catgirl_switch_revision_target == "New"
+        assert crud._catgirl_switch_revision > 71
+        for socket in (old_socket, watcher_socket, reconnected_watcher_socket):
+            socket.send_text.assert_awaited_once()
+            frame = json.loads(socket.send_text.await_args.args[0])
+            assert (frame["old_catgirl"], frame["new_catgirl"]) == ("Old", "New")
+            assert frame["switch_revision"] == crud._catgirl_switch_revision
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_synced_delete_cancel_during_restore_finishes_restore_then_propagates(tmp_path, monkeypatch):
+    from main_routers.characters_router import crud
+
+    cm = _make_config_manager(tmp_path)
+    bootstrap_local_cloudsave_environment(cm)
+    uid = "e" * 32
+    name, fallback = "RestoreCancelPrimary", "RestoreCancelSpare"
+    chars = cm.load_characters()
+    chars["当前猫娘"] = name
+    chars["猫娘"] = {
+        name: {"昵称": "A", "_reserved": {"character_uid": uid}},
+        fallback: {"昵称": "B"},
+    }
+    cm.save_characters(chars, bypass_write_fence=True)
+
+    original_save = cm.asave_characters
+    restore_entered = asyncio.Event()
+    release_restore = asyncio.Event()
+    save_calls = 0
+
+    async def controlled_save(payload):
+        nonlocal save_calls
+        save_calls += 1
+        if save_calls == 2:
+            restore_entered.set()
+            await release_restore.wait()
+        return await original_save(payload)
+
+    socket = SimpleNamespace(send_text=AsyncMock())
+    monkeypatch.setattr(cm, "asave_characters", controlled_save)
+    monkeypatch.setattr(crud, "character_config_mutation_lock", asyncio.Lock())
+    monkeypatch.setattr(crud, "_catgirl_switch_revision", 71)
+    monkeypatch.setattr(crud, "_catgirl_switch_revision_target", name)
+    monkeypatch.setattr(crud, "get_config_manager", lambda: cm)
+    monkeypatch.setattr(crud, "get_session_manager", lambda: {name: SimpleNamespace(websocket=socket)})
+    monkeypatch.setattr(crud, "get_switch_current_catgirl_fast", lambda: AsyncMock())
+    monkeypatch.setattr(crud, "get_remove_one_catgirl", lambda: AsyncMock())
+    monkeypatch.setattr(crud, "force_disable_agent_for_character_switch", AsyncMock())
+    monkeypatch.setattr(crud, "is_character_lifecycle_locked", lambda _: False)
+    monkeypatch.setattr(crud._chat_sync_host, "conversation_busy", lambda _: False)
+    monkeypatch.setattr(crud, "_delete_catgirl_by_name_serialized", AsyncMock(return_value={"success": False}))
+
+    deletion = asyncio.create_task(crud._delete_synced_character(uid, AsyncMock()))
+    await asyncio.wait_for(restore_entered.wait(), timeout=5)
+    deletion.cancel()
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(asyncio.shield(deletion), timeout=0.1)
+
+    release_restore.set()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(deletion, timeout=5)
+
+    stored = cm.load_characters()
+    assert stored["当前猫娘"] == name
+    assert name in stored["猫娘"]
+    assert crud._catgirl_switch_revision_target == name
+    socket.send_text.assert_not_awaited()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_current_rename_notifies_page_that_connects_during_finalize_when_none_were_connected(tmp_path, monkeypatch):
+    cm = _make_config_manager(tmp_path)
+    bootstrap_local_cloudsave_environment(cm)
+
+    old_manager = SimpleNamespace(websocket=None, is_active=False, session=None)
+    watcher_manager = SimpleNamespace(websocket=None, is_active=False, session=None)
+    late_socket = SimpleNamespace(send_text=AsyncMock())
+
+    async def _noop(*_args, **_kwargs):
+        return None
+
+    with patch('utils.config_manager._config_manager', cm):
+        init_shared_state(
+            role_state=_make_role_state_for_test({'Old': old_manager, 'Watcher': watcher_manager}),
+            steamworks=None, templates=None, config_manager=cm,
+            initialize_character_data=_noop, switch_current_catgirl_fast=_noop,
+            init_one_catgirl=_noop, remove_one_catgirl=_noop,
+        )
+        from main_routers.characters_router import crud
+        crud = reload_module('main_routers.characters_router.crud')
+
+        chars = cm.load_characters()
+        chars.setdefault('猫娘', {})['Old'] = {
+            '昵称': 'Old', '_reserved': {'character_id': 'character_' + 'a' * 32},
+        }
+        chars['猫娘']['Watcher'] = {
+            '昵称': 'Watcher', '_reserved': {'character_id': 'character_' + 'b' * 32},
+        }
+        chars['当前猫娘'] = 'Old'
+        cm.save_characters(chars, bypass_write_fence=True)
+        recent = Path(cm.memory_dir) / 'Old' / 'recent.json'
+        recent.parent.mkdir(parents=True, exist_ok=True)
+        recent.write_text('[]', encoding='utf-8')
+
+        monkeypatch.setattr(crud, '_catgirl_switch_revision', 71)
+        monkeypatch.setattr(crud, '_catgirl_switch_revision_target', 'Old')
+        finalize_entered = asyncio.Event()
+        release_finalize = threading.Event()
+        loop = asyncio.get_running_loop()
+
+        def finalize_success(_result):
+            loop.call_soon_threadsafe(finalize_entered.set)
+            if not release_finalize.wait(8):
+                raise TimeoutError('release rename finalize')
+            return None
+
+        with (
+            patch.object(crud, 'release_memory_server_character', AsyncMock(return_value=True)),
+            patch.object(crud, 'notify_memory_server_reload', AsyncMock(return_value=True)),
+            patch.object(crud, 'finalize_character_recent_rename', side_effect=finalize_success),
+        ):
+            rename = asyncio.create_task(
+                crud.rename_catgirl('Old', _DummyRequest({'new_name': 'New'}))
+            )
+            await asyncio.wait_for(finalize_entered.wait(), timeout=5)
+            watcher_manager.websocket = late_socket
+            release_finalize.set()
+            response = await asyncio.wait_for(rename, timeout=5)
+
+        assert response['success'] is True
+        late_socket.send_text.assert_awaited_once()
+        frame = json.loads(late_socket.send_text.await_args.args[0])
+        assert (frame['old_catgirl'], frame['new_catgirl']) == ('Old', 'New')
+        assert frame['switch_revision'] == crud._catgirl_switch_revision > 71
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_synced_delete_publishes_surviving_authority_when_inner_config_restore_fails(tmp_path, monkeypatch):
+    from main_routers.characters_router import crud
+
+    cm = _make_config_manager(tmp_path)
+    bootstrap_local_cloudsave_environment(cm)
+    uid = "a" * 32
+    name, fallback = "RollbackLostPrimary", "RollbackLostSpare"
+    chars = cm.load_characters()
+    chars["当前猫娘"] = name
+    chars["猫娘"] = {
+        name: {"昵称": "A", "_reserved": {"character_uid": uid}},
+        fallback: {"昵称": "B"},
+    }
+    cm.save_characters(chars, bypass_write_fence=True)
+    recent = cm.memory_dir / name / "recent.json"
+    recent.parent.mkdir(parents=True, exist_ok=True)
+    recent.write_text("[]", encoding="utf-8")
+
+    socket = SimpleNamespace(send_text=AsyncMock())
+    rollback = AsyncMock(return_value="characters restore failed: disk full")
+    monkeypatch.setattr(crud, "character_config_mutation_lock", asyncio.Lock())
+    monkeypatch.setattr(crud, "_catgirl_switch_revision", 71)
+    monkeypatch.setattr(crud, "_catgirl_switch_revision_target", name)
+    monkeypatch.setattr(crud, "get_config_manager", lambda: cm)
+    monkeypatch.setattr(crud, "get_session_manager", lambda: {name: SimpleNamespace(websocket=socket)})
+    monkeypatch.setattr(crud, "get_switch_current_catgirl_fast", lambda: AsyncMock())
+    monkeypatch.setattr(crud, "get_remove_one_catgirl", lambda: AsyncMock())
+    monkeypatch.setattr(crud, "force_disable_agent_for_character_switch", AsyncMock())
+    monkeypatch.setattr(crud, "is_character_lifecycle_locked", lambda _: False)
+    monkeypatch.setattr(crud._chat_sync_host, "conversation_busy", lambda _: False)
+    monkeypatch.setattr(crud, "release_memory_server_character", AsyncMock(return_value=True))
+    monkeypatch.setattr(crud, "notify_memory_server_reload", AsyncMock(return_value=False))
+    monkeypatch.setattr(crud, "_rollback_character_operation", rollback)
+
+    assert await crud._delete_synced_character(uid, AsyncMock()) is False
+
+    stored = cm.load_characters()
+    assert stored["当前猫娘"] == fallback
+    assert name not in stored["猫娘"]
+    rollback.assert_awaited_once()
+    socket.send_text.assert_awaited_once()
+    frame = json.loads(socket.send_text.await_args.args[0])
+    assert (frame["old_catgirl"], frame["new_catgirl"]) == (name, fallback)
+    assert frame["switch_revision"] == crud._catgirl_switch_revision > 71
+    assert crud._catgirl_switch_revision_target == fallback
+    current = json.loads((await crud.get_current_catgirl()).body)
+    assert current == {"current_catgirl": fallback, "switch_revision": frame["switch_revision"]}
+
+
+@pytest.mark.unit
 def test_resolve_live2d_model_binding_keeps_manual_external_url_without_catalog_rebind():
     with TemporaryDirectory() as td:
         cm = _make_config_manager(Path(td))
@@ -6744,6 +7428,17 @@ async def test_the_rollback_actually_re_retires_the_absent_name(tmp_path):
         assert all("Back" not in store._retired for store in stores)
 
 
+def _seed_source_character_registry(cm, name: str = "Source") -> None:
+    cm.save_characters(
+        {
+            "当前猫娘": name,
+            "猫娘": {name: {"_reserved": {"character_id": "character_" + "1" * 32}}},
+            "主人": {"昵称": "哥哥"},
+        },
+        bypass_write_fence=True,
+    )
+
+
 @pytest.mark.unit
 def test_a_failed_rename_restores_the_cache_lifecycle(tmp_path):
     """A raise partway through must not strand either name.
@@ -6758,6 +7453,7 @@ def test_a_failed_rename_restores_the_cache_lifecycle(tmp_path):
     import utils.character_memory as character_memory
 
     cm = _make_config_manager(tmp_path)
+    _seed_source_character_registry(cm)
     with _isolated_sidecar_stores(tmp_path) as stores:
         # The target name was deleted earlier, so it is retired.
         character_memory.retire_character_runtime_caches("Target")
@@ -6947,6 +7643,7 @@ def test_a_rename_fences_the_target_against_its_deleted_identity(tmp_path):
     import utils.character_memory as character_memory
 
     cm = _make_config_manager(tmp_path)
+    _seed_source_character_registry(cm)
     memory_root = Path(cm.memory_dir)
 
     def detected(path):
@@ -7080,6 +7777,7 @@ def test_the_rename_fence_covers_the_whole_merge(tmp_path):
     import utils.character_memory as character_memory
 
     cm = _make_config_manager(tmp_path)
+    _seed_source_character_registry(cm)
     memory_root = Path(cm.memory_dir)
 
     def detected(path):
@@ -7184,6 +7882,7 @@ def test_a_failed_rename_releases_the_write_fence(tmp_path):
     from utils.character_memory import is_character_write_fenced
 
     cm = _make_config_manager(tmp_path)
+    _seed_source_character_registry(cm)
     memory_root = Path(cm.memory_dir)
 
     with _isolated_sidecar_stores(memory_root) as (store, corpus, greeting):
@@ -7245,6 +7944,7 @@ def test_a_late_source_write_does_not_leave_the_old_directory_behind(tmp_path):
     import utils.character_memory as character_memory
 
     cm = _make_config_manager(tmp_path)
+    _seed_source_character_registry(cm)
     memory_root = Path(cm.memory_dir)
 
     with _isolated_sidecar_stores(memory_root) as (store, corpus, greeting):
@@ -7619,3 +8319,621 @@ def test_characters_cache_sees_rewrite_that_keeps_the_same_mtime(tmp_path):
     assert os.path.getmtime(config_path) == before.st_mtime
 
     assert set(cm.load_characters()["猫娘"]) == {"A", "Bee"}
+
+
+@pytest.mark.unit
+def test_f0064_samefile_case_only_rename_and_collision_guards(tmp_path, monkeypatch):
+    """F0064: case-only rename uses two-step rename, rewrites pending, and guards co-owned deletes/renames."""
+    import utils.character_memory as character_memory
+    import utils.recent_file as recent_file
+
+    cm = _make_config_manager(tmp_path)
+    memory_root = Path(cm.memory_dir)
+    cm.save_characters(
+        {
+            "当前猫娘": "neko",
+            "猫娘": {
+                "neko": {"_reserved": {"character_id": "character_" + "1" * 32}},
+                "other": {"_reserved": {"character_id": "character_" + "2" * 32}},
+            },
+            "主人": {"昵称": "哥哥"},
+        },
+        bypass_write_fence=True,
+    )
+
+    neko_dir = memory_root / "neko"
+    neko_dir.mkdir(parents=True)
+    (neko_dir / "facts.json").write_text('["fact"]', encoding="utf-8")
+    recent_path = neko_dir / "recent.json"
+    recent_path.write_text(
+        json.dumps([{"type": "human", "data": {"content": "neko说：hi", "speaker": "neko"}}]),
+        encoding="utf-8",
+    )
+
+    # 1. find_character_name_collision detects casefold & Unicode equivalents, respecting exclude_names.
+    assert character_memory.find_character_name_collision(cm, "Neko") == "neko"
+    assert character_memory.find_character_name_collision(cm, "Neko", exclude_names=("neko",)) is None
+    assert (
+        character_memory.find_character_name_collision(
+            None, "Cafe\u0301", existing_names=["Caf\u00e9"]
+        )
+        == "Caf\u00e9"
+    )
+
+    # 2. Same-path _merge_directories(d, d) is an idempotent no-op.
+    assert character_memory._merge_directories(neko_dir, neko_dir) is False
+    assert (neko_dir / "facts.json").read_text(encoding="utf-8") == '["fact"]'
+
+    # 3. Cross-character collision: renaming "other" -> "Neko" when "neko" owns memory/neko must raise.
+    other_dir = memory_root / "other"
+    other_dir.mkdir(parents=True)
+    (other_dir / "facts.json").write_text('["other"]', encoding="utf-8")
+    if os.path.exists(memory_root / "Neko") and os.path.samefile(neko_dir, memory_root / "Neko"):
+        with pytest.raises(FileExistsError, match="collides with existing character"):
+            character_memory.rename_character_memory_storage(cm, "other", "Neko")
+        assert (neko_dir / "facts.json").read_text(encoding="utf-8") == '["fact"]'
+    else:
+        # On case-sensitive Linux, simulate samefile collision explicitly.
+        real_samefile = os.path.samefile
+
+        def fake_samefile(a, b):
+            if {Path(a).name, Path(b).name} == {"neko", "Neko"}:
+                return True
+            return real_samefile(a, b)
+
+        with patch.object(character_memory.os.path, "samefile", fake_samefile):
+            with pytest.raises(FileExistsError, match="collides with existing character"):
+                character_memory.rename_character_memory_storage(cm, "other", "Neko")
+
+    # 4. Same-character case-only rename "neko" -> "Neko" succeeds and rewrites pending speaker names.
+    recent_file.set_recent_pending_unlocked(
+        recent_path,
+        [{"type": "human", "data": {"speaker": "neko", "content": "neko说：pending"}}],
+    )
+    result = character_memory.rename_character_memory_storage(cm, "neko", "Neko")
+    target_dir = result["runtime_dir"]
+    assert target_dir.name == "Neko"
+    assert (target_dir / "facts.json").read_text(encoding="utf-8") == '["fact"]'
+    target_recent = target_dir / "recent.json"
+    rewritten_disk = json.loads(target_recent.read_text(encoding="utf-8"))
+    assert rewritten_disk[0]["data"]["speaker"] == "Neko"
+    assert rewritten_disk[0]["data"]["content"] == "Neko说：hi"
+    rewritten_pending = recent_file.get_recent_pending_unlocked(target_recent)
+    assert rewritten_pending == [
+        {"type": "human", "data": {"speaker": "Neko", "content": "Neko说：pending"}}
+    ]
+    recent_file.set_recent_pending_unlocked(target_recent, [])
+
+    # 5. Mocked os.path.samefile two-step rename verification (covers case-sensitive Linux CI as well).
+    two_step_src = tmp_path / "case_mock" / "alpha"
+    two_step_dst = tmp_path / "case_mock" / "Alpha"
+    two_step_src.mkdir(parents=True)
+    (two_step_src / "data.txt").write_text("ok", encoding="utf-8")
+    real_samefile = os.path.samefile
+
+    def mock_samefile_for_alpha(a, b):
+        if {Path(a), Path(b)} == {two_step_src, two_step_dst}:
+            return True
+        return real_samefile(a, b)
+
+    with patch.object(character_memory.os.path, "samefile", mock_samefile_for_alpha):
+        assert character_memory._merge_directories(two_step_src, two_step_dst) is True
+    assert two_step_dst.exists()
+    assert (two_step_dst / "data.txt").read_text(encoding="utf-8") == "ok"
+
+    # 6. delete_character_memory_storage must NOT delete directory co-owned by another live character.
+    cm.save_characters(
+        {
+            "当前猫娘": "Neko",
+            "猫娘": {
+                "Neko": {"_reserved": {"character_id": "character_" + "1" * 32}},
+                "neko": {"_reserved": {"character_id": "character_" + "3" * 32}},
+            },
+            "主人": {"昵称": "哥哥"},
+        },
+        bypass_write_fence=True,
+    )
+    alias = memory_root / "neko"
+    if not alias.exists():
+        alias.symlink_to(target_dir, target_is_directory=True)
+    assert alias.samefile(target_dir)
+    assert alias in character_memory.list_character_memory_paths(cm, "neko")
+    assert character_memory.delete_character_memory_storage(cm, "neko") == []
+    assert (target_dir / "facts.json").read_text(encoding="utf-8") == '["fact"]'
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("seed_in_project_dir", [False, True])
+def test_f0064_rename_rejects_casefold_collision_without_runtime_dir_on_disk(
+    tmp_path, seed_in_project_dir
+):
+    """F0064: renaming onto a registered character's case-folded name must raise even without memory_dir/<other>."""
+    import utils.character_memory as character_memory
+
+    cm = _make_config_manager(tmp_path)
+    memory_root = Path(cm.memory_dir)
+    project_root = Path(cm.project_memory_dir)
+    cm.save_characters(
+        {
+            "当前猫娘": "neko",
+            "猫娘": {
+                "neko": {"_reserved": {"character_id": "character_" + "1" * 32}},
+                "other": {"_reserved": {"character_id": "character_" + "2" * 32}},
+            },
+            "主人": {"昵称": "哥哥"},
+        },
+        bypass_write_fence=True,
+    )
+
+    if seed_in_project_dir:
+        seed_dir = project_root / "neko"
+        seed_dir.mkdir(parents=True)
+        (seed_dir / "facts.json").write_text('["neko-seed"]', encoding="utf-8")
+
+    assert not (memory_root / "neko").exists()
+    other_dir = memory_root / "other"
+    other_dir.mkdir(parents=True)
+    (other_dir / "facts.json").write_text('["other-data"]', encoding="utf-8")
+
+    with pytest.raises(FileExistsError, match="collides with existing character"):
+        character_memory.rename_character_memory_storage(cm, "other", "Neko")
+
+    assert (other_dir / "facts.json").read_text(encoding="utf-8") == '["other-data"]'
+    assert not (memory_root / "Neko").exists()
+    if seed_in_project_dir:
+        assert (project_root / "neko" / "facts.json").read_text(encoding="utf-8") == '["neko-seed"]'
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("existing_name", "candidate_name"),
+    [
+        ("  neko", "Neko"),
+        ("  neko  ", "  Neko  "),
+        ("  neko  ", "Neko"),
+        ("neko ", "Neko"),
+        ("neko", "  Neko  "),
+    ],
+)
+@pytest.mark.parametrize("existing_on_disk", [False, True])
+def test_f0064_symmetric_whitespace_collision_detection_and_rename_guard(
+    tmp_path, existing_name, candidate_name, existing_on_disk
+):
+    """F0064: whitespace-padded existing and candidate names collide symmetrically."""
+    import utils.character_memory as character_memory
+
+    if existing_on_disk and os.name == "nt" and existing_name.endswith(" "):
+        pytest.skip("Win32 strips trailing spaces from directory names")
+
+    cm = _make_config_manager(tmp_path)
+    memory_root = Path(cm.memory_dir)
+    cm.save_characters(
+        {
+            "当前猫娘": existing_name,
+            "猫娘": {
+                existing_name: {"_reserved": {"character_id": "character_" + "1" * 32}},
+                "other": {"_reserved": {"character_id": "character_" + "2" * 32}},
+            },
+            "主人": {"昵称": "哥哥"},
+        },
+        bypass_write_fence=True,
+    )
+
+    if existing_on_disk:
+        existing_dir = memory_root / existing_name
+        existing_dir.mkdir(parents=True)
+        (existing_dir / "facts.json").write_text('["existing-fact"]', encoding="utf-8")
+
+    other_dir = memory_root / "other"
+    other_dir.mkdir(parents=True)
+    (other_dir / "facts.json").write_text('["other-data"]', encoding="utf-8")
+
+    assert (
+        character_memory.find_character_name_collision(
+            cm, candidate_name, exclude_names=("other",)
+        )
+        == existing_name
+    )
+    assert (
+        character_memory.find_character_name_collision(
+            None, candidate_name, exclude_names=("other",), existing_names=[existing_name, "other"]
+        )
+        == existing_name
+    )
+
+    with pytest.raises(FileExistsError, match="collides with existing character"):
+        character_memory.rename_character_memory_storage(cm, "other", candidate_name)
+
+    assert (other_dir / "facts.json").read_text(encoding="utf-8") == '["other-data"]'
+    if existing_on_disk:
+        assert (memory_root / existing_name / "facts.json").read_text(encoding="utf-8") == '["existing-fact"]'
+    else:
+        assert not (memory_root / candidate_name).exists()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("old_name", "new_name"),
+    [
+        ("  neko", "  Neko"),
+        ("  neko  ", "  Neko  "),
+    ],
+)
+def test_f0064_same_character_whitespace_padded_case_only_rename_succeeds(
+    tmp_path, old_name, new_name
+):
+    """F0064: renaming a whitespace-padded character onto its own case-variant succeeds."""
+    import utils.character_memory as character_memory
+
+    if os.name == "nt" and old_name.endswith(" "):
+        pytest.skip("Win32 strips trailing spaces from directory names")
+
+    cm = _make_config_manager(tmp_path)
+    memory_root = Path(cm.memory_dir)
+    cm.save_characters(
+        {
+            "当前猫娘": old_name,
+            "猫娘": {
+                old_name: {"_reserved": {"character_id": "character_" + "1" * 32}},
+                "other": {"_reserved": {"character_id": "character_" + "2" * 32}},
+            },
+            "主人": {"昵称": "哥哥"},
+        },
+        bypass_write_fence=True,
+    )
+
+    old_dir = memory_root / old_name
+    old_dir.mkdir(parents=True)
+    (old_dir / "facts.json").write_text('["padded-fact"]', encoding="utf-8")
+
+    assert (
+        character_memory.find_character_name_collision(
+            cm, new_name, exclude_names=(old_name,)
+        )
+        is None
+    )
+
+    result = character_memory.rename_character_memory_storage(cm, old_name, new_name)
+    target_dir = result["runtime_dir"]
+    assert target_dir.name == new_name
+    assert (target_dir / "facts.json").read_text(encoding="utf-8") == '["padded-fact"]'
+
+
+@pytest.mark.unit
+def test_f0064_rename_refuses_shared_source_directory(tmp_path):
+    """Renaming a character whose source directory is co-owned by another character must fail."""
+    import utils.character_memory as character_memory
+
+    cm = _make_config_manager(tmp_path)
+    memory_root = Path(cm.memory_dir)
+    cm.save_characters(
+        {
+            "当前猫娘": "Neko",
+            "猫娘": {
+                "Neko": {"_reserved": {"character_id": "character_" + "1" * 32}},
+                "neko": {"_reserved": {"character_id": "character_" + "2" * 32}},
+                "other": {"_reserved": {"character_id": "character_" + "3" * 32}},
+            },
+            "主人": {"昵称": "哥哥"},
+        },
+        bypass_write_fence=True,
+    )
+
+    neko_upper = memory_root / "Neko"
+    neko_upper.mkdir(parents=True)
+    (neko_upper / "facts.json").write_text('["shared-fact"]', encoding="utf-8")
+    neko_lower = memory_root / "neko"
+    if not neko_lower.exists():
+        neko_lower.symlink_to(neko_upper, target_is_directory=True)
+    assert neko_lower.samefile(neko_upper)
+    assert character_memory.list_character_memory_paths(cm, "neko")
+
+    other_dir = memory_root / "other"
+    other_dir.mkdir(parents=True)
+    (other_dir / "facts.json").write_text('["other-fact"]', encoding="utf-8")
+
+    with pytest.raises(FileExistsError, match="shared with existing character"):
+        character_memory.rename_character_memory_storage(cm, "neko", "NewNeko")
+
+    assert not (memory_root / "NewNeko").exists()
+    assert (neko_upper / "facts.json").read_text(encoding="utf-8") == '["shared-fact"]'
+
+    # Unshared character in the same config still renames normally.
+    moved = character_memory.rename_character_memory_storage(cm, "other", "OtherNew")
+    assert moved["runtime_dir"] == memory_root / "OtherNew"
+    assert (memory_root / "OtherNew" / "facts.json").read_text(encoding="utf-8") == '["other-fact"]'
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "failure_mode",
+    [
+        "corrupt_json",
+        "unreadable",
+        "missing",
+        "missing_runtime_with_seed",
+        "missing_runtime_dirty_default_cache",
+    ],
+)
+def test_f0064_rename_and_delete_fail_closed_when_character_registry_unavailable(
+    tmp_path, monkeypatch, failure_mode
+):
+    """Both rename and delete refuse to proceed when authoritative character config cannot be read."""
+    import utils.character_memory as character_memory
+
+    cm = _make_config_manager(tmp_path)
+    memory_root = Path(cm.memory_dir)
+    cm.save_characters(
+        {
+            "当前猫娘": "Neko",
+            "猫娘": {
+                "Neko": {"_reserved": {"character_id": "character_" + "1" * 32}},
+                "neko": {"_reserved": {"character_id": "character_" + "2" * 32}},
+            },
+            "主人": {"昵称": "哥哥"},
+        },
+        bypass_write_fence=True,
+    )
+
+    neko_upper = memory_root / "Neko"
+    neko_upper.mkdir(parents=True)
+    (neko_upper / "facts.json").write_text('["shared-fact"]', encoding="utf-8")
+    neko_lower = memory_root / "neko"
+    if not neko_lower.exists():
+        neko_lower.symlink_to(neko_upper, target_is_directory=True)
+    assert neko_lower.samefile(neko_upper)
+
+    config_path = Path(cm.get_runtime_config_path("characters.json"))
+    with cm._characters_cache_lock:
+        cm._characters_cache = None
+        cm._characters_cache_path = None
+        cm._characters_cache_mtime = None
+        cm._characters_dirty = False
+
+    if failure_mode == "corrupt_json":
+        config_path.write_text("{corrupt", encoding="utf-8")
+    elif failure_mode == "missing":
+        config_path.unlink()
+    elif failure_mode == "missing_runtime_with_seed":
+        cm.project_config_dir = tmp_path / "project_seed_config"
+        seed_path = cm.project_config_dir / "characters.json"
+        seed_path.parent.mkdir(parents=True, exist_ok=True)
+        seed_path.write_text(
+            json.dumps(
+                {
+                    "当前猫娘": "SeedOnly",
+                    "猫娘": {
+                        "SeedOnly": {"_reserved": {"character_id": "character_" + "9" * 32}},
+                    },
+                    "主人": {"昵称": "哥哥"},
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        config_path.unlink()
+        assert Path(cm.get_config_path("characters.json")) == seed_path
+    elif failure_mode == "missing_runtime_dirty_default_cache":
+        config_path.unlink()
+        with patch.object(cm, "save_characters", side_effect=OSError("readonly")):
+            fallback = cm.load_characters()
+            assert "当前猫娘" in fallback
+        assert cm._characters_dirty is True
+        assert cm._characters_cache_mtime is None
+        assert not config_path.exists()
+    else:
+        def _deny_load(*_args, **_kwargs):
+            raise PermissionError("characters.json unreadable")
+
+        monkeypatch.setattr(cm, "load_characters", _deny_load)
+
+    expected_exc = (
+        FileNotFoundError
+        if failure_mode in {"missing_runtime_with_seed", "missing_runtime_dirty_default_cache"}
+        else (OSError, ValueError)
+    )
+    with pytest.raises(expected_exc):
+        character_memory.rename_character_memory_storage(cm, "neko", "NewNeko")
+    assert not (memory_root / "NewNeko").exists()
+    assert (neko_upper / "facts.json").read_text(encoding="utf-8") == '["shared-fact"]'
+    if failure_mode in {"missing_runtime_with_seed", "missing_runtime_dirty_default_cache"}:
+        assert not config_path.exists()
+
+    with _isolated_sidecar_stores(memory_root) as stores:
+        with pytest.raises(expected_exc):
+            character_memory.delete_character_memory_storage(cm, "neko")
+        assert all("neko" in store._retired for store in stores)
+    assert (neko_upper / "facts.json").read_text(encoding="utf-8") == '["shared-fact"]'
+    if failure_mode in {"missing_runtime_with_seed", "missing_runtime_dirty_default_cache"}:
+        assert not config_path.exists()
+    if failure_mode == "missing_runtime_dirty_default_cache":
+        assert cm._characters_dirty is True
+    # Recent file locks must not be leaked on fail-closed refusal: acquiring again succeeds immediately.
+    acquired = threading.Event()
+
+    def _acquire():
+        with character_memory.recent_file_locks(
+            character_memory.list_character_recent_paths(cm, "neko"),
+        ):
+            acquired.set()
+
+    locker = threading.Thread(target=_acquire, daemon=True)
+    locker.start()
+    assert acquired.wait(1.0)
+    locker.join(1.0)
+
+
+@pytest.mark.unit
+def test_f0064_same_directory_entry_and_two_step_rename_guards(tmp_path):
+    """Distinct hard links and symlinks-to-target must never overwrite or leave temp files."""
+    import utils.character_memory as character_memory
+
+    hard_old = tmp_path / "Old.txt"
+    hard_new = tmp_path / "New.txt"
+    hard_old.write_bytes(b"hard-payload")
+    try:
+        os.link(hard_old, hard_new)
+    except OSError as exc:
+        pytest.skip(f"hard links unsupported on this platform: {exc}")
+
+    assert not character_memory._paths_refer_to_same_directory_entry(hard_old, hard_new)
+    with pytest.raises(FileExistsError):
+        character_memory._two_step_samefile_rename(hard_old, hard_new)
+    assert hard_old.read_bytes() == b"hard-payload"
+    assert hard_new.read_bytes() == b"hard-payload"
+    with pytest.raises(FileExistsError):
+        character_memory._move_path(hard_old, hard_new)
+    assert not any(p.name.startswith(".neko_rename_") for p in tmp_path.iterdir())
+
+    case_only = tmp_path / "CaseOnly.txt"
+    case_only.write_bytes(b"case-payload")
+    case_alias = tmp_path / "caseonly.txt"
+    if case_alias.exists():
+        assert character_memory._paths_refer_to_same_directory_entry(case_only, case_alias)
+    else:
+        os.link(case_only, case_alias)
+        assert not character_memory._paths_refer_to_same_directory_entry(case_only, case_alias)
+
+    target = tmp_path / "Target.txt"
+    target.write_bytes(b"real-target")
+    link = tmp_path / "Link.txt"
+    mid = tmp_path / "Mid.txt"
+    other = tmp_path / "OtherLink.txt"
+    dangling = tmp_path / "Dangling.txt"
+    loop = tmp_path / "Loop.txt"
+    try:
+        link.symlink_to(target.name)
+        mid.symlink_to(link.name)
+        other.symlink_to(target.name)
+        dangling.symlink_to("Missing.txt")
+        loop.symlink_to(loop.name)
+    except OSError as exc:
+        pytest.skip(f"symlinks unsupported on this platform: {exc}")
+
+    assert not character_memory._paths_refer_to_same_directory_entry(link, target)
+    assert character_memory._symlink_chain_reaches_path(link, target)
+    assert character_memory._symlink_chain_reaches_path(mid, target)
+    assert not character_memory._symlink_chain_reaches_path(link, other)
+    assert not character_memory._symlink_chain_reaches_path(loop, target)
+
+    with pytest.raises(FileExistsError):
+        character_memory._move_path(link, target)
+    assert link.is_symlink() and not target.is_symlink()
+    assert target.read_bytes() == b"real-target"
+
+    with pytest.raises(FileExistsError):
+        character_memory._move_path(dangling, tmp_path / "Missing.txt")
+
+    target_dir = tmp_path / "TargetDir"
+    target_dir.mkdir()
+    (target_dir / "file.txt").write_text("keep", encoding="utf-8")
+    link_dir = tmp_path / "LinkDir"
+    link_dir.symlink_to(target_dir.name, target_is_directory=True)
+    with pytest.raises(FileExistsError):
+        character_memory._merge_directories(link_dir, target_dir)
+    assert (target_dir / "file.txt").read_text(encoding="utf-8") == "keep"
+    assert not any(p.name.startswith(".neko_rename_") for p in tmp_path.iterdir())
+
+
+@pytest.mark.unit
+def test_f0064_same_directory_entry_ignores_zero_inode_scandir_cache(tmp_path, monkeypatch):
+    """Windows DirEntry.stat(follow_symlinks=False) can report st_ino=0/st_dev=0; lstat must still match."""
+    from types import SimpleNamespace
+    import utils.character_memory as character_memory
+
+    case_only = tmp_path / "CaseOnly.txt"
+    case_only.write_bytes(b"case-payload")
+    case_alias = tmp_path / "caseonly.txt"
+
+    real_scandir = os.scandir
+    real_lstat = os.lstat
+
+    def lstat_case_alias(path, *args, **kwargs):
+        if Path(path) == case_alias:
+            return real_lstat(case_only, *args, **kwargs)
+        return real_lstat(path, *args, **kwargs)
+
+    class _ZeroInodeEntry:
+        def __init__(self, inner):
+            self.name = inner.name
+            self.path = inner.path
+
+        def stat(self, *, follow_symlinks=True):
+            return SimpleNamespace(st_mode=0o100644, st_ino=0, st_dev=0)
+
+    class _ScandirCtx:
+        def __init__(self, path):
+            self._inner = real_scandir(path)
+
+        def __enter__(self):
+            entries = self._inner.__enter__()
+            return [_ZeroInodeEntry(entry) for entry in entries]
+
+        def __exit__(self, exc_type, exc, tb):
+            return self._inner.__exit__(exc_type, exc, tb)
+
+    monkeypatch.setattr(character_memory.os, "lstat", lstat_case_alias)
+    monkeypatch.setattr(character_memory.os, "scandir", _ScandirCtx)
+
+    assert character_memory._paths_refer_to_same_directory_entry(case_only, case_alias)
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_current_rename_finalize_failure_does_not_publish_provisional_revision(tmp_path, monkeypatch):
+    """A failed rename finalize must roll disk back without ever publishing the new name."""
+    cm = _make_config_manager(tmp_path)
+    bootstrap_local_cloudsave_environment(cm)
+
+    async def _noop(*_args, **_kwargs):
+        return None
+
+    with patch("utils.config_manager._config_manager", cm):
+        init_shared_state(
+            role_state={},
+            steamworks=None,
+            templates=None,
+            config_manager=cm,
+            initialize_character_data=_noop,
+            switch_current_catgirl_fast=_noop,
+            init_one_catgirl=_noop,
+            remove_one_catgirl=_noop,
+        )
+        crud = reload_module("main_routers.characters_router.crud")
+        characters = cm.load_characters()
+        characters.setdefault("猫娘", {})["Old"] = {
+            "昵称": "Old",
+            "_reserved": {"character_id": "character_" + "7" * 32},
+        }
+        characters["当前猫娘"] = "Old"
+        cm.save_characters(characters, bypass_write_fence=True)
+
+        recent = Path(cm.memory_dir) / "Old" / "recent.json"
+        recent.parent.mkdir(parents=True, exist_ok=True)
+        recent.write_text("[]", encoding="utf-8")
+
+        monkeypatch.setattr(crud, "_catgirl_switch_revision", 4242)
+        monkeypatch.setattr(crud, "_catgirl_switch_revision_target", "Old")
+
+        with (
+            patch.object(crud, "release_memory_server_character", AsyncMock(return_value=True)),
+            patch.object(crud, "notify_memory_server_reload", AsyncMock(return_value=True)),
+            patch.object(
+                crud,
+                "finalize_character_recent_rename",
+                side_effect=OSError("finalize failed"),
+            ) as finalize_mock,
+        ):
+            response = await crud.rename_catgirl(
+                "Old",
+                _DummyRequest({"new_name": "New"}),
+            )
+
+        finalize_mock.assert_called_once()
+        assert response.status_code == 500
+        persisted = cm.load_characters()
+        assert persisted["当前猫娘"] == "Old"
+        assert "Old" in persisted["猫娘"]
+        assert "New" not in persisted["猫娘"]
+        assert crud._catgirl_switch_revision == 4242
+        assert crud._catgirl_switch_revision_target == "Old"
+

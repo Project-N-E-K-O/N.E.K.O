@@ -14,6 +14,7 @@
 """OpenAI-compatible chat client."""
 
 from __future__ import annotations
+import inspect
 import weakref
 from typing import TYPE_CHECKING, Any, AsyncIterator
 
@@ -28,6 +29,46 @@ from .lifecycle import (
 )
 from .messages import LLMResponse, LLMStreamChunk, ToolCallAggregate, _normalize_messages
 from .thinking import strip_thinking_segments
+
+
+def top_logprobs_of(choice_logprobs: Any) -> list[list[tuple[str, float]]]:
+    """Candidate tokens of every content token in a choice's ``logprobs``.
+
+    Accepts the SDK object or its plain-dict form. Returns one
+    ``[(token, logprob), ...]`` list per content token, best candidate first as
+    the server sent them; empty when the reply carries no ``logprobs``.
+    """
+    if choice_logprobs is None:
+        return []
+    content = (
+        choice_logprobs.get("content") if isinstance(choice_logprobs, dict)
+        else getattr(choice_logprobs, "content", None)
+    )
+    out: list[list[tuple[str, float]]] = []
+    for tok in content or []:
+        tops = tok.get("top_logprobs") if isinstance(tok, dict) else getattr(tok, "top_logprobs", None)
+        cands: list[tuple[str, float]] = []
+        for top in tops or []:
+            text = top.get("token") if isinstance(top, dict) else getattr(top, "token", None)
+            logprob = top.get("logprob") if isinstance(top, dict) else getattr(top, "logprob", None)
+            if isinstance(text, str) and isinstance(logprob, (int, float)) and not isinstance(logprob, bool):
+                cands.append((text, float(logprob)))
+        out.append(cands)
+    return out
+
+
+def first_token_top_logprobs(raw_response: Any) -> list[tuple[str, float]]:
+    """Candidate tokens of the first content token of a raw chat completion.
+
+    *raw_response* is what :meth:`ChatOpenAI.ainvoke_raw` returns for a request
+    sent with ``logprobs=True`` and ``top_logprobs=N``. Empty when the reply has
+    no choice or no ``logprobs`` (many providers ignore the parameters).
+    """
+    choices = getattr(raw_response, "choices", None) or []
+    if not choices:
+        return []
+    per_token = top_logprobs_of(getattr(choices[0], "logprobs", None))
+    return per_token[0] if per_token else []
 
 
 def _plain_dict(value: Any) -> dict | None:
@@ -77,7 +118,9 @@ class ChatOpenAI:
         model: str = "",
         base_url: str | None = None,
         api_key: str | None = None,
-        temperature: float | None = None,
+        # Keyword-only from here: removing ``temperature`` (once the fourth
+        # parameter) must not let an old positional call shift into ``streaming``.
+        *,
         streaming: bool = False,
         max_retries: int = 2,
         extra_body: dict | None = None,
@@ -90,8 +133,12 @@ class ChatOpenAI:
         enable_cache_control: bool = False,
         tools: list[dict] | None = None,
         tool_choice: str | dict | None = None,
+        keepalive_expiry: float | None = None,
         **_kwargs: Any,
     ):
+        """``keepalive_expiry`` keeps idle connections open that many seconds
+        (httpx closes them after 5 s by default), for a client kept and reused
+        across calls that come further apart than that."""
         self.model = model
         self.base_url = base_url
         # Tool-calling defaults baked into instance; per-call ``overrides``
@@ -99,12 +146,8 @@ class ChatOpenAI:
         # the caller wants to suppress tools mid-conversation).
         self.tools = list(tools) if tools else None
         self.tool_choice = tool_choice
-        # Project rule: never send temperature. default=None omits request field,
-        # leaving model defaults. o1/o3/gpt-5-thinking/Claude extended-thinking reject
-        # this parameter and can pass through; ordinary models use defaults too, avoiding hard-to-reproduce
-        # regressions from temperature drift between tasks. Callers must no longer pass temperature=
-        # (CI enforced by scripts/check_no_temperature.py).
-        self.temperature = temperature
+        # Project rule: this client never sends a temperature; every provider
+        # uses its own default (scripts/check_no_temperature.py enforces it in CI).
         self.extra_body: dict = extra_body or {}
         self.max_completion_tokens = max_completion_tokens
         self.max_tokens = max_tokens
@@ -130,9 +173,19 @@ class ChatOpenAI:
         from openai import AsyncOpenAI, DefaultAsyncHttpxClient, DefaultHttpxClient, OpenAI
 
         ssl_context = _get_default_ssl_context()
-        client_kw["http_client"] = DefaultAsyncHttpxClient(verify=ssl_context)
+        http_kw: dict[str, Any] = {"verify": ssl_context}
+        if keepalive_expiry is not None:
+            import httpx
+            from openai import DEFAULT_CONNECTION_LIMITS
+
+            http_kw["limits"] = httpx.Limits(
+                max_connections=DEFAULT_CONNECTION_LIMITS.max_connections,
+                max_keepalive_connections=DEFAULT_CONNECTION_LIMITS.max_keepalive_connections,
+                keepalive_expiry=keepalive_expiry,
+            )
+        client_kw["http_client"] = DefaultAsyncHttpxClient(**http_kw)
         self._aclient = AsyncOpenAI(**client_kw)
-        client_kw["http_client"] = DefaultHttpxClient(verify=ssl_context)
+        client_kw["http_client"] = DefaultHttpxClient(**http_kw)
         self._client = OpenAI(**client_kw)
         self._client_finalizer = weakref.finalize(
             self,
@@ -168,11 +221,6 @@ class ChatOpenAI:
             "messages": _normalize_messages(messages),
             "stream": stream,
         }
-        # Project convention: default=None omits temperature. Retain branch only
-        # for backwards-compatible explicit `temperature=0` (0.0 valid, so test None
-        # rather than truthiness); actual callers must no longer pass this parameter.
-        if self.temperature is not None:
-            p["temperature"] = self.temperature
         # Provider-aware routing of token-limit field:
         #   Anthropic SDK / Anthropic-compat endpoints → max_tokens
         #   OpenAI-compat endpoints → whatever config.providers registers for the
@@ -368,59 +416,76 @@ class ChatOpenAI:
         stream = await self._aclient.chat.completions.create(
             **self._params(messages, stream=True, **overrides)
         )
-        async for chunk in stream:
-            choice = chunk.choices[0] if chunk.choices else None
-            delta = choice.delta if choice else None
-            content = delta.content if delta and delta.content else ""
-            tool_call_deltas: list[dict] | None = None
-            if delta is not None:
-                raw_tool_calls = getattr(delta, "tool_calls", None) or []
-                if raw_tool_calls:
-                    tool_call_deltas = []
-                    for tc in raw_tool_calls:
-                        # SDK objects → plain dicts. ``index`` ties fragments
-                        # of the same call together across chunks.
-                        fn = getattr(tc, "function", None)
-                        frag = {
-                            "index": getattr(tc, "index", 0),
-                            "id": getattr(tc, "id", "") or "",
-                            "type": getattr(tc, "type", "function") or "function",
-                            "function": {
-                                "name": getattr(fn, "name", "") if fn else "",
-                                "arguments": getattr(fn, "arguments", "") if fn else "",
-                            },
-                        }
-                        # Nonstandard ``extra_content``: Gemini OpenAI-compatible
-                        # endpoints (including lanlan.app overseas free routes) put thought_signature
-                        # here and require verbatim return with the tool call next turn; dropping it
-                        # consistently yields 400 INVALID_ARGUMENT. Pass through only, without parsing:
-                        # preserve whatever other providers put here too.
-                        extra_content = _plain_dict(getattr(tc, "extra_content", None))
-                        if extra_content:
-                            frag["extra_content"] = extra_content
-                        tool_call_deltas.append(frag)
-            # Thinking models place reasoning in nonstandard ``delta.reasoning_content``
-            # (openai-python BaseModel extra=allow permits unknown fields via
-            # getattr). Ordinary endpoints lack it; getattr returns None.
-            reasoning_content = (
-                getattr(delta, "reasoning_content", None) if delta else None
-            )
-            finish_reason = getattr(choice, "finish_reason", None) if choice else None
-            if content or tool_call_deltas or finish_reason or reasoning_content:
-                yield LLMStreamChunk(
-                    content=content,
-                    tool_call_deltas=tool_call_deltas,
-                    finish_reason=finish_reason,
-                    reasoning_content=reasoning_content,
+        try:
+            async for chunk in stream:
+                choice = chunk.choices[0] if chunk.choices else None
+                delta = choice.delta if choice else None
+                content = delta.content if delta and delta.content else ""
+                tool_call_deltas: list[dict] | None = None
+                if delta is not None:
+                    raw_tool_calls = getattr(delta, "tool_calls", None) or []
+                    if raw_tool_calls:
+                        tool_call_deltas = []
+                        for tc in raw_tool_calls:
+                            # SDK objects → plain dicts. ``index`` ties fragments
+                            # of the same call together across chunks.
+                            fn = getattr(tc, "function", None)
+                            frag = {
+                                "index": getattr(tc, "index", 0),
+                                "id": getattr(tc, "id", "") or "",
+                                "type": getattr(tc, "type", "function") or "function",
+                                "function": {
+                                    "name": getattr(fn, "name", "") if fn else "",
+                                    "arguments": getattr(fn, "arguments", "") if fn else "",
+                                },
+                            }
+                            # Nonstandard ``extra_content``: Gemini OpenAI-compatible
+                            # endpoints (including lanlan.app overseas free routes) put thought_signature
+                            # here and require verbatim return with the tool call next turn; dropping it
+                            # consistently yields 400 INVALID_ARGUMENT. Pass through only, without parsing:
+                            # preserve whatever other providers put here too.
+                            extra_content = _plain_dict(getattr(tc, "extra_content", None))
+                            if extra_content:
+                                frag["extra_content"] = extra_content
+                            tool_call_deltas.append(frag)
+                # Thinking models place reasoning in nonstandard ``delta.reasoning_content``
+                # (openai-python BaseModel extra=allow permits unknown fields via
+                # getattr). Ordinary endpoints lack it; getattr returns None.
+                reasoning_content = (
+                    getattr(delta, "reasoning_content", None) if delta else None
                 )
-            # Terminal chunk with usage info (stream_options={"include_usage": True})
-            if chunk.usage is not None:
-                usage_dict = chunk.usage.model_dump()
-                yield LLMStreamChunk(
-                    content="",
-                    usage_metadata=usage_dict,
-                    response_metadata={"token_usage": usage_dict},
-                )
+                finish_reason = getattr(choice, "finish_reason", None) if choice else None
+                # Only present when the request asked for logprobs.
+                top_logprobs = top_logprobs_of(getattr(choice, "logprobs", None)) if choice else []
+                if not any(top_logprobs):
+                    top_logprobs = []  # logprobs without top_logprobs: nothing to pass on
+                if content or tool_call_deltas or finish_reason or reasoning_content or top_logprobs:
+                    yield LLMStreamChunk(
+                        content=content,
+                        tool_call_deltas=tool_call_deltas,
+                        finish_reason=finish_reason,
+                        reasoning_content=reasoning_content,
+                        top_logprobs=top_logprobs or None,
+                    )
+                # Terminal chunk with usage info (stream_options={"include_usage": True})
+                if chunk.usage is not None:
+                    usage_dict = chunk.usage.model_dump()
+                    yield LLMStreamChunk(
+                        content="",
+                        usage_metadata=usage_dict,
+                        response_metadata={"token_usage": usage_dict},
+                    )
+        finally:
+            close_fn = getattr(stream, "aclose", None)
+            if not callable(close_fn):
+                close_fn = getattr(stream, "close", None)
+            if callable(close_fn):
+                try:
+                    res = close_fn()
+                    if inspect.isawaitable(res):
+                        await res
+                except Exception:
+                    pass
 
     @staticmethod
     def collect_tool_calls(deltas_per_chunk: list[list[dict] | None]) -> list[ToolCallAggregate]:

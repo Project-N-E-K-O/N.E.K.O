@@ -528,7 +528,7 @@ def test_blocked_accounting_io_does_not_block_asyncio_run_exit(tmp_path):
                 threading.Event().wait()
 
         class Gateway:
-            async def complete(self, slot, body, *, observation):
+            async def complete(self, slot, body, *, observation, before_send=None):
                 return {"ok": True}
 
         async def main():

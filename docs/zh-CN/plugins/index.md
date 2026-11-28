@@ -58,18 +58,20 @@ N.E.K.O. 插件系统是一个基于 Python 的插件框架，建立在**进程�
 
 静态分析展示可能的使用情况，不判断代码分支是否实际执行。通过从插件内部其他模块导入的对象发起调用时，扫描可能漏报。扫描失败不会禁用插件，也不会撤销已保存的决定。确认记录与能力分析报告分别保存；安装替换成功提交后才会通知分析服务，回滚不会发布新版本报告。权限页可以随时「撤回确认」删除已保存的决定，插件会被视为未确认。
 
-先阅读[插件开发入门文档](./plugin-development)，了解插件的目录构成和完整制作流程；然后跟随[快速开始](./quick-start)动手，并在实现功能时查阅[插件能力与 SDK 参考](./sdk-reference)。
+如果你是零基础或平时使用 AI 编程助手（如 DeepSeek Harness、Codex、Trae、Claude Code、Cursor、通义灵码、CodeBuddy 等），可以直接前往[用 AI 零基础做插件](./coding-agents)：在插件制作工作台新建项目后，让 AI 自动帮你搭建与检查。想先自己了解目录构成和手动制作流程，请阅读[插件开发入门文档](./plugin-development)，再跟随[快速开始](./quick-start)动手，并在实现功能时查阅[插件能力与 SDK 参考](./sdk-reference)。
 
 ## 快速链接
 
+- [用 AI 零基础做插件](./coding-agents) — 在插件制作工作台新建项目，让 AI 编程工具帮你写插件
 - [插件开发入门文档](./plugin-development) — 先了解插件由什么组成，以及怎样完成第一个插件
 - [快速开始](./quick-start) — 按步骤创建你的第一个插件
 - [发布插件](/zh-CN/plugins/cli) — 上传 GitHub、提交审核并持续发布新版本
 - [v0.9 迁移](./migration-v0.9) — 已删除接口与准确替代方案
 - [SDK 参考](./sdk-reference) — 基类、上下文 API、Result 类型
+- [消息推送与结果投递](./push-message) — `push_message` / `finish` 的投递语义、大小限制与角色占位符
 - [装饰器](./decorators) — 所有可用的装饰器
 - [Hosted UI](./hosted-ui) — 构建 TSX 面板和 Markdown 教程页
 - [示例](./examples) — 完整的可运行示例
 - [Adapter 与并发编程](./advanced) — Adapter 网关、异步入口与线程安全
 - [LLM 工具调用](./tool-calling) — 注册插件功能给 LLM 在对话中调用
-- [最佳实践](./best-practices) — 错误处理、测试、代码组织
+- [最佳实践](./best-practices) — 错误处理、代码组织

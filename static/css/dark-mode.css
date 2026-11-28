@@ -1022,16 +1022,55 @@ html[data-theme="dark"].subtitle-window-host body.subtitle-window-host {
   background: #252525;
 }
 
-/* ===== 子页面：API Key Book 管理簿面板 =====
+/* ===== 子页面：API Key Book 管理簿与 ChatGPT 账号面板 =====
    api_key_settings.css 中：
-   - #key-book-inputs：浅蓝面板 #f0f9ff + #d0e8ff 边框
+   - #key-book-inputs / #subscriptions-options：浅蓝面板 #f0f9ff + #d0e8ff 边框
    - .key-book-row input：白底 #fff + #b3e5fc 边框 + var(--text-blue) 文字
    - .key-book-row input::placeholder：浅蓝 #b3e5fc
    - .key-book-row input[readonly]：#f0f0f0 灰底 + #666 文字
    暗色基调：面板 #252525，输入 #2d2d2d，边框 #3a5a6e。 */
-[data-theme="dark"] #key-book-inputs {
+[data-theme="dark"] #key-book-inputs,
+[data-theme="dark"] #subscriptions-options {
   background: #252525;
   border-color: #3a5a6e;
+}
+
+[data-theme="dark"] .subscription-card {
+  background: #2d2d2d;
+  border-color: #3a5a6e;
+}
+
+[data-theme="dark"] .subscription-name,
+[data-theme="dark"] .subscription-feature-note em {
+  color: #8fd3f4;
+}
+
+[data-theme="dark"] .subscription-tiers-title,
+[data-theme="dark"] .subscription-state,
+[data-theme="dark"] .subscription-tier-note {
+  color: #aaa;
+}
+
+[data-theme="dark"] .subscription-state[data-kind="error"] {
+  color: #ef9a9a;
+}
+
+[data-theme="dark"] .subscription-summary {
+  background: #252525;
+  border-color: #3a5a6e;
+  color: #8fd3f4;
+}
+
+[data-theme="dark"] .subscription-tag {
+  background: #1e3a48;
+  border-color: #3a5a6e;
+  color: #b3e5fc;
+}
+
+[data-theme="dark"] .subscription-badge {
+  background: #3a2e1a;
+  border-color: #6b5426;
+  color: #f3d19e;
 }
 
 [data-theme="dark"] .key-book-row label {

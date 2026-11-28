@@ -5,6 +5,8 @@ type Options = {
   analysisStatus?: string
   capabilities?: string[]
   running?: boolean
+  permissions?: Record<string, { declared: string | null; findings: Array<{ file: string; line: number }> }>
+  blindSpots?: Array<{ type: string; file: string | null; line: number | null }>
 }
 
 const ANALYZING = new Set(['queued', 'running', 'unavailable'])
@@ -13,6 +15,8 @@ async function fixture(page: Page, options: Options = {}) {
   const analysisStatus = options.analysisStatus ?? 'completed'
   const capabilities = options.capabilities ?? ['conversations.read', 'memory.read', 'messages.push']
   let running = options.running ?? false
+  const permissions = options.permissions ?? {}
+  const blindSpots = options.blindSpots ?? []
   let decision: 'approved' | 'denied' | null = null
   const approvedCapabilities: string[] = []
   const calls = { decided: [] as boolean[], started: 0 }
@@ -50,6 +54,8 @@ async function fixture(page: Page, options: Options = {}) {
           ]
         : [],
       warnings: analysisStatus === 'failed' ? [{ code: 'analysis_failed' }] : [],
+      permissions,
+      blind_spots: blindSpots,
     },
   })
   await page.route('**/*', async (route) => {
@@ -76,7 +82,12 @@ async function fixture(page: Page, options: Options = {}) {
     type: 'plugin',
     status: running ? 'running' : 'stopped',
     entries: [],
-    consent: { state: state(), decision, upgraded: decision === 'approved' && unconfirmed().length > 0 },
+    consent: {
+      state: state(),
+      decision,
+      upgraded: decision === 'approved' && unconfirmed().length > 0,
+      blind_spots: blindSpots.length,
+    },
   })
   await page.route('**/plugins?*', (route) =>
     route.fulfill({ json: { plugins: [plugin()], message: '' } })
@@ -156,12 +167,41 @@ test('clean analysis is disclosed in Permissions and starts without a decision',
   const calls = await fixture(page, { capabilities: [] })
   await page.goto(`${PREVIEW_ORIGIN}/ui/plugins/consent_demo?tab=permissions`)
   const permissions = page.locator('.plugin-permissions')
-  await expect(permissions).toContainText('No calls that read conversations')
+  await expect(permissions).toContainText('No issues found')
   await expect(permissions.getByRole('button', { name: 'Approve and start' })).toHaveCount(0)
   await startButton(page).click()
   await expect.poll(() => calls.started).toBe(1)
   expect(calls.decided).toEqual([])
   await expect(page.getByRole('dialog', { name: 'Confirm plugin capabilities' })).toHaveCount(0)
+})
+
+test('used permissions and blind spots are disclosed instead of nothing found', async ({
+  page,
+}, testInfo) => {
+  await fixture(page, {
+    capabilities: [],
+    permissions: {
+      'system.network:connect': { declared: null, findings: [{ file: 'main.py', line: 12 }] },
+    },
+    blindSpots: [
+      { type: 'dynamic_import', file: 'main.py', line: 30 },
+      { type: 'not_analyzed', file: 'vendor/big.py', line: null },
+    ],
+  })
+  await page.goto(`${PREVIEW_ORIGIN}/ui/plugins/consent_demo?tab=permissions`)
+  const permissions = page.locator('.plugin-permissions')
+  await expect(permissions).toContainText('This plugin uses 1 permission(s)')
+  await expect(permissions).toContainText('Connect to the internet')
+  await expect(permissions).toContainText('2 place(s) could not be confirmed by static analysis')
+  await expect(permissions).not.toContainText('No issues found')
+  await page.screenshot({ path: testInfo.outputPath('blind-spots-detail.png'), fullPage: true })
+
+  await page.goto(`${PREVIEW_ORIGIN}/ui/plugins`)
+  await expect(page.locator('[data-testid="plugin-blind-spots"]').first()).toHaveText(
+    'Partly unconfirmable',
+  )
+  await expect(page.locator('[data-testid="plugin-permission-review"]')).toHaveCount(0)
+  await page.screenshot({ path: testInfo.outputPath('blind-spots-list.png'), fullPage: true })
 })
 
 test('discloses capabilities, saves the decision once, and starts without asking again', async ({
@@ -229,6 +269,53 @@ test('cancelling the consent dialog does not start or record a decision', async 
     .click()
   await expect(page.getByRole('dialog', { name: 'Confirm plugin capabilities' })).toHaveCount(0)
   expect(calls).toEqual({ decided: [], started: 0 })
+})
+
+test('failed consent module stays visible and can close or recover without approving', async ({
+  page,
+}, testInfo) => {
+  const errors: string[] = []
+  page.on('pageerror', (error) => errors.push(error.message))
+  const calls = await fixture(page)
+  // Fail the real production chunk, rather than replacing the dialog with a
+  // stub: the recovery controls must remain above the full-height route.
+  const consentModule = '**/PluginConsentDialog-*.js'
+  await page.route(consentModule, (route) => route.abort('failed'))
+  await page.goto(`${PREVIEW_ORIGIN}/ui/plugins/consent_demo`)
+  await startButton(page).click()
+  const panel = page.locator('.consent-loader-host .deferred-panel')
+  await expect(page.getByTestId('deferred-panel-error')).toBeVisible()
+  const close = panel.getByRole('button', { name: 'Close', exact: true })
+  await expect(close).toBeVisible()
+  const bounds = await panel.boundingBox()
+  const viewport = page.viewportSize()!
+  expect(bounds).not.toBeNull()
+  expect(bounds!.x).toBeGreaterThanOrEqual(0)
+  expect(bounds!.y).toBeGreaterThanOrEqual(0)
+  expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(viewport.width)
+  expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(viewport.height)
+  await page.screenshot({ path: testInfo.outputPath('consent-load-error.png'), fullPage: true })
+  await close.click()
+  await expect(panel).toHaveCount(0)
+  expect(calls).toEqual({ decided: [], started: 0 })
+
+  // Closing releases the request. A new attempt still offers recovery; after
+  // reloading the failed browser import, only an explicit approval may start.
+  await startButton(page).click()
+  await expect(page.getByTestId('deferred-panel-error')).toBeVisible()
+  await page.unroute(consentModule)
+  await Promise.all([
+    page.waitForEvent('load'),
+    page.getByTestId('deferred-panel-reload').click(),
+  ])
+  await startButton(page).click()
+  const dialog = page.getByRole('dialog', { name: 'Confirm plugin capabilities' })
+  await expect(dialog).toBeVisible()
+  expect(calls).toEqual({ decided: [], started: 0 })
+  await dialog.getByRole('button', { name: 'Approve', exact: true }).click()
+  await expect.poll(() => calls.started).toBe(1)
+  expect(calls.decided).toEqual([true])
+  expect(errors).toEqual([])
 })
 
 test('a running plugin with unconfirmed capabilities is listed in the notice', async ({

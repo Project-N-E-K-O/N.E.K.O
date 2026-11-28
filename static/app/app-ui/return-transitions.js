@@ -26,8 +26,63 @@
     let idleReturnBallDesktopDragStateFrame = 0;
     let idleReturnBallDesktopDragStatePending = null;
     I.pendingPngtuberReturnConfig = null;
+    I.NEKO_MODEL_FORM_PREPARE_TIMEOUT_MS = 3000;
+    I.modelReturnEnterSequence = 0;
+
+    I.shouldAnimateModelCatTransition = function shouldAnimateModelCatTransition() {
+        const bridge = window.nekoPetPowerSave;
+        try {
+            return !(bridge && typeof bridge.isEnabled === 'function' && bridge.isEnabled()
+                && typeof bridge.prepareFormChange === 'function');
+        } catch (_) {
+            return true;
+        }
+    };
+
+    I.prepareModelCatForm = async function prepareModelCatForm(target) {
+        if (I.shouldAnimateModelCatTransition()) return;
+        let timeoutId = null;
+        try {
+            await Promise.race([
+                window.nekoPetPowerSave.prepareFormChange(target),
+                new Promise(resolve => {
+                    timeoutId = setTimeout(() => {
+                        console.warn('[App] prepare model/cat window timed out:', target);
+                        resolve(false);
+                    }, I.NEKO_MODEL_FORM_PREPARE_TIMEOUT_MS);
+                })
+            ]);
+        } catch (error) {
+            console.warn('[App] prepare model/cat window failed:', error);
+        } finally {
+            if (timeoutId !== null) clearTimeout(timeoutId);
+        }
+    };
+
+    I.ensureModelReturnFormReady = async function ensureModelReturnFormReady(sequence) {
+        if (I.shouldAnimateModelCatTransition()) return;
+        // 显示入口可能提前返回；已经完成的准备不能因为 promise 已清理而重发。
+        if (!window._nekoModelReturnEnterPromise && I.modelReturnEnterSequence === sequence) {
+            const containerId = ['pngtuber-container', 'mmd-container', 'vrm-container', 'live2d-container']
+                .find(id => {
+                    const container = document.getElementById(id);
+                    if (!isModelContainerActive(id) || container.classList.contains('minimized')
+                        || container.style.visibility === 'hidden') return false;
+                    const style = typeof window.getComputedStyle === 'function' ? window.getComputedStyle(container) : null;
+                    return !style || (style.display !== 'none' && style.visibility !== 'hidden');
+                });
+            if (containerId) {
+                I.playModelReturnEnter(document.getElementById(containerId), null);
+            } else {
+                await I.prepareModelCatForm('model');
+            }
+        }
+        if (window._nekoModelReturnEnterPromise) await window._nekoModelReturnEnterPromise;
+    };
 
     function resolveModelReturnEnter(reason) {
+        const container = window._nekoModelReturnEnterContainer;
+        if (container && typeof container.removeAttribute === 'function') container.removeAttribute('data-neko-model-form-pending');
         const resolve = window._nekoModelReturnEnterResolve;
         window._nekoModelReturnEnterResolve = null;
         window._nekoModelReturnEnterPromise = null;
@@ -39,8 +94,24 @@
         }
     }
 
+    I.cancelModelReturnEnter = function cancelModelReturnEnter(reason = 'cancelled') {
+        if (window._nekoModelReturnEnterTimer) {
+            clearTimeout(window._nekoModelReturnEnterTimer);
+            window._nekoModelReturnEnterTimer = null;
+        }
+        const container = window._nekoModelReturnEnterContainer;
+        if (container && typeof container.getAttribute === 'function'
+            && container.getAttribute('data-neko-model-form-pending') === 'true') {
+            container.style.removeProperty('opacity');
+            container.style.removeProperty('transition');
+            container.style.removeProperty('transform');
+        }
+        resolveModelReturnEnter(reason);
+    };
+
     function startModelReturnEnterWait(container) {
         resolveModelReturnEnter('replaced');
+        I.modelReturnEnterSequence += 1;
         let resolveWait = null;
         const promise = new Promise(resolve => {
             resolveWait = resolve;
@@ -183,7 +254,8 @@
         return { dx, dy };
     }
 
-    async function snapPngtuberIntoScreen() {
+    async function snapPngtuberIntoScreen(isCurrentSettlement) {
+        if (!isCurrentSettlement()) return false;
         const manager = getPngtuberManager();
         if (!manager || !manager.config || !isModelContainerVisible('pngtuber-container')) {
             return false;
@@ -192,15 +264,16 @@
         if (!delta || (!delta.dx && !delta.dy)) return false;
         I.applyPngtuberScreenDelta(delta.dx, delta.dy);
         await I.waitForAnimationFrames(1);
-        return true;
+        return isCurrentSettlement();
     }
 
-    async function saveReturnModelPosition(modelType) {
+    async function saveReturnModelPosition(modelType, isCurrentSettlement) {
+        if (!isCurrentSettlement()) return;
         try {
             if (modelType === 'mmd') {
                 const interaction = window.mmdManager && window.mmdManager.interaction;
                 if (interaction && typeof interaction._savePositionAfterInteraction === 'function') {
-                    await interaction._savePositionAfterInteraction();
+                    await interaction._savePositionAfterInteraction({ isCurrentSettlement });
                 }
                 return;
             }
@@ -219,17 +292,28 @@
                 return;
             }
             if (window.live2dManager && typeof window.live2dManager._savePositionAfterInteraction === 'function') {
-                await window.live2dManager._savePositionAfterInteraction();
+                await window.live2dManager._savePositionAfterInteraction({ isCurrentSettlement });
             }
         } catch (error) {
             console.warn('[App] 保存回来后的模型位置失败:', error);
         }
     }
 
-    I.settleReturnedModelBounds = async function settleReturnedModelBounds(shouldSaveWhenUnchanged) {
+    I.settleReturnedModelBounds = async function settleReturnedModelBounds(shouldSaveWhenUnchanged, options = {}) {
+        const isCurrentSettlement = () => {
+            if (typeof options.isCurrentSettlement === 'function' && !options.isCurrentSettlement()) return false;
+            if (['live2d', 'vrm', 'mmd', 'pngtuber'].some(type => window[`${type}Manager`]?._goodbyeClicked)) return false;
+            if (I.multiWindowReturnBallDragState?.isDragging) return false;
+            if (I.isNativeReturnBallViewportSize?.(window.innerWidth, window.innerHeight)) return false;
+            const restoreBounds = I.getPendingModelViewportRestoreBounds?.();
+            return !restoreBounds || I.isModelViewportRestored(restoreBounds);
+        };
+        if (!isCurrentSettlement()) return;
         // showCurrentModel 会恢复容器和 canvas；等布局提交后再读边界，避免拿到隐藏态尺寸。
         await waitForModelReturnEnterToSettle();
+        if (!isCurrentSettlement()) return;
         await I.waitForAnimationFrames(2);
+        if (!isCurrentSettlement()) return;
 
         let activeModelType = null;
         try {
@@ -237,12 +321,12 @@
                 activeModelType = 'mmd';
                 const interaction = window.mmdManager.interaction;
                 if (interaction && typeof interaction._snapModelIntoScreen === 'function') {
-                    const snapped = await interaction._snapModelIntoScreen({ animate: true });
+                    const snapped = await interaction._snapModelIntoScreen({ animate: true, isCurrentSettlement });
                     if (!snapped && shouldSaveWhenUnchanged) {
-                        await saveReturnModelPosition('mmd');
+                        await saveReturnModelPosition('mmd', isCurrentSettlement);
                     }
                 } else if (shouldSaveWhenUnchanged) {
-                    await saveReturnModelPosition('mmd');
+                    await saveReturnModelPosition('mmd', isCurrentSettlement);
                 }
                 return;
             }
@@ -251,15 +335,15 @@
                 activeModelType = 'vrm';
                 const interaction = window.vrmManager.interaction;
                 if (interaction && typeof interaction._snapModelIntoScreen === 'function') {
-                    const snapped = await interaction._snapModelIntoScreen({ animate: true });
+                    const snapped = await interaction._snapModelIntoScreen({ animate: true, isCurrentSettlement });
                     if (snapped) {
                         // VRM 的回弹方法只负责动画，最终位置需要由外层保存。
-                        await saveReturnModelPosition('vrm');
+                        await saveReturnModelPosition('vrm', isCurrentSettlement);
                     } else if (shouldSaveWhenUnchanged) {
-                        await saveReturnModelPosition('vrm');
+                        await saveReturnModelPosition('vrm', isCurrentSettlement);
                     }
                 } else if (shouldSaveWhenUnchanged) {
-                    await saveReturnModelPosition('vrm');
+                    await saveReturnModelPosition('vrm', isCurrentSettlement);
                 }
                 return;
             }
@@ -268,30 +352,30 @@
                 && getPngtuberManager()
                 && isModelContainerVisible('pngtuber-container')) {
                 activeModelType = 'pngtuber';
-                const snapped = await snapPngtuberIntoScreen();
+                const snapped = await snapPngtuberIntoScreen(isCurrentSettlement);
                 if (snapped || shouldSaveWhenUnchanged) {
-                    await saveReturnModelPosition('pngtuber');
+                    await saveReturnModelPosition('pngtuber', isCurrentSettlement);
                 }
                 return;
             }
 
-            if (window.live2dManager) {
+            if (window.live2dManager && isModelContainerVisible('live2d-container')) {
                 activeModelType = 'live2d';
                 const liveModel = typeof window.live2dManager.getCurrentModel === 'function'
                     ? window.live2dManager.getCurrentModel() : null;
                 if (liveModel && !liveModel.destroyed && typeof window.live2dManager._checkAndPerformSnap === 'function') {
-                    const snapped = await window.live2dManager._checkAndPerformSnap(liveModel, { allowWhenNotReady: true });
+                    const snapped = await window.live2dManager._checkAndPerformSnap(liveModel, { allowWhenNotReady: true, isCurrentSettlement });
                     if (!snapped && shouldSaveWhenUnchanged) {
-                        await saveReturnModelPosition('live2d');
+                        await saveReturnModelPosition('live2d', isCurrentSettlement);
                     }
                 } else if (shouldSaveWhenUnchanged) {
-                    await saveReturnModelPosition('live2d');
+                    await saveReturnModelPosition('live2d', isCurrentSettlement);
                 }
             }
         } catch (error) {
             console.warn('[App] 回来后的边界回弹计算失败:', error);
             if (shouldSaveWhenUnchanged && activeModelType) {
-                await saveReturnModelPosition(activeModelType);
+                await saveReturnModelPosition(activeModelType, isCurrentSettlement);
             }
         }
     }
@@ -350,11 +434,41 @@
             if (!/\/static\/assets\/cat-resources\/appearance\/.+\.(?:gif|webp)$/i.test(url.pathname)) {
                 return src;
             }
-            url.searchParams.set('reveal', String(playbackToken || Date.now()));
+            url.searchParams.set('reveal', String(playbackToken));
             return url.href;
         } catch (_) {
             return src;
         }
+    }
+
+    // Chromium shares an animated-image timeline across elements using the same
+    // URL, so a restart needs a URL that no other return-button art (including
+    // this one, or a hidden button of another model) is showing right now.
+    // Pick the smallest free token instead of counting up: an ever-new URL
+    // misses the immutable HTTP cache (re-downloading a multi-MB cat animation
+    // on every reveal) and leaves one more decoded image in the memory cache
+    // each time. With one button this alternates between reveal=1 and reveal=2.
+    function nextNekoModelCatRevealPlaybackUrl(src) {
+        const resolve = (value) => {
+            try {
+                return new URL(value, window.location.href).href;
+            } catch (_) {
+                return value;
+            }
+        };
+        const inUse = new Set();
+        document.querySelectorAll('img.neko-idle-return-art').forEach((img) => {
+            const value = img.getAttribute('src');
+            if (value) inUse.add(resolve(value));
+        });
+        // Among inUse.size + 1 tokens at least one is free.
+        for (let token = 1; token <= inUse.size + 1; token += 1) {
+            const candidate = buildNekoModelCatRevealPlaybackUrl(src, token);
+            if (!inUse.has(resolve(candidate))) return candidate;
+        }
+        // Not a cat-resource animation: buildNekoModelCatRevealPlaybackUrl
+        // leaves it unchanged, so restart it in place as before.
+        return src;
     }
 
     I.restartNekoModelCatRevealArt = function restartNekoModelCatRevealArt(container) {
@@ -364,10 +478,7 @@
         if (!art) return false;
         const currentSrc = art.getAttribute('src') || art.currentSrc || '';
         if (!currentSrc) return false;
-        const nextSrc = buildNekoModelCatRevealPlaybackUrl(
-            currentSrc,
-            ++I.nekoModelCatRevealPlaybackToken
-        );
+        const nextSrc = nextNekoModelCatRevealPlaybackUrl(currentSrc);
         art.__nekoIdleGifPlaybackToken = (art.__nekoIdleGifPlaybackToken || 0) + 1;
         art.__nekoIdleHoverToken = (art.__nekoIdleHoverToken || 0) + 1;
         art.removeAttribute('src');
@@ -617,6 +728,14 @@
 
     I.playModelGoodbyeExit = function playModelGoodbyeExit(container, rect) {
         if (!container) return;
+        if (!I.shouldAnimateModelCatTransition()) {
+            container.style.transition = 'none';
+            container.style.opacity = '0';
+            container.style.visibility = 'hidden';
+            container.style.transform = 'none';
+            container.classList.add('minimized');
+            return;
+        }
         if (container.getAttribute('data-neko-model-goodbye-exiting') === 'true') {
             applyModelGoodbyeVisualFade(container, { restart: false });
             return;
@@ -641,14 +760,35 @@
     }
 
     I.playModelReturnEnter = function playModelReturnEnter(container, rect) {
-        if (!container || !rect) return false;
-        setModelExitTransformOrigin(container, rect);
-        if (window._nekoModelReturnEnterTimer) {
-            clearTimeout(window._nekoModelReturnEnterTimer);
-            window._nekoModelReturnEnterTimer = null;
-            resolveModelReturnEnter('timer-cleared');
+        if (!container) return false;
+        if (!I.shouldAnimateModelCatTransition()) {
+            I.cancelModelReturnEnter('replaced');
+            const enterPromise = startModelReturnEnterWait(container);
+            container.style.transition = 'none';
+            container.style.opacity = '0';
+            container.style.transform = 'none';
+            container.setAttribute('data-neko-model-form-pending', 'true');
+            I.prepareModelCatForm('model').then(() => {
+                if (window._nekoModelReturnEnterPromise !== enterPromise) return;
+                if (container.isConnected) {
+                    // 教程保活等清理可能移除内联 transition；揭示前重新禁止淡入。
+                    container.style.transition = 'none';
+                    container.style.removeProperty('opacity');
+                }
+                resolveModelReturnEnter('power-save');
+                if (container.isConnected) {
+                    // 先提交无动画的最终样式，再交还 hover/锁定淡化等既有 CSS。
+                    void container.offsetWidth;
+                    container.style.removeProperty('transition');
+                    container.style.removeProperty('transform');
+                }
+            });
+            return true;
         }
-        startModelReturnEnterWait(container);
+        if (!rect) return false;
+        setModelExitTransformOrigin(container, rect);
+        I.cancelModelReturnEnter('replaced');
+        const enterPromise = startModelReturnEnterWait(container);
 
         container.style.transition = 'none';
         container.style.opacity = '0';
@@ -656,6 +796,7 @@
         void container.offsetWidth;
 
         requestAnimationFrame(() => {
+            if (window._nekoModelReturnEnterPromise !== enterPromise) return;
             if (!container || !container.isConnected) {
                 resolveModelReturnEnter('disconnected-before-raf');
                 return;
@@ -664,6 +805,7 @@
             container.style.opacity = '1';
             container.style.transform = 'scale(1) translateZ(0)';
             window._nekoModelReturnEnterTimer = setTimeout(() => {
+                if (window._nekoModelReturnEnterPromise !== enterPromise) return;
                 if (container && container.isConnected) {
                     container.style.removeProperty('transition');
                     container.style.removeProperty('opacity');
@@ -860,6 +1002,30 @@
             return Promise.resolve({
                 blocked: true,
                 direction: I.nekoModelCatTransitionActive ? I.nekoModelCatTransitionActive.direction : direction
+            });
+        }
+        if (!I.shouldAnimateModelCatTransition()) {
+            if (container && direction === 'cat-to-model') {
+                container.style.transition = 'none';
+                container.style.opacity = '0';
+                container.style.visibility = 'hidden';
+                container.style.pointerEvents = 'none';
+            }
+            const ready = direction === 'model-to-cat' ? I.prepareModelCatForm('cat') : Promise.resolve();
+            return ready.then(() => {
+                if (isNekoModelCatTransitionTokenCurrent(token) && onBeforeOverlayCleanup) {
+                    try { onBeforeOverlayCleanup(); } catch (error) {
+                        console.warn('[App] model/cat transition cleanup failed:', error);
+                    }
+                }
+                return { completed: true, direction, animationSkipped: true };
+            }).finally(() => {
+                if (container && direction === 'cat-to-model' && isNekoModelCatTransitionTokenCurrent(token)) {
+                    // 等统一 hide/reveal 恢复可见性，避免透明子按钮仍可点击或拖拽。
+                    container.style.removeProperty('opacity');
+                    container.style.removeProperty('transition');
+                }
+                I.releaseNekoModelCatTransition(token);
             });
         }
         const rect = normalizeNekoTransitionRect(anchorRect, container, coverRect);
@@ -1321,6 +1487,10 @@
         container.style.opacity = '0';
         container.style.transform = 'translate3d(0, 8px, 0) scale(0.94)';
         container.style.transition = 'opacity 325ms cubic-bezier(0.22, 1, 0.36, 1), transform 400ms cubic-bezier(0.22, 1, 0.36, 1)';
+        if (!I.shouldAnimateModelCatTransition()) {
+            container.style.transition = 'none';
+            container.style.transform = 'none';
+        }
         container.style.willChange = 'opacity, transform';
 
         void container.offsetWidth;
@@ -1484,6 +1654,7 @@
 
     window.addEventListener('neko:return-ball-manual-move', (event) => {
         const detail = event && event.detail;
+        if (detail && detail.source === 'cat1-playground') return;
         // 只有真正发生位移（超过点击阈值）才清除贴边探身锚点：无移动的普通点击
         // 也会先经过 mousedown 的 drag-start，若在这里清掉，return 时锚点已为空，
         // 贴边探身态将无法恢复。drag-active 表示用户确实在拖 return-ball，
@@ -1513,7 +1684,9 @@
             });
         }
         I.scheduleIdleReturnBallDesktopBridge(
-            detail.source === 'return-ball-drag-demotion' ? 'return-ball-drag-demotion' : 'visual-tier'
+            detail.source === 'return-ball-drag-demotion' || detail.source === 'cat-sleep-wake-demotion'
+                ? detail.source
+                : 'visual-tier'
         );
     });
     window.addEventListener('neko:goodbye-idle-appearance', (event) => {

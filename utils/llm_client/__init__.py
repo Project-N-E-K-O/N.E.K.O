@@ -40,6 +40,7 @@ from .retry import (
     _OPENAI_RETRY_EXCEPTION_TYPES,
     anthropic_retry_error_types,
     chat_retry_error_types,
+    chat_retry_error_types_snapshot,
     openai_retry_error_types,
 )
 from .thinking import (
@@ -93,7 +94,7 @@ from .messages import (
     messages_from_dict,
     messages_to_dict,
 )
-from .openai_client import ChatOpenAI
+from .openai_client import ChatOpenAI, first_token_top_logprobs, top_logprobs_of
 from .anthropic_client import (
     Anthropic,
     AsyncAnthropic,

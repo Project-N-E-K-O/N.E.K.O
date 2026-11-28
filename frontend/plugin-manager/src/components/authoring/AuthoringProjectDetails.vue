@@ -128,7 +128,7 @@ import {
   type AuthoringProject,
   type PluginProjectMetadata,
 } from '@/api/pluginProjects'
-import { useProjectErrorMessage } from '@/composables/useAuthoringProjects'
+import { useProjectErrorMessage, projectDirectoryName } from '@/composables/useAuthoringProjects'
 import { formatHttpError } from '@/utils/request'
 
 const PROBLEM_HINTS = {
@@ -168,14 +168,15 @@ const notice = computed(() => {
 
 /** Build the project's .neko-plugin from its current source and download it; running or not. */
 async function buildPackage() {
-  const pluginId = props.project.plugin_id
-  if (!pluginId || packing.value) return
+  // The CLI finds a workbench project by its physical folder name, which can be
+  // kebab-case (`hello-world`) while the plugin ID is `hello_world`.
+  const directoryName = projectDirectoryName(props.project)
+  if (!directoryName || packing.value) return
   packing.value = true
   try {
     const result = await buildPluginCli({
       mode: 'single',
-      // A project folder is named after its plugin ID.
-      plugin_ref: { root_id: 'project', directory_name: pluginId },
+      plugin_ref: { root_id: 'project', directory_name: directoryName },
     }, { timeout: 300_000 })
     const [built] = result.built
     if (!built) {

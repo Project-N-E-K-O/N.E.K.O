@@ -53,6 +53,7 @@ from config import (
 from memory.temporal import (
     compute_event_timestamps,
     normalize_event_when,
+    to_naive_local,
 )
 from config.prompts.prompts_memory import (
     get_fact_extraction_batch_prompt,
@@ -554,40 +555,12 @@ class FactStore:
     _ENTITY_RENAMES = {'user': 'master', 'ai': 'neko'}
 
     def load_facts(self, name: str) -> list[dict]:
-        from memory.long_term_sync import require_consistent_views, consistent_view_read
+        from memory.long_term_sync import require_consistent_views
         require_consistent_views(os.path.join(self._config_manager.memory_dir, name))
-        path = self._facts_path(name)
         if name in self._facts:
             return self._facts[name]
         with self._get_lock(name):
-            require_consistent_views(os.path.join(self._config_manager.memory_dir, name))
-            # Double-check: another thread may have loaded while waiting for lock.
-            if name in self._facts:
-                return self._facts[name]
-            if os.path.exists(path):
-                try:
-                    with consistent_view_read(path):
-                        with open(path, encoding='utf-8') as f:
-                            data = json.load(f)
-                    if isinstance(data, list):
-                        data = self._without_cold_copies(name, data)
-                        if self._migrate_v1_entity_values(data):
-                            try:
-                                assert_cloudsave_writable(
-                                    self._config_manager,
-                                    operation="migrate",
-                                    target=f"memory/{name}/facts.json",
-                                )
-                                atomic_write_json(path, data, indent=2, ensure_ascii=False)
-                                logger.info(f"[FactStore] {name}: v1→v2 entity 值迁移完成")
-                            except MaintenanceModeError as exc:
-                                logger.debug(f"[FactStore] {name}: 维护态跳过 facts.json 迁移落盘: {exc}")
-                        self._facts[name] = data
-                        return data
-                except (json.JSONDecodeError, OSError) as e:
-                    logger.warning(f"[FactStore] 加载 facts 文件失败: {e}")
-            self._facts[name] = []
-            return self._facts[name]
+            return self._load_facts_locked(name)
 
     def _character_dir(self, name: str) -> str:
         # Cold shards sit next to facts_archive.json (same character directory).
@@ -803,15 +776,16 @@ class FactStore:
     ) -> list[dict]:
         """Active facts (plus archived ones) read from disk, raising ``RuntimeError`` when unreadable.
 
-        For keyed writes deciding "was this already written": the lenient
-        :meth:`load_facts` caches an unreadable active pool as empty (a later
-        save would erase it) and :meth:`load_facts_full` reads an unreadable
-        archive as absent. Nothing is cached. Absent files read as empty; a
-        row present in both files (an interrupted archive commit) counts once,
-        as in :meth:`load_facts_full`. ``include_cold_stubs`` adds the cold rows
-        as stubs (no text, see :meth:`load_facts_full`); a cold row's stub
-        replaces any copy of it in the two files. An unreadable cold shard
-        raises too.
+        For keyed writes deciding "was this already written": unlike
+        :meth:`load_facts` (which caches the active pool in memory after a
+        successful load) and :meth:`load_facts_full` (which treats an unreadable
+        archive as absent), this method bypasses the in-memory cache and fails
+        closed on unreadable active, archive, or cold-shard files. Absent files
+        read as empty; a row present in both files (an interrupted archive
+        commit) counts once, as in :meth:`load_facts_full`.
+        ``include_cold_stubs`` adds the cold rows as stubs (no text, see
+        :meth:`load_facts_full`); a cold row's stub replaces any copy of it in
+        the two files. An unreadable cold shard raises too.
         """
         from memory.long_term_sync import require_consistent_views, consistent_view_read
         require_consistent_views(os.path.join(self._config_manager.memory_dir, name))
@@ -944,78 +918,67 @@ class FactStore:
                 # (False → True only: absorbed, signal_processed).
                 # Otherwise stale-cache writes overwrite disk True with False, making drain loops
                 # resend facts to Stage-2 / synthesize duplicate reflections.
-                if os.path.exists(path):
-                    try:
-                        with open(path, encoding='utf-8') as f:
-                            disk_facts = json.load(f)
-                        if isinstance(disk_facts, list):
-                            # Index keys always use _readable_fact_id: manual/partly corrupt legacy rows
-                            # may lack ID (f['id'] raises KeyError) or use list/dict IDs
-                            # (sets raise TypeError: unhashable). Inner handlers catch JSON/OS errors only,
-                            # so either escapes, clears cache, and re-raises; every later persistence attempt
-                            # dies on that row, preventing new facts from persisting, contrary to read-merge's
-                            # intent to overwrite corrupt data safely.
-                            absorbed_ids = {
-                                _readable_fact_id(f) for f in disk_facts
-                                if isinstance(f, dict) and f.get('absorbed')
-                                and _readable_fact_id(f) is not None
-                            }
-                            signal_processed_ids = {
-                                _readable_fact_id(f) for f in disk_facts
-                                if isinstance(f, dict) and f.get('signal_processed')
-                                and _readable_fact_id(f) is not None
-                            }
-                            # ⚠ Remaining window: no interprocess lock spans this disk read and
-                            # atomic_write_json below (self._get_lock protects local threads only), so
-                            # another process may upgrade/consume after we read ai_disclosure, then our write restores
-                            # False. This exemption introduces no new race: since #976, all read-merge
-                            # has been best-effort read/merge/overwrite; any concurrent writer
-                            # can lose merged results in that window. Closing it requires an interprocess
-                            # facts.json lock across read and write (portalocker, currently used only
-                            # in galgame store), honored by every writer: a separate architectural
-                            # change outside scope. Exemption now requires the disk row still be
-                            # ai_disclosure, narrower than the existing full merge window.
-                            #
-                            # Notes count only if the disk row has not already been upgraded by another process:
-                            # it may have upgraded using its cache and already consumed Stage-2,
-                            # leaving user_observation + True on disk. Upgrading again from this process's
-                            # stale cache and permitting writeback would requeue an already consumed fact
-                            # into Stage-2, exactly the cross-process regression read-merge prevents.
-                            # Handle duplicate IDs conservatively: nobody upgraded only if all disk rows
-                            # with that ID are still ai_disclosure. Manual/reconciled files
-                            # may contain two same-ID rows: one ai_disclosure,
-                            # another upgraded with signal_processed=True. Both sets
-                            # contain it; testing only disclosure membership would allow writeback
-                            # overwriting consumed state with False.
-                            disk_disclosure_ids: set = set()
-                            disk_other_source_ids: set = set()
-                            for f in disk_facts:
-                                if not isinstance(f, dict):
-                                    continue
-                                disk_id = _readable_fact_id(f)
-                                if disk_id is None:
-                                    continue
-                                if f.get('source', self._SOURCE_DEFAULT) == 'ai_disclosure':
-                                    disk_disclosure_ids.add(disk_id)
-                                else:
-                                    disk_other_source_ids.add(disk_id)
-                            disk_ai_disclosure_ids = disk_disclosure_ids - disk_other_source_ids
-                            if absorbed_ids or signal_processed_ids:
-                                for f in facts:
-                                    if f.get('id') in absorbed_ids:
-                                        f['absorbed'] = True
-                                    unsealed = (
-                                        f.get('id') in just_unsealed_ids
-                                        and f.get('id') in disk_ai_disclosure_ids
-                                    )
-                                    if f.get('id') in signal_processed_ids and not unsealed:
-                                        f['signal_processed'] = True
-                    except (json.JSONDecodeError, OSError):
-                        # Read-merge is best-effort: if the on-disk
-                        # file is corrupt or unreadable, fall through
-                        # and write whatever we have. The atomic
-                        # write below will overwrite the bad payload.
-                        pass
+                _DISK_FACTS_ABSENT = object()
+                try:
+                    with open(path, encoding='utf-8') as f:
+                        disk_facts = json.load(f)
+                except FileNotFoundError:
+                    disk_facts = _DISK_FACTS_ABSENT
+                except (json.JSONDecodeError, UnicodeDecodeError, OSError, RecursionError) as e:
+                    logger.warning(
+                        f"[FactStore] {name}: facts.json 读取失败，拒绝覆盖写入: {e}"
+                    )
+                    raise RuntimeError(
+                        f"Refusing to overwrite unreadable facts file {path}: {e}"
+                    ) from e
+                if disk_facts is not _DISK_FACTS_ABSENT:
+                    if not isinstance(disk_facts, list):
+                        logger.warning(
+                            f"[FactStore] {name}: facts.json 顶层非 list ({type(disk_facts).__name__})，拒绝覆盖写入"
+                        )
+                        raise RuntimeError(
+                            f"Refusing to overwrite non-list facts file {path}"
+                        )
+                    # Index keys always use _readable_fact_id: manual/partly corrupt legacy rows
+                    # may lack ID (f['id'] raises KeyError) or use list/dict IDs
+                    # (sets raise TypeError: unhashable).
+                    absorbed_ids = {
+                        _readable_fact_id(f) for f in disk_facts
+                        if isinstance(f, dict) and f.get('absorbed')
+                        and _readable_fact_id(f) is not None
+                    }
+                    signal_processed_ids = {
+                        _readable_fact_id(f) for f in disk_facts
+                        if isinstance(f, dict) and f.get('signal_processed')
+                        and _readable_fact_id(f) is not None
+                    }
+                    # ⚠ Remaining window: no interprocess lock spans this disk read and
+                    # atomic_write_json below (self._get_lock protects local threads only), so
+                    # another process may upgrade/consume after we read ai_disclosure, then our write restores
+                    # False.
+                    disk_disclosure_ids: set = set()
+                    disk_other_source_ids: set = set()
+                    for f in disk_facts:
+                        if not isinstance(f, dict):
+                            continue
+                        disk_id = _readable_fact_id(f)
+                        if disk_id is None:
+                            continue
+                        if f.get('source', self._SOURCE_DEFAULT) == 'ai_disclosure':
+                            disk_disclosure_ids.add(disk_id)
+                        else:
+                            disk_other_source_ids.add(disk_id)
+                    disk_ai_disclosure_ids = disk_disclosure_ids - disk_other_source_ids
+                    if absorbed_ids or signal_processed_ids:
+                        for f in facts:
+                            if f.get('id') in absorbed_ids:
+                                f['absorbed'] = True
+                            unsealed = (
+                                f.get('id') in just_unsealed_ids
+                                and f.get('id') in disk_ai_disclosure_ids
+                            )
+                            if f.get('id') in signal_processed_ids and not unsealed:
+                                f['signal_processed'] = True
                 atomic_write_json(path, facts, indent=2, ensure_ascii=False)
             except Exception:
                 # Cache divergence guard (CodeRabbit PR-956 Major,
@@ -2374,11 +2337,15 @@ class FactStore:
         cutoff = datetime.now() - timedelta(days=_ARCHIVE_AGE_DAYS)
         active, to_archive = [], []
         for f in facts:
+            if not isinstance(f, dict):
+                active.append(f)
+                continue
             try:
                 created = datetime.fromisoformat(f.get('created_at', ''))
             except (ValueError, TypeError):
                 active.append(f)
                 continue
+            created = to_naive_local(created)
             if f.get('absorbed') and created < cutoff and not f.get('_near_dup_pending'):
                 to_archive.append(f)
             else:
@@ -6961,7 +6928,7 @@ class FactStore:
         try:
             from utils.llm_client import create_chat_llm_async
             set_call_type("memory_recheck_fact")
-            api_config = await self._config_manager.aget_model_api_config('summary')
+            api_config = await self._config_manager.aget_model_api_config('memory')
             from config import LLM_OUTPUT_GUARD_MAX_TOKENS
             # Disable thinking using factory-default extra_body: Stage-1 already annotates the same event_when
             # without thinking, despite harder input (whole conversations, multiple facts
@@ -7048,3 +7015,286 @@ class FactStore:
                 f"when={event_when_raw}"
             )
         return ok
+
+    def _load_facts_locked(self, name: str) -> list[dict]:
+        """Load facts for ``name`` assuming caller ALREADY holds ``self._get_lock(name)``."""
+        from memory.long_term_sync import require_consistent_views, consistent_view_read
+        require_consistent_views(os.path.join(self._config_manager.memory_dir, name))
+        if name in self._facts:
+            return self._facts[name]
+        path = self._facts_path(name)
+        try:
+            with consistent_view_read(path):
+                with open(path, encoding='utf-8') as f:
+                    data = json.load(f)
+        except FileNotFoundError:
+            self._facts[name] = []
+            return self._facts[name]
+        except (json.JSONDecodeError, UnicodeDecodeError, OSError, RecursionError) as e:
+            logger.warning(f"[FactStore] 加载 facts 文件失败: {e}")
+            raise RuntimeError(f"Failed to load facts file {path}: {e}") from e
+        if not isinstance(data, list):
+            logger.warning(
+                f"[FactStore] facts 文件顶层非 list ({type(data).__name__}): {path}"
+            )
+            raise RuntimeError(
+                f"Facts file {path} must contain a JSON list, got {type(data).__name__}"
+            )
+        data = self._without_cold_copies(name, data)
+        if self._migrate_v1_entity_values(data):
+            try:
+                assert_cloudsave_writable(
+                    self._config_manager,
+                    operation="migrate",
+                    target=f"memory/{name}/facts.json",
+                )
+                atomic_write_json(path, data, indent=2, ensure_ascii=False)
+                logger.info(f"[FactStore] {name}: v1→v2 entity 值迁移完成")
+            except MaintenanceModeError as exc:
+                logger.debug(f"[FactStore] {name}: 维护态跳过 facts.json 迁移落盘: {exc}")
+            except OSError as exc:
+                logger.warning(f"[FactStore] {name}: facts.json v1→v2 迁移落盘失败，暂用内存迁移结果: {exc}")
+        self._facts[name] = data
+        return data
+
+    @staticmethod
+    def _recompute_fact_hash(target: dict, cleaned_text: str) -> str:
+        """Recompute exact-dedup hash preserving daily event_date and subject/scope salts."""
+        ext = target.get("external_import")
+        daily_date = (
+            str(ext.get("event_date"))
+            if isinstance(ext, dict) and ext.get("section") == "daily" and ext.get("event_date")
+            else None
+        )
+        hash_input = f"{daily_date}\n{cleaned_text}" if daily_date else cleaned_text
+        subj = subject_from_entry(target)
+        if subj is not None:
+            hash_input = f"{subj.key}\n{subj.scope}\n{hash_input}"
+        return hashlib.sha256(hash_input.encode()).hexdigest()[:16]
+
+    @staticmethod
+    async def _run_shielded_async(coro_fn):
+        """Run an async persist+index sequence shielded against repeated cancellations."""
+        task = asyncio.create_task(coro_fn())
+        cancelled = False
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                cancelled = True
+        if cancelled:
+            if not task.cancelled():
+                task.exception()
+            raise asyncio.CancelledError
+        return task.result()
+
+    async def aedit_fact_manual(self, name: str, fact_id: str, new_text: str) -> dict | None:
+        """Manually edit one active fact's text, recompute dedup hash, and clear embedding cache."""
+        from memory._embeddings.schema import clear_embedding_fields
+
+        cleaned = str(new_text or "").strip()
+        if not cleaned or len(cleaned) > 1000:
+            raise ValueError("Fact text must be 1..1000 chars")
+
+        def _edit() -> dict | None:
+            with self._get_lock(name):
+                assert_cloudsave_writable(
+                    self._config_manager,
+                    operation="save",
+                    target=f"memory/{name}/facts.json",
+                )
+                current = self._load_facts_locked(name)
+                matches = [
+                    fact for fact in current
+                    if isinstance(fact, dict) and fact.get("id") == fact_id
+                ]
+                if not matches:
+                    return None
+                if len(matches) > 1:
+                    raise ValueError("Ambiguous duplicate fact_id across scopes")
+                target = matches[0]
+                target["text"] = cleaned
+                target["hash"] = self._recompute_fact_hash(target, cleaned)
+                clear_embedding_fields(target)
+                target.pop("embedding_model", None)
+                target.pop("embedding_text_hash", None)
+                self.save_facts(name, _fact_lock_held=True)
+                return dict(target)
+
+        async def _commit_and_index() -> dict | None:
+            result = await asyncio.to_thread(_edit)
+            if result is not None and self._time_indexed is not None:
+                try:
+                    await self._time_indexed.aindex_fact(
+                        name, fact_id, result["text"], replace=True,
+                    )
+                except Exception as exc:
+                    logger.warning(f"[FactStore] {name}: 刷新编辑后 FTS 索引失败 ({fact_id}): {exc}")
+            return result
+
+        async with self._get_persist_alock(name):
+            return await self._run_shielded_async(_commit_and_index)
+
+    async def aarchive_fact_manual(self, name: str, fact_id: str) -> bool:
+        """Manually archive (forget) one active fact with recall-honored retirement markers."""
+        def _archive() -> bool:
+            with self._get_lock(name):
+                assert_cloudsave_writable(
+                    self._config_manager,
+                    operation="archive",
+                    target=f"memory/{name}/facts_archive.json",
+                )
+                current = self._load_facts_locked(name)
+                matches = [
+                    fact for fact in current
+                    if isinstance(fact, dict) and fact.get("id") == fact_id
+                ]
+                if not matches:
+                    return False
+                if len(matches) > 1:
+                    raise ValueError("Ambiguous duplicate fact_id across scopes")
+                target = matches[0]
+                removed = dict(target)
+                kept = [fact for fact in current if fact is not target]
+                now_iso = datetime.now().isoformat()
+                removed["archived_at"] = now_iso
+                removed["arbitration_archived_at"] = now_iso
+                removed["arbitration_reason"] = "manual_forget"
+                removed["archive_reason"] = "manual_forget"
+                archive_path = self._facts_archive_path(name)
+                existing_archive: list[dict] = []
+                if os.path.exists(archive_path):
+                    with open(archive_path, encoding="utf-8") as fh:
+                        loaded = json.load(fh)
+                    if not isinstance(loaded, list):
+                        raise ValueError(
+                            f"facts_archive.json expected list, got {type(loaded).__name__}"
+                        )
+                    existing_archive = loaded
+                merged_archive = _merge_archive_entries(existing_archive, [removed])
+                atomic_write_json(
+                    archive_path, merged_archive, indent=2, ensure_ascii=False,
+                )
+                # Mutate cached list in-place to preserve list identity for concurrent holders.
+                current[:] = kept
+                self.save_facts(name, _fact_lock_held=True)
+                return True
+
+        async def _commit_and_delete_index() -> bool:
+            archived = await asyncio.to_thread(_archive)
+            if archived and self._time_indexed is not None:
+                try:
+                    await self._time_indexed.adelete_fact_from_index(name, fact_id)
+                except Exception as exc:
+                    logger.warning(f"[FactStore] {name}: 清理归档事实 FTS 索引失败 ({fact_id}): {exc}")
+            return archived
+
+        async with self._get_persist_alock(name):
+            return await self._run_shielded_async(_commit_and_delete_index)
+
+    async def amerge_facts_manual(
+        self, name: str, keep_id: str, drop_id: str, merged_text: str,
+    ) -> dict | None:
+        """Atomically update ``keep_id`` with ``merged_text`` and archive ``drop_id`` under locks."""
+        from memory._embeddings.schema import clear_embedding_fields
+
+        cleaned = str(merged_text or "").strip()
+        if not cleaned or len(cleaned) > 1000:
+            raise ValueError("Fact text must be 1..1000 chars")
+        if keep_id == drop_id:
+            raise ValueError("keep_id and drop_id must differ")
+
+        def _merge() -> dict | None:
+            with self._get_lock(name):
+                assert_cloudsave_writable(
+                    self._config_manager,
+                    operation="archive",
+                    target=f"memory/{name}/facts_archive.json",
+                )
+                current = self._load_facts_locked(name)
+                keep_matches = [
+                    fact for fact in current
+                    if isinstance(fact, dict) and fact.get("id") == keep_id
+                ]
+                drop_matches = [
+                    fact for fact in current
+                    if isinstance(fact, dict) and fact.get("id") == drop_id
+                ]
+                if not keep_matches:
+                    raise LookupError("keep_id not found")
+                if not drop_matches:
+                    raise LookupError("drop_id not found")
+                if len(keep_matches) > 1 or len(drop_matches) > 1:
+                    raise ValueError("Ambiguous duplicate fact_id across scopes")
+                keep_obj = keep_matches[0]
+                drop_obj = drop_matches[0]
+                if (
+                    str(keep_obj.get("entity") or "master") != str(drop_obj.get("entity") or "master")
+                    or subject_from_entry(keep_obj) != subject_from_entry(drop_obj)
+                    or str(keep_obj.get("scope") or "") != str(drop_obj.get("scope") or "")
+                ):
+                    raise ValueError("Cannot merge facts from different subjects or scopes")
+
+                archive_path = self._facts_archive_path(name)
+                orig_archive_bytes: bytes | None = None
+                existing_archive: list[dict] = []
+                if os.path.exists(archive_path):
+                    with open(archive_path, "rb") as raw_fh:
+                        orig_archive_bytes = raw_fh.read()
+                    loaded = json.loads(orig_archive_bytes.decode("utf-8"))
+                    if not isinstance(loaded, list):
+                        raise ValueError(
+                            f"facts_archive.json expected list, got {type(loaded).__name__}"
+                        )
+                    existing_archive = loaded
+
+                now_iso = datetime.now().isoformat()
+                removed = dict(drop_obj)
+                removed["archived_at"] = now_iso
+                removed["arbitration_archived_at"] = now_iso
+                removed["arbitration_reason"] = "manual_merge"
+                removed["archive_reason"] = "manual_merge"
+                removed["merged_into"] = keep_id
+
+                orig_current = [dict(f) if isinstance(f, dict) else f for f in current]
+                merged_archive = _merge_archive_entries(existing_archive, [removed])
+                try:
+                    atomic_write_json(
+                        archive_path, merged_archive, indent=2, ensure_ascii=False,
+                    )
+                    keep_obj["text"] = cleaned
+                    keep_obj["hash"] = self._recompute_fact_hash(keep_obj, cleaned)
+                    clear_embedding_fields(keep_obj)
+                    keep_obj.pop("embedding_model", None)
+                    keep_obj.pop("embedding_text_hash", None)
+
+                    kept = [f for f in current if f is not drop_obj]
+                    current[:] = kept
+                    self.save_facts(name, _fact_lock_held=True)
+                except Exception:
+                    current[:] = orig_current
+                    try:
+                        if orig_archive_bytes is not None:
+                            from utils.file_utils import atomic_write_bytes
+                            atomic_write_bytes(archive_path, orig_archive_bytes)
+                        elif os.path.exists(archive_path):
+                            os.remove(archive_path)
+                    except OSError as rb_exc:
+                        logger.warning(f"[FactStore] {name}: 合并回滚 archive 失败: {rb_exc}")
+                    raise
+                return dict(keep_obj)
+
+        async def _commit_and_update_index() -> dict | None:
+            kept_fact = await asyncio.to_thread(_merge)
+            if kept_fact is not None and self._time_indexed is not None:
+                try:
+                    await self._time_indexed.aindex_fact(
+                        name, keep_id, kept_fact["text"], replace=True,
+                    )
+                    await self._time_indexed.adelete_fact_from_index(name, drop_id)
+                except Exception as exc:
+                    logger.warning(f"[FactStore] {name}: 合并事实后刷新 FTS 索引失败: {exc}")
+            return kept_fact
+
+        async with self._get_persist_alock(name):
+            return await self._run_shielded_async(_commit_and_update_index)

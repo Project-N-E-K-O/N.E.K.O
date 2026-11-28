@@ -6,7 +6,138 @@ let globalCharacterCards = [];
 let currentCharacterCardId = null;
 
 const CHARACTER_CARD_MODEL_SCAN_RENDER_BUDGET_MS = 2500;
+const MOLILI_CARD_META_TIMEOUT_MS = 5000;
 let characterCardLoadSequence = 0;
+let _charTransferCsrfToken = '';
+
+function _createTransferAbortError() {
+    if (typeof DOMException === 'function') {
+        return new DOMException('The operation was aborted.', 'AbortError');
+    }
+    const error = new Error('The operation was aborted.');
+    error.name = 'AbortError';
+    return error;
+}
+
+function _awaitWithAbortSignal(promise, signal) {
+    if (!signal) {
+        return Promise.resolve(promise);
+    }
+    if (signal.aborted) {
+        return Promise.reject(_createTransferAbortError());
+    }
+    return new Promise((resolve, reject) => {
+        const onAbort = () => {
+            reject(_createTransferAbortError());
+        };
+        signal.addEventListener('abort', onAbort, { once: true });
+        Promise.resolve(promise).then(
+            (value) => {
+                signal.removeEventListener('abort', onAbort);
+                resolve(value);
+            },
+            (err) => {
+                signal.removeEventListener('abort', onAbort);
+                reject(err);
+            }
+        );
+    });
+}
+
+async function _getCharTransferMutationHeaders(forceRefresh, fetchOptions) {
+    const signal = fetchOptions && fetchOptions.signal;
+    try {
+        const security = window.nekoLocalMutationSecurity;
+        if (security && typeof security.getMutationHeaders === 'function') {
+            if (forceRefresh && typeof security.refreshToken === 'function') {
+                await _awaitWithAbortSignal(security.refreshToken(), signal);
+            }
+            const headers = await _awaitWithAbortSignal(security.getMutationHeaders(), signal);
+            if (headers && typeof headers === 'object' && (headers['X-CSRF-Token'] || headers['x-csrf-token'])) {
+                return headers;
+            }
+        }
+    } catch (err) {
+        if ((signal && signal.aborted) || (err && err.name === 'AbortError')) {
+            throw err;
+        }
+        /* fall back to page_config */
+    }
+    if (forceRefresh) _charTransferCsrfToken = '';
+    if (_charTransferCsrfToken) {
+        return { 'X-CSRF-Token': _charTransferCsrfToken };
+    }
+    try {
+        const fetchInit = { cache: 'no-store' };
+        if (signal) fetchInit.signal = signal;
+        const resp = await _awaitWithAbortSignal(fetch('/api/config/page_config', fetchInit), signal);
+        const cfg = resp && resp.ok ? await _awaitWithAbortSignal(resp.json(), signal) : null;
+        const token = cfg && cfg.autostart_csrf_token;
+        if (typeof token === 'string' && token) {
+            _charTransferCsrfToken = token;
+            return { 'X-CSRF-Token': token };
+        }
+    } catch (err) {
+        if ((signal && signal.aborted) || (err && err.name === 'AbortError')) {
+            throw err;
+        }
+        /* guarded POST will surface rejection */
+    }
+    return {};
+}
+
+async function _charTransferMutationFetch(url, options) {
+    const { timeoutMs, ...baseOptions } = options || {};
+    let timeoutController = null;
+    let timeoutId = null;
+    let externalAbortListener = null;
+    const externalSignal = baseOptions.signal || null;
+
+    if (Number.isFinite(timeoutMs) && timeoutMs > 0 && typeof AbortController === 'function') {
+        timeoutController = new AbortController();
+        if (externalSignal) {
+            if (externalSignal.aborted) {
+                timeoutController.abort();
+            } else if (typeof externalSignal.addEventListener === 'function') {
+                externalAbortListener = () => timeoutController.abort();
+                externalSignal.addEventListener('abort', externalAbortListener, { once: true });
+            }
+        }
+        timeoutId = setTimeout(() => timeoutController.abort(), timeoutMs);
+    }
+
+    const effectiveSignal = timeoutController ? timeoutController.signal : externalSignal;
+    const requestOptions = effectiveSignal
+        ? Object.assign({}, baseOptions, { signal: effectiveSignal })
+        : baseOptions;
+
+    try {
+        async function send(forceRefresh) {
+            const csrfHeaders = await _getCharTransferMutationHeaders(forceRefresh, requestOptions);
+            const init = Object.assign({}, requestOptions, {
+                headers: Object.assign({}, (baseOptions && baseOptions.headers) || {}, csrfHeaders),
+            });
+            return _awaitWithAbortSignal(fetch(url, init), effectiveSignal);
+        }
+        const response = await send(false);
+        if (response.status !== 403 || typeof response.clone !== 'function') return response;
+        try {
+            const payload = await _awaitWithAbortSignal(response.clone().json(), effectiveSignal);
+            if (!payload || payload.error_code !== 'csrf_validation_failed') return response;
+        } catch (err) {
+            if ((effectiveSignal && effectiveSignal.aborted) || (err && err.name === 'AbortError')) {
+                throw err;
+            }
+            return response;
+        }
+        return await send(true);
+    } finally {
+        if (timeoutId !== null) clearTimeout(timeoutId);
+        if (externalSignal && externalAbortListener && typeof externalSignal.removeEventListener === 'function') {
+            externalSignal.removeEventListener('abort', externalAbortListener);
+        }
+    }
+}
 
 function getCharacterCardDescriptionFromData(data) {
     if (!data || typeof data !== 'object') {
@@ -285,6 +416,16 @@ function refreshCharacterCardSelectOptions() {
 }
 
 // 加载角色卡列表
+// Refresh snapshots and switch receipts describe the same backend commit order.
+// Legacy unversioned replies still work until this page learns a revision.
+function applyWorkshopCurrentCatgirlSnapshot(name, revision) {
+    const incoming = Number.isSafeInteger(revision) && revision > 0 ? revision : 0;
+    if (incoming < (window._workshopCurrentCatgirlRevision || 0)) return false;
+    window._workshopCurrentCatgirl = name || '';
+    window._workshopCurrentCatgirlRevision = incoming;
+    return true;
+}
+
 async function loadCharacterCards() {
     const loadSequence = ++characterCardLoadSequence;
 
@@ -360,10 +501,13 @@ async function loadCharacterCards() {
     // 获取当前猫娘
     try {
         const currentResp = await fetch('/api/characters/current_catgirl');
-        const currentData = await currentResp.json();
-        window._workshopCurrentCatgirl = currentData.current_catgirl || '';
+        if (currentResp.ok) {
+            const currentData = await currentResp.json();
+            applyWorkshopCurrentCatgirlSnapshot(currentData.current_catgirl, currentData.switch_revision);
+        }
     } catch (e) {
-        window._workshopCurrentCatgirl = '';
+        // A failed refresh is not a snapshot; keep the last confirmed name and revision.
+        console.warn('[CharaCardManager] Could not refresh current character:', e);
     }
 
     // 预取已设置卡面的猫娘名单（避免逐个发起 404 请求）
@@ -701,24 +845,39 @@ const CHARACTER_PROFILE_RESERVED_ROUTE_NAMES = new Set([
     'memory_browser',
     'cookies_login',
     'chat',
+    'chat_full',
+    'web_chat_compact',
     'subtitle',
     'agenthud',
     'toast',
     'card_maker',
+    'emote_maker',
+    'theater',
+    'chara_manager',
+    'visit_persona',
+    'social_hub',
+    'avatar_tool_editor',
     'soccer_demo',
     'badminton_demo',
     'air_basketball',
+    'drawing_guess_demo',
+    'watch_together',
     'jukebox',
     'static',
     'user_live2d',
     'user_live2d_local',
     'user_vrm',
     'user_mmd',
+    'user_pngtuber',
+    'user_avatar_tools',
     'user_mods',
     'workshop',
     'api',
     'ws',
     'health',
+    'market',
+    'focus',
+    'templates',
 ]);
 const CHARACTER_PROFILE_RESERVED_DEVICE_RE = /^(con|prn|aux|nul|clock\$|com[1-9]|lpt[1-9])$/i;
 const CHARACTER_PROFILE_ALLOWED_PUNCTUATION = new Set([' ', '_', '-', '(', ')', '（', '）', '·', '・', "'", '’']);
@@ -891,10 +1050,11 @@ function renderCardMetaBlock(container, name, isNew, rawData) {
                 if (newVal === (author || '').trim()) return;
                 saving = true;
                 try {
-                    const resp = await fetch('/api/characters/catgirl/' + encodeURIComponent(name) + '/card-meta', {
+                    const resp = await _charTransferMutationFetch('/api/characters/catgirl/' + encodeURIComponent(name) + '/card-meta', {
                         method: 'PUT',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ author: newVal })
+                        body: JSON.stringify({ author: newVal }),
+                        timeoutMs: MOLILI_CARD_META_TIMEOUT_MS,
                     });
                     if (!resp.ok) throw new Error('HTTP ' + resp.status);
                     const data = await resp.json();
@@ -1075,7 +1235,7 @@ async function handleImportCharacterCard(event) {
             formData.append('card_image', pngBlob, file.name || 'card.png');
         }
 
-        const response = await fetch('/api/characters/import-card', { method: 'POST', body: formData });
+        const response = await _charTransferMutationFetch('/api/characters/import-card', { method: 'POST', body: formData });
         if (!response.ok) {
             const errorData = await response.json().catch(() => ({ error: '导入失败' }));
             throw new Error(errorData.error || `HTTP ${response.status}`);
@@ -1504,21 +1664,32 @@ async function handleMoliliArchiveImport(file) {
         }
 
         // 来源徽章：把卡的 origin 标记为 molili（与 本地创作/导入/创意工坊 并列展示）。
-        // Best-effort：失败只告警，不阻断导入。
+        // Best-effort：设明确超时，失败只告警，绝不阻塞后续记忆导入。
+        const metaAbortController = typeof AbortController === 'function' ? new AbortController() : null;
+        let metaTimeoutId = null;
+        if (metaAbortController) {
+            metaTimeoutId = setTimeout(() => metaAbortController.abort(), MOLILI_CARD_META_TIMEOUT_MS);
+        }
         try {
-            const metaResponse = await fetch(`/api/characters/catgirl/${encodeURIComponent(characterName)}/card-meta`);
-            const metaNow = await metaResponse.json().catch(() => ({}));
+            const metaSignal = metaAbortController ? metaAbortController.signal : undefined;
+            const metaResponse = await _awaitWithAbortSignal(
+                fetch(`/api/characters/catgirl/${encodeURIComponent(characterName)}/card-meta`, metaSignal ? { signal: metaSignal } : {}),
+                metaSignal
+            );
+            const metaNow = await _awaitWithAbortSignal(metaResponse.json().catch(() => ({})), metaSignal);
             const currentMeta = metaNow.meta || metaNow || {};
             // 后端只允许 self 改标为 molili；导入 / 创意工坊角色发了也必然 403，直接跳过
             //（这类角色照常导入记忆，只是不加 Molili 来源徽章）
             if (currentMeta.origin === 'self') {
-                const saveMetaResponse = await fetch(`/api/characters/catgirl/${encodeURIComponent(characterName)}/card-meta`, {
+                const saveMetaResponse = await _charTransferMutationFetch(`/api/characters/catgirl/${encodeURIComponent(characterName)}/card-meta`, {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ origin: 'molili' }),
+                    ...(metaSignal ? { signal: metaSignal } : {}),
+                    timeoutMs: MOLILI_CARD_META_TIMEOUT_MS,
                 });
                 if (saveMetaResponse.ok) {
-                    const metaSaved = await saveMetaResponse.json().catch(() => ({}));
+                    const metaSaved = await _awaitWithAbortSignal(saveMetaResponse.json().catch(() => ({})), metaSignal);
                     if (metaSaved.meta && window._cardMetas) {
                         window._cardMetas[characterName] = metaSaved.meta;
                         // 该角色详情面板若已打开，立即重渲染卡面信息，来源徽章不用重开页面才可见
@@ -1528,6 +1699,8 @@ async function handleMoliliArchiveImport(file) {
             }
         } catch (metaError) {
             console.warn('卡面来源标记失败（不阻断导入）:', metaError);
+        } finally {
+            if (metaTimeoutId !== null) clearTimeout(metaTimeoutId);
         }
 
         // 归档里没有任何记忆候选（只有角色设定）：设定已写好，没有记忆可导，

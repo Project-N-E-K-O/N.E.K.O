@@ -1,0 +1,542 @@
+// @vitest-environment happy-dom
+/**
+ * Work that waits for a familiar busy with something else, in a project without a leader: whether
+ * another is to do it in a worktree of its own. Asked while the commission is at no familiar, read
+ * from the commissions waiting for the user, answered with a button where the busy one is shown;
+ * and what the user set about it.
+ */
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { createApp, h, markRaw, nextTick, reactive } from 'vue'
+import type { Component } from 'vue'
+import { createI18n } from 'vue-i18n'
+import ElementPlus from 'element-plus'
+import words from '@/i18n/power/en-US'
+import type { Board, BoardAsk, BoardCard, CommissionRow } from '@/api/console'
+import AskBox from '../AskBox.vue'
+import { askFacts, askLines, askSummary, besideHint, choiceLabel, isBeside } from '../ask'
+import FamiliarBoard from '../home/FamiliarBoard.vue'
+import LandingCard from '../LandingCard.vue'
+import FamiliarColony from './FamiliarColony.vue'
+import { inTerritory } from './layout'
+import { BESIDE_POLL_MS, besideAsksOf, mayBeAsked } from './useBesideAsks'
+
+const api = vi.hoisted(() => ({
+  getBoard: vi.fn(), getTimeline: vi.fn(), getTimelineStart: vi.fn(), getWaits: vi.fn(),
+  answerCommission: vi.fn(), archiveProject: vi.fn(), listCommissions: vi.fn(), getLanding: vi.fn(), setLanding: vi.fn(),
+  consoleErrorCode: (error: unknown) => (error as { code?: string })?.code ?? null,
+}))
+vi.mock('@/api/console', () => api)
+const push = vi.fn()
+vi.mock('vue-router', () => ({ useRouter: () => ({ push }) }))
+
+const refusal = (code: string, status = 409) =>
+  Object.assign(new Error(code), { code, response: { status, data: { detail: { code } } } })
+const card = (over: Partial<BoardCard> = {}): BoardCard => ({
+  id: 'shop', name: 'Shop/general', kind: 'project', lanlan_name: 'Lan', runtime: 'builtin', workdir: 'D:/shop', preset: 'general',
+  avatar: 'general', label: '', description: '', title: 'Shelf keeper', duty: '', duty_by: '', doing: '', state: 'working', leader: false,
+  parent: null, model: null, commission: { id: 'c1', title: 'Restock the shelves', status: 'working', started_at: 0 }, ...over,
+})
+const board = (members: BoardCard[] = [card()], revision = 'r1'): Board => ({
+  revision,
+  projects: [{ name: 'Shop', description: '', workdir: 'D:/shop', archived: false, done_today: 0, members }],
+  loose: [],
+})
+const beside = (over: Partial<BoardAsk> = {}): BoardAsk => ({
+  id: 'q9', kind: 'permission', category: 'open_beside', options: ['always', 'session', 'once', 'deny'],
+  detail: {
+    tool: 'beside', title: 'Write the newsletter', preset: 'general', tree: true, member: 'Shop/general-2', project: 'Shop',
+    beside: 'Shop/general', beside_session: 'shop', at_hand: 'Restock the shelves',
+  },
+  ...over,
+})
+const row = (over: Partial<CommissionRow> = {}): CommissionRow => ({
+  id: 'c9', title: 'Write the newsletter', status: 'waiting_user', reason: 'waiting for the user', result: '', source: 'dispatch',
+  route: 'task_agent', project: 'Shop', lanlan_name: 'Lan', parent_id: null, session_id: null, session: null, runtime: null,
+  plugin_id: null, entry_id: null, created_at: 0, started_at: null, ended_at: null, updated_at: 0, usage: { requests: 0, tokens: 0 },
+  ask: beside(), ...over,
+})
+const asked = (rows: CommissionRow[] = [row()]) => ({ commissions: rows, more: false })
+
+let cleanup: (() => void) | undefined
+const NativeMutationObserver = globalThis.MutationObserver
+async function flush() {
+  for (let i = 0; i < 8; i++) { await Promise.resolve(); await nextTick() }
+  await vi.dynamicImportSettled()
+  for (let i = 0; i < 4; i++) { await Promise.resolve(); await nextTick() }
+}
+async function mount(component: Component, props: Record<string, unknown> = {}) {
+  const container = document.createElement('div')
+  document.body.append(container)
+  const state = reactive({ props })
+  const app = createApp({ render: () => h(component, state.props) })
+  app.use(ElementPlus)
+  app.use(createI18n({ legacy: false, locale: 'en-US', messages: { 'en-US': { power: words, common: { cancel: 'Cancel' } } } }))
+  app.mount(container)
+  cleanup = () => { app.unmount(); container.remove() }
+  await flush()
+  return { container, state }
+}
+const byTest = (id: string) => document.querySelector(`[data-testid="${id}"]`) as HTMLElement | null
+const cat = (id: string) => document.querySelector(`[data-cat="${id}"]`) as HTMLElement | null
+const choice = (option: string, within: ParentNode = document) => within.querySelector(`[data-choice="${option}"]`) as HTMLElement | null
+function pointer(element: Element | null, type: string, x: number, y: number) {
+  expect(element).toBeTruthy()
+  const event = new MouseEvent(type, { bubbles: true, clientX: x, clientY: y, button: 0 })
+  Object.defineProperty(event, 'pointerId', { value: 1 })
+  element!.dispatchEvent(event)
+}
+const at = (element: HTMLElement | null) => [parseFloat(element?.style.left ?? ''), parseFloat(element?.style.top ?? '')]
+async function click(element: Element | null | undefined) {
+  expect(element).toBeTruthy()
+  ;(element as HTMLElement).click()
+  await flush()
+}
+
+beforeEach(() => {
+  vi.stubGlobal('MutationObserver', class extends NativeMutationObserver {
+    constructor(callback: MutationCallback) { super(callback); markRaw(this) }
+  })
+  vi.resetAllMocks()
+  localStorage.clear()
+  api.getBoard.mockResolvedValue(board())
+  api.getTimelineStart.mockResolvedValue({ after: '', latest: 'e1.m0' })
+  api.getTimeline.mockResolvedValue({ entries: [], next: 'e1.m0', more: false, latest: 'e1.m0' })
+  api.getWaits.mockResolvedValue({ waits: [], more: false })
+  api.listCommissions.mockResolvedValue(asked())
+})
+afterEach(() => {
+  cleanup?.(); cleanup = undefined; document.body.innerHTML = ''
+  vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals()
+})
+
+const t = (key: string, named: Record<string, unknown> = {}) => {
+  const found = key.split('.').slice(1).reduce<unknown>((at, part) => (at as Record<string, unknown> | undefined)?.[part], words)
+  return String(found ?? key).replace(/\{(\w+)\}/g, (_, name: string) => String(named[name] ?? ''))
+}
+const te = (key: string) => t(key) !== key
+
+describe('what is asked of opening another beside a busy one', () => {
+  it('says what came beside what the busy one is at, and who would do it, and nothing it is known by inside', () => {
+    const ask = beside()
+    expect(isBeside(ask)).toBe(true)
+    expect(askLines(ask, t, te)).toEqual([words.ask.beside.question])
+    const facts = askFacts(ask, t, te)
+    expect(facts.map(fact => fact.name)).toEqual(['title', 'at_hand', 'member', 'tree'])
+    expect(facts.map(fact => fact.value)).toEqual(['Write the newsletter', 'Restock the shelves', 'Shop/general-2', words.ask.treeNote])
+    expect(facts[1].label).toBe(words.ask.beside.atHand.replace('{name}', 'Shop/general'))
+    // The session it waits for is no fact for the user.
+    expect(JSON.stringify(facts)).not.toContain('"shop"')
+    expect(askSummary(ask, t, te)).toBe(words.ask.beside.summary.replace('{title}', 'Write the newsletter'))
+    expect(besideHint(ask, t, te)).toBe(
+      words.ask.beside.hint.replace('{name}', 'Shop/general').replace('{deny}', words.ask.beside.choices.deny),
+    )
+    expect(['always', 'session', 'once', 'deny'].map(option => choiceLabel(ask, option, t, te))).toEqual([
+      words.ask.beside.choices.always, words.ask.beside.choices.session, words.ask.beside.choices.once, words.ask.beside.choices.deny,
+    ])
+  })
+
+  it('says of the busy one by what it is where its name is not given, and leaves out what is not there', () => {
+    const ask = beside({ detail: { tool: 'beside', title: 'Write the newsletter', tree: false } })
+    expect(askFacts(ask, t, te).map(fact => fact.name)).toEqual(['title'])
+    expect(besideHint(ask, t, te)).toContain(words.ask.beside.busyOne)
+    const nameless = askFacts(beside({ detail: { tool: 'beside', title: 'Write the newsletter', at_hand: 'Restock the shelves' } }), t, te)
+    expect(nameless.find(fact => fact.name === 'at_hand')?.label).toBe(words.ask.beside.atHand.replace('{name}', words.ask.beside.busyOne))
+  })
+
+  it('leaves every other question as it was', () => {
+    const other: BoardAsk = { id: 'q1', kind: 'permission', category: 'open_session', detail: { tool: 'hand_over', title: 'Fix it' }, options: ['once', 'deny'] }
+    expect(isBeside(other)).toBe(false)
+    expect(isBeside(null)).toBe(false)
+    expect(besideHint(other, t, te)).toBeNull()
+    expect(choiceLabel(other, 'deny', t, te)).toBe(words.space.familiars.choices.deny)
+    expect(choiceLabel(other, 'later', t, te)).toBe('later')
+    expect(askFacts(other, t, te).map(fact => fact.name)).toEqual(['title'])
+  })
+
+  it('is answered with a button, and saying no to it is drawn as no danger', async () => {
+    await mount(AskBox, { ask: beside(), busy: '' })
+    expect(document.body.textContent).toContain(words.ask.beside.heading)
+    expect(byTest('ask-hint')?.textContent).toContain(words.ask.beside.choices.deny)
+    expect(document.querySelector('[data-fact="at_hand"]')?.textContent).toContain('Restock the shelves')
+    expect(choice('once')?.textContent).toContain(words.ask.beside.choices.once)
+    expect(choice('deny')?.className).not.toContain('danger')
+    // Nothing to type: it is answered with the buttons.
+    expect(byTest('familiar-reply')).toBeNull()
+  })
+})
+
+describe('where such a question is looked for', () => {
+  it('is among those waiting for the user that are at no familiar', () => {
+    const rows = [
+      row(),
+      row({ id: 'c2', session_id: 'shop' }),
+      row({ id: 'c3', status: 'queued' }),
+      row({ id: 'c4', ask: { ...beside(), detail: { tool: 'hand_over' } } }),
+      row({ id: 'c5', ask: null }),
+    ]
+    expect(besideAsksOf(rows)).toEqual([
+      { id: 'c9', title: 'Write the newsletter', project: 'Shop', ask: rows[0].ask, beside: 'shop', member: 'Shop/general-2' },
+    ])
+  })
+
+  it('is read only while a project without a leader has a familiar at something', () => {
+    expect(mayBeAsked(board())).toBe(true)
+    expect(mayBeAsked(board([card({ commission: { id: 'c1', title: 'x', status: 'waiting_user', started_at: 0 } })]))).toBe(true)
+    expect(mayBeAsked(null)).toBe(false)
+    expect(mayBeAsked(board([card({ state: 'idle', commission: null })]))).toBe(false)
+    expect(mayBeAsked(board([card({ commission: { id: 'c1', title: 'x', status: 'resting', started_at: 0 } })]))).toBe(false)
+    expect(mayBeAsked(board([card(), card({ id: 'boss', leader: true, commission: null })]))).toBe(false)
+    const away = board()
+    away.projects![0].archived = true
+    expect(mayBeAsked(away)).toBe(false)
+  })
+})
+
+describe('the question in the colony', () => {
+  it('is said among those that wait, and the one that would be opened stands beside the busy one, not there yet', async () => {
+    await mount(FamiliarColony)
+    expect(api.listCommissions).toHaveBeenCalledWith({ status: ['waiting_user'] })
+    const line = document.querySelector('[data-beside="c9"]')
+    expect(line?.textContent).toContain(words.colony.besideWho.replace('{name}', 'Shelf keeper'))
+    expect(line?.textContent).toContain('Write the newsletter')
+    const ghost = cat('beside:c9')
+    expect(ghost?.closest('[data-territory]')?.getAttribute('data-territory')).toBe('project:Shop')
+    expect(ghost?.getAttribute('data-look')).toBe('unborn')
+    expect(ghost?.textContent).toContain('Shop/general-2')
+    // What it asks is said when it is pointed at, not in a bubble over the busy one's name.
+    expect(ghost?.getAttribute('title')).toBe(words.colony.besideTip)
+    expect(ghost?.querySelector('.bubble')).toBeNull()
+    expect(ghost?.style.cursor).toBe('pointer')
+    expect(ghost?.getAttribute('aria-label')).toBe(words.colony.unbornLabel.replace('{name}', 'Shop/general-2'))
+    expect(byTest('board-tally')?.textContent).toContain(words.home.waiting.replace('{count}', '1'))
+    // Beside the busy one, as one it started would stand: that one keeps the middle of its territory.
+    expect([cat('shop')?.style.left, cat('shop')?.style.top]).toEqual(['50%', '52%'])
+  })
+
+  it('stands by the busy one where the user put that one', async () => {
+    // Every territory is 400 by 300 at the top left; the gate is the 100 by 40 at its bottom right.
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      const box = this.hasAttribute('data-colony-gate') ? { left: 300, top: 260, width: 100, height: 40 } : { left: 0, top: 0, width: 400, height: 300 }
+      return { ...box, right: box.left + box.width, bottom: box.top + box.height, x: box.left, y: box.top, toJSON: () => box } as DOMRect
+    })
+    // With one the busy one started: that one stays where it stands, as ever.
+    api.getBoard.mockResolvedValue(board([card(), card({ id: 'kid', name: 'Shop/general', kind: 'child', parent: 'shop', state: 'idle', commission: null })]))
+    await mount(FamiliarColony)
+    const [busyX, busyY] = at(cat('shop'))
+    const [ghostX, ghostY] = at(cat('beside:c9'))
+    const kid = at(cat('kid'))
+    pointer(cat('shop'), 'pointerdown', 200, 156)
+    pointer(cat('shop'), 'pointermove', 120, 100)
+    pointer(cat('shop'), 'pointerup', 120, 100)
+    await flush()
+    const [movedX, movedY] = at(cat('shop'))
+    expect(movedX).toBeCloseTo(30, 6)
+    expect(movedY).toBeCloseTo(100 / 3, 6)
+    const [followedX, followedY] = at(cat('beside:c9'))
+    expect(followedX).toBeCloseTo(ghostX + movedX - busyX, 6)
+    expect(followedY).toBeCloseTo(ghostY + movedY - busyY, 6)
+    expect(at(cat('kid'))).toEqual(kid)
+    // Not moved with the keys either: it goes on standing by the busy one.
+    cat('beside:c9')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }))
+    await flush()
+    expect(at(cat('beside:c9'))).toEqual([followedX, followedY])
+    pointer(cat('shop'), 'pointerdown', 120, 100)
+    pointer(cat('shop'), 'pointermove', 160, 120)
+    pointer(cat('shop'), 'pointerup', 160, 120)
+    await flush()
+    const [againX, againY] = at(cat('shop'))
+    expect(at(cat('beside:c9'))[0]).toBeCloseTo(ghostX + againX - busyX, 6)
+    expect(at(cat('beside:c9'))[1]).toBeCloseTo(ghostY + againY - busyY, 6)
+  })
+
+  it('stands as far from the busy one put by an edge as ever, and not on top of it', async () => {
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      const box = this.hasAttribute('data-colony-gate') ? { left: 300, top: 260, width: 100, height: 40 } : { left: 0, top: 0, width: 400, height: 300 }
+      return { ...box, right: box.left + box.width, bottom: box.top + box.height, x: box.left, y: box.top, toJSON: () => box } as DOMRect
+    })
+    await mount(FamiliarColony)
+    const [busyX, busyY] = at(cat('shop'))
+    const [ghostX, ghostY] = at(cat('beside:c9'))
+    // Below the busy one in the middle.
+    expect(ghostX).toBeCloseTo(busyX, 6)
+    expect(ghostY).toBeGreaterThan(busyY)
+    const away = ghostY - busyY
+    // Above it at the bottom edge; beside it at the far left, where the territory is too narrow for either.
+    for (const [x, y, side] of [[200, 299, 'above'], [1, 156, 'beside']] as const) {
+      const [fromX, fromY] = at(cat('shop')).map((value, index) => (value / 100) * (index ? 300 : 400))
+      pointer(cat('shop'), 'pointerdown', fromX, fromY)
+      pointer(cat('shop'), 'pointermove', x, y)
+      pointer(cat('shop'), 'pointerup', x, y)
+      await flush()
+      const [shopX, shopY] = at(cat('shop'))
+      const [edgeX, edgeY] = at(cat('beside:c9'))
+      expect(inTerritory({ x: edgeX / 100, y: edgeY / 100 })).toBe(true)
+      if (side === 'above') expect([edgeX - shopX, edgeY - shopY].map(value => Math.round(value * 1e6))).toEqual([0, Math.round(-away * 1e6)])
+      else expect([edgeX - shopX, edgeY - shopY].map(value => Math.round(value * 1e6))).toEqual([Math.round(away * 1e6), 0])
+    }
+  })
+
+  it('is answered with a button from the one not there yet, which is no familiar to open', async () => {
+    api.answerCommission.mockResolvedValue({ success: true })
+    await mount(FamiliarColony)
+    // Not picked up to be dragged: it is not there.
+    cat('beside:c9')!.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, button: 0 }))
+    await flush()
+    expect(cat('beside:c9')?.className).not.toContain('cat--grabbed')
+    await click(cat('beside:c9'))
+    expect(push).not.toHaveBeenCalled()
+    expect(document.querySelector('[data-fact="at_hand"]')?.textContent).toContain('Restock the shelves')
+    expect(document.querySelector('.el-dialog__title')?.textContent).toBe(words.colony.besideTitle)
+    // What came is said among the facts, not once more above the question.
+    expect(byTest('colony-ask-title')).toBeNull()
+    api.listCommissions.mockResolvedValue(asked([]))
+    await click(choice('once'))
+    expect(api.answerCommission).toHaveBeenCalledWith('c9', { choice: 'once', text: undefined, question_id: 'q9' })
+    // Read again at once: it is asked no more, and the one not there yet is gone.
+    expect(cat('beside:c9')).toBeNull()
+    expect(document.querySelector('[data-beside]')).toBeNull()
+    expect(document.querySelector('[data-fact]')).toBeNull()
+  })
+
+  it('is answered from its line as well, and says why when the answer is not taken', async () => {
+    api.answerCommission.mockRejectedValue(refusal('not_taken'))
+    await mount(FamiliarColony)
+    await click(document.querySelector('[data-beside="c9"] button'))
+    expect(byTest('colony-ask-title')).toBeNull()
+    await click(choice('deny'))
+    expect(api.answerCommission).toHaveBeenCalledWith('c9', { choice: 'deny', text: undefined, question_id: 'q9' })
+    expect(byTest('colony-ask-error')?.textContent).toContain(words.ask.stale)
+  })
+
+  it('goes once it is taken back', async () => {
+    vi.useFakeTimers()
+    await mount(FamiliarColony)
+    await click(cat('beside:c9'))
+    expect(document.querySelector('[data-fact]')).toBeTruthy()
+    // Read again a while later: what was asked was taken back meanwhile.
+    api.listCommissions.mockResolvedValue(asked([]))
+    await vi.advanceTimersByTimeAsync(BESIDE_POLL_MS + 100)
+    await flush()
+    expect(cat('beside:c9')).toBeNull()
+    expect(document.querySelector('[data-fact]')).toBeNull()
+  })
+
+  it('goes at once when nobody is at anything any more, and is not looked for then', async () => {
+    vi.useFakeTimers()
+    await mount(FamiliarColony)
+    expect(cat('beside:c9')).toBeTruthy()
+    // The busy one came free, before the commissions are read again: none can be asked of any more.
+    api.getBoard.mockResolvedValue(board([card({ state: 'idle', commission: null })], 'r2'))
+    await vi.advanceTimersByTimeAsync(2100)
+    await flush()
+    expect(cat('beside:c9')).toBeNull()
+    expect(document.querySelector('[data-beside]')).toBeNull()
+    const calls = api.listCommissions.mock.calls.length
+    await vi.advanceTimersByTimeAsync(BESIDE_POLL_MS * 3)
+    await flush()
+    expect(api.listCommissions.mock.calls.length).toBe(calls)
+  })
+
+  it('is not looked for in a project with a leader', async () => {
+    api.getBoard.mockResolvedValue(board([card(), card({ id: 'boss', leader: true, commission: null, state: 'idle' })]))
+    await mount(FamiliarColony)
+    expect(api.listCommissions).not.toHaveBeenCalled()
+    expect(cat('beside:c9')).toBeNull()
+  })
+
+  it('stands in the territory of its project even where the busy one is not on the board', async () => {
+    api.listCommissions.mockResolvedValue(asked([row({ ask: beside({ detail: { ...beside().detail, beside_session: 'gone' } }) })]))
+    await mount(FamiliarColony)
+    expect(cat('beside:c9')?.closest('[data-territory]')?.getAttribute('data-territory')).toBe('project:Shop')
+    expect(document.querySelector('[data-beside="c9"]')?.textContent).toContain(words.colony.besideWho.replace('{name}', words.activity.someone))
+  })
+})
+
+describe('the question on the board', () => {
+  it('is not drawn among the loose ones, whatever its project is called', async () => {
+    const both = board()
+    both.loose = [card({ id: 'odd', name: 'Sort the photos', kind: 'single', state: 'idle', commission: null })]
+    api.getBoard.mockResolvedValue(both)
+    api.listCommissions.mockResolvedValue(asked([row({ project: words.home.loose, ask: beside({ detail: { ...beside().detail, beside_session: 'gone' } }) })]))
+    await mount(FamiliarBoard)
+    expect(document.querySelector('[data-hive="loose"] [data-testid="beside-ask"]')).toBeNull()
+  })
+
+  it('says on the card of the familiar that a sentence added to its answer was not taken, also once its commission is done', async () => {
+    const ask = { id: 'q1', kind: 'permission', category: 'run_command', detail: { command: 'npm test' }, options: ['once', 'deny'] }
+    const waiting = card({ state: 'waiting_user', commission: { id: 'c1', title: 'Run the tests', status: 'waiting_user', started_at: 0, ask } })
+    api.getBoard.mockResolvedValue(board([waiting]))
+    api.listCommissions.mockResolvedValue(asked([]))
+    await mount(FamiliarBoard)
+    const here = () => document.querySelector(`[data-familiar="${waiting.id}"]`)
+    // Answered, the sentence lost; and by the time the board is read again its commission is done.
+    api.answerCommission.mockResolvedValue({ success: true, note_taken: false })
+    api.getBoard.mockResolvedValue(board([card({ state: 'idle', commission: null })], 'r2'))
+    await click(here()?.querySelector('[data-choice="deny"]'))
+    await flush()
+    expect(here()?.querySelector('[data-testid="familiar-ask"]')).toBeNull()
+    expect(here()?.querySelector('[data-testid="familiar-card-error"]')?.textContent).toContain(words.ask.noteLost)
+  })
+
+  it('keeps the words of a later answer for their own while, though those of an earlier one read the same', async () => {
+    vi.useFakeTimers()
+    const ask = (id: string) => ({ id, kind: 'permission', category: 'run_command', detail: { command: 'npm test' }, options: ['once', 'deny'] })
+    const waiting = (id: string) => card({ state: 'waiting_user', commission: { id: 'c1', title: 'Run the tests', status: 'waiting_user', started_at: 0, ask: ask(id) } })
+    api.getBoard.mockResolvedValue(board([waiting('q1')]))
+    api.listCommissions.mockResolvedValue(asked([]))
+    await mount(FamiliarBoard)
+    api.answerCommission.mockResolvedValue({ success: true, note_taken: false })
+    // Answered, the sentence lost; it asks the next thing, which is answered just before those words would go.
+    api.getBoard.mockResolvedValue(board([waiting('q2')], 'r2'))
+    await click(document.querySelector('[data-familiar="shop"] [data-choice="deny"]'))
+    await flush()
+    expect(byTest('familiar-card-error')).toBeTruthy()
+    await vi.advanceTimersByTimeAsync(14900)
+    api.getBoard.mockResolvedValue(board([card({ state: 'idle', commission: null })], 'r3'))
+    let back: (value: unknown) => void = () => {}
+    api.answerCommission.mockReturnValue(new Promise(resolve => { back = resolve }))
+    await click(document.querySelector('[data-familiar="shop"] [data-choice="deny"]'))
+    await flush()
+    expect(api.answerCommission).toHaveBeenCalledTimes(2)
+    // What was said of the last answer is not about this one, which is on its way.
+    expect(byTest('familiar-card-error')).toBeNull()
+    back({ success: true, note_taken: false })
+    await flush()
+    // The time of the first ones is up: these are not theirs to take away.
+    await vi.advanceTimersByTimeAsync(500)
+    expect(byTest('familiar-card-error')?.textContent).toContain(words.ask.noteLost)
+    await vi.advanceTimersByTimeAsync(14000)
+    expect(byTest('familiar-card-error')).toBeTruthy()
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(byTest('familiar-card-error')).toBeNull()
+  })
+
+  it('says it above the board where the familiar has no card on it any more by the time the board is read again', async () => {
+    vi.useFakeTimers()
+    const ask = { id: 'q1', kind: 'permission', category: 'run_command', detail: { command: 'npm test' }, options: ['once', 'deny'] }
+    const waiting = card({ state: 'waiting_user', commission: { id: 'c1', title: 'Run the tests', status: 'waiting_user', started_at: 0, ask } })
+    const other = card({ id: 'desk', name: 'Shop/desk', commission: null, state: 'idle' })
+    api.getBoard.mockResolvedValue(board([waiting, other]))
+    api.listCommissions.mockResolvedValue(asked([]))
+    await mount(FamiliarBoard)
+    // While its card is there, the card says it and nothing is said above the board.
+    api.answerCommission.mockResolvedValue({ success: true, note_taken: false })
+    api.getBoard.mockResolvedValue(board([card({ state: 'idle', commission: null }), other], 'r2'))
+    await click(document.querySelector(`[data-familiar="${waiting.id}"] [data-choice="deny"]`))
+    await flush()
+    expect(byTest('familiar-card-error')?.textContent).toContain(words.ask.noteLost)
+    expect(byTest('board-answer-note')).toBeNull()
+    // Read again, the familiar that was answered is gone from the board.
+    api.getBoard.mockResolvedValue(board([other], 'r3'))
+    await vi.advanceTimersByTimeAsync(2100)
+    await flush()
+    expect(document.querySelector(`[data-familiar="${waiting.id}"]`)).toBeNull()
+    expect(byTest('board-answer-note')?.textContent).toBe(words.ask.noteLost)
+  })
+
+  it('takes those words away again after a while: nothing else would, once the familiar is back at its work', async () => {
+    vi.useFakeTimers()
+    const ask = { id: 'q1', kind: 'permission', category: 'run_command', detail: { command: 'npm test' }, options: ['once', 'deny'] }
+    const waiting = card({ state: 'waiting_user', commission: { id: 'c1', title: 'Run the tests', status: 'waiting_user', started_at: 0, ask } })
+    api.getBoard.mockResolvedValue(board([waiting]))
+    api.listCommissions.mockResolvedValue(asked([]))
+    await mount(FamiliarBoard)
+    api.answerCommission.mockResolvedValue({ success: true, note_taken: false })
+    api.getBoard.mockResolvedValue(board([card({ state: 'idle', commission: null })], 'r2'))
+    await click(document.querySelector(`[data-familiar="${waiting.id}"] [data-choice="deny"]`))
+    await flush()
+    expect(byTest('familiar-card-error')).toBeTruthy()
+    await vi.advanceTimersByTimeAsync(14000)
+    expect(byTest('familiar-card-error')).toBeTruthy()
+    await vi.advanceTimersByTimeAsync(1500)
+    expect(byTest('familiar-card-error')).toBeNull()
+  })
+
+  it('says above the board that a sentence added to that answer was not taken: it is of no familiar\'s card', async () => {
+    api.answerCommission.mockResolvedValue({ success: true, note_taken: false })
+    await mount(FamiliarBoard)
+    await click(choice('once', byTest('beside-ask')!))
+    await flush()
+    expect(byTest('board-answer-note')?.textContent).toBe(words.ask.noteLost)
+    // Not about the next answer.
+    api.answerCommission.mockResolvedValue({ success: true })
+    await click(choice('deny', byTest('beside-ask')!))
+    await flush()
+    expect(byTest('board-answer-note')).toBeNull()
+  })
+
+  it('stands under the busy one, answered with a button', async () => {
+    api.answerCommission.mockResolvedValue({ success: true })
+    await mount(FamiliarBoard)
+    const asking = byTest('beside-ask')
+    expect(asking?.previousElementSibling?.getAttribute('data-familiar')).toBe('shop')
+    expect(asking?.textContent).toContain('Shop/general-2')
+    expect(asking?.textContent).toContain(words.home.states.unborn)
+    expect(asking?.textContent).toContain('Restock the shelves')
+    expect(byTest('board-tally')?.textContent).toContain(words.home.waiting.replace('{count}', '1'))
+    api.listCommissions.mockResolvedValue(asked([]))
+    await click(choice('once', asking!))
+    expect(api.answerCommission).toHaveBeenCalledWith('c9', { choice: 'once', text: undefined, question_id: 'q9' })
+    expect(byTest('beside-ask')).toBeNull()
+  })
+
+  it('takes an answer to another question while the answer to one is on its way', async () => {
+    api.listCommissions.mockResolvedValue(asked([row(), row({ id: 'c8', title: 'Price the tea', ask: beside({ id: 'q8' }) })]))
+    let arrive: (value: unknown) => void = () => {}
+    api.answerCommission.mockImplementation((id: string) => (id === 'c9' ? new Promise(done => { arrive = done }) : Promise.resolve({ success: true })))
+    await mount(FamiliarBoard)
+    const [first, second] = [...document.querySelectorAll('[data-testid="beside-ask"]')] as HTMLElement[]
+    await click(choice('once', first))
+    // The first is on its way: its buttons wait, the other's do not.
+    expect(choice('deny', first)?.hasAttribute('disabled')).toBe(true)
+    expect(choice('deny', second)?.hasAttribute('disabled')).toBe(false)
+    await click(choice('deny', second))
+    expect(api.answerCommission).toHaveBeenCalledWith('c8', { choice: 'deny', text: undefined, question_id: 'q8' })
+    // The first is still on its way.
+    expect(choice('deny', first)?.hasAttribute('disabled')).toBe(true)
+    arrive({ success: true })
+    await flush()
+    expect(api.answerCommission).toHaveBeenCalledTimes(2)
+  })
+
+  it('says why an answer was not taken, beside the question', async () => {
+    api.answerCommission.mockRejectedValue(refusal('not_taken'))
+    await mount(FamiliarBoard)
+    await click(choice('deny', byTest('beside-ask')!))
+    expect(byTest('beside-error')?.textContent).toContain(words.ask.stale)
+    // It can be answered again.
+    expect(choice('once', byTest('beside-ask')!)?.hasAttribute('disabled')).toBe(false)
+  })
+
+  it('stands at the end of its project where the busy one is not on the board', async () => {
+    api.listCommissions.mockResolvedValue(asked([row({ ask: beside({ detail: { ...beside().detail, beside_session: 'gone' } }) })]))
+    await mount(FamiliarBoard)
+    const asking = byTest('beside-ask')
+    expect(asking?.closest('[data-hive]')?.getAttribute('data-hive')).toBe('project:Shop')
+    expect(asking?.nextElementSibling).toBeNull()
+  })
+})
+
+describe('what the user set about it', () => {
+  it('offers the three, each with what it comes to, and saves the one chosen', async () => {
+    api.getLanding.mockResolvedValue({ mode: 'auto', inspect: false, beside: 'ask' })
+    api.setLanding.mockResolvedValue({ mode: 'auto', inspect: false, beside: 'queue' })
+    await mount(LandingCard)
+    for (const option of ['ask', 'open', 'queue'] as const) {
+      expect(byTest(`landing-beside-${option}`)?.textContent).toContain(words.landing.beside[option])
+      expect(byTest(`landing-beside-${option}-hint`)?.textContent).toContain(words.landing.beside[`${option}Hint`])
+    }
+    // What starting one without asking may come to is said beside it before it is chosen.
+    expect(byTest('landing-beside-open-hint')?.className).toContain('warn')
+    await click(byTest('landing-beside-queue')?.querySelector('input'))
+    expect(api.setLanding).toHaveBeenCalledWith({ beside: 'queue' })
+    expect((byTest('landing-beside-queue')?.querySelector('input') as HTMLInputElement).checked).toBe(true)
+  })
+
+  it('is not offered by a service that has no such setting', async () => {
+    api.getLanding.mockResolvedValue({ mode: 'auto', inspect: false })
+    await mount(LandingCard)
+    expect(byTest('landing-settings')).toBeTruthy()
+    expect(byTest('landing-beside')).toBeNull()
+  })
+})

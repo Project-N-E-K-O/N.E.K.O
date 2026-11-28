@@ -51,13 +51,20 @@ from main_logic.tts_client import (
     TTS_SHUTDOWN_SENTINEL,
     TTS_AUDIO_DONE_SENTINEL,
     TTS_SOFT_FLUSH_SENTINEL,
+    TTS_PRECONNECT_SENTINEL,
     TTS_PROVIDER_REGISTRY,
     VLLM_OMNI_DEFAULT_BASE_URL,
+    worker_supports_preconnect,
     VLLM_OMNI_DEFAULT_MODEL,
 )
 from main_logic.tts_client.workers.gptsovits import GPTSOVITS_END_TIMEOUT_SECONDS
 from utils.gptsovits_config import is_gsv_disabled_voice_id
+from utils.qwen_token_plan_tts import (
+    QWEN_TOKEN_PLAN_TTS_DEFAULT_BASE_URL,
+    QWEN_TOKEN_PLAN_TTS_DEFAULT_MODEL,
+)
 from utils.config_manager import _as_bool, get_reserved
+from utils.tts import provider_registry
 from utils.tts.native_voice_registry import is_free_preset_voice_id, resolve_native_voice_for_routing
 from utils.api_config_loader import get_livestream_config
 from threading import Thread
@@ -431,6 +438,29 @@ class TtsRuntimeMixin:
             # No running loop (synchronous test fixture enqueues directly): no fallback, simply do not send.
             self._tts_soft_flush_task = None
 
+    def request_tts_preconnect(self) -> bool:
+        """Ask the TTS worker to open the next speech's socket now.
+
+        Called when a reply's LLM request starts, so the socket handshake runs
+        while the model is still producing its first text instead of after it.
+        Only for workers that recognize ``TTS_PRECONNECT_SENTINEL``; a worker
+        that does not would read it as a new speech id. Returns whether the
+        request was queued.
+        """
+        if not getattr(self, "_tts_preconnect_supported", False):
+            return False
+        if not getattr(self, "use_tts", True):
+            # Replies are not spoken through this worker (it may still be alive
+            # for the mirror channel, see _clear_tts_pipeline).
+            return False
+        if getattr(self, "_tts_quota_blocked", False):
+            # Every connect is refused until the quota window passes.
+            return False
+        if not (self.tts_ready and self.tts_thread and self.tts_thread.is_alive()):
+            return False
+        self.tts_request_queue.put((TTS_PRECONNECT_SENTINEL, None))
+        return True
+
     def _cancel_tts_soft_flush(self) -> None:
         task = getattr(self, "_tts_soft_flush_task", None)
         if task is not None and not task.done():
@@ -708,6 +738,24 @@ class TtsRuntimeMixin:
             or 'default',
         )
 
+    @staticmethod
+    def _resolve_qwen_token_plan_runtime_config(core_config: dict) -> tuple[str, str]:
+        # The Token Plan worker reads its slot from core_config.json, not tts_custom,
+        # so its endpoint and model must be part of the runtime identity explicitly.
+        # Same selection fields as the worker's is_selected (TTS_PROVIDER / ttsProvider
+        # or ttsModelProvider).
+        if not any(
+            str(core_config.get(field) or '').strip().lower() == 'qwen_token_plan'
+            for field in ('TTS_PROVIDER', 'ttsProvider', 'ttsModelProvider')
+        ):
+            return ('', '')
+        return (
+            str(core_config.get('ttsModelUrl') or '').strip()
+            or QWEN_TOKEN_PLAN_TTS_DEFAULT_BASE_URL,
+            str(core_config.get('ttsModelId') or '').strip()
+            or QWEN_TOKEN_PLAN_TTS_DEFAULT_MODEL,
+        )
+
     def _build_tts_runtime_key(self) -> tuple:
         """Return the effective TTS worker identity for ready-state reuse."""
         try:
@@ -727,6 +775,15 @@ class TtsRuntimeMixin:
                 'tts_custom' if has_custom else 'tts_default'
             )
             api_key = self.resolve_tts_api_key(provider_key, api_key_override, tts_config)
+            provider = provider_registry.get(provider_key)
+            # Workers that read the settings-page fallback voice bind it at start,
+            # so a changed fallback voice must restart them.
+            hosted_default_voice = (
+                (core_config.get('TTS_VOICE_ID', ''), core_config.get('ttsVoiceId', ''))
+                if provider and provider.uses_configured_default_voice
+                and not (provider.preset_catalog and provider.preset_catalog.is_voice(route_voice_id))
+                else ''
+            )
             return (
                 provider_key,
                 self.core_api_type,
@@ -736,6 +793,8 @@ class TtsRuntimeMixin:
                 tts_config.get('base_url', ''),
                 tts_config.get('model', ''),
                 self._resolve_vllm_omni_runtime_config(core_config),
+                self._resolve_qwen_token_plan_runtime_config(core_config),
+                hosted_default_voice,
                 api_key,
                 tuple(sorted(getattr(self, "_tts_excluded_provider_keys", frozenset()))),
             )
@@ -1202,7 +1261,7 @@ class TtsRuntimeMixin:
                 int(getattr(self, "_game_speech_preload_pending_batches", 1)) - 1,
             )
 
-    async def _clear_tts_pipeline(self):
+    async def _clear_tts_pipeline(self, *, still_owned=None):
         """Clear the TTS request/response queues and pending caches, stopping the current synthesis.
 
         Gate is on worker liveness, not ``self.use_tts``: mirror channel
@@ -1219,10 +1278,16 @@ class TtsRuntimeMixin:
         notice): ``_interrupt_tts_now`` (synchronous),
         ``_let_tts_interrupt_land`` (audio a handler already held goes out,
         what leaked meanwhile is dropped) and ``_finish_tts_clear``.
+        ``still_owned``, when given, is rechecked before draining leaked
+        responses and again under ``tts_cache_lock`` before clearing pending
+        caches, so an overtaken caller leaves successor speech untouched.
         """
         interrupt = self._interrupt_tts_now()
-        await self._let_tts_interrupt_land(interrupt)
-        await self._finish_tts_clear(interrupt)
+        await self._let_tts_interrupt_land(interrupt, still_owned=still_owned)
+        if still_owned is None:
+            await self._finish_tts_clear(interrupt)
+        else:
+            await self._finish_tts_clear(interrupt, still_owned=still_owned)
 
     @staticmethod
     def _drain_tts_responses(response_queue) -> None:
@@ -1312,7 +1377,7 @@ class TtsRuntimeMixin:
         if still_owned is None or still_owned():
             self._drain_tts_responses(interrupt[1])
 
-    async def _finish_tts_clear(self, interrupt) -> None:
+    async def _finish_tts_clear(self, interrupt, *, still_owned=None) -> None:
         """The last step of ``_clear_tts_pipeline``, given what
         ``_interrupt_tts_now`` returned: the pending caches."""
         if interrupt is None:
@@ -1332,6 +1397,15 @@ class TtsRuntimeMixin:
             # replay list; a replacement cache still belongs to its new owner.
             if (not (owns_queues or owns_transferred_replay)
                     or not self._tts_output_is_current()):
+                return
+            if still_owned is not None and not still_owned():
+                # Successor speech already took over: prune only chunks belonging
+                # to the interrupted speech_id and preserve successor state.
+                if speech_id is not None:
+                    self.tts_pending_chunks[:] = [
+                        chunk for chunk in self.tts_pending_chunks
+                        if chunk[0] != speech_id
+                    ]
                 return
             self.tts_pending_chunks.clear()
             # Clear queued again: during the 20ms above, concurrent paths (finish_proactive_delivery,
@@ -1594,6 +1668,10 @@ class TtsRuntimeMixin:
         self._tts_normalize_enabled = not meta or meta.category != "ws_bistream"
         # Send text-idle soft flush only to workers recognizing this sentinel (capability in registry).
         self._tts_soft_flush_supported = bool(meta and meta.soft_flush)
+        # Read off the worker callable rather than the registry: 'free' runs the
+        # Step protocol but is deliberately absent from TTS_PROVIDER_REGISTRY.
+        # Unwraps functools.partial (ElevenLabs binds its base URL that way).
+        self._tts_preconnect_supported = worker_supports_preconnect(tts_worker)
         self._cancel_tts_soft_flush()
         self._tts_replay_progress_supported = bool(
             meta and meta.category == "http_sentence"
@@ -2125,6 +2203,19 @@ class TtsRuntimeMixin:
                 configured_provider,
             )
             return True
+        hosted_provider = _core_facade.selected_realtime_output_tts_provider_key(
+            core_config_snapshot, self._config_manager, self.voice_id,
+        )
+        if hosted_provider:
+            # Ask the provider itself: some need no key (local OpenAI-compatible
+            # endpoints), others fall back to a silent dummy worker without one.
+            if _core_facade.realtime_output_tts_provider_ready(
+                core_config_snapshot, self._config_manager, self.voice_id, hosted_provider,
+            ):
+                logger.info("%s🔊 语音模式：使用外部 TTS provider=%s", log_prefix, hosted_provider)
+                return True
+            logger.info("%s🔊 语音模式：TTS provider=%s 不可用（如缺少 API Key），使用原生语音", log_prefix, hosted_provider)
+            return False
         if self._is_vllm_omni_tts_enabled(core_config_snapshot):
             logger.info(f"{log_prefix}🔊 语音模式：检测到 vLLM-Omni TTS provider，将使用外部 TTS")
             return True

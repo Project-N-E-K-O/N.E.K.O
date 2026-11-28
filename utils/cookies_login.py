@@ -28,12 +28,13 @@ import json
 import os
 import sys
 import threading
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import Dict, Any, Optional
 from pathlib import Path
 import logging
 
-from utils.file_utils import atomic_write_json
+from utils.file_utils import PublishedFileSyncError, atomic_write_bytes, atomic_write_json
 from utils.logger_config import get_module_logger
 
 # ==========================================
@@ -129,15 +130,49 @@ def _read_encryption_key(platform: str, key_file: Path) -> bytes:
     return key_file.read_bytes()
 
 
-def _write_encryption_key(platform: str, key_file: Path, key: bytes) -> None:
-    key_file.write_bytes(key)
+_LAST_SAVE_PUBLISHED_PAYLOAD = threading.local()
 
+
+def _publish_cookie_artifact(
+    target_path: Path,
+    writer,
+    *,
+    track_payload_publish: bool = False,
+) -> None:
+    """Write a cookie or key artifact atomically and preserve 0o600 permissions.
+
+    When ``track_payload_publish`` is True, records that the credential payload
+    file itself was replaced on disk so callers know to invalidate stale
+    in-memory cache entries if a post-replace directory sync fails, without
+    evicting rejected/cached states when only the encryption key was published.
+    """
+    try:
+        writer()
+    except PublishedFileSyncError:
+        if track_payload_publish:
+            _LAST_SAVE_PUBLISHED_PAYLOAD.value = True
+        if sys.platform != 'win32':
+            with suppress(OSError):
+                os.chmod(target_path, 0o600)
+        # Deliberately conservative: let callers avoid treating an unsynced
+        # credential write as durably saved.
+        raise
+    if track_payload_publish:
+        _LAST_SAVE_PUBLISHED_PAYLOAD.value = True
     if sys.platform != 'win32':
-        os.chmod(key_file, 0o600)
+        os.chmod(target_path, 0o600)
+
+
+def _write_encryption_key(platform: str, key_file: Path, key: bytes) -> None:
+    _publish_cookie_artifact(
+        key_file,
+        lambda: atomic_write_bytes(key_file, key, strict_dir_sync=True),
+    )
 
 def _save_cookies_to_file_uncached(platform: str, cookies: Dict[str, Any], encrypt: bool = True) -> bool:
     """Save cookies, with normalization checks and encryption logic"""
     try:
+        _LAST_SAVE_PUBLISHED_PAYLOAD.value = False
         if platform not in COOKIE_FILES:
             return False
 
@@ -180,22 +215,25 @@ def _save_cookies_to_file_uncached(platform: str, cookies: Dict[str, Any], encry
             cookie_json = json.dumps(cookies, ensure_ascii=False)
             encrypted_data = fernet.encrypt(cookie_json.encode('utf-8'))
             
-            # Save encrypted data
-            with open(cookie_file, 'wb') as f:
-                f.write(encrypted_data)
-            
-            # Set cookie-file permissions
-            if sys.platform != 'win32':
-                os.chmod(cookie_file, 0o600)
+            # Save encrypted data and lock down file permissions
+            _publish_cookie_artifact(
+                cookie_file,
+                lambda: atomic_write_bytes(
+                    cookie_file, encrypted_data, strict_dir_sync=True
+                ),
+                track_payload_publish=True,
+            )
             
             logger.info(f"✅ 已加密保存 {platform} 凭证到: {cookie_file}")
         else:
-            # Save plaintext
-            atomic_write_json(cookie_file, cookies, ensure_ascii=False, indent=4)
-                
-            # 🔒 Security hardening: set permissions to 600 (current-user read/write only) to prevent theft by other users
-            if sys.platform != 'win32':
-                os.chmod(cookie_file, 0o600)
+            # Save plaintext and lock down file permissions (0o600: current-user read/write only)
+            _publish_cookie_artifact(
+                cookie_file,
+                lambda: atomic_write_json(
+                    cookie_file, cookies, ensure_ascii=False, indent=4, strict_dir_sync=True
+                ),
+                track_payload_publish=True,
+            )
             
             logger.info(f"✅ 已明文保存 {platform} 凭证到: {cookie_file}")
         
@@ -512,11 +550,20 @@ class CredentialManager:
                     or entry.credentials != expected
                 ):
                     return False
-            if not _save_cookies_to_file_uncached(
-                platform,
-                normalized,
-                encrypt=encrypt,
-            ):
+            _LAST_SAVE_PUBLISHED_PAYLOAD.value = False
+            try:
+                saved = _save_cookies_to_file_uncached(
+                    platform,
+                    normalized,
+                    encrypt=encrypt,
+                )
+                published_payload = bool(getattr(_LAST_SAVE_PUBLISHED_PAYLOAD, "value", False))
+            finally:
+                _LAST_SAVE_PUBLISHED_PAYLOAD.value = False
+            if not saved:
+                if published_payload:
+                    with self._cache_lock:
+                        self._cache.pop(platform, None)
                 return False
             self._store(
                 platform,

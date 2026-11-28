@@ -25,24 +25,59 @@ import asyncio
 import json
 from copy import deepcopy
 from fastapi import Request
+from fastapi.responses import JSONResponse
 from ..shared_state import get_session_manager, get_initialize_character_data
+from ..system_router._shared import _validate_local_mutation_request
 from utils.file_utils import read_json_async
 from utils.cloudsave_runtime import MaintenanceModeError
 from utils.config_manager import ensure_default_yui_voice_for_free_api
+from utils.config_manager.tier_renames import migrate_renamed_tier_fields
+from utils.decision_client.workspace import (
+    InvalidWorkspaceHostError,
+    normalize_workspace_host,
+    stored_workspace_host,
+    workspace_id_of,
+)
+from config.api_profiles import ASSIST_WORKSPACE_HOST_FIELDS, TTS_KEY_BOOK_FIELDS
 
 
 CORE_CONFIG_SECRET_SENTINEL = "__NEKO_SECRET_MASKED__"
 
 CORE_CONFIG_MODEL_TYPES = (
-    'conversation', 'summary', 'gameMain', 'gameSummary', 'correction', 'emotion',
-    'vision', 'agent', 'omni', 'tts', 'image',
+    'conversation', 'memory', 'gameMain', 'gameSummary', 'recognition',
+    'decision', 'vision', 'agent', 'agentAdvanced', 'agentSmall', 'gameRecognition', 'omni', 'tts', 'image',
 )
+
+# Model types merged away; their saved fields are dropped on the next save.
+# 'correction' was merged into 'memory' (the summary slot wins, so nothing is
+# carried over). Not listed in CORE_CONFIG_MODEL_TYPES, so GET never returns
+# these fields and a stale key stays unreadable.
+CORE_CONFIG_RETIRED_MODEL_TYPES = ('correction',)
+
+def _drop_retired_model_fields(core_cfg: dict) -> None:
+    """Remove the saved fields of merged-away model types, logging what was dropped.
+
+    Only the provider and model id are logged, never the URL or the key.
+    """
+    for model_type in CORE_CONFIG_RETIRED_MODEL_TYPES:
+        dropped = {
+            suffix: core_cfg.pop(f'{model_type}Model{suffix}', None)
+            for suffix in ('Provider', 'Url', 'Id', 'ApiKey')
+        }
+        if any(value not in (None, '') for value in dropped.values()):
+            logger.info(
+                "Dropped retired %s model slot on save (provider=%r, model=%r); "
+                "its work now uses the summary slot",
+                model_type, dropped['Provider'] or '', dropped['Id'] or '',
+            )
+
 
 CORE_CONFIG_ASSIST_API_KEY_FIELDS = (
     'assistApiKeyQwen', 'assistApiKeyQwenIntl', 'assistApiKeyOpenai',
     'assistApiKeyDeepseek', 'assistApiKeyGlm', 'assistApiKeyStep',
     'assistApiKeySilicon', 'assistApiKeyGemini', 'assistApiKeyKimi',
-    'assistApiKeyDoubao', 'assistApiKeyDoubaoTts', 'assistApiKeyMinimax',
+    'assistApiKeyDoubao', 'assistApiKeyDoubaoTts', 'assistApiKeyQwenTokenPlan',
+    'assistApiKeyMinimax',
     'assistApiKeyMinimaxIntl', 'assistApiKeyMimo',
     'assistApiKeyMimoTokenPlan', 'assistApiKeyElevenlabs', 'assistApiKeyGrok',
     'assistApiKeyClaude', 'assistApiKeyKimiCode', 'assistApiKeyOpenrouter',
@@ -50,6 +85,12 @@ CORE_CONFIG_ASSIST_API_KEY_FIELDS = (
     'assistApiKeyRequesty',
     'assistApiKeyOpper',
     'assistApiKeyAtlascloud',
+)
+
+# Bailian workspace API Hosts (core_config.json field names, legacy ID-only
+# field names), one pair per provider.
+CORE_CONFIG_WORKSPACE_HOST_FIELDS = tuple(
+    (file_field, legacy_field) for file_field, legacy_field, _config_key in ASSIST_WORKSPACE_HOST_FIELDS.values()
 )
 
 CORE_CONFIG_MODEL_API_KEY_FIELDS = tuple(
@@ -182,6 +223,8 @@ async def get_core_config_api():
             config_manager = get_config_manager()
             core_config_path = str(config_manager.get_runtime_config_path('core_config.json'))
             core_cfg = await read_json_async(core_config_path)
+            # Old tier names (emotion / summary) are shown under the new ones.
+            migrate_renamed_tier_fields(core_cfg)
             api_key = core_cfg.get('coreApiKey', '')
             runtime_core_config = await config_manager.aget_core_config()
         except FileNotFoundError:
@@ -235,9 +278,11 @@ async def get_core_config_api():
         _fallback_providers = (
             {_core_api_provider, _assist_api_provider} & _core_capable_providers
         )
-        _doubao_tts_shared_key = ''
-        if str(core_cfg.get('ttsModelProvider') or '').strip() == 'doubao_tts':
-            _doubao_tts_shared_key = core_cfg.get('ttsModelApiKey', '')
+        # A TTS-only provider with its own Key Book entry shares the TTS slot key while selected.
+        _tts_slot_provider = str(core_cfg.get('ttsModelProvider') or '').strip()
+
+        def _tts_shared_key(provider: str) -> str:
+            return core_cfg.get('ttsModelApiKey', '') if _tts_slot_provider == provider else ''
 
         def _fb(provider: str) -> str:
             """Fall back to coreApiKey only when the provider matches the user-selected coreApi/assistApi."""
@@ -267,7 +312,8 @@ async def get_core_config_api():
             "assistApiKeyKimiCode": core_cfg.get('assistApiKeyKimiCode', '') or _fb('kimi_code'),
             "assistApiKeyDeepseek": core_cfg.get('assistApiKeyDeepseek', '') or _fb('deepseek'),
             "assistApiKeyDoubao": core_cfg.get('assistApiKeyDoubao', '') or _fb('doubao'),
-            "assistApiKeyDoubaoTts": core_cfg.get('assistApiKeyDoubaoTts', '') or _doubao_tts_shared_key,
+            "assistApiKeyDoubaoTts": core_cfg.get('assistApiKeyDoubaoTts', '') or _tts_shared_key('doubao_tts'),
+            "assistApiKeyQwenTokenPlan": core_cfg.get('assistApiKeyQwenTokenPlan', '') or _tts_shared_key('qwen_token_plan'),
             # MiniMax/MiMo are assist-only TTS providers, so coreApiKey may be incompatible;
             # do not fall back and inject an invalid TTS credential causing 401.
             "assistApiKeyMinimax": core_cfg.get('assistApiKeyMinimax', ''),
@@ -283,6 +329,18 @@ async def get_core_config_api():
             "assistApiKeyRequesty": core_cfg.get('assistApiKeyRequesty', ''),
             "assistApiKeyOpper": core_cfg.get('assistApiKeyOpper', ''),
             "assistApiKeyAtlascloud": core_cfg.get('assistApiKeyAtlascloud', ''),
+            # Bailian workspace hosts are not secrets; an invalid stored value reads as unset.
+            **{
+                file_field: stored_workspace_host(core_cfg, file_field, legacy_field)
+                for file_field, legacy_field in CORE_CONFIG_WORKSPACE_HOST_FIELDS
+            },
+            # A settings page loaded before the host field existed reads only the
+            # ID-only field and posts it back on save; give it the saved host's ID
+            # so that save does not clear the workspace.
+            **{
+                legacy_field: workspace_id_of(stored_workspace_host(core_cfg, file_field, legacy_field))
+                for file_field, legacy_field in CORE_CONFIG_WORKSPACE_HOST_FIELDS
+            },
             "mcpToken": core_cfg.get('mcpToken', ''),
             "openclawUrl": core_cfg.get('openclawUrl'),
             "openclawTimeout": core_cfg.get('openclawTimeout'),
@@ -367,9 +425,37 @@ async def update_core_config(request: Request):
     """Update the core config (API keys); the snapshot-to-write section runs one save at a time."""
     save_lock_held = False
     try:
-        data = await request.json()
+        media_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+        if media_type != "application/json":
+            return JSONResponse(
+                {"success": False, "error": "Content-Type must be application/json"},
+                status_code=415,
+            )
+        try:
+            data = await request.json()
+        except (ValueError, UnicodeDecodeError, RecursionError):
+            return JSONResponse({"success": False, "error": "无效的JSON数据"}, status_code=400)
+        if not isinstance(data, dict):
+            return JSONResponse({"success": False, "error": "无效的数据"}, status_code=400)
+        # Legacy desktop shell (N.E.K.O.-PC pet-preference-actions.js) posts
+        # {"disableTts": bool} via same-origin JSON fetch without X-CSRF-Token (#4019 P2).
+        is_legacy_disable_tts_toggle = (
+            len(data) == 1
+            and "disableTts" in data
+            and isinstance(data["disableTts"], bool)
+        )
+        validation_error = _validate_local_mutation_request(
+            request,
+            payload=data,
+            error_defaults={"success": False},
+            require_csrf=not is_legacy_disable_tts_toggle,
+        )
+        if validation_error is not None:
+            return validation_error
         if not data:
             return {"success": False, "error": "无效的数据"}
+        # A settings page opened before the upgrade still posts the old tier names.
+        migrate_renamed_tier_fields(data)
         
         enable_custom_api = data.get('enableCustomApi', False)
 
@@ -401,6 +487,9 @@ async def update_core_config(request: Request):
                 "success": False,
                 "error": "core_config.json 读取失败（文件可能已损坏），为避免覆盖现有配置，本次未保存",
             }
+        # Everything below (connectivity targets included) reads the current tier names;
+        # a partial update must see a file restored with the old ones the same way.
+        migrate_renamed_tier_fields(existing_core_cfg)
         core_cfg = deepcopy(existing_core_cfg)
 
         def _incoming_provider(field, error_message):
@@ -527,7 +616,7 @@ async def update_core_config(request: Request):
                 raise TypeError("API Key必须是字符串类型")
             return value.strip()
 
-        # Allow missing coreApiKey only when custom APIs are enabled
+        # Allow missing coreApiKey only when custom APIs are enabled or toggling disableTts alone
         if enable_custom_api:
             # coreApiKey is optional with custom APIs enabled
             if 'coreApiKey' in data:
@@ -537,6 +626,9 @@ async def update_core_config(request: Request):
                     return {"success": False, "error": str(exc)}
                 if api_key is not None:
                     core_cfg['coreApiKey'] = api_key
+        elif is_legacy_disable_tts_toggle:
+            # Single-field disableTts toggle never edits provider/key fields; preserve stored credentials.
+            pass
         else:
             # Require coreApiKey when custom APIs are disabled
             if 'coreApiKey' not in data and not core_uses_free_provider:
@@ -591,6 +683,32 @@ async def update_core_config(request: Request):
                 if not isinstance(data[field], str) or len(data[field]) > 200:
                     return {"success": False, "error": "INVALID_MANAGEMENT_CONFIG"}
                 core_cfg[field] = data[field].strip()
+        for field, legacy_field in CORE_CONFIG_WORKSPACE_HOST_FIELDS:
+            # A page loaded before the host field existed still sends the ID-only field.
+            submitted_field = field if field in data else legacy_field if legacy_field in data else ""
+            if not submitted_field:
+                continue
+            # The value becomes part of a hostname: reject anything that is not a
+            # workspace ID or a Bailian workspace API Host instead of cleaning it up.
+            try:
+                submitted = normalize_workspace_host(data[submitted_field])
+            except InvalidWorkspaceHostError:
+                return {
+                    "success": False,
+                    "error": "INVALID_WORKSPACE_HOST",
+                    "field": submitted_field,
+                }
+            if submitted_field == legacy_field:
+                # An old page only knows the ID: the same bare ID it was given keeps
+                # the saved full host (and its region) instead of replacing it. A full
+                # host sent under the legacy name is saved as sent; it never equals a
+                # bare ID, so its region is not dropped.
+                current = stored_workspace_host(core_cfg, field, legacy_field)
+                if submitted and submitted == workspace_id_of(current):
+                    submitted = current
+            core_cfg[field] = submitted
+            # The host field replaces the legacy one, which would otherwise come back once it is cleared.
+            core_cfg.pop(legacy_field, None)
         if 'openclawUrl' in data:
             # Frontend forms populate original saved values. If startup migration failed to persist (Windows antivirus may block
             # os.replace), this still receives old 8089; writing unchanged would persist the old port again,
@@ -623,16 +741,23 @@ async def update_core_config(request: Request):
                 return {"success": False, "error": "disableTts must be a boolean"}
             core_cfg['disableTts'] = data['disableTts']
 
-        # Capture the stored provider and whether either Doubao TTS credential
+        # Capture the stored provider and whether either credential of a TTS
+        # provider with its own Key Book entry (Doubao Speech, Bailian Token Plan)
         # was explicitly changed before applying the submitted model fields.
         # A masked value means "keep existing"; an empty string is an explicit
         # clear and must remain distinguishable from that no-op.
         stored_tts_model_provider = str(
             core_cfg.get('ttsModelProvider') or ''
-        ).strip()
-        doubao_tts_key_was_explicitly_updated = (
-            'assistApiKeyDoubaoTts' in data
-            and not is_core_config_secret_placeholder(data['assistApiKeyDoubaoTts'])
+        ).strip().lower()
+        # The slot key as stored, before the submitted model fields overwrite it.
+        stored_tts_slot_key = str(core_cfg.get('ttsModelApiKey') or '').strip()
+        _incoming_tts_provider = str(data.get('ttsModelProvider', '') or '').strip()
+        # A partial update that omits ttsModelProvider keeps the stored provider.
+        _effective_tts_provider = str(data.get('ttsModelProvider', stored_tts_model_provider) or '').strip().lower()
+        _tts_book_field = TTS_KEY_BOOK_FIELDS.get(_effective_tts_provider, '')
+        tts_book_key_was_explicitly_updated = bool(_tts_book_field) and (
+            _tts_book_field in data
+            and not is_core_config_secret_placeholder(data[_tts_book_field])
         )
         tts_model_key_was_explicitly_updated = (
             'ttsModelApiKey' in data
@@ -686,36 +811,86 @@ async def update_core_config(request: Request):
         # Custom API configuration: Provider / Url / Id / ApiKey per model type
         for mt in CORE_CONFIG_MODEL_TYPES:
             for suffix in ['Provider', 'Url', 'Id', 'ApiKey']:
+                if mt == 'tts' and suffix != 'Provider' and _effective_tts_provider == 'deepseek':
+                    # Older clients may submit DeepSeek's display-only URL or credentials.
+                    continue
                 field = f'{mt}Model{suffix}'
                 if field in data:
                     if suffix == 'ApiKey':
                         apply_core_config_secret_update(core_cfg, data, field)
                     else:
                         core_cfg[field] = data[field]
+        # ChatGPT (subscription) signs in with OAuth and has an account-specific model
+        # catalog: only the slots it declares, an explicit model, its fixed endpoint, no key.
+        from utils.api_config_loader import get_config as _get_api_config
+        chatgpt_slots = set(
+            _get_api_config().get('assist_api_providers', {}).get('chatgpt', {}).get('supported_model_types', [])
+        )
+        for mt in CORE_CONFIG_MODEL_TYPES:
+            if core_cfg.get(f'{mt}ModelProvider') == 'chatgpt':
+                if mt not in chatgpt_slots:
+                    return {"success": False, "error": "ChatGPT plan usage supports text slots only"}
+                model_id = core_cfg.get(f'{mt}ModelId')
+                if not isinstance(model_id, str) or not model_id.strip():
+                    return {"success": False, "error": "Select an available ChatGPT model before saving"}
+                core_cfg[f'{mt}ModelUrl'] = 'https://api.openai.com/v1'
+                core_cfg[f'{mt}ModelApiKey'] = ''
+        _drop_retired_model_fields(core_cfg)
         # Lazy migration after retiring gptsovitsEnabled, at the save boundary, symmetric with #1842 voice_id:
         # ttsModelProvider=='gptsovits' is the sole GSV-enabled truth; old gptsovitsEnabled remains only
         # pre-#1830 compatibility fallback. Frontend loading pins enabled GSV dropdowns to 'gptsovits', so any submitted
         # other ttsModelProvider means an explicit user switch; set the leftover old flag False,
         # or get_core_config's follow_* fallback resurrects old true and even follow_assist cannot
         # disable GSV. Partial updates omitting ttsModelProvider retain the flag for legacy users who never resave.
-        _incoming_tts_provider = str(data.get('ttsModelProvider', '') or '').strip()
         if _incoming_tts_provider and _incoming_tts_provider != 'gptsovits':
             core_cfg['gptsovitsEnabled'] = False
-        if _incoming_tts_provider == 'doubao_tts':
-            doubao_key = str(core_cfg.get('assistApiKeyDoubaoTts') or '').strip()
-            if doubao_tts_key_was_explicitly_updated:
+        if (
+            stored_tts_model_provider in TTS_KEY_BOOK_FIELDS
+            and _effective_tts_provider != stored_tts_model_provider
+        ):
+            # Leaving a Key Book-backed provider: older configs kept its only key in
+            # the shared slot. Move it to that provider's own Key Book field before
+            # the slot is cleared or replaced, so switching back still works.
+            previous_book_field = TTS_KEY_BOOK_FIELDS[stored_tts_model_provider]
+            slot_key = stored_tts_slot_key
+            previous_book_explicitly_updated = (
+                previous_book_field in data
+                and not is_core_config_secret_placeholder(data[previous_book_field])
+            )
+            if (
+                slot_key
+                and not is_core_config_secret_placeholder(slot_key)
+                and not str(core_cfg.get(previous_book_field) or '').strip()
+                and not previous_book_explicitly_updated
+            ):
+                core_cfg[previous_book_field] = slot_key
+        if _tts_book_field:
+            book_key = str(core_cfg.get(_tts_book_field) or '').strip()
+            if tts_book_key_was_explicitly_updated:
                 # The dedicated Key Book field is authoritative when the user
                 # explicitly edits it, including an explicit empty-string clear.
-                core_cfg['ttsModelApiKey'] = doubao_key
+                core_cfg['ttsModelApiKey'] = book_key
             elif not tts_model_key_was_explicitly_updated:
-                if doubao_key and not is_core_config_secret_placeholder(doubao_key):
-                    core_cfg['ttsModelApiKey'] = doubao_key
-                elif stored_tts_model_provider != 'doubao_tts':
+                if book_key and not is_core_config_secret_placeholder(book_key):
+                    core_cfg['ttsModelApiKey'] = book_key
+                elif stored_tts_model_provider != _effective_tts_provider:
                     # Switching from another provider must not reuse its shared
-                    # model key as a Doubao credential. When already on Doubao,
-                    # however, masked/no-op saves preserve the legacy key stored
-                    # only in ttsModelApiKey.
+                    # model key as this provider's credential. When already on
+                    # it, however, masked/no-op saves preserve the legacy key
+                    # stored only in ttsModelApiKey.
                     core_cfg['ttsModelApiKey'] = ''
+        elif (
+            stored_tts_model_provider in TTS_KEY_BOOK_FIELDS
+            and _effective_tts_provider != stored_tts_model_provider
+            # Still the stored value: omitted, masked, or ignored by the new provider
+            # (DeepSeek drops submitted slot fields). A new key the user typed stays.
+            and str(core_cfg.get('ttsModelApiKey') or '').strip() == stored_tts_slot_key
+        ):
+            # The slot holds the previous provider's mirrored Key Book key (already
+            # moved to its Key Book above when it was the only copy). Leaving for
+            # another provider (e.g. custom with its own URL) without a new key must
+            # not carry that credential to the new endpoint.
+            core_cfg['ttsModelApiKey'] = ''
         if 'ttsVoiceId' in data:
             core_cfg['ttsVoiceId'] = data['ttsVoiceId']
 
@@ -737,6 +912,8 @@ async def update_core_config(request: Request):
 
         def _apply_core_config_changes(fresh_cfg):
             # Even without changed fields, update_json_config checks the write fence and rejects maintenance-mode writes.
+            # Drop the old tier field names, whatever is saved under the new ones below.
+            migrate_renamed_tier_fields(fresh_cfg)
             for key in removed_fields:
                 fresh_cfg.pop(key, None)
             fresh_cfg.update(deepcopy(changed_fields))
@@ -747,6 +924,12 @@ async def update_core_config(request: Request):
         )
         _core_api_save_lock.release()
         save_lock_held = False
+
+        # A newly picked Claude/Gemini model needs an SDK startup warmup skipped. Start
+        # importing it now, in the background, while the page reloads and sessions restart,
+        # so the first call does not import it on the event loop.
+        from utils.module_warmup import request_config_rewarm
+        request_config_rewarm("core_api")
 
         await ensure_default_yui_voice_for_free_api(config_manager, core_cfg)
 
@@ -824,8 +1007,17 @@ async def update_core_config(request: Request):
         try:
             import httpx
             from config import TOOL_SERVER_PORT
-            async with httpx.AsyncClient(timeout=5, proxy=None, trust_env=False) as client:
-                await client.post(f"http://127.0.0.1:{TOOL_SERVER_PORT}/notify_config_changed")
+            from utils.internal_http_client import internal_service_event_hooks
+
+            async with httpx.AsyncClient(
+                timeout=5,
+                proxy=None,
+                trust_env=False,
+                event_hooks=internal_service_event_hooks(),
+            ) as client:
+                notify_resp = await client.post(f"http://127.0.0.1:{TOOL_SERVER_PORT}/notify_config_changed")
+                if notify_resp is not None and not notify_resp.is_success:
+                    raise RuntimeError(f"HTTP {notify_resp.status_code}")
             logger.info("已通知 agent_server 刷新 CUA 适配器")
         except Exception as notify_err:
             logger.warning(f"通知 agent_server 刷新 CUA 失败 (非致命): {notify_err}")
@@ -887,8 +1079,8 @@ async def get_api_providers_config():
             "assist_api_providers_full": full_config.get("assist_api_providers", {}),
             "assist_model_defaults": {
                 key: {field: profile.get(field, '') for field in (
-                    'CONVERSATION_MODEL', 'VISION_MODEL', 'SUMMARY_MODEL',
-                    'CORRECTION_MODEL', 'EMOTION_MODEL', 'AGENT_MODEL',
+                    'CONVERSATION_MODEL', 'VISION_MODEL', 'MEMORY_MODEL',
+                    'RECOGNITION_MODEL', 'AGENT_MODEL',
                 )}
                 for key, profile in get_assist_api_profiles().items()
             },

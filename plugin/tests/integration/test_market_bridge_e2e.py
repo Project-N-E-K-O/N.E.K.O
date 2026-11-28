@@ -506,19 +506,24 @@ async def test_install_rejects_another_plugins_release(
 def test_market_task_cleanup_prunes_overflow_workers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Capacity pruning releases both task states and their worker handles."""
+    """Capacity pruning releases completed task states and their worker handles."""
     from plugin.server.routes import market_bridge as market_bridge_module
 
+    class _DoneWorker:
+        def done(self) -> bool:
+            return True
+
+    now = time.time()
     monkeypatch.setattr(market_bridge_module, "_TASK_MAX_ENTRIES", 1)
     monkeypatch.setattr(
         market_bridge_module,
         "_tasks",
         {
-            "old": {"created_at": 1.0, "completed_at": None},
-            "new": {"created_at": 2.0, "completed_at": None},
+            "old": {"created_at": now - 20.0, "completed_at": now - 10.0},
+            "new": {"created_at": now - 15.0, "completed_at": now - 5.0},
         },
     )
-    workers = {"old": object(), "new": object()}
+    workers = {"old": _DoneWorker(), "new": _DoneWorker()}
     monkeypatch.setattr(market_bridge_module, "_task_workers", workers)
 
     market_bridge_module._cleanup_tasks()
@@ -527,6 +532,93 @@ def test_market_task_cleanup_prunes_overflow_workers(
     assert "old" not in workers
     assert "new" in market_bridge_module._tasks
     assert "new" in workers
+
+
+def test_market_task_cleanup_never_evicts_inflight_tasks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """F0317: in-flight tasks and active workers are never evicted on overflow or TTL."""
+    from plugin.server.routes import market_bridge as market_bridge_module
+
+    class _Worker:
+        def __init__(self, is_done: bool) -> None:
+            self._done = is_done
+
+        def done(self) -> bool:
+            return self._done
+
+    monkeypatch.setattr(market_bridge_module, "_TASK_MAX_ENTRIES", 1)
+    monkeypatch.setattr(
+        market_bridge_module,
+        "_tasks",
+        {
+            "inflight_old": {"created_at": 1.0, "completed_at": None},
+            "done_mid": {"created_at": 2.0, "completed_at": 2.5},
+            "active_worker_done_ts": {"created_at": 3.0, "completed_at": 3.5},
+            "inflight_new": {"created_at": 4.0, "completed_at": None},
+        },
+    )
+    workers = {
+        "inflight_old": _Worker(False),
+        "done_mid": _Worker(True),
+        "active_worker_done_ts": _Worker(False),
+        "inflight_new": _Worker(False),
+    }
+    monkeypatch.setattr(market_bridge_module, "_task_workers", workers)
+
+    market_bridge_module._cleanup_tasks()
+
+    assert "done_mid" not in market_bridge_module._tasks
+    assert "done_mid" not in workers
+    assert "inflight_old" in market_bridge_module._tasks
+    assert "inflight_old" in workers
+    assert "active_worker_done_ts" in market_bridge_module._tasks
+    assert "active_worker_done_ts" in workers
+    assert "inflight_new" in market_bridge_module._tasks
+    assert "inflight_new" in workers
+
+
+def test_market_task_cleanup_evicts_cancelled_done_worker_without_completed_at(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cancelled/done worker missing completed_at must still expire by TTL and evict on overflow."""
+    from plugin.server.routes import market_bridge as market_bridge_module
+
+    class _Worker:
+        def __init__(self, is_done: bool) -> None:
+            self._done = is_done
+
+        def done(self) -> bool:
+            return self._done
+
+    now = time.time()
+    monkeypatch.setattr(market_bridge_module, "_TASK_MAX_ENTRIES", 2)
+    monkeypatch.setattr(
+        market_bridge_module,
+        "_tasks",
+        {
+            "cancelled_expired": {"created_at": now - (market_bridge_module._TASK_TTL_SECONDS + 30.0), "completed_at": None},
+            "cancelled_recent": {"created_at": now - 10.0, "completed_at": None},
+            "active_worker": {"created_at": now - 5.0, "completed_at": None},
+            "pending_without_worker": {"created_at": now - 2.0, "completed_at": None},
+        },
+    )
+    workers = {
+        "cancelled_expired": _Worker(True),
+        "cancelled_recent": _Worker(True),
+        "active_worker": _Worker(False),
+    }
+    monkeypatch.setattr(market_bridge_module, "_task_workers", workers)
+
+    market_bridge_module._cleanup_tasks()
+
+    assert "cancelled_expired" not in market_bridge_module._tasks
+    assert "cancelled_expired" not in workers
+    assert "cancelled_recent" not in market_bridge_module._tasks
+    assert "cancelled_recent" not in workers
+    assert "active_worker" in market_bridge_module._tasks
+    assert "active_worker" in workers
+    assert "pending_without_worker" in market_bridge_module._tasks
 
 
 @pytest.mark.asyncio
@@ -1212,6 +1304,7 @@ async def test_authenticated_market_install_reports_usage(
     from plugin.server.routes import market_bridge as market_bridge_module
 
     reports: list[dict[str, Any]] = []
+    report_received = asyncio.Event()
     real_async_client = load_httpx().AsyncClient
 
     class _RecordingAsyncClient:
@@ -1245,6 +1338,7 @@ async def test_authenticated_market_install_reports_usage(
         ) -> httpx.Response:
             if url == "https://market.test/api/v1/me/installs":
                 reports.append({"headers": headers or {}, "json": json or {}})
+                report_received.set()
                 return httpx.Response(
                     200,
                     json={"ok": True},
@@ -1330,6 +1424,7 @@ async def test_authenticated_market_install_reports_usage(
 
     assert final_status is not None, "task did not reach terminal state"
     assert final_status["status"] == "completed", final_status
+    await asyncio.wait_for(report_received.wait(), timeout=5)
     assert len(reports) == 1
 
     report = reports[0]

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import http.client
 import io
 import json
 import subprocess
@@ -186,6 +187,118 @@ def test_preparer_removes_partial_file_after_bad_download(
 
     assert not (tmp_path / MODEL_FILENAME).exists()
     assert not (tmp_path / f"{MODEL_FILENAME}.part").exists()
+
+
+_HF_SOURCE = "https://huggingface.co/owner/repo/resolve/" + "a" * 40 + "/model.onnx"
+
+
+def _pin_manifest(directory: Path, *, payload: bytes, source: str, monkeypatch) -> None:
+    _manifest(directory, payload=payload, source=source)
+    monkeypatch.setattr(
+        preparer._asset_manifest,
+        "_EXPECTED_MANIFEST",
+        preparer._asset_manifest.CampPlusManifest(
+            **json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
+        ),
+    )
+
+
+def test_preparer_falls_back_to_hf_mirror_when_origin_is_unreachable(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    payload = b"reviewed model"
+    _pin_manifest(tmp_path, payload=payload, source=_HF_SOURCE, monkeypatch=monkeypatch)
+    monkeypatch.delenv("HF_ENDPOINTS", raising=False)
+    monkeypatch.delenv("HF_ENDPOINT", raising=False)
+    tried: list[str] = []
+
+    def urlopen(request, **_kwargs):
+        tried.append(request.full_url)
+        if request.full_url.startswith("https://huggingface.co/"):
+            raise OSError("controlled outage")
+        return _Response(payload)
+
+    monkeypatch.setattr(preparer.urllib.request, "urlopen", urlopen)
+    patch_module_clock(monkeypatch, preparer, sleep=lambda _seconds: None)
+
+    prepared = preparer.prepare_speaker_model(tmp_path)
+
+    assert prepared.read_bytes() == payload
+    mirror = "https://hf-mirror.com" + _HF_SOURCE[len("https://huggingface.co"):]
+    assert tried == [_HF_SOURCE] * 3 + [mirror]
+
+
+def test_preparer_falls_back_to_mirror_after_mid_read_disconnects(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    payload = b"reviewed model"
+    _pin_manifest(tmp_path, payload=payload, source=_HF_SOURCE, monkeypatch=monkeypatch)
+    monkeypatch.delenv("HF_ENDPOINTS", raising=False)
+    monkeypatch.delenv("HF_ENDPOINT", raising=False)
+    partial_files: list[bool] = []
+
+    class _Disconnecting(_Response):
+        def read(self, size=-1):
+            if self.tell():
+                partial_files.append((tmp_path / f"{MODEL_FILENAME}.part").exists())
+                raise http.client.IncompleteRead(b"", len(payload) - self.tell())
+            return super().read(min(size, 4))
+
+    tried: list[str] = []
+
+    def urlopen(request, **_kwargs):
+        tried.append(request.full_url)
+        if request.full_url.startswith("https://huggingface.co/"):
+            return _Disconnecting(payload)
+        return _Response(payload)
+
+    monkeypatch.setattr(preparer.urllib.request, "urlopen", urlopen)
+    patch_module_clock(monkeypatch, preparer, sleep=lambda _seconds: None)
+
+    prepared = preparer.prepare_speaker_model(tmp_path)
+
+    assert prepared.read_bytes() == payload
+    mirror = "https://hf-mirror.com" + _HF_SOURCE[len("https://huggingface.co"):]
+    assert tried == [_HF_SOURCE] * 3 + [mirror]
+    assert partial_files == [True] * 3
+    assert not (tmp_path / f"{MODEL_FILENAME}.part").exists()
+
+
+def test_preparer_never_shops_mirrors_for_matching_content(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    payload = b"reviewed model"
+    _pin_manifest(tmp_path, payload=payload, source=_HF_SOURCE, monkeypatch=monkeypatch)
+    monkeypatch.delenv("HF_ENDPOINTS", raising=False)
+    monkeypatch.delenv("HF_ENDPOINT", raising=False)
+    tried: list[str] = []
+
+    def urlopen(request, **_kwargs):
+        tried.append(request.full_url)
+        return _Response(b"reviewed modeX")
+
+    monkeypatch.setattr(preparer.urllib.request, "urlopen", urlopen)
+
+    with pytest.raises(CampPlusAssetError, match="asset_sha256_mismatch"):
+        preparer.prepare_speaker_model(tmp_path)
+
+    assert tried == [_HF_SOURCE]
+    assert not (tmp_path / MODEL_FILENAME).exists()
+
+
+def test_preparer_honors_hf_endpoint_override_and_keeps_other_hosts(monkeypatch) -> None:
+    monkeypatch.setenv("HF_ENDPOINTS", "https://mirror.example/, https://huggingface.co")
+
+    assert preparer._download_source_candidates(_HF_SOURCE) == (
+        "https://mirror.example" + _HF_SOURCE[len("https://huggingface.co"):],
+        _HF_SOURCE,
+    )
+    assert preparer._download_source_candidates("https://example.test/model") == (
+        "https://example.test/model",
+    )
 
 
 def test_preparer_runs_on_bare_interpreter_without_numpy() -> None:

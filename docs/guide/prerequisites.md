@@ -7,7 +7,7 @@
 | Python | exactly 3.11.x | `pyproject.toml` |
 | uv | a current compatible release | `uv.lock` and workflows |
 | Git | a maintained release | repository operations |
-| Node.js + npm | `^20.19.0 || >=22.12.0` for plugin manager | `frontend/plugin-manager/package.json` |
+| Node.js + npm | `>=22.12.0` for plugin manager | `frontend/plugin-manager/package.json` |
 
 Install Python dependencies with `uv sync`; do not use a hand-maintained `pip install -r requirements.txt` flow. Frontend and docs builds use committed lockfiles and `npm ci`.
 
@@ -16,7 +16,8 @@ Install Python dependencies with `uv sync`; do not use a hand-maintained `pip in
 - Docker Engine + Compose for containers
 - Steam client/SDK environment for Steam integration tests
 - Platform build dependencies for Nuitka/Electron packaging
-- Playwright Chromium for browser/frontend tests
+- A Chromium-based browser installed on the machine (Chrome, Edge, Brave, or Chromium) for the Agent's browser control. The application ships no browser and downloads none; without one, browser control reports that no usable browser was found
+- Playwright Chromium for the frontend and e2e tests only (`uv run playwright install chromium`); running the application needs nothing installed through Playwright
 - Provider credentials only for runtime paths or tests that call those providers
 
 A free route may exist in current provider data, but availability and limits are external state, not a development prerequisite or documentation promise.

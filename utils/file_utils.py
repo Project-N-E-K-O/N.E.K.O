@@ -828,12 +828,47 @@ def move_aside(path: str | os.PathLike[str], suffix: str) -> Path | None:
     return target
 
 
+def _fsync_directory(path: str | os.PathLike[str]) -> None:
+    """Sync a directory entry where supported, surfacing genuine I/O errors."""
+    if os.name == "nt":
+        return
+    try:
+        fd = os.open(os.fspath(path), os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    except OSError as exc:
+        if exc.errno not in (errno.EINVAL, errno.EBADF, errno.ENOTSUP, errno.EOPNOTSUPP):
+            raise
+
+
+class PublishedFileSyncError(OSError):
+    """The target was replaced, but its directory entry may not be durable."""
+
+
+def _sync_replaced_file(target: Path, *, strict: bool = False) -> None:
+    try:
+        _fsync_directory(target.parent)
+    except OSError as exc:
+        if strict:
+            raise PublishedFileSyncError(
+                exc.errno, f"File replaced but directory sync failed: {exc}", str(target)
+            ) from exc
+        logger.warning(
+            "File replaced but parent directory sync failed for %s: %s",
+            target,
+            exc,
+        )
+
+
 def atomic_write_text(
     path: str | os.PathLike[str],
     content: str,
     *,
     encoding: str = "utf-8",
     create_parents: bool = True,
+    strict_dir_sync: bool = False,
 ) -> None:
     """Atomically replace a text file in the same directory.
 
@@ -869,9 +904,15 @@ def atomic_write_text(
         with suppress(OSError):
             os.remove(temp_path)
         raise
+    _sync_replaced_file(target_path, strict=strict_dir_sync)
 
 
-def atomic_write_bytes(path: str | os.PathLike[str], content: bytes) -> None:
+def atomic_write_bytes(
+    path: str | os.PathLike[str],
+    content: bytes,
+    *,
+    strict_dir_sync: bool = False,
+) -> None:
     """Atomically replace a binary file in the same directory."""
     target_path = Path(path)
     target_path.parent.mkdir(parents=True, exist_ok=True)
@@ -890,6 +931,7 @@ def atomic_write_bytes(path: str | os.PathLike[str], content: bytes) -> None:
         with suppress(OSError):
             os.remove(temp_path)
         raise
+    _sync_replaced_file(target_path, strict=strict_dir_sync)
 
 
 def atomic_write_json(
@@ -899,6 +941,7 @@ def atomic_write_json(
     encoding: str = "utf-8",
     ensure_ascii: bool = False,
     indent: int | None = 2,
+    strict_dir_sync: bool = False,
     **json_kwargs: Any,
 ) -> None:
     """Serialize JSON and atomically replace the destination file.
@@ -920,7 +963,12 @@ def atomic_write_json(
         indent=indent,
         **json_kwargs,
     )
-    atomic_write_text(path, content, encoding=encoding)
+    atomic_write_text(
+        path,
+        content,
+        encoding=encoding,
+        strict_dir_sync=strict_dir_sync,
+    )
 
 
 def is_json_number(value: Any) -> bool:
@@ -1048,8 +1096,15 @@ async def atomic_write_text_async(
     content: str,
     *,
     encoding: str = "utf-8",
+    strict_dir_sync: bool = False,
 ) -> None:
-    await asyncio.to_thread(atomic_write_text, path, content, encoding=encoding)
+    await asyncio.to_thread(
+        atomic_write_text,
+        path,
+        content,
+        encoding=encoding,
+        strict_dir_sync=strict_dir_sync,
+    )
 
 
 async def atomic_write_json_async(
@@ -1059,6 +1114,7 @@ async def atomic_write_json_async(
     encoding: str = "utf-8",
     ensure_ascii: bool = False,
     indent: int | None = 2,
+    strict_dir_sync: bool = False,
     **json_kwargs: Any,
 ) -> None:
     await asyncio.to_thread(
@@ -1068,6 +1124,7 @@ async def atomic_write_json_async(
         encoding=encoding,
         ensure_ascii=ensure_ascii,
         indent=indent,
+        strict_dir_sync=strict_dir_sync,
         **json_kwargs,
     )
 
@@ -1078,3 +1135,19 @@ async def read_json_async(
     encoding: str = "utf-8",
 ) -> Any:
     return await asyncio.to_thread(read_json, path, encoding=encoding)
+
+
+def extract_unc_share(raw_path: str) -> tuple[str, str] | None:
+    """Extract normalized ``(server, share)`` from a Windows UNC path, else ``None``."""
+    unified = raw_path.replace("/", "\\")
+    if unified.startswith(("\\??\\", "\\\\.\\", "\\\\?\\")):
+        return None
+    if not unified.startswith("\\\\"):
+        return None
+    remainder = unified[2:]
+    if not remainder or remainder.startswith("\\"):
+        return None
+    parts = remainder.split("\\")
+    if len(parts) < 2 or not parts[0] or not parts[1]:
+        return None
+    return parts[0].lower(), parts[1].lower()

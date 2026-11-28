@@ -270,6 +270,25 @@ def _widen_write_window(monkeypatch, seconds: float = 0.02):
     monkeypatch.setattr(recent_file, "atomic_write_json", _slow)
 
 
+def _run_on_private_loop(coro, executor: ThreadPoolExecutor | None = None):
+    """Run *coro* on a throwaway event loop, optionally with its own default executor.
+
+    tests/conftest.py applies nest_asyncio, whose ``asyncio.run()`` reuses the
+    process-wide loop instead of creating one. A default executor installed on
+    that loop would outlive the test, and once shut down it makes every later
+    ``run_in_executor``/``to_thread`` in the same worker fail with "cannot
+    schedule new futures after shutdown". The runner's teardown cancels
+    leftover tasks, closes async generators and waits for the executor's
+    threads before closing the loop, so nothing keeps running after the test.
+    ``loop_factory`` keeps the runner from replacing (and later clearing) the
+    thread's current event loop.
+    """
+    with asyncio.Runner(loop_factory=asyncio.new_event_loop) as runner:
+        if executor is not None:
+            runner.get_loop().set_default_executor(executor)
+        return runner.run(coro)
+
+
 def _run_with_wide_pool(coro_factory, workers: int = 8):
     """Run a coroutine with a default executor big enough for real concurrency.
 
@@ -277,12 +296,7 @@ def _run_with_wide_pool(coro_factory, workers: int = 8):
     runner that is 6 workers, and queueing would hide the very interleaving
     these tests are about.
     """
-    async def _main():
-        loop = asyncio.get_running_loop()
-        loop.set_default_executor(ThreadPoolExecutor(max_workers=workers))
-        return await coro_factory()
-
-    return asyncio.run(_main())
+    return _run_on_private_loop(coro_factory(), ThreadPoolExecutor(max_workers=workers))
 
 
 # ─────────────── T1: concurrent update_history keeps every batch ───────────────
@@ -832,13 +846,47 @@ def test_unreadable_reads_keep_process_pending_visible_without_duplicates(tmp_pa
 # ─────────────── T5: the invariant the no-dedup design rests on ───────────────
 
 
-def test_atomic_write_failure_leaves_target_byte_identical(tmp_path, monkeypatch):
-    """``atomic_write_json`` raising ⟹ the target file was NOT replaced.
+def test_directory_sync_failure_does_not_requeue_visible_messages(tmp_path, monkeypatch):
+    from utils import file_utils
 
-    The whole "just re-append the pending batch, no dedup needed" design rests
-    on this, so it is pinned explicitly even though the code under test is
-    utils.file_utils rather than this PR's code.
-    """
+    mgr, name, path = _make_manager(tmp_path)
+    _write_disk(path, [HumanMessage(content="A")])
+    with recent_file.recent_file_access(path) as locked:
+        before = recent_file.get_recent_content_version_unlocked(locked)
+
+    def fail_sync(directory):
+        raise OSError("injected directory sync failure")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(file_utils, "_fsync_directory", fail_sync)
+        asyncio.run(mgr.update_history([HumanMessage(content="B")], name, compress=False))
+
+    assert [m.content for m in _read_disk(path)] == ["A", "B"]
+    assert mgr._pending_batches(name) == []
+    with recent_file.recent_file_access(path) as locked:
+        assert recent_file.get_recent_content_version_unlocked(locked) == before + 1
+    asyncio.run(mgr.update_history([HumanMessage(content="C")], name, compress=False))
+    assert [m.content for m in _read_disk(path)] == ["A", "B", "C"]
+
+
+def test_receipt_sidecar_sync_failure_leaves_history_untouched(tmp_path, monkeypatch):
+    from utils import file_utils
+
+    path = tmp_path / "recent.json"
+    path.write_text("[]")
+
+    def fail_sync(directory):
+        raise OSError("injected directory sync failure")
+
+    monkeypatch.setattr(file_utils, "_fsync_directory", fail_sync)
+    with recent_file.recent_file_access(path) as locked:
+        with pytest.raises(file_utils.PublishedFileSyncError):
+            recent_file.write_recent_payload_unlocked(locked, [{"new": True}], receipt=("consumer", "1"))
+    assert path.read_text() == "[]"
+
+
+def test_atomic_write_failure_leaves_target_byte_identical(tmp_path, monkeypatch):
+    """A failed replacement leaves the original history available for replay."""
     target = tmp_path / "recent.json"
     target.write_text(json.dumps([{"keep": "me"}]), encoding="utf-8")
     before = target.read_bytes()
@@ -1858,8 +1906,6 @@ def test_main_server_recent_writers_share_the_memory_server_lock(tmp_path, monke
             errors.append(exc)
 
     async def _go():
-        loop = asyncio.get_running_loop()
-        loop.set_default_executor(ThreadPoolExecutor(max_workers=16))
         await asyncio.gather(
             mgr.update_history([HumanMessage(content="w0")], name, compress=False),
             mgr.update_history([HumanMessage(content="w1")], name, compress=False),
@@ -1867,7 +1913,7 @@ def test_main_server_recent_writers_share_the_memory_server_lock(tmp_path, monke
             asyncio.to_thread(_hammer_read),
         )
 
-    asyncio.run(_go())
+    _run_on_private_loop(_go(), ThreadPoolExecutor(max_workers=16))
 
     assert errors == [], f"并发路径不得抛异常，实际 {errors}"
     contents = [m.content for m in _read_disk(path)]

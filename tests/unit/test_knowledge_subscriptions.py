@@ -18,10 +18,10 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
-import knowledge.service as service_module
+import services.knowledge.service as service_module
 from app.memory_server import knowledge_routes
-from knowledge.registry import REGISTRY_FILE, KnowledgeRegistryError, load_registry
-from knowledge.subscriptions import (
+from services.knowledge.registry import REGISTRY_FILE, KnowledgeRegistryError, load_registry
+from services.knowledge.subscriptions import (
     KnowledgeSubscription,
     SubscriptionError,
     identity_conflict,
@@ -374,12 +374,15 @@ def test_plugin_server_copies_of_the_subscription_rules_agree():
     """The plugin server does not import ``knowledge``; its copies must not drift."""
     import re
 
-    from knowledge import models, subscriptions
+    from services.knowledge import models, subscriptions
     from plugin.server.routes import knowledge_market as km
+    from utils.knowledge_package import DEFAULT_LIMITS
 
     assert km.MARKET_PROVIDER == subscriptions.MARKET_PROVIDER
     assert km.SUBSCRIPTION_PROTOCOL_VERSION == subscriptions.SUBSCRIPTION_PROTOCOL_VERSION
-    assert km.MAX_ARTIFACT_BYTES == models.MAX_PACK_BYTES
+    assert km.MAX_ARTIFACT_BYTES == DEFAULT_LIMITS.max_archive_bytes
+    # ZIP transport and the embedded v1 text pack retain independent bounds.
+    assert models.MAX_PACK_BYTES == DEFAULT_LIMITS.max_pack_bytes == 10 * 1024 * 1024
     assert km._PACK_ID_PATTERN == models._PACK_ID_RE.pattern
     assert km._VERSION_PATTERN == subscriptions._VERSION_RE.pattern
     assert km._SHA256_RE.pattern == subscriptions._SHA256_RE.pattern
@@ -792,7 +795,7 @@ async def client(tmp_path, monkeypatch):
     await service.stop()
 
 
-def _apply_form(raw: bytes, subscription: dict, *, protocol: str = "1"):
+def _apply_form(raw: bytes, subscription: dict, *, protocol: str = "2"):
     return {
         "data": {"protocol_version": protocol, "subscription": json.dumps(subscription)},
         "files": {"pack": ("pack.neko-knowledge.json", raw, "application/json")},
@@ -827,9 +830,10 @@ async def test_apply_route_lets_a_repeat_through_while_imports_are_full(client, 
 @pytest.mark.parametrize(
     "data, file_field, reason",
     [
-        ({"protocol_version": "2"}, "pack", "unsupported_protocol"),
+        ({"protocol_version": "1"}, "pack", "unsupported_protocol"),
         ({"subscription": "{"}, "pack", "invalid_subscription"),
         ({}, "other", "invalid_request"),
+        ({}, None, "invalid_request"),
     ],
 )
 async def test_apply_route_refuses_malformed_requests(client, data, file_field, reason):
@@ -837,8 +841,15 @@ async def test_apply_route_refuses_malformed_requests(client, data, file_field, 
     raw = _raw(_pack())
     form = _apply_form(raw, _subscription(raw).to_json())
     form["data"].update(data)
-    form["files"] = {file_field: form["files"]["pack"]}
+    # Subscriptions require the named pack upload; absence is invalid too.
+    if file_field:
+        form["files"] = {file_field: form["files"]["pack"]}
+    else:
+        # Force real text-only multipart; files={} becomes urlencoded and
+        # would reject its media type before exercising the missing pack.
+        form["files"] = [(name, (None, value)) for name, value in form.pop("data").items()]
     response = await http.post("/internal/knowledge/subscriptions/apply", **form)
+    assert response.request.headers["Content-Type"].startswith("multipart/form-data;")
     assert response.status_code == 400
     assert response.json()["reason"] == reason
     assert service.list_jobs() == []
@@ -855,7 +866,7 @@ async def test_remove_route_checks_its_request_and_is_safe_to_repeat(client):
     await _subscribe(service)
     expected = {"provider": "plugin-market", "provider_package_id": "42", "remote_id": "knowledge/market-memes"}
     request = {
-        "protocol_version": 1,
+        "protocol_version": 2,
         "pack_id": "market-memes",
         "expected_subscription": expected,
         "releases": [{"version": "1.0.0", "artifact_sha256": hashlib.sha256(_raw(_pack())).hexdigest()}],

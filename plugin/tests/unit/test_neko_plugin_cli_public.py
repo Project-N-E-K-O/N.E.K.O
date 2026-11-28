@@ -167,6 +167,25 @@ def test_local_metadata_named_plugin_data_is_preserved_at_every_depth():
     assert not should_skip_path(Path("data") / name, is_dir=False, rules=rules)
 
 
+def test_build_rules_skip_scaffolded_agent_kit() -> None:
+    rules = BuildRuleSet()
+
+    for path, is_dir in (
+        (Path(".agents"), True),
+        (Path(".agents/skills/neko-plugin/SKILL.md"), False),
+        (Path(".claude"), True),
+        (Path(".claude/skills/neko-plugin/SKILL.md"), False),
+        (Path("AGENTS.md"), False),
+        (Path("CLAUDE.md"), False),
+    ):
+        assert should_skip_path(path, is_dir=is_dir, rules=rules) is True
+    # Like .DS_Store, the guide names are excluded at every depth.
+    assert should_skip_path(Path("docs/AGENTS.md"), is_dir=False, rules=rules) is True
+    # A dangling or file-target symlink is walked as a file, not a directory.
+    assert should_skip_path(Path(".claude"), is_dir=False, rules=rules) is True
+    assert should_skip_path(Path(".agents"), is_dir=False, rules=rules) is True
+
+
 def _assert_probed_without_bytecode(package_path: Path, plugin_ids: list[str]) -> None:
     with zipfile.ZipFile(package_path) as archive:
         names = archive.namelist()
@@ -384,6 +403,33 @@ def test_build_plugin_metadata_probe_leaves_no_bytecode_in_package(tmp_path: Pat
 
     _assert_probed_without_bytecode(package_path, ["probe_plugin"])
     assert inspect_package(package_path).payload_hash_verified is True
+
+
+def test_build_plugin_excludes_scaffolded_agent_kit(tmp_path: Path) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path)
+    (plugin_dir / "AGENTS.md").write_text("agent guide\n", encoding="utf-8")
+    (plugin_dir / "CLAUDE.md").write_text("read AGENTS.md\n", encoding="utf-8")
+    skill_file = plugin_dir / ".agents" / "skills" / "neko-plugin" / "SKILL.md"
+    skill_file.parent.mkdir(parents=True)
+    skill_file.write_text("skill\n", encoding="utf-8")
+    claude_link = plugin_dir / ".claude" / "skills"
+    claude_link.parent.mkdir(parents=True)
+    try:
+        claude_link.symlink_to(Path("..") / ".agents" / "skills", target_is_directory=True)
+    except OSError:
+        pytest.skip("symlink creation unavailable on this platform")
+    package_path = tmp_path / "demo_plugin.neko-plugin"
+
+    build_plugin(plugin_dir, package_path)
+
+    with zipfile.ZipFile(package_path) as archive:
+        names = set(archive.namelist())
+    assert "payload/plugins/demo_plugin/plugin.toml" in names
+    assert not any(
+        name.startswith(("payload/plugins/demo_plugin/.agents/", "payload/plugins/demo_plugin/.claude/"))
+        or name in ("payload/plugins/demo_plugin/AGENTS.md", "payload/plugins/demo_plugin/CLAUDE.md")
+        for name in names
+    )
 
 
 def test_build_bundle_metadata_probe_leaves_no_bytecode_in_package(tmp_path: Path) -> None:
@@ -1094,3 +1140,62 @@ def test_plugin_tree_walk_raises_like_rglob(tmp_path, monkeypatch, error):
     else:
         with pytest.raises(OSError):
             build_rules.walk_plugin_tree(tmp_path)
+
+
+def test_pack_plugin_and_bundle_normalize_nfd_filenames_to_nfc(tmp_path: Path) -> None:
+    import unicodedata
+    import zipfile
+
+    from plugin.neko_plugin_cli.core.install import install_package
+    from plugin.neko_plugin_cli.public import inspect_package, pack_bundle, pack_plugin
+
+    def _make_plugin(root: Path, plugin_id: str, nfd_filename: str) -> Path:
+        pdir = root / plugin_id
+        pdir.mkdir(parents=True)
+        (pdir / "plugin.toml").write_text(
+            f'[plugin]\nid = "{plugin_id}"\nname = "{plugin_id}"\nversion = "0.1.0"\n'
+            f'entry = "plugins.{plugin_id}:Plugin"\n',
+            encoding="utf-8",
+        )
+        (pdir / "__init__.py").write_text("class Plugin:\n    pass\n", encoding="utf-8")
+        (pdir / nfd_filename).write_text("hello", encoding="utf-8")
+        return pdir
+
+    nfd_name = unicodedata.normalize("NFD", "café.txt")
+    nfc_name = unicodedata.normalize("NFC", "café.txt")
+
+    single_dir = _make_plugin(tmp_path / "src_single", "nfd_single", nfd_name)
+    single_pkg = tmp_path / "out" / "nfd_single.neko-plugin"
+    pack_plugin(single_dir, single_pkg)
+
+    inspected = inspect_package(single_pkg)
+    assert inspected.payload_hash_verified is True
+    with zipfile.ZipFile(single_pkg) as zf:
+        assert f"payload/plugins/nfd_single/{nfc_name}" in zf.namelist()
+    installed = install_package(
+        single_pkg,
+        plugins_root=tmp_path / "inst_single",
+        profiles_root=tmp_path / "prof_single",
+    )
+    assert installed.payload_hash_verified is True
+    assert installed.installed_plugin_count == 1
+    assert (tmp_path / "inst_single" / "nfd_single" / nfc_name).is_file()
+
+    plug_a = _make_plugin(tmp_path / "src_bundle", "nfd_a", nfd_name)
+    plug_b = _make_plugin(tmp_path / "src_bundle", "nfd_b", "plain.txt")
+    bundle_pkg = tmp_path / "out" / "nfd_bundle.neko-bundle"
+    pack_bundle([plug_a, plug_b], bundle_pkg, bundle_id="nfd_bundle")
+
+    inspected_bundle = inspect_package(bundle_pkg)
+    assert inspected_bundle.payload_hash_verified is True
+    with zipfile.ZipFile(bundle_pkg) as zf:
+        assert f"payload/plugins/nfd_a/{nfc_name}" in zf.namelist()
+    installed_bundle = install_package(
+        bundle_pkg,
+        plugins_root=tmp_path / "inst_bundle",
+        profiles_root=tmp_path / "prof_bundle",
+    )
+    assert installed_bundle.payload_hash_verified is True
+    assert installed_bundle.installed_plugin_count == 2
+    assert (tmp_path / "inst_bundle" / "nfd_a" / nfc_name).is_file()
+    assert (tmp_path / "inst_bundle" / "nfd_b" / "plain.txt").is_file()

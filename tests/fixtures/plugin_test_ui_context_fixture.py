@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import threading
+import time
 from collections.abc import Mapping
+
+from pydantic import BaseModel, Field
 
 from plugin.sdk.plugin import NekoPluginBase, custom_event, plugin_entry, ui
 from plugin.sdk.shared.core.context import SdkContext
@@ -53,6 +57,16 @@ class HangingUiContextFixturePlugin(NekoPluginBase):
     async def main_context(self, **_: object) -> dict[str, object]:
         await asyncio.sleep(3600)
         return {}
+
+
+class SlowToListenHangingUiContextFixturePlugin(HangingUiContextFixturePlugin):
+    """Hanging provider in a process that reads its first command late, like a busy CI machine."""
+
+    async def _on_command_loop_start(self) -> None:
+        # Blocks the loop on purpose: the request waits unread, as it does while a loaded machine finishes startup.
+        # Longer than the 0.75s reply headroom, so a budget counted from the read misses the caller's deadline
+        # however fast the rest of startup is.
+        time.sleep(1.0)  # noqa: ASYNC251 - blocking the loop is what this fixture simulates
 
 
 class UncancellableUiContextFixturePlugin(NekoPluginBase):
@@ -117,6 +131,31 @@ class BareModelDumpUiContextFixturePlugin(NekoPluginBase):
     @ui.context(id="main")
     async def main_context(self, **_: object) -> object:
         return _BareDumpState()
+
+
+class _NonFiniteFloatState(BaseModel):
+    finite: float = 1.0
+    nan_val: float = Field(default=float("nan"))
+    inf_val: float = Field(default=float("inf"))
+
+
+class NonFiniteFloatUiContextFixturePlugin(NekoPluginBase):
+    @ui.action(
+        id="ping",
+        label="Ping",
+        confirm={"title": "Proceed?", "threshold": float("nan")},
+    )
+    @plugin_entry(id="ping", name="Ping")
+    async def ping(self, **_: object) -> dict[str, object]:
+        return {"ok": True}
+
+    @ui.context(id="main")
+    async def main_context(self, **_: object) -> object:
+        return _NonFiniteFloatState(
+            finite=2.5,
+            nan_val=float("nan"),
+            inf_val=float("-inf"),
+        )
 
 
 class _ConfirmMapping(Mapping):

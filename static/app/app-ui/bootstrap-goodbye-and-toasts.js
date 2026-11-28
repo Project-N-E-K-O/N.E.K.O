@@ -77,7 +77,6 @@ I.mod = window.appUi;
     })();
     I.nekoModelCatTransitionToken = 0;
     I.nekoModelCatTransitionActive = null;
-    I.nekoModelCatRevealPlaybackToken = 0;
     I.nekoGoodbyeIdleAppearance = I.normalizeNekoGoodbyeIdleAppearance(window.__nekoGoodbyeIdleAppearance);
     window.__nekoGoodbyeIdleAppearance = I.nekoGoodbyeIdleAppearance;
     const GOODBYE_RESOURCE_SUSPEND_STORAGE_KEY = 'neko-goodbye-resource-suspended';
@@ -602,6 +601,13 @@ I.mod = window.appUi;
         }
     }
 
+    // Marks the page's own DOM toast, so callers that verify a notice by reading
+    // #status-toast-text can tell it apart from a replacement that renders
+    // elsewhere (the desktop shell forwards window.showStatusToast over IPC to
+    // a separate toast window).
+    try {
+        Object.defineProperty(I.showStatusToast, '__nekoDomStatusToast', { value: true });
+    } catch (_) {}
     I.mod.showStatusToast = I.showStatusToast;
     window.showStatusToast = I.showStatusToast;
 

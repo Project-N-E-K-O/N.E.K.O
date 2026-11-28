@@ -461,14 +461,14 @@ async def _invoke_emotion_tier(prompt: str, *, timeout: float, label: str) -> st
 
     try:
         cfg_mgr = get_config_manager()
-        cfg = await cfg_mgr.aget_model_api_config('emotion')
+        cfg = await cfg_mgr.aget_model_api_config('recognition')
     except Exception as e:
         _report_failure(label, 'emotion_config_unavailable', _failure_detail(e))
         return None
     model = cfg.get('model')
     api_key = cfg.get('api_key')
     base_url = cfg.get('base_url')
-    if not model or not api_key:
+    if not model or (not api_key and cfg.get('provider_type') != 'chatgpt'):
         _report_failure(label, 'emotion_model_or_api_key_missing')
         return None
 
@@ -476,7 +476,6 @@ async def _invoke_emotion_tier(prompt: str, *, timeout: float, label: str) -> st
     try:
         llm = await create_chat_llm_async(
             model, base_url, api_key,
-            temperature=0.4,
             max_completion_tokens=512,
             timeout=timeout,  # same budget the asyncio.wait_for below enforces
             provider_type=cfg.get('provider_type'),
@@ -505,7 +504,7 @@ async def _invoke_capable_tier(prompt: str, *, timeout: float, label: str) -> st
 
     Deep-search query derivation is a step up from the emotion-tier candidate
     pass: it runs once, at open time, off the user hot path, so it uses the
-    heavier ``summary`` tier (the same tier the window search summarizer uses).
+    heavier ``memory`` tier (the same tier the window search summarizer uses).
     Returns raw response text or None on any failure.
     """
     from utils.config_manager import get_config_manager
@@ -514,14 +513,14 @@ async def _invoke_capable_tier(prompt: str, *, timeout: float, label: str) -> st
 
     try:
         cfg_mgr = get_config_manager()
-        cfg = await cfg_mgr.aget_model_api_config('summary')
+        cfg = await cfg_mgr.aget_model_api_config('memory')
     except Exception as e:
         _report_failure(label, 'summary_config_unavailable', _failure_detail(e))
         return None
     model = cfg.get('model')
     api_key = cfg.get('api_key')
     base_url = cfg.get('base_url')
-    if not model or not api_key:
+    if not model or (not api_key and cfg.get('provider_type') != 'chatgpt'):
         _report_failure(label, 'summary_model_or_api_key_missing')
         return None
 
@@ -529,7 +528,6 @@ async def _invoke_capable_tier(prompt: str, *, timeout: float, label: str) -> st
     try:
         llm = await create_chat_llm_async(
             model, base_url, api_key,
-            temperature=0.3,
             max_completion_tokens=128,
             timeout=timeout,  # same budget the asyncio.wait_for below enforces
             provider_type=cfg.get('provider_type'),

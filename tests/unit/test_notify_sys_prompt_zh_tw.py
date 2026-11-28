@@ -10,7 +10,7 @@ which keeps ``zh-TW`` and resolves every other input to the key the short code
 gave before.
 
 What is under way is no longer rendered here from a task list: the agent
-process answers ``/nekoclaw/brief`` with finished lines, written in the
+process answers ``/nekopower/brief`` with finished lines, written in the
 language the request names. So the session's language has to reach that
 request as it is -- folded on this side, the lines would come back Simplified
 under a Traditional header.
@@ -29,6 +29,7 @@ import memory.user_directives as user_directives_module
 from config.prompts.prompts_sys import (
     AGENT_TASKS_HEADER,
     AGENT_TASKS_NOTICE,
+    SESSION_INIT_NO_NEKOPOWER,
     SESSION_INIT_PROMPT,
     SESSION_INIT_PROMPT_AGENT,
 )
@@ -59,6 +60,7 @@ UNCHANGED_LOCALES = (
 SYS_TABLES = {
     "SESSION_INIT_PROMPT": SESSION_INIT_PROMPT,
     "SESSION_INIT_PROMPT_AGENT": SESSION_INIT_PROMPT_AGENT,
+    "SESSION_INIT_NO_NEKOPOWER": SESSION_INIT_NO_NEKOPOWER,
     "AGENT_TASKS_HEADER": AGENT_TASKS_HEADER,
     "AGENT_TASKS_NOTICE": AGENT_TASKS_NOTICE,
 }
@@ -117,7 +119,8 @@ def brief_requests(monkeypatch):
 
 def _expected_prompt(key: str, *, agent_enabled: bool) -> str:
     if not agent_enabled:
-        return SESSION_INIT_PROMPT[key].format(name=NAME) + PERSONA
+        # NekoPower off (the owner here has no switches at all): the opening says she cannot act.
+        return SESSION_INIT_PROMPT[key].format(name=NAME) + SESSION_INIT_NO_NEKOPOWER[key] + PERSONA
     return (
         SESSION_INIT_PROMPT_AGENT[key].format(name=NAME)
         + PERSONA
@@ -134,7 +137,7 @@ def _assert_brief_asked_in(requests, user_language, *, agent_enabled: bool) -> N
         return
     assert len(requests) == 1
     url, params = requests[0]
-    assert url.endswith("/nekoclaw/brief")
+    assert url.endswith("/nekopower/brief")
     assert params == {"lanlan_name": NAME, "language": user_language or ""}
 
 

@@ -48,6 +48,13 @@ TTS_AUDIO_DONE_SENTINEL = "__audio_done__"
 # audio finishes before sending done, leaving the final sentence stuck in CosyVoice until the user's next turn.
 TTS_SOFT_FLUSH_SENTINEL = "__soft_flush__"
 
+# Preconnect sentinel: core sends request_queue.put((TTS_PRECONNECT_SENTINEL, None)) when a reply's LLM request
+# starts, so a worker that opens one socket per speech can have that socket ready by the time the first text
+# arrives instead of connecting after it. The socket is not bound to any speech id: the next new speech adopts
+# it, and the worker closes it on its own if nothing adopts it in time. Like the soft flush, send it only to
+# workers whose callable carries ``supports_preconnect = True``; an unaware worker reads it as a speech id.
+TTS_PRECONNECT_SENTINEL = "__preconnect__"
+
 
 class AudioDoneEmitter:
     """One-shot per-speech "audio stream closed" signal for the frontend.
@@ -65,11 +72,14 @@ class AudioDoneEmitter:
     lands mid-teardown cannot slip through.
     """
 
-    __slots__ = ("_response_queue", "_emitted_speech_id", "_interrupted")
+    __slots__ = ("_response_queue", "_emitted_speech_id", "_delivered_speech_id", "_interrupted")
 
     def __init__(self, response_queue):
         self._response_queue = response_queue
+        # Dedup key: set on the attempt, so a failed put is not retried.
         self._emitted_speech_id = None
+        # Set only once the sentinel is on the queue (see emitted()).
+        self._delivered_speech_id = None
         self._interrupted = False
 
     def begin_interrupt(self) -> None:
@@ -83,6 +93,11 @@ class AudioDoneEmitter:
     def reset(self) -> None:
         """Clear dedup state for a new speech / reconnect / session restart."""
         self._emitted_speech_id = None
+        self._delivered_speech_id = None
+
+    def emitted(self, speech_id) -> bool:
+        """Whether the sentinel for ``speech_id`` is already on the queue."""
+        return bool(speech_id) and speech_id == self._delivered_speech_id
 
     def emit(self, speech_id) -> None:
         """Enqueue the sentinel at most once for ``speech_id``."""
@@ -95,6 +110,7 @@ class AudioDoneEmitter:
         self._emitted_speech_id = speech_id
         try:
             self._response_queue.put((TTS_AUDIO_DONE_SENTINEL, speech_id))
+            self._delivered_speech_id = speech_id
         except Exception:
             # Missing it is an acceptable fallback (the frontend has a give-up timer); do not interrupt the finalization path.
             logger.debug("audio_done 哨兵投递失败 speech_id=%s", speech_id)
@@ -184,8 +200,9 @@ class AudioJitterBuffer:
     new utterance / interrupt and flush() on response.done. The buffer never owns
     those boundaries because only the worker sees them.
     """
-    def __init__(self, response_queue, initial_buffer_bytes: int, steady_buffer_bytes: int):
+    def __init__(self, response_queue, initial_buffer_bytes: int, steady_buffer_bytes: int, *, speech_id=None):
         self._response_queue = response_queue
+        self._speech_id = speech_id
         self._initial_buffer_bytes = initial_buffer_bytes
         self._steady_buffer_bytes = steady_buffer_bytes
         self.buffer = bytearray()
@@ -224,7 +241,8 @@ class AudioJitterBuffer:
     def _flush(self):
         if not self.buffer:
             return
-        self._response_queue.put(bytes(self.buffer))
+        audio = bytes(self.buffer)
+        self._response_queue.put(audio if self._speech_id is None else ("__audio__", self._speech_id, audio))
         self.buffer.clear()
         # Passing the gate means this turn has started: if a short sentence is first released by the terminal flush because it is below the initial threshold,
         # any later stray upstream delta should use steady-state handling instead of restarting head-start and being discarded by reset.
@@ -232,7 +250,8 @@ class AudioJitterBuffer:
 
 def make_audio_jitter_buffer(response_queue, initial_ms_default: float = 400,
                              steady_ms_default: float = 200,
-                             legacy_env_prefix: str | None = None) -> AudioJitterBuffer:
+                             legacy_env_prefix: str | None = None,
+                             *, speech_id=None) -> AudioJitterBuffer:
     """Build an :class:`AudioJitterBuffer` from the generic NEKO_TTS_JITTER_* env knobs.
 
     ``legacy_env_prefix`` (e.g. "NEKO_QWEN_TTS") keeps honoring a provider's
@@ -252,7 +271,7 @@ def make_audio_jitter_buffer(response_queue, initial_ms_default: float = 400,
     steady_ms = _resolve_ms("NEKO_TTS_JITTER_STEADY_MS", "STEADY_BUFFER_MS", steady_ms_default)
     initial_bytes = int(initial_ms / 1000 * _TTS_OUTPUT_BYTES_PER_SECOND)
     steady_bytes = int(steady_ms / 1000 * _TTS_OUTPUT_BYTES_PER_SECOND)
-    return AudioJitterBuffer(response_queue, initial_bytes, steady_bytes)
+    return AudioJitterBuffer(response_queue, initial_bytes, steady_bytes, speech_id=speech_id)
 
 # Close codes that mean "the server refused this request" rather than "the
 # connection went away". Everything else stays on the reconnect path: 1000 /
@@ -339,9 +358,14 @@ def enqueue_configured_tts_failure(response_queue, provider_key: str, stage: str
     _enqueue_error(response_queue, configured_tts_failure_payload(provider_key, stage))
 
 try:
-    from websockets.connection import State as _WsState
+    # websockets >= 11 renamed websockets.connection to websockets.protocol;
+    # the old module name is deprecated and disappearing from newer releases.
+    from websockets.protocol import State as _WsState
 except (ImportError, AttributeError):
-    _WsState = None
+    try:
+        from websockets.connection import State as _WsState
+    except (ImportError, AttributeError):
+        _WsState = None
 
 def _ws_is_open(ws_conn) -> bool:
     """Connection-state check compatible with different websockets versions."""

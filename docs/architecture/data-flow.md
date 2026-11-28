@@ -60,6 +60,7 @@ Important JSON message types include:
 | `status` | Structured status or error payload |
 | `expression`, `focus_state`, `focus_charge` | Character presentation state |
 | `agent_status_update`, `agent_task_update`, `agent_notification` | Agent state and task delivery |
+| `agent_builtin_activity` | A task began or stopped using the keyboard and mouse or the browser |
 | `request_screenshot`, `capture_bridge_request` | Client capture requests |
 | `session_ended_by_server`, `reload_page`, `catgirl_switched` | Lifecycle recovery or character changes |
 | `pong` | Heartbeat response |
@@ -84,7 +85,7 @@ Routers obtain long-lived managers through `main_routers/shared_state.py` getter
 main dialogue model
         │ dispatch_task / query_tasks (tool call)
         ▼
-tool_calling.py ── HTTP :48915 /nekoclaw/* ──> NekoClaw host ──> receipt back to the model
+tool_calling.py ── HTTP :48915 /nekopower/* ──> NekoPower host ──> receipt back to the model
 
 cross_server turn end without a tool call that acts
         │ user's words + the character's reply
@@ -92,7 +93,7 @@ cross_server turn end without a tool call that acts
 MainServerAgentBridge ── ZMQ :48963 ──> AgentServerEventBridge ──> turn check
         ▲                                      │
         │ ACK / task_update / reports          ▼
-        └──────────── ZMQ :48962 ───── NekoClaw host (outbox)
+        └──────────── ZMQ :48962 ───── NekoPower host (outbox)
         │
         ├─ task_update ──> WebSocket ──> Task HUD
         └─ task_result / proactive_message ──> LLMSessionManager callback queue ──> chat delivery

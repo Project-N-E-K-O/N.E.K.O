@@ -8,7 +8,7 @@ uv sync
 uv run playwright install chromium
 ```
 
-根目录 `tests/conftest.py` 在 Chromium 不可用时也会尝试安装，但显式准备更可预测。不要提交 `tests/api_keys.json`；只有确实调用外部服务的测试才从模板创建该文件。
+根目录 `tests/conftest.py` 在 Chromium 不可用时也会尝试安装，但显式准备更可预测。Playwright 和这个 Chromium 只给前端和 e2e 测试用：Playwright 是开发依赖，应用自己的浏览器操控直接驱动本机已安装的浏览器，用不到它。不要提交 `tests/api_keys.json`；只有确实调用外部服务的测试才从模板创建该文件。
 
 ## 常用命令
 
@@ -38,7 +38,7 @@ uv run pytest plugin/tests -q
 
 ## CI 覆盖范围
 
-- `.github/workflows/plugin-tests.yml`：Windows 上的插件测试和选定根契约。
+- `.github/workflows/plugin-tests.yml`：Linux 和 Windows 上的完整插件测试（`plugin/tests`）。
 - `.github/workflows/analyze.yml`：Ruff 与项目专用静态契约。
 - `.github/workflows/docs.yml`：`npm ci` 和 VitePress 构建。
 - 桌面与 Docker workflow 分别验证打包路径。

@@ -21,6 +21,12 @@ from plugin.server.application.install_source import (
 from plugin.server.application.install_source.models import LockEntry
 from plugin.server.application.install_source.scanner import PluginDirectoryScanner
 from plugin.server.application.plugins.consent_service import forget_plugin
+from plugin.server.application.plugins.permission_service import (
+    UNUSABLE_STORE_CODES,
+    forget_permissions,
+    forget_remembered_permissions,
+    restore_permissions,
+)
 from plugin.server.application.plugins.operation_lock import serialized_plugin_operation
 from plugin.server.application.plugins.registry_service import PluginRegistryService
 from plugin.server.domain.errors import ServerDomainError
@@ -77,6 +83,9 @@ class UninstallPluginResult:
     runtime_restart: RuntimeRestart
     cleanup_pending: bool
     runtime_restart_error: dict[str, str] | None = None
+    # Set when the permission store could not be read, so the plugin's grants
+    # were not cleared; ``{"code": ..., "message": ...}``.
+    permission_warning: dict[str, str] | None = None
 
 
 class UninstallPluginError(RuntimeError):
@@ -141,6 +150,9 @@ class _RollbackOutcome:
     # Whether the plugin's own source (install record and code) is back,
     # independent of the package-profile restore in filesystem_rollback.
     source_restored: bool = True
+    # Whether the post-rollback registry refresh succeeded; if not, the
+    # registry may still describe a different plugin for this id.
+    registry_restored: bool = True
 
 
 def _get_plugin_meta_sync(plugin_id: str) -> dict[str, object] | None:
@@ -709,9 +721,17 @@ async def _rollback_precommit(
     was_running: bool,
     stop_attempted: bool,
     registry_target: _RegistryRefreshTarget,
+    grants_not_cleared: bool = False,
 ) -> _RollbackOutcome:
     """Compensate in reverse stage order: source, code, preference,
-    registry, then the original runtime. Each step is best effort."""
+    registry, then the original runtime. Each step is best effort.
+
+    ``grants_not_cleared``: the permission store was unusable, so the
+    plugin's grants were left as they were, including the in-process copy
+    of its last read grants. That copy is kept only when the original
+    plugin is back; otherwise it is dropped before anything restarts under
+    this id.
+    """
     filesystem_changed = (
         source_update_attempted or staged_code is not None
     )
@@ -748,16 +768,22 @@ async def _rollback_precommit(
                 "uninstall rollback failed to restore preference plugin_id={}",
                 plugin_id,
             )
+    registry_restored = True
     if filesystem_changed:
         try:
             await _refresh_registry(registry_target)
         except Exception:
+            registry_restored = False
             # A refresh failure does not undo the physical restores above;
             # the scan itself is not part of the filesystem rollback report.
             logger.exception(
                 "uninstall rollback registry refresh failed plugin_id={}",
                 plugin_id,
             )
+    if grants_not_cleared and not (source_restored and registry_restored):
+        # The id may now resolve to another copy (e.g. the built-in a user
+        # override shadowed); a read failure must not hand it these grants.
+        forget_remembered_permissions(plugin_id)
     runtime_restart = await _restore_original_runtime(
         plugin_id,
         was_running=was_running and stop_attempted,
@@ -772,7 +798,49 @@ async def _rollback_precommit(
         runtime_restart=runtime_restart,
         preference_restored=preference_restored,
         source_restored=source_restored,
+        registry_restored=registry_restored,
     )
+
+
+async def _forget_permissions_precommit(
+    plugin_id: str,
+) -> tuple[dict | None, dict[str, str] | None]:
+    """Clear the plugin's permission grants before anything else changes.
+
+    This runs while the registry and install source still describe the
+    plugin being removed, so a first-use import binds to that plugin and no
+    concurrent reader can observe another source for a record that still
+    exists. Returns ``(removed_record, warning)``.
+
+    A damaged or newer-version store (``UNUSABLE_STORE_CODES``) holds no
+    grant that could apply, the same rule the replacement paths use, so the
+    uninstall goes on and ``warning`` tells the user the grants were not
+    cleared. Otherwise a damaged store would block every uninstall. Its
+    records stay on disk: if the file becomes readable again, this plugin's
+    old entry is still there. Any other failure (a possibly transient read
+    error or a failed write) aborts the uninstall; the error keeps the
+    store's own code.
+    """
+    try:
+        return await asyncio.to_thread(forget_permissions, plugin_id), None
+    except ServerDomainError as exc:
+        if exc.code in UNUSABLE_STORE_CODES:
+            # Logged and acted on after the commit (see uninstall_plugin): a
+            # rollback keeps the plugin, so nothing is reported here.
+            return None, {
+                "code": exc.code,
+                "message": (
+                    "The permission records file is damaged or from a newer "
+                    "version, so any grants this plugin had were not cleared; "
+                    "they may still apply once the file is readable again"
+                ),
+            }
+        raise ServerDomainError(
+            exc.code,
+            "Uninstall could not clear the plugin's permission grants: " + exc.message,
+            exc.status_code,
+            details={**exc.details, "plugin_id": plugin_id},
+        ) from exc
 
 
 @serialized_plugin_operation
@@ -867,7 +935,15 @@ async def uninstall_plugin(plugin_id: str) -> UninstallPluginResult:
     preference_update_attempted = False
     autostart_was_pending = False
     autostart_gate_rollback: str | None = None
+    removed_permissions: dict | None = None
+    permission_warning: dict[str, str] | None = None
+    permission_rollback: str | None = None
     try:
+        stage = "forget_permissions"
+        removed_permissions, permission_warning = await _forget_permissions_precommit(
+            plugin_id
+        )
+
         stage = "stop"
         if was_running:
             stop_attempted = True
@@ -936,6 +1012,7 @@ async def uninstall_plugin(plugin_id: str) -> UninstallPluginResult:
             was_running=was_running,
             stop_attempted=stop_attempted,
             registry_target=registry_target,
+            grants_not_cleared=permission_warning is not None,
         )
         if not rollback.source_restored:
             # If original source cannot be restored exactly, recovery permission must not cover whatever remains on disk. Check only
@@ -960,10 +1037,31 @@ async def uninstall_plugin(plugin_id: str) -> UninstallPluginResult:
                     "been started by the user",
                     plugin_id,
                 )
+        if removed_permissions is not None and await asyncio.to_thread(plugin_dir.exists):
+            # Same criterion as the autostart record: restore only when the
+            # rollback actually brought the plugin back.
+            try:
+                await asyncio.to_thread(
+                    restore_permissions, plugin_id, removed_permissions
+                )
+            except Exception as restore_exc:
+                permission_rollback = "incomplete"
+                logger.error(
+                    "uninstall rollback restored plugin {} but could not restore "
+                    "its permission grants: error={}",
+                    plugin_id,
+                    type(restore_exc).__name__,
+                )
+            if permission_rollback is None and not rollback.registry_restored:
+                # The grants are back, but the registry may still resolve this
+                # id to another copy, so their source cannot be confirmed.
+                permission_rollback = "incomplete"
         gate_details = (
             {} if autostart_gate_rollback is None
             else {"autostart_gate_rollback": autostart_gate_rollback}
         )
+        if permission_rollback is not None:
+            gate_details["permission_rollback"] = permission_rollback
         if isinstance(exc, UninstallPluginError):
             exc.details.update(gate_details)
         if not isinstance(exc, Exception) or isinstance(exc, UninstallPluginError):
@@ -1020,6 +1118,19 @@ async def uninstall_plugin(plugin_id: str) -> UninstallPluginResult:
         await asyncio.to_thread(forget_plugin, plugin_id)
     except Exception as exc:
         logger.warning("Could not clear uninstalled plugin consent: plugin_id={}, error={}", plugin_id, type(exc).__name__)
+    if permission_warning is not None:
+        logger.error(
+            "uninstall committed without clearing permission grants, store unusable "
+            "plugin_id={} code={}",
+            plugin_id,
+            permission_warning["code"],
+        )
+        # Nothing was written to the store, so no change notification drops
+        # the in-process copy of the old grants. Drop it before a restored
+        # built-in starts, so a read failure cannot hand it the removed
+        # plugin's grants. Only after the commit: a rollback keeps the plugin
+        # and its grants.
+        forget_remembered_permissions(plugin_id)
     if restored_builtin:
         from plugin.server.application.plugins.capability_analysis_service import schedule_analysis
 
@@ -1062,4 +1173,5 @@ async def uninstall_plugin(plugin_id: str) -> UninstallPluginResult:
         runtime_restart=runtime_restart,
         cleanup_pending=cleanup_pending,
         runtime_restart_error=runtime_restart_error,
+        permission_warning=permission_warning,
     )

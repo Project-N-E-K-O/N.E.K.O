@@ -15,7 +15,7 @@
 
 """Lifecycle, session events, and task endpoints for the agent server.
 
-Tasks are commissions of the NekoClaw host (``nekoclaw/host``). This module
+Tasks are commissions of the NekoPower host (``nekopower/host``). This module
 connects the host to the rest of the process: the two requests the main
 dialogue's task tools make (dispatch, query), the list a new session is told,
 the check of a turn in which she called no task tool, and the task endpoints
@@ -23,12 +23,15 @@ the HUD uses.
 """
 
 import math
+import threading
 from collections import OrderedDict
 
+from utils.shutdown_steps import ShutdownCancellationBudget, run_shutdown_step
+
+from .api_console import build_console_router
 from .api_shared import (  # noqa: F401
     AgentServerEventBridge,
     Any,
-    ComputerUseAdapter,
     Dict,
     HTTPException,
     HUD_ACTIVE,
@@ -38,14 +41,14 @@ from .api_shared import (  # noqa: F401
     ThrottledLogger,
     USER_PLUGIN_SERVER_PORT,
     _bump_state_revision,
-    _close_browser_use_adapter,
+    _close_browser,
     _create_tracked_task,
     _emit_agent_status_update,
     _emit_main_event,
     _ensure_plugin_lifecycle_started,
     _ensure_plugin_lifecycle_stopped,
-    _fire_agent_llm_connectivity_check,
     _set_capability,
+    _capability_ticket_now,
     _start_embedded_user_plugin_server,
     _stop_embedded_user_plugin_server,
     app,
@@ -56,13 +59,13 @@ from .api_shared import (  # noqa: F401
     hud,
     ledger_exists,
     logger,
-    mount_nekoclaw_host,
-    nekoclaw_on,
+    mount_nekopower_host,
+    nekopower_on,
     os,
     peek_host,
     ready_host,
     restore_hud,
-    shutdown_nekoclaw_host,
+    shutdown_nekopower_host,
     time,
     uuid,
 )
@@ -377,6 +380,69 @@ def _forward_conversation_turn(event: Dict[str, Any]) -> bool:
         return False
 
 
+def _note_turn_for_task_agents(event: Dict[str, Any]) -> bool:
+    """Keep one message of the main dialogue in memory for the excerpt a new task agent session is handed.
+
+    A commission comes with one dispatched sentence and the user's last
+    words; what they refer to was said a few messages earlier. The NekoPower
+    host hands a commission that opens a new session the last few messages
+    as background, and takes them from here: this process is told of every
+    message anyway, so a dispatch asks the main server for nothing more.
+
+    Gated on NekoPower being on, as the plugin stores are gated on user
+    plugins: with it off nothing is dispatched, and a resident copy of what
+    was said would be retention that buys nothing. Memory only (a few
+    messages for each character, ``nekopower/host/conversation.py``); a
+    synchronous append, like the hops above. Nothing said is logged.
+    """
+    try:
+        from nekopower.host.conversation import recent_conversation
+
+        if not nekopower_on():
+            # Nothing is kept while it is off, and what was kept before it
+            # was switched off goes with the first message that comes by:
+            # switched on again, a commission is handed nothing from then.
+            recent_conversation().forget()
+            return False
+        return bool(recent_conversation().note_event(event))
+    except Exception:
+        logger.debug("[NekoPower] keeping a message for task agents failed")
+        return False
+
+
+def forget_turns_for_task_agents() -> None:
+    """Drop what was kept of the main dialogue for task agents: called when NekoPower is switched off.
+
+    Without this what was kept would stay until a message comes by
+    while it is off (``_note_turn_for_task_agents``), and switched on
+    again before one did, a commission would be handed what was said
+    before it was switched off.
+    """
+    try:
+        from nekopower.host.conversation import recent_conversation
+
+        recent_conversation().forget()
+    except Exception:
+        # Seen: with this failed, what was said before NekoPower was
+        # switched off is handed to a task agent once it is on again.
+        logger.warning("[NekoPower] dropping the messages kept for task agents failed", exc_info=True)
+
+
+def forget_turns_if_nekopower_is_off() -> None:
+    """Drop what was kept for task agents if NekoPower is off now: called the moment a capability switch goes off.
+
+    NekoPower is on with the master switch alone (``nekopower_on``), so a
+    capability switch going off drops nothing while the master switch is
+    on; with the master switch off, what was kept goes. A capability
+    switch goes off by the user's hand and by itself (a model that
+    cannot be reached, a tool that is not there any more); every
+    such place puts it off by ``_shared._put_switch_off``, which
+    calls this before anything is waited for.
+    """
+    if not nekopower_on():
+        forget_turns_for_task_agents()
+
+
 def _forward_conversation_fact(event: Dict[str, Any]) -> bool:
     """Forward an observed fact; never run plugin callbacks in this receive path."""
     if not _user_plugins_enabled():
@@ -420,9 +486,9 @@ def _resolve_session_language(session_language: Optional[str]) -> str:
             from utils.language_utils import is_supported_language_code
             if is_supported_language_code(session_language):
                 return str(session_language)
-            logger.debug("[NekoClaw] ignoring unsupported session language: %r", session_language)
+            logger.debug("[NekoPower] ignoring unsupported session language: %r", session_language)
         except Exception:
-            logger.debug("[NekoClaw] session language check failed", exc_info=True)
+            logger.debug("[NekoPower] session language check failed", exc_info=True)
     from utils.result_parser import _get_lang
     return _get_lang(None)
 
@@ -448,7 +514,7 @@ async def _handle_turn_check_request(event: Dict[str, Any]) -> None:
         _turn_checks_seen[event_id] = None
         while len(_turn_checks_seen) > _TURN_CHECKS_REMEMBERED:
             _turn_checks_seen.popitem(last=False)
-    if not nekoclaw_on() or not lanlan_name:
+    if not nekopower_on() or not lanlan_name:
         return
     user_text = event.get("user_text")
     reply_text = event.get("reply_text")
@@ -464,6 +530,7 @@ async def _handle_turn_check_request(event: Dict[str, Any]) -> None:
             user_text=user_text,
             reply_text=reply_text,
             conversation_id=event.get("conversation_id"),
+            source_message_ref=event.get("source_message_ref"),
             lang=_resolve_session_language(event.get("language")),
             external_intent=external_intent,
         )
@@ -481,8 +548,8 @@ async def _on_session_event(event: Dict[str, Any]) -> None:
         # First-real-client-session signal from main_server (sent on
         # ``greeting_check``). Restore persisted agent runtime intent now
         # — agent_server is fully ready (we're already receiving events),
-        # but we delayed restore to here so we don't trigger LLM probes
-        # and plugin lifecycle startup during the cold-start window
+        # but we delayed restore to here so we don't trigger the switch
+        # replay and plugin lifecycle startup during the cold-start window
         # before the user actually opens a session. The restore helper
         # has its own once-flag, so this is safe to spam.
         # Late import avoids the runtime -> routes initialization cycle while
@@ -499,6 +566,7 @@ async def _on_session_event(event: Dict[str, Any]) -> None:
     if event_type == "conversation_turn_observed":
         _forward_user_context(event)
         _forward_conversation_turn(event)
+        _note_turn_for_task_agents(event)
         return
     if event_type == "conversation_fact_observed":
         _forward_conversation_fact(event)
@@ -557,35 +625,44 @@ async def startup():
     # so that site covers all lazy modules; do not start another warmup here and compete for the startup GIL.
 
     os.environ["NEKO_PLUGIN_HOSTED_BY_AGENT"] = "true"
-    Modules.computer_use = ComputerUseAdapter()
     Modules.throttled_logger = ThrottledLogger(logger, interval=30.0)
     _region_task = asyncio.create_task(_settle_region())
     Modules._persistent_tasks.add(_region_task)
     _region_task.add_done_callback(Modules._persistent_tasks.discard)
 
+    # Whether the main page shows the task HUD: read once here, off the event loop, so that the
+    # status snapshot (built synchronously) only reads memory afterwards.
+    try:
+        from app.agent_task_hud import get_visible as _task_hud_visible
+
+        await asyncio.to_thread(_task_hud_visible)
+    except Exception as e:  # noqa: BLE001 - the snapshot reads it again when asked
+        logger.warning("[Agent] Failed to read the task HUD setting at start (exc_type=%s)", type(e).__name__)
+
     try:
         await _start_embedded_user_plugin_server()
     except Exception as e:
         logger.warning(f"[Agent] Failed to start embedded user plugin server: {e}")
-    # BrowserUse stays unloaded until its toggle, availability endpoint, or
-    # a task agent's call asks for it.
+    # No browser is found or started here: that happens when a task agent
+    # first calls a browser tool.
 
-    # Both CUA and BrowserUse share the agent LLM — default to "not connected"
-    # and probe in background.  The single check updates both capability caches.
-    _set_capability("computer_use", False, "connectivity check pending")
-    _set_capability("browser_use", False, "connectivity check pending")
+    # The keyboard-and-mouse and browser tools: "not ready" with no reason
+    # until the master switch comes on, which works out whether they can be
+    # used (``_refresh_tool_capabilities``). That only reads the
+    # configuration and looks for input and a browser; the agent model is
+    # never sent anything to see whether it answers. A model that does not
+    # shows when a task agent first uses it, and is reported with its reason.
+    _set_capability("computer_use", False, "")
+    _set_capability("browser_use", False, "")
     # Plugin capability = ready (embedded HTTP server is always up), but lifecycle
     # is NOT started here — it syncs with user_plugin_enabled (default OFF).
     # The lifecycle starts on-demand when the user toggles the plugin flag ON.
     _set_capability("user_plugin", True, "")
-    _llm_probe_task = asyncio.create_task(_fire_agent_llm_connectivity_check())
-    Modules._persistent_tasks.add(_llm_probe_task)
-    _llm_probe_task.add_done_callback(Modules._persistent_tasks.discard)
 
-    # NekoClaw host (task brain, task agents, capability gateway). This only tells
+    # NekoPower host (task brain, task agents, capability gateway). This only tells
     # it how to read this process's switches and what to call back; it is built
     # on the first dispatch. Must stay free of I/O: see the startup path rules.
-    mount_nekoclaw_host(_plugin_list_change_token)
+    mount_nekopower_host(_plugin_list_change_token)
 
     # Start ZeroMQ bridge for main_server events
     try:
@@ -615,11 +692,50 @@ async def startup():
     _bump_state_revision()
 
 
+def _kill_browser_at_last() -> None:
+    """Kill the browser the tools started: the last resort of a shutdown; never raises. Runs on a thread of its own."""
+    try:
+        builtin_provider.kill_browser()
+    except Exception as e:
+        logger.warning(f"[Agent] Killing the browser failed: {e}")
+
+
 @app.on_event("shutdown")
 async def shutdown():
     """Gracefully stop running tasks and release async resources."""
     global _loop_stall_watchdog
     logger.info("[Agent] Shutdown initiated — stopping running tasks")
+    from config.nekopower_settings import (
+        BROWSER_CLOSE_AT_SHUTDOWN_SECONDS,
+        BROWSER_KILL_AT_SHUTDOWN_SECONDS,
+        KEYS_RETRY_UNTIL_SHUTDOWN_SECONDS,
+    )
+
+    keys_retry_until = asyncio.get_running_loop().time() + KEYS_RETRY_UNTIL_SHUTDOWN_SECONDS
+    # Set first: whatever the steps below take, and whether or not the event
+    # loop gets round to them, the browser the tools started does not outlive
+    # this process (see ``BROWSER_KILL_AT_SHUTDOWN_SECONDS``). Cancelled once
+    # the browser has been closed.
+    browser_killed_at = asyncio.get_running_loop().time() + BROWSER_KILL_AT_SHUTDOWN_SECONDS
+    # Set by the timer before it kills, and read below instead of the loop's
+    # clock alone: the timer and the loop keep time apart, and the timer may
+    # fire a clock tick (about 15.6 ms on Windows) before the loop's clock
+    # reaches ``browser_killed_at``.
+    browser_last_resort_fired = threading.Event()
+
+    def browser_last_resort_kill() -> None:
+        browser_last_resort_fired.set()
+        _kill_browser_at_last()
+
+    browser_last_resort = threading.Timer(BROWSER_KILL_AT_SHUTDOWN_SECONDS, browser_last_resort_kill)
+    browser_last_resort.daemon = True
+    browser_last_resort.start()
+    # And no call of the built-in tools is carried out from here on. The
+    # browser is closed (or killed) once, further down; a task agent whose
+    # runtime is not stopped by then (the host is only waited for for a few
+    # seconds) would have its next browser call start another, with nobody
+    # left to close it.
+    builtin_provider.shut_down()
     # Release first so the synchronous cleanup below is not reported as stalls.
     if _loop_stall_watchdog is not None:
         try:
@@ -628,80 +744,152 @@ async def shutdown():
             logger.debug(f"[loop-stall] watchdog stop failed: {e}")
         _loop_stall_watchdog = None
 
-    try:
-        from utils.token_tracker import TokenTracker
-        TokenTracker.get_instance().save()
-    except Exception:
-        pass
+    cancellation = None
+    # Keep the launcher's last-resort budget: Main/Memory/Agent have 20/12/8
+    # seconds, leaving three seconds of cancellation grace below its 45 s cap.
+    cancellation_budget = ShutdownCancellationBudget(3.0)
+
+    async def step(factory, what):
+        nonlocal cancellation
+        cancellation = await run_shutdown_step(
+            factory,
+            what=what,
+            deadline_monotonic=None,
+            pending_cancellation=cancellation,
+            cancelled_budget_seconds=3.0,
+            cancellation_budget=cancellation_budget,
+            logger=logger,
+        )
 
     # The host first, while the plugin server it cancels runs on and the
     # bridge it reports through are still up. Bounded: see
     # HOST_SHUTDOWN_BUDGET_SECONDS. A no-op when nothing ever built the host.
-    await shutdown_nekoclaw_host()
+    await step(shutdown_nekopower_host, "Agent host cleanup")
+    # Keys can only be held by calls the host has just stopped. Release them
+    # now, local and quick, ahead of the steps that may spend the cancellation
+    # budget; like ``aclose``, keys first and the browser afterwards.
+    keys_released = False
+    keys_tried = False
 
-    if Modules.computer_use:
-        Modules.computer_use.cancel_running()
-    if Modules.browser_use:
-        try:
-            Modules.browser_use.cancel_running()
-        except Exception:
-            pass
+    async def release_held_keys():
+        nonlocal keys_released, keys_tried
+        keys_tried = True
+        keys_released = await asyncio.wait_for(builtin_provider.release_keys(), timeout=2.0)
+
+    await step(release_held_keys, "Agent held keys release")
+    if not keys_tried:
+        # The host's cleanup took all of the cancellation budget, so the step
+        # was skipped. Releasing the keys must not be: it is handed to a
+        # thread of its own and not waited for, like queueing the final save.
+        builtin_provider.release_keys_unwaited()
 
     for t in list(Modules._persistent_tasks):
         if not t.done():
             t.cancel()
 
-    try:
-        await _ensure_plugin_lifecycle_stopped()
-    except Exception as e:
-        logger.warning(f"[Agent] Plugin lifecycle cleanup error: {e}")
-
-    try:
-        await _stop_embedded_user_plugin_server()
-    except Exception as e:
-        logger.warning(f"[Agent] Embedded user plugin server cleanup error: {e}")
+    await step(_ensure_plugin_lifecycle_stopped, "Agent plugin lifecycle cleanup")
+    await step(_stop_embedded_user_plugin_server, "Agent embedded plugin server cleanup")
 
     bridge = Modules.agent_bridge
     if bridge is not None:
-        try:
+        async def stop_bridge():
             await bridge.stop()
             Modules.agent_bridge = None
             logger.debug("[Agent] ✅ ZMQ event bridge cleaned up")
-        except Exception as e:
-            logger.warning("[Agent] ⚠️ ZMQ event bridge cleanup error: %s", e)
+        await step(stop_bridge, "Agent ZMQ event bridge cleanup")
 
     all_tasks = list(Modules._persistent_tasks) + list(Modules._background_tasks)
     tasks_to_await = [t for t in all_tasks if not t.done()]
     for t in tasks_to_await:
         t.cancel()
     if tasks_to_await:
-        try:
+        async def drain_tasks():
             await asyncio.wait_for(
                 asyncio.gather(*tasks_to_await, return_exceptions=True),
                 timeout=5.0,
             )
-        except asyncio.TimeoutError:
-            logger.warning("[Agent] ⚠️ 部分后台任务取消超时")
+        await step(drain_tasks, "Agent background task cleanup")
     Modules._persistent_tasks.clear()
     Modules._background_tasks.clear()
 
-    # BrowserSession.keep_alive keeps Chromium running between tasks; closing
-    # the adapter is therefore required at service shutdown, not just task
-    # cancellation, to reap the browser subprocess tree.
-    await _close_browser_use_adapter()
+    async def close_builtin_tools():
+        # The browser the tools started stays open between tasks; it is closed
+        # at service shutdown. The host's shutdown above has cancelled every
+        # call that was under way.
+        # The launcher ends this process a few seconds after it began to shut
+        # down, and a browser that is still closing then would run on with
+        # nobody to close it. It is asked to close within what is left before
+        # the time it is killed at, and killed when it has not; with nothing
+        # left (the steps above took it all) it is not asked at all, and
+        # neither once the last resort has fired, whatever the loop's clock
+        # says is left: that browser is killed (or being killed) already.
+        left = min(BROWSER_CLOSE_AT_SHUTDOWN_SECONDS, browser_killed_at - asyncio.get_running_loop().time())
+        closed_in_time = False
+        last_resort_fired = browser_last_resort_fired.is_set()
+        if left > 0 and not last_resort_fired:
+            try:
+                await asyncio.wait_for(_close_browser(), timeout=left)
+                closed_in_time = True
+            except asyncio.TimeoutError:
+                pass  # Killed just below, like one there was no time left to ask.
+        if last_resort_fired:
+            logger.warning("[Agent] The browser was killed by the shutdown's last resort; killing it once more")
+        elif not closed_in_time:
+            logger.warning("[Agent] The browser did not close in time; killing it")
+        elif builtin_provider.browser_unclosed():
+            # It was asked in time and closing it failed. The browser is then
+            # kept to be closed the next time, and at a shutdown there is none.
+            closed_in_time = False
+            logger.warning("[Agent] The browser could not be closed; killing it")
+        if not closed_in_time:
+            try:
+                await asyncio.to_thread(builtin_provider.kill_browser)
+            except Exception as e:
+                logger.warning(f"[Agent] Killing the browser failed: {e}")
+        browser_last_resort.cancel()
+        # Keys were released right after the host stopped (see above). Not
+        # ``aclose``: a browser that was just killed would be waited for again.
 
-    cu = Modules.computer_use
-    # Waited for whether or not a call is on record as running: a cancelled
-    # call is taken off the record after a bounded wait even if its worker
-    # thread has not stopped. An idle adapter returns at once.
-    if cu is not None and hasattr(cu, "wait_for_completion"):
-        loop = asyncio.get_running_loop()
-        finished = await loop.run_in_executor(None, cu.wait_for_completion, 8.0)
-        if not finished:
-            logger.warning("[Agent] CUA thread did not stop within 8s at shutdown")
+    await step(close_builtin_tools, "Agent built-in tools cleanup")
+    if not keys_released:
+        # Something was still held (a key that would not come up, or a call
+        # whose thread was still at the keyboard): one more try, within what
+        # is left before ``KEYS_RETRY_UNTIL_SHUTDOWN_SECONDS`` (the shared
+        # budget only starts once the launcher cancels, which is after it has
+        # already given up on this process) and the cancellation budget. Not when the
+        # first one let go of everything. What is left is read in the retry
+        # itself, when it gets to run, not when it is scheduled.
+        async def retry_held_keys():
+            nonlocal keys_released
+            now = asyncio.get_running_loop().time()
+            deadline = min(now + 2.0, keys_retry_until)
+            if deadline <= now:
+                logger.warning("[Agent] Held keys release retry skipped: no time left before the launcher ends the process")
+                return
+            # Awaited in this task (no ``wait_for`` child that could start
+            # after the deadline and still hand the release to a thread).
+            async with asyncio.timeout_at(deadline):
+                keys_released = await builtin_provider.release_keys()
+
+        await step(retry_held_keys, "Agent held keys release retry")
+
+    try:
+        from utils.token_tracker import TokenTracker
+
+        # Submitting must survive an already exhausted cancellation budget.
+        token_save = TokenTracker.get_instance().submit_save(report_timeout=1.0)
+
+        async def save_stats():
+            await asyncio.shield(asyncio.wrap_future(token_save))
+
+        await step(save_stats, "Agent token usage save")
+    except Exception as exc:
+        logger.warning("[Agent] Token usage save failed during shutdown: %s", exc)
 
     logger.info("[Agent] Shutdown cleanup complete")
-    await _emit_agent_status_update()
+    await step(_emit_agent_status_update, "Agent final status")
+    if cancellation is not None:
+        raise cancellation
 
 
 @app.get("/health")
@@ -723,7 +911,7 @@ async def health():
 
 
 def _disabled_receipt(lang: str) -> Dict[str, Any]:
-    from nekoclaw.host.task_brain import Receipt
+    from nekopower.host.task_brain import Receipt
 
     receipt = Receipt(kind="no_capability", reason="disabled")
     return {
@@ -736,8 +924,8 @@ def _disabled_receipt(lang: str) -> Dict[str, Any]:
     }
 
 
-@app.post("/nekoclaw/dispatch")
-async def nekoclaw_dispatch(payload: Dict[str, Any]):
+@app.post("/nekopower/dispatch")
+async def nekopower_dispatch(payload: Dict[str, Any]):
     """Hand one sentence of hers to the task brain and return the receipt of its first round."""
     text = (payload or {}).get("text")
     lanlan_name = (payload or {}).get("lanlan_name")
@@ -746,7 +934,7 @@ async def nekoclaw_dispatch(payload: Dict[str, Any]):
     if not isinstance(lanlan_name, str) or not lanlan_name:
         raise HTTPException(400, "lanlan_name required")
     lang = _resolve_session_language((payload or {}).get("language"))
-    if not nekoclaw_on():
+    if not nekopower_on():
         # Nothing is built for a switch that is off.
         return _disabled_receipt(lang)
     user_text = (payload or {}).get("user_text")
@@ -757,11 +945,12 @@ async def nekoclaw_dispatch(payload: Dict[str, Any]):
         lanlan_name=lanlan_name,
         user_text=user_text if isinstance(user_text, str) else "",
         conversation_id=conversation_id if isinstance(conversation_id, str) and conversation_id else None,
+        source_message_ref=payload.get("source_message_ref"),
         lang=lang,
         source="dispatch",
     )
     logger.info(
-        "[NekoClaw] dispatch: lanlan=%s kind=%s reason=%s model_calls=%d",
+        "[NekoPower] dispatch: lanlan=%s kind=%s reason=%s model_calls=%d",
         lanlan_name, receipt.kind, receipt.reason or "-", receipt.model_calls,
     )
     return {
@@ -774,30 +963,30 @@ async def nekoclaw_dispatch(payload: Dict[str, Any]):
     }
 
 
-@app.post("/nekoclaw/query")
-async def nekoclaw_query(payload: Dict[str, Any]):
+@app.post("/nekopower/query")
+async def nekopower_query(payload: Dict[str, Any]):
     """Answer what is going on, or whether something can be done. No model is asked."""
     lanlan_name = (payload or {}).get("lanlan_name")
     if not isinstance(lanlan_name, str) or not lanlan_name:
         raise HTTPException(400, "lanlan_name required")
     text = (payload or {}).get("text")
     lang = _resolve_session_language((payload or {}).get("language"))
-    if not nekoclaw_on():
+    if not nekopower_on():
         return {"success": True, "text": _disabled_receipt(lang)["text"], "can_do": False}
     host = await ready_host()
     answer = await host.query(text if isinstance(text, str) else "", lanlan_name=lanlan_name, lang=lang)
     return {"success": True, "text": answer.text, "can_do": answer.can_do}
 
 
-@app.get("/nekoclaw/brief")
-async def nekoclaw_brief(lanlan_name: str, language: Optional[str] = None):
+@app.get("/nekopower/brief")
+async def nekopower_brief(lanlan_name: str, language: Optional[str] = None):
     """Return what is under way, one line each, for a new session's opening prompt.
 
     Called whenever a session starts, so it stays cheap: with the switch off,
     or with no ledger file and no host built yet, nothing is built and nothing
     is opened.
     """
-    if not nekoclaw_on() or not lanlan_name:
+    if not nekopower_on() or not lanlan_name:
         return {"success": True, "lines": []}
     if peek_host() is None and not await ledger_exists():
         return {"success": True, "lines": []}
@@ -847,6 +1036,235 @@ async def cancel_task(task_id: str):
     return {"success": True, "task_id": task_id, "status": "cancelled"}
 
 
+def _console_token() -> str:
+    """What the console routes ask for: the token of this launch, as the plugin server holds it."""
+    from config import AUTOSTART_CSRF_TOKEN
+
+    return AUTOSTART_CSRF_TOKEN
+
+
+async def _console_switches() -> Dict[str, Any]:
+    """Where the switches stand, for the console. Unlike ``/agent/state``, the notification is left for the main page."""
+    from app import agent_server as _agent_server_facade
+
+    from app.agent_task_hud import get_visible as _task_hud_visible
+
+    from .capabilities import _agent_flags_snapshot, _model_images_status
+
+    return {
+        "enabled": bool(Modules.analyzer_enabled),
+        "flags": _agent_flags_snapshot(),
+        "gate": _agent_server_facade._check_agent_api_gate(),
+        "capabilities": dict(Modules.capability_cache or {}),
+        "model_images": await _model_images_status(),
+        # Never set here means shown, as the main page has it by default. Off the event loop:
+        # the first read is from the file.
+        "task_hud_visible": (await asyncio.to_thread(_task_hud_visible)) is not False,
+    }
+
+
+async def _console_character() -> Optional[str]:
+    """The character the user is with now: whose task agent one made from the console is."""
+    try:
+        _, her_name, *_rest = await get_config_manager().aget_character_data()
+    except Exception as exc:  # noqa: BLE001 - told as "no character", not as a failure of the page
+        logger.warning("[Agent] reading the current character for the console failed (exc_type=%s)", type(exc).__name__)
+        return None
+    return her_name if isinstance(her_name, str) and her_name else None
+
+
+async def _console_read_browser() -> Dict[str, Any]:
+    return await get_browser_settings()
+
+
+async def _console_write_browser(payload: Dict[str, Any]) -> Dict[str, Any]:
+    return await set_browser_settings(payload)
+
+
+# What the console pages read and change of the task agents; the plugin
+# server passes their requests on to here. Mounted at the end of the module,
+# once the browser settings routes it leans on are defined.
+
+
+@app.get("/builtin/activity")
+async def builtin_activity():
+    """Return which commission is using the keyboard and mouse, and which the browser, right now.
+
+    The same payloads the ``builtin_activity`` events carry, for a display
+    that starts late and missed them.
+    """
+    from nekopower.host.capabilities import BUILTIN_GROUPS
+
+    from .nekopower_builtins import activity_payload, occupant
+
+    items = []
+    for group in BUILTIN_GROUPS:
+        commission_id = occupant(group)
+        if commission_id:
+            items.append(activity_payload(group, "started", commission_id))
+    return {"activity": items}
+
+
+@app.post("/builtin/stop")
+async def stop_builtin(payload: Optional[Dict[str, Any]] = None):
+    """Stop the commission that is using the keyboard and mouse or the browser.
+
+    What the Esc key of the banner calls. ``group`` names one of the two;
+    without it both are stopped. Stopping is what cancelling the task from
+    the task window does: the status is written first, the call under way is
+    cancelled, and the desktop or the browser is given back.
+
+    ``commission_id`` names the commission the stop is meant for, the one
+    the banner was up for (the ``builtin_activity`` events carry it). A
+    request can be on its way for a while; when it arrives, that commission
+    may have ended and another may be using the group. That one is left
+    alone, and the answer says so: ``not_stopped`` lists each group that
+    was asked about and is used by another commission, with the commission
+    that uses it. Without ``commission_id`` (``null`` is taken as not
+    given) whoever uses the group is stopped, as before, and the answer has
+    no ``not_stopped``. Anything else that is not a non-empty string is
+    refused.
+    """
+    from nekopower.host.capabilities import BUILTIN_GROUPS
+
+    from .nekopower_builtins import occupant
+
+    group = (payload or {}).get("group")
+    if group is not None and group not in BUILTIN_GROUPS:
+        raise HTTPException(400, "unknown group")
+    meant = (payload or {}).get("commission_id")
+    if meant is not None and (not isinstance(meant, str) or not meant):
+        raise HTTPException(400, "commission_id must be a non-empty string")
+    host = peek_host()
+    stopped = []
+    not_stopped = []
+    # Each one is asked once, whether or not it could be ended: one that
+    # holds both groups is not stopped twice.
+    tried = set()
+    for name in ([group] if group else list(BUILTIN_GROUPS)):
+        commission_id = occupant(name)
+        if not commission_id or commission_id in tried or host is None:
+            continue
+        if meant is not None and commission_id != meant:
+            not_stopped.append({"group": name, "commission_id": commission_id})
+            logger.info("[Agent] Esc was meant for task %s; %s is used by task %s, which is left alone", meant, name, commission_id)
+            continue
+        tried.add(commission_id)
+        try:
+            commission = await host.abort(commission_id, reason="Stopped with Esc")
+        except Exception:  # noqa: BLE001 - one that cannot be ended does not keep the other groups going
+            # (Its task agent could not be closed, say: it is not said to be
+            # stopped, and the next Esc tries it again.)
+            logger.warning("[Agent] Esc could not end task %s (%s)", commission_id, name, exc_info=True)
+            continue
+        if commission is not None and commission.status == "cancelled":
+            stopped.append(commission_id)
+            logger.info("[Agent] Task %s stopped with Esc (%s)", commission_id, name)
+    answer: Dict[str, Any] = {"success": True, "stopped": stopped}
+    if meant is not None:
+        answer["not_stopped"] = not_stopped
+    return answer
+
+
+# Held while the browser settings are read, changed and saved: two requests
+# that save at the same time must not each compare against what the other is
+# about to replace (the later one would take its settings for unchanged and
+# leave open a browser that was started with the other's). Taken in the
+# worker thread, never on the event loop.
+_browser_settings_lock = threading.Lock()
+
+
+def _browser_settings_view() -> Dict[str, Any]:
+    """Return the browser settings with the browsers found on this computer. Blocking (file checks)."""
+    from nekopower.builtin.browser.launcher import find_browsers
+    from nekopower.builtin.browser.settings import MODES, BrowserSettingsStore
+
+    store = BrowserSettingsStore()
+    return {
+        "settings": store.load().to_json(),
+        "modes": list(MODES),
+        "browsers": [
+            {"kind": install.kind, "name": install.name, "executable": install.executable}
+            for install in find_browsers()
+        ],
+    }
+
+
+@app.get("/builtin/browser/settings")
+async def get_browser_settings():
+    """Return which browser the browser tools use and how; for the settings page of the console."""
+    return await asyncio.to_thread(_browser_settings_view)
+
+
+@app.post("/builtin/browser/settings")
+async def set_browser_settings(payload: Dict[str, Any]):
+    """Change which browser the browser tools use and how.
+
+    ``mode`` is ``own_profile`` (the user's browser with a profile directory
+    of its own) or ``attach`` (the browser the user is using, which they
+    allow in that browser). The change applies to the next browser that is
+    started: one that is open is closed, so the next call starts anew. When
+    what is saved is what was there before, nothing changes for the browser
+    that is open, and it is left alone.
+    """
+    from nekopower.builtin.browser.launcher import is_browser_executable
+    from nekopower.builtin.browser.settings import MODES, BrowserSettings, BrowserSettingsStore
+
+    payload = payload or {}
+
+    def apply() -> tuple[Dict[str, Any], bool]:
+        store = BrowserSettingsStore()
+        current = store.load()
+        mode = payload.get("mode", current.mode)
+        if mode not in MODES:
+            raise ValueError("unknown mode")
+        executable = payload.get("executable", current.executable)
+        if executable is not None and (not isinstance(executable, str) or not executable.strip()):
+            executable = None
+        if executable is not None and not os.path.isfile(executable):
+            raise ValueError("executable not found")
+        if executable is not None and not is_browser_executable(executable):
+            # It is started with a debugging port: not any program will do.
+            raise ValueError("executable is not a browser the tools can drive (Chrome, Edge, Brave or Chromium)")
+        headless = payload.get("headless", current.headless)
+        wanted = BrowserSettings(mode=mode, executable=executable, headless=headless is True)
+        store.save(wanted)
+        return _browser_settings_view(), wanted != current
+
+    def apply_alone() -> tuple[Dict[str, Any], bool]:
+        with _browser_settings_lock:
+            return apply()
+
+    try:
+        view, changed = await asyncio.to_thread(apply_alone)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    # A browser named in the settings may be one the search does not find,
+    # or the one it found may have been set aside: looked for afresh.
+    from .capabilities import _browser_availability, _forget_browser_search
+
+    _forget_browser_search()
+    if changed:
+        # The browser that is open was started with the settings before, and
+        # for as long as it is connected to, no other is started: whichever
+        # of them changed (the program, the window, whose browser it is),
+        # the new one only takes once that browser is closed. Said before
+        # the task that closes it has had a turn: stopping every task stops
+        # that one too, and must then close the browser itself.
+        builtin_provider.browser_no_longer_wanted()
+        _create_tracked_task(_close_browser(update_capability=False))
+    # Whether there is a browser to drive may just have changed: said at
+    # once. Left as it was (no browser found, from before one was named
+    # here), the tools would stay refused until something asked again.
+    # In a worker thread: it reads the configuration from the disk.
+    started = _capability_ticket_now()
+    browser_ready, browser_reason = await asyncio.to_thread(_browser_availability)
+    _set_capability("browser_use", browser_ready, browser_reason, started=started)
+    _bump_state_revision()
+    await _emit_agent_status_update()
+    return {"success": True, **view}
+
+
 @app.post("/api/agent/tasks/{task_id}/complete")
 async def complete_deferred_task(task_id: str):
     """Callback for a plugin: its deferred work for this task is done.
@@ -876,6 +1294,12 @@ async def complete_deferred_task(task_id: str):
 
 def hud_status(status: str) -> str:
     """Return a commission's status in the words the task endpoints have always used."""
-    from .nekoclaw_mount import _HUD_STATUS
+    from .nekopower_mount import _HUD_STATUS
 
     return _HUD_STATUS.get(status, status)
+
+
+app.include_router(build_console_router(
+    ready_host, _console_token, character=_console_character,
+    switches=_console_switches, read_browser=_console_read_browser, write_browser=_console_write_browser,
+))

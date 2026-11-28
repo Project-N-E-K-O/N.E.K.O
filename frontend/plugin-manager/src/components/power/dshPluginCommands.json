@@ -1,0 +1,28 @@
+{
+  "comment": "Command lines and whether they may add a dsh plugin. Read by the tests of both recognizers: askWarning in ask.ts and adds_plugin in nekopower/dsh/plugin_command.py, so the two cannot drift apart.",
+  "adds": [
+    "neko-dsh-plugin add dsh-free-search",
+    "& \"C:\\N.E.K.O\\nekopower\\dsh\\bin\\neko-dsh-plugin.cmd\" add dsh-free-search",
+    "cd D:/blog && NEKO-DSH-PLUGIN  add a b",
+    "neko-dsh-plugin --silent add dsh-free-search",
+    "neko-dsh-plugin \"add\" dsh-free-search",
+    "neko-dsh-plugin 'add' dsh-free-search",
+    "neko-dsh-plugin update dsh-free-search",
+    "neko-dsh-plugin install",
+    "neko-dsh-plugin",
+    "neko-dsh-plugin list && neko-dsh-plugin add x",
+    "neko-dsh-plugin allow-version some-plugin@1.0.0 --dsh-version 0.2.1-rc.2 --accept-risk",
+    "neko-dsh-plugin\nlist",
+    "neko-dsh-plugin\r\nneko-dsh-plugin list"
+  ],
+  "local": [
+    "neko-dsh-plugin list",
+    "neko-dsh-plugin LS",
+    "neko-dsh-plugin remove dsh-free-search",
+    "neko-dsh-plugin.cmd why dsh-free-search",
+    "neko-dsh-plugin 'list'",
+    "neko-dsh-plugin revoke-version some-plugin@1.0.0 --dsh-version 0.2.1-rc.2",
+    "pnpm add dsh-free-search",
+    "npm run build && echo done"
+  ]
+}

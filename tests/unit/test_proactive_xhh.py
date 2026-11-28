@@ -1111,10 +1111,21 @@ async def test_community_mode_fetches_only_neko_community_cards():
 
 @pytest.mark.asyncio
 async def test_fetch_xhh_feed_injects_saved_credentials_when_available():
-    client = _FakeClient()
+    class IsolatedClient(_FakeClient):
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return False
+
+    auth_client = IsolatedClient()
+    shared_client = _FakeClient()
     with patch(
+        "utils.web_scraper.trending_content.httpx.AsyncClient",
+        return_value=auth_client,
+    ), patch(
         "utils.web_scraper.trending_content.get_external_http_client",
-        return_value=client,
+        return_value=shared_client,
     ), patch(
         "utils.web_scraper.trending_content.load_cookies_from_file",
         return_value={"user_heybox_id": "123", "user_pkey": "secret"},
@@ -1123,7 +1134,8 @@ async def test_fetch_xhh_feed_injects_saved_credentials_when_available():
 
     assert result["success"] is True
     assert result["authenticated"] is True
-    _, kwargs = client.call
+    assert shared_client.call is None
+    _, kwargs = auth_client.call
     cookie_header = kwargs["headers"]["Cookie"]
     assert "user_heybox_id=123" in cookie_header
     assert "user_pkey=secret" in cookie_header
@@ -1136,19 +1148,30 @@ async def test_fetch_xhh_feed_falls_back_to_public_when_credentials_fail():
         def json(self):
             return {"status": "fail", "message": "credential expired"}
 
-    class FallbackClient(_FakeClient):
-        def __init__(self):
-            super().__init__()
-            self.calls = []
+    class IsolatedAuthClient(_FakeClient):
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return False
 
         async def get(self, url, **kwargs):
-            self.calls.append((url, kwargs))
-            return AuthFailedResponse() if len(self.calls) == 1 else _FakeResponse()
+            self.call = (url, kwargs)
+            return AuthFailedResponse()
 
-    client = FallbackClient()
+    class PublicSharedClient(_FakeClient):
+        async def get(self, url, **kwargs):
+            self.call = (url, kwargs)
+            return _FakeResponse()
+
+    auth_client = IsolatedAuthClient()
+    shared_client = PublicSharedClient()
     with patch(
+        "utils.web_scraper.trending_content.httpx.AsyncClient",
+        return_value=auth_client,
+    ), patch(
         "utils.web_scraper.trending_content.get_external_http_client",
-        return_value=client,
+        return_value=shared_client,
     ), patch(
         "utils.web_scraper.trending_content.load_cookies_from_file",
         return_value={"user_heybox_id": "123", "user_pkey": "expired"},
@@ -1157,9 +1180,56 @@ async def test_fetch_xhh_feed_falls_back_to_public_when_credentials_fail():
 
     assert result["success"] is True
     assert result["authenticated"] is False
-    assert len(client.calls) == 2
-    assert "Cookie" in client.calls[0][1]["headers"]
-    assert "Cookie" not in client.calls[1][1]["headers"]
+    assert auth_client.call is not None
+    assert shared_client.call is not None
+    assert "Cookie" in auth_client.call[1]["headers"]
+    assert "Cookie" not in shared_client.call[1]["headers"]
+
+
+@pytest.mark.asyncio
+async def test_fetch_xhh_feed_does_not_leak_set_cookie_into_shared_client(monkeypatch):
+    """B19-001: Set-Cookie from authenticated XHH attempt must not pollute shared fallback jar."""
+    seen_cookies: list[str | None] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        seen_cookies.append(request.headers.get("Cookie"))
+        if request.headers.get("Cookie"):
+            return httpx.Response(
+                200,
+                headers={"Set-Cookie": "xhh_session=secret123; Path=/; HttpOnly"},
+                json={"status": "fail", "message": "expired"},
+            )
+        return httpx.Response(200, json=SAMPLE_PAYLOAD)
+
+    transport = httpx.MockTransport(handle)
+    real_async_client = httpx.AsyncClient
+    async with real_async_client(transport=transport) as shared_client:
+        monkeypatch.setattr(trending_content, "get_external_http_client", lambda: shared_client)
+        monkeypatch.setattr(
+            trending_content,
+            "load_cookies_from_file",
+            lambda _platform: {"user_heybox_id": "123", "user_pkey": "expired"},
+        )
+        monkeypatch.setattr(
+            trending_content.httpx,
+            "AsyncClient",
+            lambda **kwargs: real_async_client(transport=transport, **kwargs),
+        )
+        result = await fetch_xhh_feed_content(limit=1)
+
+        assert result["success"] is True
+        assert result["authenticated"] is False
+        assert len(seen_cookies) == 2
+        assert seen_cookies[0] is not None
+        assert seen_cookies[1] is None
+        assert len(shared_client.cookies) == 0
+
+        # Subsequent unauthenticated call after credentials are removed must not carry cookies.
+        monkeypatch.setattr(trending_content, "load_cookies_from_file", lambda _platform: {})
+        unauth_result = await fetch_xhh_feed_content(limit=1)
+        assert unauth_result["success"] is True
+        assert unauth_result["authenticated"] is False
+        assert seen_cookies[2] is None
 
 
 @pytest.mark.asyncio

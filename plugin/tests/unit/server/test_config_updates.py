@@ -54,6 +54,33 @@ def test_update_plugin_config_validates_protected_fields(monkeypatch: pytest.Mon
 
 
 @pytest.mark.plugin_unit
+def test_update_plugin_config_does_not_persist_reserved_permissions_table(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config_path = tmp_path / "plugin.toml"
+    config_path.write_text(
+        "[plugin]\nid='demo'\nentry='plugin.main:Main'\n[runtime]\nenabled=true\n",
+        encoding="utf-8",
+    )
+    written: dict[str, object] = {}
+
+    monkeypatch.setattr(module, "get_plugin_update_lock", lambda plugin_id: threading.Lock())
+    monkeypatch.setattr(module, "ensure_plugin_runtime_config", lambda plugin_id: config_path)
+    monkeypatch.setattr(module, "dump_toml_bytes", lambda payload: written.setdefault("payload", payload) and b"ok")
+    monkeypatch.setattr(module, "atomic_write_bytes", lambda **kwargs: None)
+    monkeypatch.setattr(module, "load_plugin_config", lambda plugin_id: {"config": {}})
+
+    module.update_plugin_config(
+        "demo", {"runtime": {"enabled": False}, "permissions": {"ask": {}}}
+    )
+
+    assert written["payload"] == {
+        "plugin": {"id": "demo", "entry": "plugin.main:Main"},
+        "runtime": {"enabled": False},
+    }
+
+
+@pytest.mark.plugin_unit
 def test_update_plugin_config_atomic_write_after_file_lock_released(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

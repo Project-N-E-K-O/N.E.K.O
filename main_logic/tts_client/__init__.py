@@ -31,7 +31,14 @@ import websockets
 
 from utils.config_manager import get_config_manager
 from utils.tts.native_voice_registry import get_native_tts_worker
+from utils.tts.providers.deepseek import DEEPSEEK_PRESET_CATALOG, DEEPSEEK_TTS_URL
 from utils.tts.providers.mimo import MIMO_PRESET_CATALOG
+from utils.qwen_token_plan_tts import (
+    QWEN_TOKEN_PLAN_TTS_DEFAULT_BASE_URL,
+    QWEN_TOKEN_PLAN_TTS_DEFAULT_MODEL,
+    QWEN_TOKEN_PLAN_TTS_DEFAULT_VOICE,
+    QWEN_TOKEN_PLAN_TTS_PRESET_CATALOG,
+)
 from utils.tts import provider_registry as _tts_providers
 from utils.logger_config import get_module_logger
 
@@ -40,17 +47,20 @@ from ._infra import (
     TTS_SHUTDOWN_SENTINEL,
     TTS_AUDIO_DONE_SENTINEL,
     TTS_SOFT_FLUSH_SENTINEL,
+    TTS_PRECONNECT_SENTINEL,
     AudioDoneEmitter,
     _resample_audio,
     _parse_env_float,
     _enqueue_error,
     _ws_is_open,
     log_configured_tts_failure,
+    configured_tts_unavailable_worker,
     SentenceBuffer,
     _AudioQueueProxy,
     _non_bistream_tts_main_loop,
     _run_sentence_tts_worker,
 )
+from ._preconnect import worker_supports_preconnect
 from ._telemetry import _record_tts_telemetry
 from ._registry_meta import TTSProviderMeta, TTS_PROVIDER_REGISTRY
 
@@ -97,6 +107,7 @@ from .workers.vllm_omni import (
     _vllm_omni_clone_is_selected,
     _vllm_omni_clone_resolve,
 )
+from .workers.deepseek import deepseek_tts_worker, _deepseek_is_selected, _deepseek_resolve
 from .workers.mimo import (
     mimo_tts_worker,
     _get_mimo_chat_completions_url,
@@ -108,6 +119,11 @@ from .workers.doubao import (
     doubao_tts_worker,
     _doubao_is_selected,
     _doubao_resolve,
+)
+from .workers.qwen_token_plan import (
+    qwen_token_plan_tts_worker,
+    _qwen_token_plan_is_selected,
+    _qwen_token_plan_resolve,
 )
 from .workers.gptsovits import (
     gptsovits_tts_worker,
@@ -152,17 +168,17 @@ __all__ = [
     "get_tts_worker", "_get_voice_meta", "_grok_voice_id_is_xai_custom",
     "_XAI_CUSTOM_VOICE_PATTERN", "logger",
     # shared infrastructure
-    "TTS_SHUTDOWN_SENTINEL", "TTS_AUDIO_DONE_SENTINEL", "TTS_SOFT_FLUSH_SENTINEL", "AudioDoneEmitter",
+    "TTS_SHUTDOWN_SENTINEL", "TTS_AUDIO_DONE_SENTINEL", "TTS_SOFT_FLUSH_SENTINEL", "TTS_PRECONNECT_SENTINEL", "AudioDoneEmitter",
     "_resample_audio", "_parse_env_float", "_enqueue_error",
     "_ws_is_open", "SentenceBuffer", "_AudioQueueProxy", "_non_bistream_tts_main_loop",
-    "_run_sentence_tts_worker", "_record_tts_telemetry",
+    "_run_sentence_tts_worker", "_record_tts_telemetry", "worker_supports_preconnect",
     "TTSProviderMeta", "TTS_PROVIDER_REGISTRY",
     # workers
     "step_realtime_tts_worker", "free_realtime_tts_worker",
     "grok_streaming_tts_worker", "qwen_realtime_tts_worker",
     "cosyvoice_vc_tts_worker", "cogtts_tts_worker", "gemini_tts_worker",
-    "openai_tts_worker", "vllm_omni_tts_worker", "mimo_tts_worker",
-    "doubao_tts_worker",
+    "openai_tts_worker", "vllm_omni_tts_worker", "mimo_tts_worker", "deepseek_tts_worker",
+    "doubao_tts_worker", "qwen_token_plan_tts_worker",
     "gptsovits_tts_worker", "minimax_tts_worker", "elevenlabs_tts_worker",
     "local_cosyvoice_worker", "dummy_tts_worker",
     # provider constants
@@ -187,12 +203,14 @@ __all__ = [
     "_gptsovits_is_selected", "_gptsovits_resolve",
     "_custom_openai_tts_is_selected", "_custom_openai_tts_resolve",
     "tts_provider_falls_back_on_failure", "tts_provider_uses_configured_preset_voice",
-    "selected_configured_tts_preset_provider_key",
+    "selected_configured_tts_preset_provider_key", "selected_realtime_output_tts_provider_key",
+    "realtime_output_tts_provider_ready",
     "_minimax_clone_is_selected", "_minimax_clone_resolve",
     "_elevenlabs_clone_is_selected", "_elevenlabs_clone_resolve",
     "_cosyvoice_clone_is_selected", "_cosyvoice_clone_resolve",
     "_mimo_is_selected", "_mimo_resolve",
     "_doubao_is_selected", "_doubao_resolve",
+    "_qwen_token_plan_is_selected", "_qwen_token_plan_resolve",
     "_glm_clone_is_selected", "_glm_clone_resolve",
 ]
 
@@ -524,6 +542,8 @@ _tts_providers.register(_tts_providers.TTSProvider(
     probe_sub_type='openai_tts',
     configured_preset_voice=True,
     fallback_on_failure=True,
+    realtime_output_override=True,
+    uses_configured_default_voice=True,
     # The generic "custom" option is already inserted into every model dropdown.
     # Keep this registry entry available as metadata without adding a duplicate.
     tts_config_visible=False,
@@ -562,6 +582,74 @@ def selected_configured_tts_preset_provider_key(core_config, cm, voice_id):
         # On voice-ownership lookup failure, continue legacy routing without logging raw exceptions that may contain credentials.
         log_configured_tts_failure("configured", "ownership")
         return None
+
+
+def _tts_provider_is_explicit_choice(provider_key, core_config):
+    """Whether the TTS dropdown names ``provider_key`` rather than a follow_* default."""
+    choices = {
+        str(core_config.get(field) or "").strip().lower()
+        for field in ("TTS_PROVIDER", "ttsProvider", "ttsModelProvider")
+    }
+    return provider_key in choices
+
+
+def _is_canonical_catalog_voice(catalog, voice_id):
+    """Whether ``voice_id`` is a catalog voice name itself, not a generic alias."""
+    voice, recognized = catalog.normalize(voice_id)
+    return bool(recognized and voice_id and voice_id.casefold() == str(voice).casefold())
+
+
+def selected_realtime_output_tts_provider_key(core_config, cm, voice_id):
+    """Return a selected provider that handles realtime sessions' speech output.
+
+    The provider takes over only on a deliberate choice: the user picked it in
+    the TTS dropdown (an assist-API default such as assistApi=mimo does not
+    count), or the character uses one of its catalog voices by exact name.
+    A stored custom voice keeps the established routing.
+    """
+    voice_id = str(voice_id or "").strip()
+    provider = _tts_providers.selected_provider(
+        _tts_providers.DispatchContext(core_config=core_config, cm=cm, voice_id=voice_id)
+    )
+    if not provider or not provider.realtime_output_override:
+        return None
+    # Checked first: this lookup carries no voice metadata, so a saved voice
+    # sharing a catalog name may belong to another provider.
+    if voice_id and cm.voice_id_exists_in_any_storage(voice_id):
+        return None
+    if provider.preset_catalog and _is_canonical_catalog_voice(provider.preset_catalog, voice_id):
+        return provider.key
+    if not _tts_provider_is_explicit_choice(provider.key, core_config):
+        return None
+    return provider.key
+
+
+def realtime_output_tts_provider_ready(core_config, cm, voice_id, provider_key):
+    """Whether ``provider_key`` resolves to a worker that can actually speak."""
+    provider = _tts_providers.get(provider_key)
+    if provider is None:
+        return False
+    if (
+        provider.uses_configured_default_voice
+        and not provider.preset_catalog
+        and not provider.default_voice
+        and not str(voice_id or "").strip()
+        and not str(core_config.get(provider.voice_field) or "").strip()
+    ):
+        # No character voice, no fallback voice and no built-in default: the
+        # worker would reject every request, so keep the realtime voice.
+        return False
+    try:
+        worker, _, resolved_key = provider.resolve(_tts_providers.DispatchContext(
+            core_config=core_config, cm=cm, voice_id=str(voice_id or "").strip(),
+        ))
+    except Exception:
+        # The exception may echo credentials or signed URLs; log only the stage.
+        log_configured_tts_failure(provider_key, "realtime_output")
+        return False
+    # Both placeholders fail at once (configured_tts_unavailable_worker covers an
+    # invalid endpoint), so taking over would only trade the realtime voice away.
+    return resolved_key is not None and worker not in (dummy_tts_worker, configured_tts_unavailable_worker)
 
 
 # Cloned-voice providers (hosted SaaS, selected by voice_meta.provider). Priority 30/40/50
@@ -643,7 +731,27 @@ _tts_providers.register(_tts_providers.TTSProvider(
     is_selected=_mimo_is_selected,
     resolve=_mimo_resolve,
     preset_catalog=MIMO_PRESET_CATALOG,
+    # Speaks for realtime sessions only when chosen in the TTS dropdown or by
+    # an exact catalog voice; assistApi=mimo alone keeps the realtime voice.
+    realtime_output_override=True,
     tts_dropdown_only=False,
+))
+
+_tts_providers.register(_tts_providers.TTSProvider(
+    key='deepseek',
+    kind='hosted',
+    # A selected DeepSeek voice or explicit TTS choice takes precedence over MiMo's assist default.
+    priority=59,
+    capabilities=frozenset({'preset'}),
+    is_selected=_deepseek_is_selected,
+    resolve=_deepseek_resolve,
+    preset_catalog=DEEPSEEK_PRESET_CATALOG,
+    realtime_output_override=True,
+    uses_configured_default_voice=True,
+    tts_dropdown_only=False,
+    default_url=DEEPSEEK_TTS_URL,
+    default_voice=DEEPSEEK_PRESET_CATALOG.default_voice,
+    api_key_field='assistApiKeyDeepseek',
 ))
 
 _tts_providers.register(_tts_providers.TTSProvider(
@@ -653,6 +761,8 @@ _tts_providers.register(_tts_providers.TTSProvider(
     capabilities=frozenset({'clone'}),
     is_selected=_doubao_is_selected,
     resolve=_doubao_resolve,
+    realtime_output_override=True,
+    uses_configured_default_voice=True,
     default_url='https://openspeech.bytedance.com',
     default_model='seed-icl-2.0',
     default_voice='',
@@ -661,6 +771,36 @@ _tts_providers.register(_tts_providers.TTSProvider(
     probe_sub_type='doubao_tts',
     tts_dropdown_only=True,
     tts_config_visible=False,
+))
+
+# Alibaba Bailian Token Plan TTS (qwen-audio-3.0-tts-plus): selected only by the TTS dropdown
+# (ttsModelProvider=='qwen_token_plan'). Priority 58: after clones, and ahead of MiMo's assistApi=mimo
+# default (60) so the explicit dropdown choice wins, like deepseek (59); a character whose voice is
+# another provider's custom voice (doubao / glm clones) keeps that provider, like MiMo. Same slot layout as
+# doubao_tts (ttsModelUrl / ttsModelId / ttsVoiceId, key from the dedicated Key Book entry
+# assistApiKeyQwenTokenPlan or the TTS slot), but visible in the TTS dropdown because it has preset
+# voices rather than clones. Token Plan keys only go to the whitelisted HTTPS hosts
+# (utils.qwen_token_plan_tts.is_qwen_token_plan_url); voices other than this model's fall back to
+# its default voice inside the worker.
+_tts_providers.register(_tts_providers.TTSProvider(
+    key='qwen_token_plan',
+    kind='hosted',
+    priority=58,
+    capabilities=frozenset({'preset'}),
+    is_selected=_qwen_token_plan_is_selected,
+    resolve=_qwen_token_plan_resolve,
+    preset_catalog=QWEN_TOKEN_PLAN_TTS_PRESET_CATALOG,
+    realtime_output_override=True,
+    uses_configured_default_voice=True,
+    default_url=QWEN_TOKEN_PLAN_TTS_DEFAULT_BASE_URL,
+    default_model=QWEN_TOKEN_PLAN_TTS_DEFAULT_MODEL,
+    default_voice=QWEN_TOKEN_PLAN_TTS_DEFAULT_VOICE,
+    # The settings page shows the Key Book key read-only in the TTS slot.
+    api_key_field='assistApiKeyQwenTokenPlan',
+    editable_endpoint=True,
+    probe_kind='http_tts',
+    probe_sub_type='qwen_token_plan',
+    tts_dropdown_only=True,
 ))
 
 # GLM cloned voices (selected by voice_meta.provider=='glm_tts', priority 66 immediately after doubao).

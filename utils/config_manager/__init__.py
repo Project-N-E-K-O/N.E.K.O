@@ -231,6 +231,14 @@ def _ensure_config_manager_migrated():
             "[ConfigManager] migrate_openclaw_url_port 抛异常（已忽略）: %s",
             type(exc).__name__,
         )
+    # Same pattern: persist the emotion/summary -> recognition/memory field rename once.
+    try:
+        _config_manager.migrate_renamed_tiers()
+    except Exception as exc:
+        logger.warning(
+            "[ConfigManager] migrate_renamed_tiers 抛异常（已忽略）: %s",
+            type(exc).__name__,
+        )
     # After basic config/memory migration, perform a one-time soft migration of N.E.K.O/memory under legacy
     # Documents/AppData paths: migrate only entries associated with characters, leaving unassociated entries
     # for manual frontend legacy-cleanup UI rather than deleting them automatically at startup.
@@ -267,6 +275,28 @@ def get_config_manager(app_name=None, *, migrate=True):
     if migrate:
         _ensure_config_manager_migrated()
     return _config_manager
+
+
+def peek_app_docs_dir():
+    """The runtime data root (``app_docs_dir``) without creating the config manager.
+
+    Constructing ConfigManager probes and creates the app-data directories,
+    which read-only callers must not do. This answers from the manager when
+    this process already has one; otherwise from ``NEKO_STORAGE_SELECTED_ROOT``,
+    which the launcher exports to every service it starts and which
+    ConfigManager itself takes as ``app_docs_dir`` (see
+    StorageRootsMixin.__init__; only when resolving the storage policy raises
+    does it fall back to the default root instead). None when neither is
+    available.
+    """
+    if _config_manager is not None:
+        return Path(_config_manager.app_docs_dir)
+    selected_root = os.environ.get("NEKO_STORAGE_SELECTED_ROOT", "").strip()
+    if not selected_root:
+        return None
+    from utils.storage_policy import normalize_runtime_root
+
+    return normalize_runtime_root(selected_root)
 
 
 # Convenience functions
@@ -321,6 +351,14 @@ def save_workshop_path(workshop_path):
 def persist_user_workshop_folder(workshop_path):
     """Persist the actual Steam Workshop path into the config file (written only once per startup)"""
     return get_config_manager().persist_user_workshop_folder(workshop_path)
+
+def register_steam_workshop_library_roots(roots):
+    """Remember the Workshop content roots of all Steam libraries (runtime)"""
+    return get_config_manager().register_steam_workshop_library_roots(roots)
+
+def get_steam_workshop_library_roots():
+    """Get the Workshop content roots of all known Steam libraries (runtime)"""
+    return get_config_manager().get_steam_workshop_library_roots()
 
 def get_steam_workshop_path():
     """Get the Steam Workshop root directory path (runtime)"""

@@ -39,6 +39,7 @@ from config.prompts.prompts_proactive import (
     MINI_GAME_INVITE_LINES_BY_GAME,
     MINI_GAME_INVITE_OPTION_LABEL_OVERRIDES,
     MINI_GAME_INVITE_OPTION_LABELS,
+    THEATER_STORY_INVITE_LINES,
     normalize_mini_game_invite_locale,
 )
 from config.prompts.prompts_sys import _loc
@@ -348,19 +349,95 @@ def _mini_game_launch_url(game_type: str, lanlan_name: str, session_id: str) -> 
         "lanlan_name": lanlan_name,
         "session_id": session_id,
     }
+    if game_type == "theater":
+        selected = _mini_game_invite_get_state(lanlan_name).get("theater_selection")
+        query["market"] = "selected" if selected else "random"
+        if selected:
+            query.update(share_id=selected["id"], market_revision=selected["revision"],
+                         file_sha256=selected["file_sha256"])
     separator = "&" if "?" in url_template else "?"
     return f"{url_template}{separator}{_urlencode(query)}"
 
 
-def _pick_mini_game_type(lanlan_name: str | None = None, *, manager=None) -> str | None:
+async def _select_theater_story():
+    """Freeze a public random selection before delivery; never read player memory."""
+    import httpx
+    from services.theater.market_selection import market_story
+    try:
+        return await market_story()
+    except (httpx.HTTPError, ValueError, KeyError):
+        logger.info("Theater invite skipped: no compatible Market story is available")
+        return None
+
+
+async def _compose_theater_invite_line(
+    selected: dict[str, Any], invite_lang: str, *, character_prompt: str, master_name: str,
+) -> str:
+    """Let the character invite the user in its own voice; empty means use the fallback line.
+
+    One bounded call to the conversation model. A line that names the theater
+    itself, runs long or comes back empty is discarded rather than repaired.
+    """
+    if not (selected.get("background") or selected.get("invitation")):
+        return ""
+    import asyncio
+    import json
+    from config.prompts.prompts_theater import (
+        THEATER_INVITE_COMPOSE_PROMPT, THEATER_INVITE_LANGUAGE_NAMES, THEATER_INVITE_META_TERMS,
+        THEATER_INVITE_SYSTEM_PROMPT_WATERMARK,
+    )
+    from utils.config_manager import get_config_manager
+    from utils.llm_client import create_chat_llm_async, HumanMessage, SystemMessage
+    from utils.tokenize import truncate_to_tokens
+
+    locale = normalize_mini_game_invite_locale(invite_lang)
+    limit = 80 if locale in {"zh", "zh-TW", "ja", "ko"} else 240
+    instruction = THEATER_INVITE_COMPOSE_PROMPT.format(
+        master_name=(master_name or "").strip() or "the user",
+        language=THEATER_INVITE_LANGUAGE_NAMES.get(locale, "English"), limit=limit,
+    )
+    persona = (character_prompt or "").strip()
+    system = (f"{persona}\n\n{instruction}" if persona else instruction) + THEATER_INVITE_SYSTEM_PROMPT_WATERMARK
+    data = {"background": truncate_to_tokens(selected.get("background") or "", 2048)}
+    if selected.get("invitation"):
+        data["author_invitation"] = truncate_to_tokens(selected["invitation"], 256)
+    try:
+        async with asyncio.timeout(8):
+            api = await get_config_manager().aget_model_api_config("conversation")
+            async with await create_chat_llm_async(
+                api["model"], api["base_url"], api["api_key"], provider_type=api.get("provider_type"),
+                timeout=8, max_retries=0, max_completion_tokens=200,
+            ) as client:
+                response = await client.ainvoke([
+                    SystemMessage(content=system),
+                    HumanMessage(content=json.dumps(data, ensure_ascii=False)),
+                ])
+    except Exception:
+        # Do not retry; the author's line or the localized line is spoken instead.
+        logger.info("Theater invite line unavailable; using the fallback line")
+        return ""
+    text = " ".join(str(response.content or "").split()).strip("\"“”「」『』")
+    lowered = text.lower()
+    if not text or len(text) > limit or "{" in text or any(term in lowered for term in THEATER_INVITE_META_TERMS):
+        logger.info("Theater invite line rejected; using the fallback line")
+        return ""
+    return text
+
+
+def _pick_mini_game_type(
+    lanlan_name: str | None = None, *, manager=None,
+    user_toggle_enabled: bool = True,
+    theater_toggle_enabled: bool = False,
+) -> str | None:
     """Pick an available mini-game type with invite copy configured.
 
-    Games missing invite lines are skipped, and character-specific cooldowns are
-    respected when a character name is provided.
+    Games missing invite lines are skipped. Theater uses its own toggle; all other
+    games use the mini-game toggle. Character cooldowns apply to both.
     """
     candidates = [
         g for g in MINI_GAME_INVITE_AVAILABLE_GAMES
         if g in MINI_GAME_INVITE_LINES_BY_GAME
+        and (theater_toggle_enabled if g == "theater" else user_toggle_enabled)
     ]
     if 'watch-together' in candidates:
         from main_logic.watch_together.preparation import is_available
@@ -385,17 +462,18 @@ async def _attempt_mini_game_invite_delivery(
     invite_lang: str,
     master_name: str,
     user_toggle_enabled: bool = True,
+    theater_toggle_enabled: bool = False,
     push_options_compat: bool,
     memory_dir: str | Path | None = None,
     round_id: str | None = None,
+    character_prompt: str = "",
 ) -> dict | None:
     """Deliver an eligible invite for either the legacy or staged caller.
 
     Short-circuit conditions (any one unmet → return None and the caller
     continues the original Phase1/2 pipeline):
       - MINI_GAME_INVITE_ENABLED=False (global kill switch, the production master toggle)
-      - user_toggle_enabled=False (the user turned the
-        ``proactiveMiniGameInviteEnabled`` toggle off in the frontend CHAT_MODE_CONFIG)
+      - both source toggles are off (mini-games and theater have independent switches)
       - activity_snapshot is None (privacy mode / tracker unavailable — be conservative, do not send)
       - propensity == 'restricted_screen_only' (focused_work / non-casual gaming)
       - state == 'away' (user absent; nobody to receive the invite)
@@ -407,8 +485,8 @@ async def _attempt_mini_game_invite_delivery(
       - on the non-force-first path, random() >= MINI_GAME_INVITE_TRIGGER_PROBABILITY
 
     Debug flag: when ``config.MINI_GAME_INVITE_FORCE_GAME_TYPE`` is non-None it
-    bypasses every gate except ``MINI_GAME_INVITE_ENABLED`` (including the user
-    toggle, cooldown, probability, unfinished_thread, snapshot None / propensity
+    bypasses every gate except ``MINI_GAME_INVITE_ENABLED`` and the selected source
+    toggle (including cooldown, probability, unfinished_thread, snapshot None / propensity
     / away, and the force-first decision), pinning game_type to the flag value.
     Local manual testing only; keep it None in production.
 
@@ -442,7 +520,9 @@ async def _attempt_mini_game_invite_delivery(
     # flags must not bypass users explicitly disabling mini-game sources in the frontend.
     force_game = MINI_GAME_INVITE_FORCE_GAME_TYPE
     debug_force = bool(force_game)
-    if debug_force and not user_toggle_enabled:
+    if debug_force and not (
+        theater_toggle_enabled if force_game == "theater" else user_toggle_enabled
+    ):
         return None
     if debug_force:
         if force_game not in MINI_GAME_INVITE_LINES_BY_GAME:
@@ -459,7 +539,7 @@ async def _attempt_mini_game_invite_delivery(
         # path, making printed diagnostics recognizable.
         force_first = True
     else:
-        if not user_toggle_enabled:
+        if not (user_toggle_enabled or theater_toggle_enabled):
             return None
         if activity_snapshot is None:
             return None
@@ -483,15 +563,18 @@ async def _attempt_mini_game_invite_delivery(
         # ``state.delivered_at is None``, reset by PR-B later choices and process restarts.
         # Codex P1 review: without this, force-first treats previously invited users as new
         # and forces another invitation after every restart.
-        await _ensure_proactive_chat_totals_loaded(**state_storage_kwargs)
-        never_delivered = not _was_invite_ever_delivered(lanlan_name)
-        total_so_far = _get_proactive_chat_total(lanlan_name)
+        loaded = await _ensure_proactive_chat_totals_loaded(**state_storage_kwargs)
         force_first = (
-            never_delivered
-            and total_so_far >= max(0, MINI_GAME_INVITE_NEW_USER_FORCE_AT - 1)
+            loaded
+            and not _was_invite_ever_delivered(lanlan_name, **state_storage_kwargs)
+            and _get_proactive_chat_total(lanlan_name, **state_storage_kwargs)
+            >= max(0, MINI_GAME_INVITE_NEW_USER_FORCE_AT - 1)
         )
 
-        game_type = _pick_mini_game_type(lanlan_name, manager=mgr)
+        game_type = _pick_mini_game_type(
+            lanlan_name, manager=mgr, user_toggle_enabled=user_toggle_enabled,
+            theater_toggle_enabled=theater_toggle_enabled,
+        )
         if game_type is None:
             logger.warning(
                 "[%s] mini-game invite skipped: no game_type available "
@@ -506,7 +589,14 @@ async def _attempt_mini_game_invite_delivery(
             import random as _random
             if _random.random() >= MINI_GAME_INVITE_TRIGGER_PROBABILITY:
                 return None
-    invite_text = _render_mini_game_invite_line(game_type, invite_lang, master_name)
+    selected_theater = await _select_theater_story() if game_type == "theater" else None
+    if game_type == "theater" and selected_theater is None:
+        return None
+    invite_text = (await _compose_theater_invite_line(
+        selected_theater, invite_lang, character_prompt=character_prompt, master_name=master_name,
+    ) if selected_theater else "") or _render_mini_game_invite_line(
+        game_type, invite_lang, master_name, selected_story=selected_theater,
+    )
     if not invite_text:
         return None
 
@@ -585,6 +675,7 @@ async def _attempt_mini_game_invite_delivery(
     _record_proactive_chat(lanlan_name, invite_text, channel='mini_game')
     _mini_game_invite_record_delivered(lanlan_name, invite_session_id)
     _mini_game_invite_get_state(lanlan_name)['last_game_type'] = game_type
+    _mini_game_invite_get_state(lanlan_name)['theater_selection'] = selected_theater
     # Atomically persist counter+1 and ever_delivered=True under one lock; both must
     # persist together. Partial totals increment with stale ever_delivered=False
     # repeats force-first after restart (CodeRabbit Major).
@@ -649,6 +740,7 @@ async def _maybe_deliver_mini_game_invite(
     invite_lang: str,
     master_name: str,
     user_toggle_enabled: bool = True,
+    theater_toggle_enabled: bool = False,
 ) -> dict | None:
     """Preserve the pre-stage-5.5 direct delivery behavior and signature."""
     return await _attempt_mini_game_invite_delivery(
@@ -658,6 +750,7 @@ async def _maybe_deliver_mini_game_invite(
         invite_lang=invite_lang,
         master_name=master_name,
         user_toggle_enabled=user_toggle_enabled,
+        theater_toggle_enabled=theater_toggle_enabled,
         push_options_compat=True,
     )
 
@@ -670,8 +763,10 @@ async def _run_mini_game_invite_short_circuit(
     invite_lang: str,
     master_name: str,
     user_toggle_enabled: bool = True,
+    theater_toggle_enabled: bool = False,
     memory_dir: str | Path | None = None,
     round_id: str | None = None,
+    character_prompt: str = "",
 ) -> MiniGameInviteShortCircuit | None:
     """Run the invite attempt and expose framework-neutral short-circuit data."""
     state_storage_kwargs = (
@@ -684,8 +779,10 @@ async def _run_mini_game_invite_short_circuit(
         invite_lang=invite_lang,
         master_name=master_name,
         user_toggle_enabled=user_toggle_enabled,
+        theater_toggle_enabled=theater_toggle_enabled,
         push_options_compat=False,
         round_id=round_id,
+        character_prompt=character_prompt,
         **state_storage_kwargs,
     )
     if body is None:
@@ -709,8 +806,28 @@ async def _run_mini_game_invite_short_circuit(
     )
 
 
+# 句末标点集合：中英日韩俄西葡的句末符号，用于判断摘要是否已自带结尾。
+# 作者可能自带定界符（内置三部的 meta.title 就都带《》），而各语言模板会再套一层自己的，
+# 不剥就会出现《《…》》或“《…》”。只剥首尾完全配对的一层；ASCII 引号不在表内，
+# 因为它在标题里既可能是定界符也可能是正文的一部分，剥错比不剥更糟。
+_TITLE_DELIMITER_PAIRS = (
+    ("《", "》"), ("『", "』"), ("「", "」"), ("〈", "〉"),
+    ("“", "”"), ("‘", "’"), ("«", "»"),
+)
+
+
+def _bare_story_title(title: str) -> str:
+    """Strip one matched pair of outer delimiters so each locale template adds its own."""
+    text = (title or "").strip()
+    for opening, closing in _TITLE_DELIMITER_PAIRS:
+        if len(text) > 2 and text.startswith(opening) and text.endswith(closing):
+            return text[1:-1].strip()
+    return text
+
+
 def _render_mini_game_invite_line(
     game_type: str, invite_lang: str, master_name: str,
+    *, selected_story: dict[str, Any] | None = None,
 ) -> str:
     """Render the canned invite line for one game.
 
@@ -720,15 +837,27 @@ def _render_mini_game_invite_line(
     ``_loc``'s Chinese fallback to the Simplified line — a wrong-script invite, not
     an error, so nothing downstream would ever notice.
 
+    For theater this is the fallback when the character's own invitation could
+    not be generated: the author's invitation when the story is written in the
+    invite's language, otherwise a localized line that stays inside the fiction.
+
     Extracted from ``_attempt_mini_game_invite_delivery`` so this is reachable
     without standing up an activity snapshot and a delivery-capable manager: the
     locale behaviour is otherwise only testable through the whole invite flow.
     """
-    template = _loc(
-        MINI_GAME_INVITE_LINES_BY_GAME[game_type],
-        normalize_mini_game_invite_locale(invite_lang),
-    )
+    locale = normalize_mini_game_invite_locale(invite_lang)
+    template = _loc(MINI_GAME_INVITE_LINES_BY_GAME[game_type], locale)
     safe_master = (master_name or '').strip()
+    if game_type == "theater" and selected_story and selected_story.get("title"):
+        invitation = " ".join(str(selected_story.get("invitation") or "").split())
+        # Theater packages are written in Chinese; a Chinese author line is not
+        # spoken to a user who chats in another language.
+        if invitation and locale in {"zh", "zh-TW"}:
+            return f"{safe_master}，{invitation}" if safe_master else invitation
+        rendered = _loc(THEATER_STORY_INVITE_LINES, locale).format(
+            master_name=safe_master, story_title=_bare_story_title(selected_story["title"]),
+        )
+        return " ".join(rendered.split())
     try:
         return template.format(master_name=safe_master).strip()
     except Exception:
@@ -899,34 +1028,158 @@ async def _push_mini_game_invite_resolved(
         )
 
 
-# Match ASCII / Cyrillic keywords with word-boundary regex; other scripts (CJK / Hiragana /
-# Katakana / Hangul) use substrings. Python `\b` tests \w boundaries, but East Asian characters
-# are also \w, lacking internal boundaries; word-boundary matching misses 我好啊.
-# Cyrillic and Latin are letter-based, so \b works. Codex P1: prevent English false matches
-# such as yes in yesterday and no in no idea.
-_LETTER_ONLY_KW_RE = re.compile(r"^[A-Za-z0-9\s'\-Ѐ-ӿ]+$")
+# Match ASCII / accented Latin / Greek / Cyrillic keywords with letter-boundary
+# lookarounds; other scripts (CJK / Hiragana / Katakana / Hangul) use clause-anchored
+# matching so embedded substrings in ordinary sentences do not trigger false positives.
+_LETTER_ONLY_KW_RE = re.compile(r"^[0-9A-Za-zÀ-ɏͰ-ϿЀ-ӿ\s'\-]+$")
+_LETTER_BOUNDARY_CLASS = "0-9A-Za-zÀ-ɏͰ-ϿЀ-ӿ"
+_PUNCT_CLAUSE_SPLIT_RE = re.compile(
+    r"[,，.。!！?？;；:：、…~～\-—()（）\[\]【】「」『』\"']+"
+)
+_CJK_PREFIX_RE = re.compile(
+    r"^(?:但是|但|可是|不过|不過|嗯|唔|呃|哦|噢|啊|那|就|我们|我們|我|咱们|咱們|咱|先|还是|還是|"
+    r"现在|現在|今天|这次|這次|好吧|行吧|好啊|好的|行啊|来吧|來吧|うん|うーん|いや|でも|"
+    r"じゃあ|それ|ちょっと|また|もう|あとで|いま|응|어|음|아니|나는|나도|나|난|지금|좀|일단)*+$"
+)
+_CJK_SUFFIX_RE = re.compile(
+    r"^(?:吧|呀|啊|呢|啦|哦|嘛|呗|唄|咯|喔|哈|呵|了|的|儿|兒|玩|说|說|再说|再說|"
+    r"再玩|再聊|再看|一会|一會|一下|~|等下|等会|等會|一起玩|谢谢|謝謝|よ|ね|な|わ|さ|ぞ|ぜ|"
+    r"だ|です|ます|かな|かも|か|する|요|네|지|야|만|에|은|는|다|가)*+$"
+)
 
 
 _KEYWORD_PATTERN_CACHE: dict[str, "re.Pattern[str]"] = {}
+_ZH_ALL_KEYWORDS = frozenset(
+    kw
+    for locale in ("zh", "zh-TW")
+    for bucket in MINI_GAME_INVITE_KEYWORDS.get(locale, {}).values()
+    for kw in bucket
+)
+_ZH_ACCEPT_KEYWORDS = frozenset(
+    kw
+    for locale in ("zh", "zh-TW")
+    for kw in MINI_GAME_INVITE_KEYWORDS.get(locale, {}).get("accept", ())
+)
+_ZH_CLAUSE_OPEN_ACCEPT_KEYWORDS = frozenset({"好啊", "行啊", "来吧", "來吧"})
+_ZH_MODAL_CLAUSE_BREAK_RE = re.compile(r"^(?:[儿兒])?[吧呀啊呢啦哦嘛呗唄咯喔哈呵]")
+_ZH_LE_CLAUSE_BREAK_KEYWORDS = frozenset(
+    {"不玩", "不想", "不要", "没空", "沒空", "算了", "拒绝", "拒絕"}
+)
+_ZH_HAODE_CONTINUATION_RE = re.compile(r"^(?:我们|我們|我|咱们|咱們|咱|来|來|一起)")
+_ZH_DECLINE_OBJECT_RE = re.compile(
+    r"^(?:玩(?:这个|這個|那个|那個)?(?:小游戏|小遊戲|游戏|遊戲)?"
+    r"|(?:这个|這個|那个|那個)(?:小游戏|小遊戲|游戏|遊戲)?"
+    r"|(?:小游戏|小遊戲|游戏|遊戲))"
+)
+
+
+def _cjk_affixes_match(keyword: str, prefix: str, suffix: str) -> bool:
+    if not _CJK_PREFIX_RE.fullmatch(prefix):
+        return False
+    # Allow emphatic keyword reduplication (e.g. "不要不要", "不行不行", "算了算了").
+    if len(keyword) >= 2:
+        while suffix.startswith(keyword):
+            suffix = suffix[len(keyword):]
+    # Never treat a question ending in 吗/嗎 as affirmative consent
+    # (e.g. "一起玩需要下载吗", "好啊需要下载吗", "好的我们要下载吗").
+    if keyword in _ZH_ACCEPT_KEYWORDS and suffix.endswith(("吗", "嗎")):
+        return False
+    # Clause-initial Chinese accept phrases ending in a particle
+    # (never noun modifiers like "好的衣服" or noun compounds like "来吧台坐坐")
+    # accept trailing continuations; decline/later priority still wins when
+    # another clause declines or defers.
+    if keyword in _ZH_CLAUSE_OPEN_ACCEPT_KEYWORDS:
+        if keyword in {"来吧", "來吧"} and suffix.startswith(("台", "臺")):
+            return False
+        return True
+    if keyword == "好的" and _ZH_HAODE_CONTINUATION_RE.match(suffix):
+        return True
+    # Refusals and deferrals can name the game or object before trailing particles.
+    if keyword == "算了":
+        suffix = suffix.removeprefix("不玩")
+    if keyword in {"算了", "不玩", "不想", "没空", "沒空", "不要"}:
+        suffix = _ZH_DECLINE_OBJECT_RE.sub("", suffix)
+    elif keyword in {"等下", "等会", "等會", "回头", "回頭", "稍后", "稍後", "晚点", "晚點"}:
+        suffix = suffix.removeprefix("再看看")
+    # A Chinese clause-closing modal particle after the keyword starts a fresh clause
+    # (e.g. "好的呀我来", "算了吧我不玩", "等下吧我在忙").
+    if keyword in _ZH_ALL_KEYWORDS and _ZH_MODAL_CLAUSE_BREAK_RE.match(suffix):
+        return True
+    # Unambiguous Chinese decline keywords closed by "了" can be followed by any
+    # continuation (e.g. "不玩了谢谢", "不要了我在忙").
+    if keyword in _ZH_LE_CLAUSE_BREAK_KEYWORDS and suffix.startswith("了"):
+        return True
+    if not _CJK_SUFFIX_RE.fullmatch(suffix):
+        return False
+    # Korean "그래" only takes polite "요" ("그래요") as an affirmative reply;
+    # other Hangul suffixes form distinct discourse connectors or predicates
+    # (e.g. "그래서", "그래도", "그래야").
+    if keyword == "그래" and suffix and suffix != "요":
+        return False
+    return True
+
+
+def _match_east_asian_candidate(keyword: str, candidate: str) -> bool:
+    # A conversational reply has only short particles around the keyword.
+    # Bound the text inspected for each possible keyword position.
+    if len(candidate) > len(keyword) + 64:
+        return False
+    if candidate == keyword:
+        return True
+    start = 0
+    while True:
+        idx = candidate.find(keyword, start)
+        if idx < 0:
+            break
+        prefix = candidate[:idx]
+        suffix = candidate[idx + len(keyword):]
+        if _cjk_affixes_match(keyword, prefix, suffix):
+            return True
+        start = idx + 1
+    return False
 
 
 def _keyword_matches(keyword: str, norm_text: str) -> bool:
-    """Locale-aware substring/word-boundary match.
+    """Locale-aware boundary matching for mini-game invite keywords.
 
-    Keywords made of ASCII / digits / Cyrillic / spaces / apostrophes / hyphens
-    go through a word-boundary regex (``\\b...\\b``); other scripts (CJK /
-    Hiragana / Katakana / Hangul) use substring matching — Python's regex counts
-    those characters as \\w, so adding \\b would cause misses (in "我好啊" there
-    is no boundary before '好')."""  # noqa: DOCSTRING_CJK
+    Keywords made of Latin / accented Latin / Greek / Cyrillic / digits /
+    spaces / apostrophes / hyphens use explicit letter-class boundary
+    lookarounds; East Asian script keywords (CJK / Hiragana / Katakana /
+    Hangul) require clause-anchored matching with bounded conversational
+    prefixes and particles so embedded substrings in ordinary sentences do not
+    trigger false positives.
+    """
     if not keyword or not norm_text:
         return False
     if _LETTER_ONLY_KW_RE.fullmatch(keyword):
         pattern = _KEYWORD_PATTERN_CACHE.get(keyword)
         if pattern is None:
-            pattern = re.compile(r'\b' + re.escape(keyword) + r'\b', re.IGNORECASE)
+            pattern = re.compile(
+                rf"(?<![{_LETTER_BOUNDARY_CLASS}])"
+                + re.escape(keyword)
+                + rf"(?![{_LETTER_BOUNDARY_CLASS}])",
+                re.IGNORECASE,
+            )
             _KEYWORD_PATTERN_CACHE[keyword] = pattern
         return bool(pattern.search(norm_text))
-    return keyword in norm_text
+    kw_tokens = keyword.split()
+    kw_token_count = len(kw_tokens)
+    for punct_clause in _PUNCT_CLAUSE_SPLIT_RE.split(norm_text):
+        tokens = punct_clause.split()
+        if not tokens:
+            continue
+        if kw_token_count <= 1:
+            for token in tokens:
+                if _match_east_asian_candidate(keyword, token):
+                    return True
+        else:
+            if len(tokens) < kw_token_count:
+                continue
+            for idx in range(len(tokens) - kw_token_count + 1):
+                span = " ".join(tokens[idx : idx + kw_token_count])
+                if _match_east_asian_candidate(keyword, span):
+                    return True
+    return False
 
 
 def _match_mini_game_invite_keyword(text: str) -> str | None:

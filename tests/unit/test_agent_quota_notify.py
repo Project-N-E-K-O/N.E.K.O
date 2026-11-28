@@ -144,3 +144,38 @@ def test_reserve_agent_quota_atomically_keeps_required_final_unit(
         (tmp_path / "agent_quota.json").read_text(encoding="utf-8")
     )
     assert persisted == {"date": date.today().isoformat(), "used": 2}
+
+
+def test_free_daily_quota_meters_even_when_agent_model_is_paid(tmp_path, monkeypatch):
+    """Plugin host-follow calls hold their own free credentials: the separately
+    configured (paid) Agent model must not disable their metering."""
+    calls = []
+    ConfigManager.register_quota_exceeded_notifier(lambda used, limit: calls.append((used, limit)))
+
+    cm = ConfigManager.__new__(ConfigManager)
+    cm.config_dir = tmp_path
+    cm.project_config_dir = tmp_path
+    cm.app_name = "N.E.K.O"
+    cm._verbose = False
+    monkeypatch.setattr(cm, "get_model_api_config", lambda model_type: {"model": "qwen3.6-plus-2026-04-02"})
+    monkeypatch.setattr(cm, "ensure_config_directory", lambda: None)
+    monkeypatch.setattr(ConfigManager, "_free_agent_daily_limit", 2)
+
+    # The agent-gated variant stays unmetered for a paid agent model.
+    ok, info = cm.consume_agent_daily_quota(source="agent")
+    assert ok is True and info["limited"] is False
+
+    # The credential-based variant meters against the shared counter regardless.
+    ok, info = cm.consume_free_daily_quota(source="plugin:alpha:analysis")
+    assert ok is True and info["limited"] is True and info["used"] == 1
+    ok, info = cm.consume_free_daily_quota(source="plugin:alpha:analysis")
+    assert ok is True and info["used"] == 2
+    ok, info = cm.consume_free_daily_quota(source="plugin:alpha:analysis")
+    assert ok is False and info["used"] == 2 and info["limit"] == 2
+    assert calls == [(2, 2)]
+
+    # Both variants share one counter file: the agent-gated path, when the
+    # agent model IS free, sees the units the plugin path already consumed.
+    monkeypatch.setattr(cm, "get_model_api_config", lambda model_type: {"model": "free-agent-model"})
+    ok, info = cm.consume_agent_daily_quota(source="agent")
+    assert ok is False and info["used"] == 2

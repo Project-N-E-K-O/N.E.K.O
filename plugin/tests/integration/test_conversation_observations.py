@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import socket
+import sys
 from pathlib import Path
 
 import ormsgpack
@@ -116,9 +117,16 @@ async def observation_runtime(monkeypatch, tmp_path):
         push.close()
         context.term()
         await asyncio.to_thread(runner.stop)
+        # The runner must have released its listeners. SO_REUSEADDR, as libzmq
+        # sets on its own TCP listeners: without it a connection left in
+        # TIME_WAIT on the port fails the bind with EADDRINUSE, which happens
+        # intermittently when the suite runs under pytest-xdist.
         for port in ports:
             sock = socket.socket()
             try:
+                # Not on Windows: there SO_REUSEADDR would bind over a live listener.
+                if sys.platform != "win32":
+                    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                 sock.bind(("127.0.0.1", port))
             finally:
                 sock.close()

@@ -71,6 +71,7 @@ class InboundBodySizeLimitMiddleware:
         multipart_methods: tuple[str, ...] = (),
         max_multipart_body_bytes: int | None = None,
         multipart_preflight=None,
+        multipart_path_limits: dict[str, int] | None = None,
         json_path_limits: dict[str, int] | None = None,
     ):
         self.app = app
@@ -78,6 +79,10 @@ class InboundBodySizeLimitMiddleware:
         self.json_path_limits = {
             str(path).rstrip("/"): int(limit)
             for path, limit in (json_path_limits or {}).items()
+        }
+        self.multipart_path_limits = {
+            str(path).rstrip("/"): int(limit)
+            for path, limit in (multipart_path_limits or {}).items()
         }
         self.multipart_path_prefix = (multipart_path_prefix or "").rstrip("/")
         self.multipart_methods = frozenset(method.upper() for method in multipart_methods)
@@ -95,16 +100,25 @@ class InboundBodySizeLimitMiddleware:
             return
 
         content_length: bytes | None = None
-        content_type: bytes = b""
+        content_types: list[bytes] = []
         for key, value in scope.get("headers") or ():
             lowered = key.lower()
             if lowered == b"content-length":
                 content_length = value
             elif lowered == b"content-type":
-                content_type = value
+                content_types.append(value)
 
+        content_type = content_types[0] if content_types else b""
+        has_multipart_content_type = any(
+            value.strip().lower().startswith(b"multipart/") for value in content_types
+        )
         configured_route = self._matches_configured_route(scope)
-        bounded_multipart = configured_route and self._is_bounded_multipart(content_type)
+        path_multipart_limit = self._multipart_path_limit(scope)
+        is_multipart = has_multipart_content_type
+        bounded_multipart = (
+            (configured_route and self.max_multipart_body_bytes is not None and is_multipart)
+            or (path_multipart_limit is not None)
+        )
         # Trigger preflight by route, not content-type: these route handlers declare
         # Form/File parameters, so FastAPI parses the body before entering the handler and its
         # equivalent local-access/CSRF checks. Running preflight only for multipart lets cross-origin
@@ -115,9 +129,14 @@ class InboundBodySizeLimitMiddleware:
                 await rejected(scope, receive, send)
                 return
 
-        maximum = (
-            self.max_multipart_body_bytes if bounded_multipart else self._non_multipart_limit(scope)
-        )
+        if bounded_multipart:
+            maximum = (
+                path_multipart_limit
+                if path_multipart_limit is not None
+                else self.max_multipart_body_bytes
+            )
+        else:
+            maximum = self._non_multipart_limit(scope)
         if self._exceeds_limit(
             content_length, content_type, bounded_multipart=bounded_multipart, maximum=maximum,
         ):
@@ -163,6 +182,16 @@ class InboundBodySizeLimitMiddleware:
         return path == self.multipart_path_prefix or path.startswith(
             f"{self.multipart_path_prefix}/"
         )
+
+    def _multipart_path_limit(self, scope) -> int | None:
+        """Exact-path cap for configured POST/PUT multipart upload endpoints."""
+        if (
+            self.multipart_path_limits
+            and scope.get("method", "").upper() in {"POST", "PUT"}
+        ):
+            path = str(scope.get("path") or "").rstrip("/")
+            return self.multipart_path_limits.get(path)
+        return None
 
     def _non_multipart_limit(self, scope) -> int:
         """Global cap, or the exact-path POST override from ``json_path_limits``."""

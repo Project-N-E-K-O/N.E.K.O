@@ -13,7 +13,7 @@ import os
 import sys
 from queue import Queue
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import ANY, AsyncMock, MagicMock
 
 import pytest
 
@@ -208,6 +208,74 @@ async def test_prepare_proactive_delivery_counts_recent_ui_engagement(
     )
 
     assert prepared is False
+
+
+async def test_prepare_proactive_delivery_auto_start_does_not_self_block(
+    monkeypatch,
+):
+    """Background auto-start refreshes lifecycle activity but must not impersonate user input."""
+    mgr = _make_mgr()
+    mgr.is_goodbye_silent = MagicMock(return_value=False)
+    mgr.is_active = False
+    mgr.websocket = object()
+    mgr.last_user_activity_time = 10.0
+    mgr.last_user_engagement_time = None
+    patch_module_clock(monkeypatch, proactive_core, time=lambda: 100.0)
+
+    async def background_start(*_args, **_kwargs):
+        mgr.session = SimpleNamespace(_conversation_history=[])
+        # start_session intentionally refreshes this for idle-session lifecycle.
+        mgr.last_user_activity_time = 100.0
+
+    mgr.start_session = AsyncMock(side_effect=background_start)
+
+    prepared = await LLMSessionManager.prepare_proactive_delivery(
+        mgr,
+        min_idle_secs=10.0,
+    )
+
+    assert prepared is True
+    assert mgr.current_speech_id is not None
+    mgr.start_session.assert_awaited_once()
+
+
+async def test_prepare_proactive_delivery_auto_start_still_blocks_new_activity_before_claim(
+    monkeypatch,
+):
+    """Only the auto-start refresh is ignored; later activity must still preempt."""
+    import memory.anti_repeat as anti_repeat
+
+    mgr = _make_mgr()
+    mgr.is_goodbye_silent = MagicMock(return_value=False)
+    mgr.is_active = False
+    mgr.websocket = object()
+    mgr.last_user_activity_time = 10.0
+    mgr.last_user_engagement_time = None
+    patch_module_clock(monkeypatch, proactive_core, time=lambda: 101.0)
+
+    async def background_start(*_args, **_kwargs):
+        mgr.session = SimpleNamespace(_conversation_history=[])
+        # Internal lifecycle refresh caused by the proactive auto-start.
+        mgr.last_user_activity_time = 100.0
+
+    async def activity_during_preload(*_args, **_kwargs):
+        # Genuine activity after start_session returned must still block claim.
+        mgr.last_user_activity_time = 101.0
+
+    corpus = MagicMock()
+    corpus.apreload = AsyncMock(side_effect=activity_during_preload)
+    monkeypatch.setattr(anti_repeat, "get_anti_repeat_corpus", lambda: corpus)
+    mgr.start_session = AsyncMock(side_effect=background_start)
+
+    prepared = await LLMSessionManager.prepare_proactive_delivery(
+        mgr,
+        min_idle_secs=10.0,
+    )
+
+    assert prepared is False
+    assert mgr.current_speech_id is None
+    mgr.start_session.assert_awaited_once()
+    corpus.apreload.assert_awaited_once_with("Test")
 
 
 async def test_prepare_proactive_delivery_rechecks_ui_engagement_before_claim(
@@ -935,9 +1003,12 @@ async def test_finish_proactive_delivery_stages_screenshot_only_under_live_conse
     )
 
     assert committed is True
-    mgr.session.set_proactive_screenshot.assert_called_once_with(
-        None if live_consent is False else "SHOT_B64"
-    )
+    if live_consent is False:
+        mgr.session.set_proactive_screenshot.assert_called_once_with(None)
+    else:
+        mgr.session.set_proactive_screenshot.assert_called_once_with(
+            "SHOT_B64", consent_check=ANY,
+        )
 
 
 async def _finish_with_engagement_during_publish(engaged: bool) -> LLMSessionManager:

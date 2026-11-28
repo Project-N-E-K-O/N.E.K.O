@@ -1850,13 +1850,27 @@ function ActionForm(props) {
         setFormError('Please fix the form errors first');
         return;
       }
+      // Read before any await: the submit event scope ends at the first one.
+      const userInitiated = __hostedUserActionDepth > 0;
       const confirmMessage = action.confirm || props.confirm;
-      if (confirmMessage && !window.confirm(confirmMessage === true ? 'Run this action?' : String(confirmMessage))) {
-        return;
+      if (confirmMessage) {
+        // Disable submit while the host dialog is open so a second submit
+        // does not collide with the pending confirmation.
+        setLoading(true);
+        let confirmed = false;
+        try {
+          confirmed = await confirmHostedAction(confirmMessage, userInitiated);
+        } catch (error) {
+          setFormError(formatErrorMessage(error));
+        }
+        if (!confirmed) {
+          setLoading(false);
+          return;
+        }
       }
       try {
         setLoading(true);
-        const result = await api.call(action.entry_id || action.id, values);
+        const result = await api.call(action.entry_id || action.id, values, { userInitiated });
         if (action.refresh_context !== false) await api.refresh();
         setFormSuccess(props.successMessage || 'Action completed');
         if (typeof props.onResult === 'function') props.onResult(result);
@@ -2003,13 +2017,19 @@ function requestHost(method, payload, options) {
     };
     __pendingRequests.set(requestId, { resolve, reject, cleanup });
     if (signal) signal.addEventListener('abort', handleAbort, { once: true });
-    const userInitiated = (method === 'call' || method === 'parseDocument') && options && options.userInitiated === true;
+    const userInitiated = (method === 'call' || method === 'parseDocument' || method === 'confirm') && options && options.userInitiated === true;
     timeoutId = window.setTimeout(() => {
       if (!__pendingRequests.has(requestId)) return;
       __pendingRequests.delete(requestId);
       cleanup();
-      const error = new Error(method === 'parseDocument' ? 'Document parsing timed out' : 'Hosted surface request timed out');
+      parent.postMessage({ type: 'neko-hosted-surface-cancel', requestId }, hostedTargetOrigin());
+      const error = new Error(method === 'parseDocument'
+        ? 'Document parsing timed out'
+        : method === 'confirm'
+          ? 'The confirmation did not respond, so the action was not run.'
+          : 'Hosted surface request timed out');
       if (method === 'parseDocument') error.code = 'document_parse_timeout';
+      if (method === 'confirm') error.code = 'action_confirm_timeout';
       reject(error);
     }, timeoutMs);
     parent.postMessage({ type: 'neko-hosted-surface-request', requestId, method, payload, timeoutMs, userInitiated }, hostedTargetOrigin());
@@ -2050,6 +2070,21 @@ const api = {
     return refreshHostedPayload(context);
   },
 };
+// Sandboxed panels have no allow-modals, so window.confirm always returns
+// false there. The host renders the dialog instead and answers { confirmed }.
+// The host closes its dialog HOSTED_CONFIRM_RESPONSE_MARGIN_MS before this
+// request times out (same constant name in HostedSurfaceFrame.vue; keep both
+// in sync), so a host timeout comes back as a localized error; a host that
+// never answers rejects here.
+const HOSTED_CONFIRM_DIALOG_MS = 120000;
+const HOSTED_CONFIRM_RESPONSE_MARGIN_MS = 5000;
+function confirmHostedAction(confirmMessage, userInitiated) {
+  const payload = confirmMessage === true ? {} : { message: String(confirmMessage) };
+  return requestHost('confirm', payload, {
+    timeoutMs: HOSTED_CONFIRM_DIALOG_MS + HOSTED_CONFIRM_RESPONSE_MARGIN_MS,
+    userInitiated: userInitiated === true,
+  }).then((result) => !!(result && result.confirmed === true));
+}
 function ActionButton(props) {
   const action = props.action || {};
   const actionId = props.actionId || action.entry_id || action.id;
@@ -2064,12 +2099,23 @@ function ActionButton(props) {
     onClick: async (event) => {
       try {
         setError('');
+        const userInitiated = !!event && event.isTrusted !== false;
         const confirmMessage = props.confirm || action.confirm;
-        if (confirmMessage && !window.confirm(confirmMessage === true ? 'Run this action?' : String(confirmMessage))) {
-          return;
+        if (confirmMessage) {
+          // Disabled while the host dialog is open; the finally below re-enables.
+          setLoading(true);
+          let confirmed = false;
+          try {
+            confirmed = await confirmHostedAction(confirmMessage, userInitiated);
+          } catch (confirmError) {
+            // Not confirmed means not run; say so instead of failing silently.
+            setError(formatErrorMessage(confirmError));
+            return;
+          }
+          if (!confirmed) return;
         }
         setLoading(true);
-        const result = await api.call(actionId, props.values || props.args || {}, { userInitiated: event && event.isTrusted !== false });
+        const result = await api.call(actionId, props.values || props.args || {}, { userInitiated });
         if (action.refresh_context !== false && props.refresh !== false) await api.refresh();
         if (typeof props.onResult === 'function') props.onResult(result);
       } catch (error) {

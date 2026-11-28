@@ -97,27 +97,10 @@ RESULT_PARSER_ERROR_SUBSTRINGS = {
         'ja': 'タイムアウト', 'ko': '시간 초과', 'ru': 'Превышено время ожидания',
         'es': 'Tiempo agotado', 'pt': 'Tempo esgotado',
     },
-    'Browser disconnected': {
-        'zh': '浏览器窗口被关闭', 'zh-TW': '瀏覽器視窗被關閉', 'en': 'Browser window closed',
-        'ja': 'ブラウザが切断されました', 'ko': '브라우저 연결 끊김', 'ru': 'Браузер отключён',
-        'es': 'Ventana del navegador cerrada', 'pt': 'Janela do navegador fechada',
-    },
     'CONTENT_FILTER': {
         'zh': '内容安全过滤', 'zh-TW': '內容安全過濾', 'en': 'Content filtered',
         'ja': 'コンテンツフィルター', 'ko': '콘텐츠 필터링', 'ru': 'Фильтр контента',
         'es': 'Contenido filtrado', 'pt': 'Conteúdo filtrado',
-    },
-    'browser-use execution failed': {
-        'zh': '浏览器执行失败', 'zh-TW': '瀏覽器執行失敗', 'en': 'Browser execution failed',
-        'ja': 'ブラウザ実行失敗', 'ko': '브라우저 실행 실패', 'ru': 'Ошибка выполнения браузера',
-        'es': 'Falló la ejecución del navegador', 'pt': 'Falha na execução do navegador',
-    },
-    '未找到 Chrome': {
-        'zh': '未找到 Chrome 浏览器', 'zh-TW': '找不到 Chrome 瀏覽器', 'en': 'Chrome browser not found',
-        'ja': 'Chrome ブラウザが見つかりません', 'ko': 'Chrome 브라우저를 찾을 수 없음',
-        'ru': 'Браузер Chrome не найден',
-        'es': 'No se encontró el navegador Chrome',
-        'pt': 'Navegador Chrome não encontrado',
     },
 }
 
@@ -145,7 +128,7 @@ RESULT_PARSER_PHRASES = {
 # The last sentence asks her to say a word before any tool call (recall,
 # knowledge lookup, the task tools, plugin tools), so a call never leaves the
 # user facing silence. It is in both openings: the recall tool exists in a
-# session without NekoClaw as well.
+# session without NekoPower as well.
 SESSION_INIT_PROMPT = {
     'zh': '你是一个角色扮演大师。请按要求扮演以下角色（{name}）。调用任何工具前，先自然地说一声。',
     'zh-TW': '你是一個角色扮演大師。請照要求扮演以下角色（{name}）。呼叫任何工具前，先自然地說一聲。',
@@ -157,7 +140,7 @@ SESSION_INIT_PROMPT = {
     'pt': 'Você é especialista em roleplay. Interprete o seguinte personagem ({name}) conforme as instruções. Antes de chamar qualquer ferramenta, diga primeiro uma palavra de forma natural.',
 }
 
-# The opening of a session with NekoClaw switched on. Real actions go through
+# The opening of a session with NekoPower switched on. Real actions go through
 # the two task tools (``config/prompts/prompts_task_tools.py``) and she speaks
 # by what they answer. No list of capabilities is given here on purpose: what
 # can be done is answered by the tools' receipts, not by this sentence.
@@ -170,6 +153,34 @@ SESSION_INIT_PROMPT_AGENT = {
     'ru': 'Вы мастер ролевых игр и хорошо разбираетесь в управлении компьютером. Пожалуйста, играйте следующего персонажа ({name}) согласно инструкциям. Всё, что нужно сделать вне диалога, выполняется только через инструменты задач; говорите в соответствии с их ответом, а без результата инструмента не утверждайте, что действие начато или завершено. Перед вызовом любого инструмента сначала естественно скажите об этом пару слов.',
     'es': 'Eres un experto en roleplay y hábil con operaciones de computadora. Interpreta al siguiente personaje ({name}) según las instrucciones. Lo que haya que hacer fuera de la conversación solo se hace mediante las herramientas de tareas; habla según lo que respondan y, sin un resultado de herramienta, nunca afirmes que ya empezó o terminó. Antes de llamar a cualquier herramienta, di primero unas palabras de forma natural.',
     'pt': 'Você é especialista em roleplay e tem habilidade com operações de computador. Interprete o seguinte personagem ({name}) conforme as instruções. O que precisar ser feito fora da conversa só se faz pelas ferramentas de tarefas; fale conforme o que elas responderem e, sem um resultado de ferramenta, nunca afirme que já começou ou terminou. Antes de chamar qualquer ferramenta, diga primeiro uma palavra de forma natural.',
+}
+
+# Added after SESSION_INIT_PROMPT when the NekoPower master switch is off: such a
+# session has no task tool, and no turn of hers is checked afterwards, so nothing
+# else keeps her from promising, or claiming to have done, what only the task tools
+# could do. Only things done on the computer for the user are named, so role-play is
+# left as it is. SESSION_INIT_PROMPT itself is not changed: a visit (``prompts_visit``)
+# opens with it too. Only the master switch is looked at (owner, 2026-11-26): the task
+# agent is to start with the master switch alone, whatever capability is on.
+# When asked, she tells the user NekoPower is off and suggests switching it on (owner,
+# 2026-11-26). The built-in tool every session without NekoPower has is named as staying
+# in use (recall_memory). The knowledge base is left to "and the like": it is there only
+# once a knowledge package is imported, and then its own definition says when to use it;
+# named here, she might claim to search one that is not there. Web search is not named as something she cannot do: some providers search
+# on their own whatever NekoPower is (Gemini Live's google_search).
+# It rides on every request of a session in the default state, so it is kept short
+# (``tests/unit/test_task_tools_budget.py``). The name of NekoPower is the panel's
+# (``settings.toggles.agentMaster``). Where sentences are parted by a space, the row
+# starts with one: it follows the last sentence of SESSION_INIT_PROMPT directly.
+SESSION_INIT_NO_NEKOPOWER = {
+    'zh': '喵能力没开，你没有任务工具：替人在电脑上动手的事（开文件或程序、操作键鼠、点网页）办不了。被要求时照实告诉对方喵能力没开、现在办不到，并主动引导对方授权你把喵能力打开；别答应，也别说已经开始或完成。回忆记忆等内置工具照常用。',
+    'zh-TW': '喵能力沒開，你沒有任務工具：替人在電腦上動手的事（開檔案或程式、操作鍵鼠、點網頁）辦不到。被要求時照實告訴對方喵能力沒開、現在辦不到，並主動引導對方授權你把喵能力打開；別答應，也別說已經開始或完成。回想記憶等內建工具照常用。',
+    'en': ' NekoPower is off, so you have no task tools and cannot act on the computer for the user (open files or programs, use the keyboard and mouse, click through web pages). If asked, tell them plainly that NekoPower is off and you cannot do it now, and on your own ask them to authorize you to switch NekoPower on; do not promise it, and never claim it has started or completed. Built-in tools such as recalling memories work as usual.',
+    'ja': 'にゃんパワーがオフでタスクツールがないため、コンピュータ上で代わりに手を動かす用件（ファイルやプログラムを開く、キーボードやマウスの操作、ページのクリック）はできません。頼まれたら、にゃんパワーがオフでいまはできないと正直に伝え、にゃんパワーをオンにする許可をくれるよう自分から頼んでください。引き受けたり、開始した・完了したと言ったりしないでください。記憶の呼び出しなどの内蔵ツールはそのまま使えます。',
+    'ko': ' 냥파워가 꺼져 있어 작업 도구가 없으므로, 컴퓨터에서 대신 해야 하는 일(파일이나 프로그램 열기, 키보드·마우스 조작, 웹페이지 클릭)은 할 수 없습니다. 부탁받으면 냥파워가 꺼져 있어 지금은 할 수 없다고 솔직하게 말하고, 냥파워를 켤 수 있게 허락해 달라고 먼저 부탁하세요. 하겠다고 약속하거나 이미 시작했다·완료했다고 말하지 마세요. 기억 떠올리기 같은 내장 도구는 그대로 쓰세요.',
+    'ru': ' NekoPower выключен, инструментов задач у вас нет, поэтому сделать что-то за пользователя на компьютере (открыть файл или программу, управлять клавиатурой и мышью, прокликать страницы) вы не можете. Если просят, честно скажите, что NekoPower выключен и сейчас это невозможно, и сами попросите разрешить вам включить NekoPower; не обещайте и не утверждайте, что действие начато или завершено. Встроенными инструментами, например воспоминаниями, пользуйтесь как обычно.',
+    'es': ' NekoPower está desactivado: no tienes herramientas de tareas y no puedes hacer cosas en la computadora por el usuario (abrir archivos o programas, usar el teclado y el ratón, hacer clic en páginas). Si te lo piden, di con franqueza que NekoPower está desactivado y ahora no puedes, y pídele por tu cuenta que te autorice a activar NekoPower; no lo prometas ni afirmes que ya empezó o terminó. Las herramientas integradas, como recordar memorias, funcionan como siempre.',
+    'pt': ' O NekoPower está desativado: você não tem ferramentas de tarefas e não consegue fazer coisas no computador pelo usuário (abrir arquivos ou programas, usar o teclado e o mouse, clicar em páginas). Se pedirem, diga com franqueza que o NekoPower está desativado e agora não dá, e peça por iniciativa própria que autorizem você a ativar o NekoPower; não prometa nem afirme que já começou ou terminou. As ferramentas integradas, como lembrar memórias, funcionam normalmente.',
 }
 
 AGENT_TASKS_HEADER = {
@@ -245,6 +256,7 @@ def get_context_summary_ready(
     ('audio' / 'text'); chat-platform plugins are always 'text'. Callers
     still ``.format(name=..., master=...)`` the result — the group variant
     simply has no ``{master}`` slot to fill."""
+    lang = normalize_sys_prompt_locale(lang)
     if is_group:
         return _loc(CONTEXT_SUMMARY_READY_GROUP, lang)
     if str(input_mode or '').strip() == 'text':

@@ -38,6 +38,8 @@ uv run python -m app.agent_server
 
 只有 memory + main 时主 UI 可加载，但 Agent、托管插件、浏览器/电脑控制等需要 agent/tool。拆分模式不复现 launcher 的端口回退与生命周期。
 
+在诊断拆分模式下手动分别启动三个进程时，请在三个终端中导出相同的 `NEKO_INSTANCE_ID`（或统一设置 `NEKO_AUTOSTART_CSRF_TOKEN`）。否则各进程会各自随机生成不同的 `AUTOSTART_CSRF_TOKEN`，导致 `agent_server` 与插件 `console_proxy` 转发到 `main_server` 的内部写请求因 CSRF 校验不匹配返回 `403` / `502`。
+
 Cloud Save 的 Steam RemoteStorage 路径应通过 Steam/桌面 launcher 验证。拆分 main server 可执行后备 snapshot 导入并通知 memory reload；退出不会自动把运行时变化暂存，需由 Cloud Save Manager 准备上传 snapshot。
 
 在主 URL 的 `/api_key` 选择当前 Core/Assist Provider、填写密钥并运行连通性检查。源码模式不消费 Docker API 初始化变量。`/health` 用于启动诊断。

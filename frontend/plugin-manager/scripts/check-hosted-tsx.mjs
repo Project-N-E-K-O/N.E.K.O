@@ -13,6 +13,7 @@ import {
 const repoRoot = resolve(fileURLToPath(new URL('../../../', import.meta.url)))
 const repoRealRoot = realpathSync(repoRoot)
 const hostedUiGlobalsPath = join(repoRoot, 'plugin/sdk/hosted-ui/globals.d.ts')
+const hostedUiIndexPath = join(repoRoot, 'plugin/sdk/hosted-ui/index.d.ts')
 const maxPluginTomlBytes = 1024 * 1024
 const maxRelativeImportDepth = 64
 const importResolutionCache = new Map()
@@ -32,8 +33,11 @@ const HOSTED_UI_GLOBAL_NAMES = [
   'Tip', 'Warning', 'Steps', 'Step', 'Tabs', 'useI18n',
   'useState', 'useReducer', 'useEffect', 'useLayoutEffect', 'useMemo', 'useCallback', 'useRef', 'useElementSize',
   'useScrollIntoView', 'useScrollToBottom', 'useClipboard', 'useLocalState',
-  'useDebounce', 'useDebouncedState', 'useForm', 'useAsync', 'showToast', 'useToast', 'useConfirm',
+  'useDebounce', 'useDebouncedState', 'useForm', 'useAsync', 'showToast', 'useToast', 'useConfirm', 'render',
 ]
+const HOSTED_UI_GLOBAL_NAME_SET = new Set(HOSTED_UI_GLOBAL_NAMES)
+const HOSTED_UI_SPECIAL_VALUE_NAMES = new Set(['h', 'Fragment'])
+let cachedHostedUiExportedTypes = null
 const sourceTextCache = new Map()
 
 function formatError(error) {
@@ -451,10 +455,11 @@ function parseTomlSurfaces(text) {
 }
 
 function inferMode(entry) {
-  if (!entry) return 'auto'
-  if (entry.endsWith('.tsx') || entry.endsWith('.jsx')) return 'hosted-tsx'
-  if (entry.endsWith('.md') || entry.endsWith('.mdx')) return 'markdown'
-  if (entry.endsWith('.html') || entry.endsWith('.htm')) return 'static'
+  const normalized = typeof entry === 'string' ? entry.trim().toLowerCase() : ''
+  if (!normalized) return 'auto'
+  if (normalized.endsWith('.tsx') || normalized.endsWith('.jsx')) return 'hosted-tsx'
+  if (normalized.endsWith('.md') || normalized.endsWith('.mdx')) return 'markdown'
+  if (normalized.endsWith('.html') || normalized.endsWith('.htm')) return 'static'
   return 'static'
 }
 
@@ -532,6 +537,164 @@ function assertNoDynamicImport(sourcePath, source) {
     ts.forEachChild(node, visit)
   }
   visit(sourceFile)
+}
+
+function getHostedUiExportedTypes() {
+  if (cachedHostedUiExportedTypes) return cachedHostedUiExportedTypes
+  const source = readSourceFile(hostedUiIndexPath)
+  const sourceFile = sourceFileFor(hostedUiIndexPath, source)
+  const names = []
+  for (const statement of sourceFile.statements) {
+    const modifiers = ts.canHaveModifiers(statement) ? ts.getModifiers(statement) : undefined
+    const isExported = Boolean(modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword))
+    if (!isExported) continue
+    if (
+      (ts.isTypeAliasDeclaration(statement) || ts.isInterfaceDeclaration(statement))
+      && statement.name
+    ) {
+      names.push(statement.name.text)
+    }
+  }
+  cachedHostedUiExportedTypes = names
+  return names
+}
+
+function collectBindingNames(bindingName, target) {
+  if (!bindingName) return
+  if (ts.isIdentifier(bindingName)) {
+    target.add(bindingName.text)
+    return
+  }
+  if (ts.isObjectBindingPattern(bindingName) || ts.isArrayBindingPattern(bindingName)) {
+    for (const element of bindingName.elements) {
+      if (ts.isBindingElement(element)) {
+        collectBindingNames(element.name, target)
+      }
+    }
+  }
+}
+
+function collectLocalDeclarations(sourcePath, source) {
+  const sourceFile = sourceFileFor(sourcePath, source)
+  const localTypes = new Set()
+  const localValues = new Set()
+  for (const statement of sourceFile.statements) {
+    if (ts.isTypeAliasDeclaration(statement) || ts.isInterfaceDeclaration(statement)) {
+      if (statement.name) localTypes.add(statement.name.text)
+    } else if (ts.isFunctionDeclaration(statement)) {
+      if (statement.name) localValues.add(statement.name.text)
+    } else if (ts.isClassDeclaration(statement) || ts.isEnumDeclaration(statement)) {
+      if (statement.name) {
+        localTypes.add(statement.name.text)
+        localValues.add(statement.name.text)
+      }
+    } else if (ts.isVariableStatement(statement)) {
+      for (const declaration of statement.declarationList.declarations) {
+        collectBindingNames(declaration.name, localValues)
+      }
+    } else if (ts.isModuleDeclaration(statement)) {
+      if (statement.name && ts.isIdentifier(statement.name)) {
+        localTypes.add(statement.name.text)
+        localValues.add(statement.name.text)
+      }
+    } else if (ts.isImportDeclaration(statement)) {
+      const specifier = moduleSpecifierText(statement.moduleSpecifier)
+      if (specifier === '@neko/plugin-ui' || specifier === 'neko:ui') continue
+      const clause = statement.importClause
+      if (!clause) continue
+      if (clause.name) {
+        localTypes.add(clause.name.text)
+        localValues.add(clause.name.text)
+      }
+      const bindings = clause.namedBindings
+      if (!bindings) continue
+      if (ts.isNamespaceImport(bindings)) {
+        localTypes.add(bindings.name.text)
+        localValues.add(bindings.name.text)
+      } else if (ts.isNamedImports(bindings)) {
+        for (const element of bindings.elements) {
+          localTypes.add(element.name.text)
+          localValues.add(element.name.text)
+        }
+      }
+    } else if (ts.isImportEqualsDeclaration(statement)) {
+      localTypes.add(statement.name.text)
+      localValues.add(statement.name.text)
+    }
+  }
+  return { localTypes, localValues }
+}
+
+function collectHostedUiImportAliases(sourcePath, source, exportedTypeSet) {
+  const sourceFile = sourceFileFor(sourcePath, source)
+  const explicitTypeImports = []
+  const explicitTypeLocalNames = new Set()
+  const namespaceImports = []
+  const explicitUnaliasedValues = new Set()
+  const explicitValueLocalNames = new Set()
+  const valueAliasDecls = []
+  for (const statement of sourceFile.statements) {
+    if (!ts.isImportDeclaration(statement)) continue
+    const specifier = moduleSpecifierText(statement.moduleSpecifier)
+    if (specifier !== '@neko/plugin-ui' && specifier !== 'neko:ui') continue
+    const clause = statement.importClause
+    if (!clause) continue
+    if (clause.name && !clause.isTypeOnly) {
+      explicitValueLocalNames.add(clause.name.text)
+      if (clause.name.text !== 'NekoUi') {
+        valueAliasDecls.push(`const ${clause.name.text} = NekoUi;`)
+      }
+    }
+    const bindings = clause.namedBindings
+    if (!bindings) continue
+    if (ts.isNamespaceImport(bindings)) {
+      const ns = bindings.name.text
+      explicitTypeLocalNames.add(ns)
+      explicitValueLocalNames.add(ns)
+      if (ns !== 'NekoUi') {
+        namespaceImports.push(
+          clause.isTypeOnly
+            ? `import type * as ${ns} from "@neko/plugin-ui";`
+            : `import * as ${ns} from "@neko/plugin-ui";`,
+        )
+      }
+    } else if (ts.isNamedImports(bindings)) {
+      for (const element of bindings.elements) {
+        const orig = element.propertyName ? element.propertyName.text : element.name.text
+        const local = element.name.text
+        const isTypeOnly = Boolean(clause.isTypeOnly || element.isTypeOnly)
+        if (exportedTypeSet.has(orig)) {
+          explicitTypeLocalNames.add(local)
+          explicitValueLocalNames.add(local)
+          explicitTypeImports.push(local === orig ? orig : `${orig} as ${local}`)
+        } else if (HOSTED_UI_GLOBAL_NAME_SET.has(orig) || HOSTED_UI_SPECIAL_VALUE_NAMES.has(orig)) {
+          if (isTypeOnly) {
+            explicitTypeLocalNames.add(local)
+            explicitValueLocalNames.add(local)
+            explicitTypeImports.push(local === orig ? orig : `${orig} as ${local}`)
+          } else if (local !== orig) {
+            explicitValueLocalNames.add(local)
+            valueAliasDecls.push(`const ${local} = NekoUi.${orig};`)
+          } else {
+            explicitUnaliasedValues.add(orig)
+          }
+        }
+      }
+    }
+  }
+  return {
+    explicitTypeImports,
+    explicitTypeLocalNames,
+    namespaceImports,
+    explicitUnaliasedValues,
+    explicitValueLocalNames,
+    valueAliasDecls,
+  }
+}
+
+function tempCheckPathForEntry(sourcePath, tempDir, entryIndex) {
+  const targetPath = tempPathForSource(sourcePath, tempDir)
+  return `${targetPath}.__hosted_entry_${entryIndex}.tsx`
 }
 
 function stripHostedUiImports(sourcePath, source) {
@@ -691,9 +854,11 @@ function copyRelativeDependencies(
   assertHostedExportContract(source)
   assertHostedImportContract(source)
   assertNoDynamicImport(resolvedPath, source)
-  const targetPath = tempPathForSource(resolvedPath, tempDir)
-  mkdirForFile(targetPath, 'hosted TSX copy')
-  writeTextFile(targetPath, source, 'hosted TSX dependency copy')
+  if (depth > 0) {
+    const targetPath = tempPathForSource(resolvedPath, tempDir)
+    mkdirForFile(targetPath, 'hosted TSX copy')
+    writeTextFile(targetPath, source, 'hosted TSX dependency copy')
+  }
 
   try {
     const { runtime: runtimeSpecifiers, typeOnly: typeOnlySpecifiers } = findHostedRelativeImportSpecifiers(source)
@@ -723,18 +888,61 @@ function copyRelativeDependencies(
   }
 }
 
-function createCheckFile(entryPath, tempDir, surface, tomlPath) {
+function createCheckFile(entryPath, tempDir, surface, tomlPath, entryIndex) {
   const resolvedEntryPath = assertPathInsideRepo(entryPath, 'Hosted TSX entry')
   const pluginRoot = dirname(tomlPath)
   const source = readSourceFile(resolvedEntryPath)
+  const exportedTypes = getHostedUiExportedTypes()
+  const exportedTypeSet = new Set(exportedTypes)
+  const {
+    explicitTypeImports,
+    explicitTypeLocalNames,
+    namespaceImports,
+    explicitUnaliasedValues,
+    explicitValueLocalNames,
+    valueAliasDecls,
+  } = collectHostedUiImportAliases(
+    resolvedEntryPath,
+    source,
+    exportedTypeSet,
+  )
   const stripped = stripHostedUiImports(resolvedEntryPath, source)
-  const checkPath = tempPathForSource(resolvedEntryPath, tempDir)
+  const { localTypes, localValues } = collectLocalDeclarations(resolvedEntryPath, stripped)
+  const checkPath = tempCheckPathForEntry(resolvedEntryPath, tempDir, entryIndex)
   const prefixLines = 6
+  const autoInjectedTypes = exportedTypes.filter(
+    (name) => !localTypes.has(name) && !explicitTypeLocalNames.has(name),
+  )
+  const typeImportSpecifiers = Array.from(new Set([...autoInjectedTypes, ...explicitTypeImports]))
+  const typeImportParts = []
+  if (typeImportSpecifiers.length > 0) {
+    typeImportParts.push(`import type { ${typeImportSpecifiers.join(', ')} } from "@neko/plugin-ui";`)
+  }
+  typeImportParts.push(...namespaceImports)
+  const typeImportLine = typeImportParts.join(' ')
+  const destructureNames = HOSTED_UI_GLOBAL_NAMES.filter(
+    (name) => !explicitValueLocalNames.has(name)
+      && (!localValues.has(name) || explicitUnaliasedValues.has(name)),
+  )
+  const valueParts = []
+  if (destructureNames.length > 0) {
+    valueParts.push(`const { ${destructureNames.join(', ')} } = NekoUi;`)
+  }
+  valueParts.push(...valueAliasDecls)
+  const valueDestructureLine = valueParts.join(' ')
+  const hDeclLine = !explicitValueLocalNames.has('h')
+    && (!localValues.has('h') || explicitUnaliasedValues.has('h'))
+    ? 'declare const h: any;'
+    : ''
+  const fragmentDeclLine = !explicitValueLocalNames.has('Fragment')
+    && (!localValues.has('Fragment') || explicitUnaliasedValues.has('Fragment'))
+    ? 'declare const Fragment: any;'
+    : ''
   copyRelativeDependencies(resolvedEntryPath, tempDir, pluginRoot)
   mkdirForFile(checkPath, 'hosted TSX check')
   writeTextFile(
     checkPath,
-    `/// <reference path="${hostedUiGlobalsPath}" />\nimport * as NekoUi from "@neko/plugin-ui";\nimport type { PluginSurfaceProps, HostedAction, JsonSchema, HostedApi } from "@neko/plugin-ui";\nconst { ${HOSTED_UI_GLOBAL_NAMES.join(', ')} } = NekoUi;\ndeclare const h: any;\ndeclare const Fragment: any;\n${stripped}\n`,
+    `/// <reference path="${hostedUiGlobalsPath}" />\nimport * as NekoUi from "@neko/plugin-ui";\n${typeImportLine}\n${valueDestructureLine}\n${hDeclLine}\n${fragmentDeclLine}\n${stripped}\n`,
     'hosted TSX check file',
   )
   return {
@@ -790,6 +998,7 @@ function withHostedHint(message) {
 function main() {
   let tempDir = null
   let ambientGlobalsPath = null
+  let entryCounter = 0
   const checkFiles = []
   const errors = []
   const warnings = []
@@ -820,8 +1029,9 @@ function main() {
       // these surfaces, so they shouldn't be able to fail the check.
       if (surfaces.pluginUiDisabled) continue
       for (const surface of surfaces) {
-        const entry = surface.entry
-        const mode = surface.mode || inferMode(entry)
+        const entry = typeof surface.entry === 'string' ? surface.entry.trim() : ''
+        const rawMode = typeof surface.mode === 'string' ? surface.mode.trim().toLowerCase() : ''
+        const mode = rawMode || inferMode(entry)
         if (!entry || mode !== 'hosted-tsx') continue
         const label = surfaceLabel(surface)
         const entryPath = resolve(pluginDir, entry)
@@ -848,7 +1058,7 @@ function main() {
         }
         let checkFile
         try {
-          checkFile = createCheckFile(checkedEntryPath, tempDir, surface, tomlPath)
+          checkFile = createCheckFile(checkedEntryPath, tempDir, surface, tomlPath, entryCounter++)
         } catch (error) {
           errors.push(`${entryPath}:1:1 [${label}] - ${withHostedHint(formatError(error))}`)
           continue
@@ -880,6 +1090,7 @@ function main() {
         jsxFactory: 'h',
         jsxFragmentFactory: 'Fragment',
         module: ts.ModuleKind.ESNext,
+        moduleDetection: ts.ModuleDetectionKind.Force,
         target: ts.ScriptTarget.ES2020,
         moduleResolution: ts.ModuleResolutionKind.Bundler,
         baseUrl: repoRoot,

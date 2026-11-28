@@ -658,8 +658,38 @@ class DesktopChatSyncRuntime:
             if not await asyncio.to_thread(self.scheduler.claim, domain, "model", binding["generation"], presence):
                 continue
             try:
-                await self.models.step(uid, automatic_only=True)
-                await asyncio.to_thread(self.scheduler.success, domain, "model")
+                try:
+                    await self.models.step(uid, automatic_only=True)
+                except (OSError, ValueError, sqlite3.Error) as step_error:
+                    # Legacy services can omit model endpoints. Both paths still
+                    # inspect local pending work under the same failure handling.
+                    if getattr(step_error, "status_code", None) != 404:
+                        raise
+                from utils.character_memory import character_config_mutation_lock
+                await self._same_session(presence)
+                # Keep the local selection stable through the completion receipt.
+                # Model edits and renderer admission use this configuration gate too.
+                async with character_config_mutation_lock:
+                    selection = (await self.models.adapter.read(uid))['selection']
+
+                    def record_model_status():
+                        # Resolve/retry and renderer admission use this writer gate too.
+                        # Keep the state snapshot and receipt update in one commit.
+                        try:
+                            model_state = self.models.store.get(domain)
+                        except OSError as read_error:
+                            # A failed read must not quarantine the writer gate.
+                            return read_error
+                        pending = bool(model_state and (
+                            any(model_state.get(field) for field in ('pending', 'candidate', 'conflict'))
+                            or self.models.has_unresolved_failure(model_state)
+                            or model_state.get('seen_revision', 0) > model_state.get('revision', 0)
+                            or model_state.get('selection') != selection))
+                        self.scheduler.success(domain, 'model', pending=pending)
+
+                    read_error = await asyncio.to_thread(self._commit_bound, binding, record_model_status, fingerprint=presence)
+                    if read_error is not None:
+                        raise read_error
             except AutomaticRoleInactive:
                 continue
             except Exception as exc:
@@ -669,10 +699,7 @@ class DesktopChatSyncRuntime:
                 if not isinstance(exc, (OSError, ValueError, sqlite3.Error)):
                     # Only the class name: exception text may hold paths or signed URLs.
                     print(f"[chat-sync] model_step_unavailable {type(exc).__name__}")
-                if getattr(exc, "status_code", None) == 404:
-                    await asyncio.to_thread(self.scheduler.success, domain, "model")
-                else:
-                    await asyncio.to_thread(self.scheduler.failure, domain, "model", binding["generation"], presence, exc)
+                await asyncio.to_thread(self.scheduler.failure, domain, "model", binding["generation"], presence, exc)
         await asyncio.to_thread(self.models.cleanup_cache)
 
 
@@ -1104,7 +1131,7 @@ class DesktopChatSyncRuntime:
                 # Internal prototype response bound, not a final per-message cap.
                 payload = json.loads(raw)
         except httpx.HTTPError:
-            raise ValueError("chat_sync_unavailable") from None
+            raise ValueError("chat_sync_network_unavailable") from None
         except (TypeError, json.JSONDecodeError, UnicodeError, RecursionError):
             raise ValueError("invalid_chat_sync_response") from None
         if not isinstance(payload, dict):
@@ -1137,6 +1164,9 @@ class DesktopChatSyncRuntime:
             ))
             binding["lastSyncError"] = await asyncio.to_thread(
                 self.scheduler.last_error, ChatDomain(binding["owner_id"], binding["character_uid"]).key(),
+            )
+            binding["channelStatus"] = await asyncio.to_thread(
+                self.scheduler.channel_status, ChatDomain(binding["owner_id"], binding["character_uid"]).key(),
             )
             recent_name = await self._recent_diagnostic_name(binding)
             binding["localMemoryDiagnostics"] = await asyncio.to_thread(self._local_memory_diagnostics, binding, recent_name)
@@ -1422,7 +1452,7 @@ class DesktopChatSyncRuntime:
                             self.state.queue_new_role(uid, {**request, "error": code})
                 await asyncio.to_thread(block)
             elif code in {"chat_sync_account_mismatch", "chat_sync_login_required", "chat_sync_session_changed",
-                          "chat_sync_session_unavailable", "chat_sync_unavailable", "chat_sync_retry_later",
+                          "chat_sync_session_unavailable", "chat_sync_unavailable", "chat_sync_network_unavailable", "chat_sync_retry_later",
                           "chat_sync_service_rejected", "chat_sync_writer_recovery_required"}:
                 def remember():
                     with self.writer.locked():
@@ -1582,7 +1612,7 @@ class DesktopChatSyncRuntime:
                     expected_binding=binding, automatic_only=True)
                 can_apply = lambda: self.profiles.adapter is None or not self.profiles.adapter.busy(name)
                 result = await self.recent_memory.sync(domain, name, request, commit, can_apply=can_apply)
-                await asyncio.to_thread(self.scheduler.success, domain.key(), "pull")
+                await asyncio.to_thread(self.scheduler.success, domain.key(), "pull", pending=result['hasMore'])
                 if result['hasMore']:
                     await commit(self.scheduler.request_check, domain.key(), 'pull')
                     self.wake_scheduler()
@@ -1635,13 +1665,30 @@ class DesktopChatSyncRuntime:
                     expected_binding=binding, automatic_only=True)
                 result = await self.long_term_memory.sync(domain, grant, epoch, request, commit, can_apply=can_apply,
                                                           session_fingerprint=presence)
-                await asyncio.to_thread(self.scheduler.success, domain.key(), 'long_term')
                 if result['changed'] and can_apply():
                     applied = await self.long_term_memory.adapter.flush(uid)
                     if applied and self.history_changed:
                         await self._notify_history_changed(binding, presence)
-                if result['hasMore']:
-                    await commit(self.scheduler.request_check, domain.key(), 'long_term')
+                def record_long_term_status():
+                    # commit holds the writer lock through the snapshot and status
+                    # write, so capture cannot replace owed work between these reads.
+                    self.writer.require_epoch(epoch)
+                    try:
+                        local_after = self.long_term_memory.adapter.read_local(grant, epoch)
+                        upload_pending = bool(local_after and local_after['pending'])
+                        pending = (result['hasMore'] or upload_pending or bool(local_after and local_after['republish'])
+                                   or self.long_term_memory.adapter.incoming_path(uid).is_file()
+                                   or self.long_term_memory.adapter.owed_path(uid).is_file())
+                    except OSError as read_error:
+                        # A failed read must not quarantine the writer gate.
+                        return read_error
+                    self.scheduler.success(domain.key(), 'long_term', pending=pending)
+                    if result['hasMore'] or upload_pending:
+                        self.scheduler.request_check(domain.key(), 'long_term')
+
+                read_error = await commit(record_long_term_status)
+                if read_error is not None:
+                    raise read_error
                 return {'uploaded': 0, 'deletions': 0, 'pullPages': 0, 'hasMore': result['hasMore']}
             except (ValueError, OSError, sqlite3.Error) as error:
                 await asyncio.to_thread(self.scheduler.failure, domain.key(), 'long_term', binding['generation'], presence, error)

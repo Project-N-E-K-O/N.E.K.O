@@ -12,7 +12,7 @@
 
 按 [Docker 部署](./docker) 完成安装，Compose 文件就是 `docker/docker-compose.yml`。低配机器上建议：
 
-- **使用 full 镜像**：在 `docker/.env` 设置 `NEKO_IMAGE_VERSION=latest-full`。镜像自带 Chromium，首次启动不用在容器里下载安装浏览器，代价是多占约 1GB 磁盘。
+- **要用浏览器操控就选 full 镜像**：在 `docker/.env` 设置 `NEKO_IMAGE_VERSION=latest-full`。镜像自带 Chromium，代价是多占约 1GB 磁盘。standard 镜像不带浏览器，应用自己也不下载，所以在 standard 镜像里浏览器操控会报告找不到可用的浏览器。Chromium 的沙箱需要用户命名空间，要连同 `docker/compose.browser.yaml` 一起启动才起得来：在 `docker/.env` 里再设 `COMPOSE_FILE=docker-compose.yml:compose.browser.yaml`（已经有 `COMPOSE_FILE` 时把 `compose.browser.yaml` 接在后面），说明见 `docker/README_Docker.md`。
 - **固定版本**：`latest`、`latest-full` 是滚动标签。上线前用 `NEKO_IMAGE` 固定经过验证的 tag 或 digest，并确认镜像包含实例授权（#3289）与 HTTP 配对（#3299）。
 - **自有域名**：在 `docker/.env` 配置，官方 Compose 会把它们传入容器：
 
@@ -24,7 +24,7 @@ NEKO_TRUSTED_ORIGINS=https://your-domain.example:48912
 
 默认允许通过 `http://<服务器IP>:48911` 配对，页面会提示连接未加密；HTTP 会以明文传输配对 key 和会话 Cookie，不要在不可信网络上这样输入凭证。需要强制 HTTPS/WSS 时设置 `NEKO_REQUIRE_HTTPS=1`。实例凭证的读取方式见 [Docker 部署](./docker)。
 
-已有部署改了 `SSL_DOMAIN` 时，入口脚本会继续复用 `docker/neko-home/ssl/` 下已有的自签名证书，不会按新域名重新签发。需要新证书时，先停容器，把 `N.E.K.O.crt` 和 `N.E.K.O.key` 移出该目录备份，再启动让入口脚本重新生成；使用自有证书时直接替换这两个文件。
+已有部署改了 `SSL_DOMAIN` 时，入口脚本会继续复用 `docker/neko-home/ssl/` 下已有的自签名证书，不会按新域名重新签发。需要新证书时，先停容器，把 `N.E.K.O.crt` 和 `N.E.K.O.key` 移出该目录备份，再启动让入口脚本重新生成；使用自有证书时直接替换这两个文件。默认情况下（`AUTO_REGENERATE_CERT=0`），若只存在半边文件或证书/私钥校验失败（包括无 TTY 容器启动时无法解锁的带口令私钥），入口脚本会原样保留现有文件并报错退出，不会删除或覆盖你的证书；仅在明确希望把无效/残缺文件归档为 `*.invalid-<时间戳>` 并重新签发自签名证书时设置 `AUTO_REGENERATE_CERT=1`。
 
 首次启动前，在仓库根目录执行一次宿主机预检（迁移数据后、或 Docker 曾以 root 建过这两个目录时也执行）：
 
@@ -53,6 +53,8 @@ services:
 ```dotenv
 COMPOSE_FILE=docker-compose.yml:compose.gateway.yaml
 ```
+
+`COMPOSE_FILE` 是完整的文件列表，新写的值会整个替换旧的：之前已经写进去的覆盖文件要留在里面。比如第 1 节里为 full 镜像加过 `compose.browser.yaml`，这里要写成 `COMPOSE_FILE=docker-compose.yml:compose.gateway.yaml:compose.browser.yaml`，否则下次重建容器时浏览器的 seccomp 配置会被去掉，Chromium 起不来。
 
 `!override` 需要 Docker Compose **2.24.4 及以上**。每次重建前用 `docker compose config` 核对最终端口绑定。
 

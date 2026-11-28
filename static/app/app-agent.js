@@ -15,6 +15,8 @@
  *   window.startAgentTaskPolling
  *   window.stopAgentTaskPolling
  *   window.checkAndToggleTaskHUD
+ *   window.setFloatingAgentStatus
+ *   window.maybeShowContentFilterModal
  *   window.appAgent  (module namespace)
  */
 (function () {
@@ -131,9 +133,8 @@
         isAgentActive() {
             const f = this._cachedFlags;
             if (!f) return false;
-            const master = !!f.agent_enabled;
-            const child = !!(f.computer_use_enabled || f.browser_use_enabled || f.user_plugin_enabled);
-            return master && child;
+            // NekoPower is on with the master switch alone.
+            return !!f.agent_enabled;
         },
 
         _updateUI() {
@@ -248,6 +249,7 @@
         });
     }
     mod.setFloatingAgentStatus = setFloatingAgentStatus;
+    window.setFloatingAgentStatus = setFloatingAgentStatus;
 
     // ====================================================================
     // Content filter modal
@@ -291,6 +293,7 @@
             });
     }
     mod.maybeShowContentFilterModal = maybeShowContentFilterModal;
+    window.maybeShowContentFilterModal = maybeShowContentFilterModal;
 
     // ====================================================================
     // Health check
@@ -516,14 +519,8 @@
         }
 
         const masterCheckbox = getEl(['live2d-agent-master', 'vrm-agent-master', 'mmd-agent-master', 'pngtuber-agent-master']);
-        const keyboardCheckbox = getEl(['live2d-agent-keyboard', 'vrm-agent-keyboard', 'mmd-agent-keyboard', 'pngtuber-agent-keyboard']);
-        const browserCheckbox = getEl(['live2d-agent-browser', 'vrm-agent-browser', 'mmd-agent-browser', 'pngtuber-agent-browser']);
-        const userPlugin = getEl(['live2d-agent-user-plugin', 'vrm-agent-user-plugin', 'mmd-agent-user-plugin', 'pngtuber-agent-user-plugin']);
 
         const domMaster = masterCheckbox ? masterCheckbox.checked : false;
-        const domChild = (keyboardCheckbox && keyboardCheckbox.checked)
-            || (browserCheckbox && browserCheckbox.checked)
-            || (userPlugin && userPlugin.checked);
 
         const snap = window._agentStatusSnapshot;
         const machineFlags = window.agentStateMachine ? window.agentStateMachine._cachedFlags : null;
@@ -531,30 +528,24 @@
         const flags = (snap && snap.flags && Object.keys(snap.flags).length > 0) ? snap.flags : machineFlags;
 
         let optMaster = undefined;
-        let optChild = undefined;
         if (window.agent_ui_v2_state && window.agent_ui_v2_state.optimistic) {
             const opt = window.agent_ui_v2_state.optimistic;
             if ('agent_enabled' in opt) optMaster = !!opt.agent_enabled;
-            if ('computer_use_enabled' in opt || 'browser_use_enabled' in opt || 'user_plugin_enabled' in opt) {
-                optChild = !!opt.computer_use_enabled || !!opt.browser_use_enabled || !!opt.user_plugin_enabled;
-            }
         }
 
         let isMasterOn = false;
-        let isChildOn = false;
 
         const isUiInteractive = masterCheckbox && !masterCheckbox.disabled;
 
         if (!isUiInteractive) {
             isMasterOn = optMaster !== undefined ? optMaster : (flags && !!flags.agent_enabled);
-            isChildOn = optChild !== undefined ? optChild : (flags && !!(flags.computer_use_enabled || flags.browser_use_enabled || flags.user_plugin_enabled));
         } else {
             isMasterOn = optMaster !== undefined ? optMaster : domMaster;
-            isChildOn = optChild !== undefined ? optChild : domChild;
         }
 
-        if (isMasterOn && isChildOn) {
-            console.log('[HUD] Starting polling. Master:', isMasterOn, 'Child:', isChildOn);
+        // NekoPower is on with the master switch alone: the HUD follows it.
+        if (isMasterOn) {
+            console.log('[HUD] Starting polling. Master:', isMasterOn);
             window.startAgentTaskPolling();
         } else {
             const LINGER_MS = 10000;

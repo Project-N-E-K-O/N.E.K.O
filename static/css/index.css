@@ -458,6 +458,20 @@ button * {
     transform-origin: var(--neko-model-exit-origin-x, 50%) var(--neko-model-exit-origin-y, 50%);
 }
 
+/* 省算力形态切换：窗口坐标准备完成前不显示新模型，子 canvas 不播放回归淡入。 */
+html body #live2d-container[data-neko-model-form-pending="true"],
+html body #vrm-container[data-neko-model-form-pending="true"],
+html body #mmd-container[data-neko-model-form-pending="true"],
+html body #pngtuber-container[data-neko-model-form-pending="true"] {
+    opacity: 0 !important;
+    transition: none !important;
+    transform: none !important;
+}
+[data-neko-model-form-pending="true"] canvas {
+    opacity: 1 !important;
+    transition: none !important;
+}
+
 /* 看板娘判定框-最小化状态 */
 #live2d-container.minimized {
     transform: scale(0.38) translateZ(0);
@@ -1781,6 +1795,35 @@ body.subtitle-web-host #react-chat-window-shell.is-minimized .react-chat-minimiz
     image-rendering: auto !important;
 }
 
+/* 最小化小球的角标：喵能力有问话在等回话（宿主据 React 上报设 data-nekopower-ask-waiting）。
+   挂在拖拽手柄（即小球的点击区）里，压在毛线球右上沿（51px 方框里球偏左上、右下是线头）；
+   不接指针事件，点击和拖动照旧落在小球上。
+   颜色取问话卡的琥珀色边框，白圈让它在毛线球和任何背景上都分得出来。 */
+body.subtitle-web-host #react-chat-window-shell .react-chat-minimized-ask-badge {
+    display: none;
+}
+
+body.subtitle-web-host #react-chat-window-shell.is-minimized[data-nekopower-ask-waiting="true"] .react-chat-minimized-ask-badge {
+    display: block;
+    position: absolute;
+    top: 2px;
+    right: 9px;
+    width: 14px;
+    height: 14px;
+    box-sizing: border-box;
+    border: 2px solid #fff;
+    border-radius: 50%;
+    background: #e8962a;
+    box-shadow: 0 1px 3px rgba(42, 49, 66, 0.35);
+    pointer-events: none;
+}
+
+/* 旧版 full 形态的呼吸灯球是撑满 51px 的整圆：角标贴右上角。 */
+body.subtitle-web-host #react-chat-window-shell.is-minimized.is-legacy-full-ball[data-nekopower-ask-waiting="true"] .react-chat-minimized-ask-badge {
+    top: 0;
+    right: 0;
+}
+
 /* 隐藏 resize 边缘 */
 body.subtitle-web-host #react-chat-window-shell.is-minimized .react-chat-resize-edge {
     display: none;
@@ -2536,6 +2579,45 @@ body.react-chat-window-dragging {
 /* 语音模式下隐藏文本输入区 */
 #text-input-area.hidden {
     display: none;
+}
+
+/* 小剧场主动入口独立于邀约开关，复用浮动菜单的明暗主题。 */
+.theater-market-enter {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    margin-left: auto;
+    flex-shrink: 0;
+    min-height: 24px;
+    padding: 0 9px;
+    border: 1px solid var(--neko-popup-accent-border, rgba(68, 183, 254, 0.25));
+    border-radius: 999px;
+    background: var(--neko-popup-accent-bg, rgba(68, 183, 254, 0.05));
+    color: var(--neko-popup-accent, #2a7bc4);
+    font: inherit;
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 1;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: background 0.15s ease, border-color 0.15s ease;
+}
+.theater-market-enter::after {
+    content: '';
+    width: 4px;
+    height: 4px;
+    border-top: 1.5px solid currentColor;
+    border-right: 1.5px solid currentColor;
+    transform: rotate(45deg);
+}
+.theater-market-enter:hover {
+    background: var(--neko-popup-selected-hover, rgba(68, 183, 254, 0.15));
+    border-color: var(--neko-popup-accent, #2a7bc4);
+}
+.theater-market-enter:focus-visible {
+    outline: 2px solid var(--neko-popup-accent, #2a7bc4);
+    outline-offset: 2px;
 }
 
 /* 独立头像预览弹窗（chat.html / index.html 共用）

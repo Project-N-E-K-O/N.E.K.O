@@ -60,6 +60,7 @@ Client                         Main Server                    LLM client
 | `status` | 構造化 status/error |
 | `expression`、`focus_state`、`focus_charge` | キャラクター表示状態 |
 | `agent_status_update`、`agent_task_update`、`agent_notification` | Agent 状態とタスク配信 |
+| `agent_builtin_activity` | タスクがキーボード・マウスまたはブラウザーを使い始めた／使い終えた |
 | `request_screenshot`、`capture_bridge_request` | クライアント capture 要求 |
 | `session_ended_by_server`、`reload_page`、`catgirl_switched` | 復旧やキャラクター変更 |
 | `pong` | heartbeat response |
@@ -84,7 +85,7 @@ Router は `main_routers/shared_state.py` の getter から長寿命 manager を
 main dialogue model
         │ dispatch_task / query_tasks (tool call)
         ▼
-tool_calling.py ── HTTP :48915 /nekoclaw/* ──> NekoClaw host ──> receipt back to the model
+tool_calling.py ── HTTP :48915 /nekopower/* ──> NekoPower host ──> receipt back to the model
 
 cross_server turn end without a tool call that acts
         │ user's words + the character's reply
@@ -92,7 +93,7 @@ cross_server turn end without a tool call that acts
 MainServerAgentBridge ── ZMQ :48963 ──> AgentServerEventBridge ──> turn check
         ▲                                      │
         │ ACK / task_update / reports          ▼
-        └──────────── ZMQ :48962 ───── NekoClaw host (outbox)
+        └──────────── ZMQ :48962 ───── NekoPower host (outbox)
         │
         ├─ task_update ──> WebSocket ──> Task HUD
         └─ task_result / proactive_message ──> LLMSessionManager callback queue ──> chat delivery

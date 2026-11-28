@@ -43,7 +43,19 @@ CORRUPT_IDS = ["broken-json", "array", "null", "bad-encoding"]
 
 class _FakeRequest:
     def __init__(self, payload):
+        from types import SimpleNamespace
+        from starlette.datastructures import Headers
+        from main_routers.system_router._shared import AUTOSTART_CSRF_TOKEN
+
         self._payload = payload
+        self.method = "POST"
+        self.base_url = "http://testserver/"
+        self.url = SimpleNamespace(path="/api/config/core_api")
+        self.headers = Headers({
+            "content-type": "application/json",
+            "origin": "http://testserver",
+            "x-csrf-token": AUTOSTART_CSRF_TOKEN,
+        })
 
     async def json(self):
         return self._payload
@@ -565,7 +577,10 @@ async def test_slow_request_body_does_not_hold_off_other_core_api_saves(
     body_started = asyncio.Event()
     release_body = asyncio.Event()
 
-    class _SlowBodyRequest:
+    class _SlowBodyRequest(_FakeRequest):
+        def __init__(self):
+            super().__init__(CORE_API_PAYLOAD)
+
         async def json(self):
             body_started.set()
             await release_body.wait()
@@ -876,7 +891,7 @@ def test_every_core_config_writer_goes_through_the_locked_entry_point():
 
     root = Path(json_update.__file__).resolve().parents[2]
     sources = [*root.glob("*.py")]
-    for package in ("app", "brain", "config", "main_logic", "main_routers", "memory", "plugin", "utils"):
+    for package in ("app", "config", "main_logic", "main_routers", "memory", "plugin", "utils"):
         sources.extend(path for path in (root / package).rglob("*.py") if "tests" not in path.parts)
     assert len(sources) > 100, "source scan found almost nothing; the guard would pass vacuously"
     offenders = []

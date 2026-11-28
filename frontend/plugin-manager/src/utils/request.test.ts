@@ -279,6 +279,26 @@ describe('hosted panel error suppression', () => {
     consoleError.mockRestore()
   })
 
+  it('replaces the server text of a permission-store failure with what to do', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+
+    await expect(rejectWith({
+      message: 'Request failed with status code 500',
+      response: {
+        status: 500,
+        data: {
+          detail: {
+            code: 'PLUGIN_PERMISSIONS_CORRUPT',
+            message: 'Uninstall could not clear the plugin\'s permission grants',
+          },
+        },
+      },
+    })).rejects.toThrow('Request failed with status code 500')
+
+    expect(requestMocks.errorMessage).toHaveBeenCalledWith('pluginConsent.errors.corrupt')
+    consoleError.mockRestore()
+  })
+
   it('does not repeat a network error when shared probe waiters are already disconnected', async () => {
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
     const healthProbe = vi.spyOn(axios, 'get').mockRejectedValue(new Error('health unavailable'))

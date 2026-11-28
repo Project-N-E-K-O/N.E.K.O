@@ -207,7 +207,15 @@ async def plugin_server_lifespan(app: FastAPI) -> AsyncIterator[None]:
             set_global_manager,
         )
         _install_source_mgr = build_install_source_manager()
-        await StartupReconciler(_install_source_mgr).run()
+        # With an owned lifecycle the layout migration already ran, so the
+        # removed entries are final; otherwise the lifecycle's own replay
+        # after its migration prunes. A migration that failed or was blocked
+        # leaves its legacy sources where they were; the only directories it
+        # deletes are dot-prefixed staging ones, which the lock never tracks,
+        # so it cannot leave a tombstone behind here.
+        await StartupReconciler(
+            _install_source_mgr, prune_uninstalled_grants=manage_lifecycle
+        ).run()
         set_global_manager(_install_source_mgr)
     except Exception as exc:
         logger.error(
@@ -218,6 +226,15 @@ async def plugin_server_lifespan(app: FastAPI) -> AsyncIterator[None]:
             set_global_manager(None)
         except Exception:
             pass  # already in degraded mode
+
+    # Default host-follow slots exist before the first panel open. Best-effort:
+    # ensure_default_slots never raises; list_slots seeds lazily as a fallback.
+    try:
+        from plugin.server.application.model_config_service import ModelConfigService
+
+        await asyncio.to_thread(ModelConfigService().ensure_default_slots)
+    except Exception as exc:
+        logger.warning("default model slot seeding failed at startup: err_type={}", type(exc).__name__)
 
     # Write bridge token file for Market frontend / URI handler
     try:
@@ -240,6 +257,9 @@ async def plugin_server_lifespan(app: FastAPI) -> AsyncIterator[None]:
         from plugin.server.infrastructure.package_download import aclose_package_http_client
 
         await aclose_package_http_client()
+        from plugin.server.routes.console_proxy import close_console_proxy
+
+        await close_console_proxy()
         stop_event.set()
         heartbeat_task.cancel()
         try:
@@ -355,6 +375,19 @@ def build_plugin_server_app(
     )
 
     app.include_router(plugin_consent_router)
+    from plugin.server.routes.plugin_permissions import (
+        router as plugin_permissions_router,
+    )
+
+    app.include_router(plugin_permissions_router)
+    from plugin.server.routes.plugin_permission_switch import (
+        router as plugin_permission_switch_router,
+    )
+
+    app.include_router(plugin_permission_switch_router)
+    from plugin.server.routes.plugin_audit import router as plugin_audit_router
+
+    app.include_router(plugin_audit_router)
     app.include_router(runs_router)
     app.include_router(messages_router)
     app.include_router(metrics_router)
@@ -366,6 +399,9 @@ def build_plugin_server_app(
     app.include_router(media_router)
     app.include_router(frontend_router)
     app.include_router(security_router)
+    from plugin.server.routes.console_proxy import router as console_proxy_router
+
+    app.include_router(console_proxy_router)
     app.include_router(websocket_router)
     app.include_router(plugin_ui_router)
     # Built-in plugin routes are optional. In AppImage/Nuitka builds,
@@ -382,8 +418,12 @@ def build_plugin_server_app(
     # Before the bridge: its /market/knowledge/{path} catch-all would
     # otherwise answer the subscription routes with 404.
     app.include_router(knowledge_market_router)
+    from plugin.server.routes.knowledge_publish import router as knowledge_publish_router
+    app.include_router(knowledge_publish_router)
     app.include_router(knowledge_bridge_router)
     app.include_router(market_bridge_router)
+    from plugin.server.routes.theater_market import router as theater_market_router
+    app.include_router(theater_market_router)
     # Keep the Host/Origin guard outside CORS and the cache-header middleware;
     # untrusted requests must not be short-circuited before the guard runs.
     from utils.instance_access import InstanceAccessMiddleware

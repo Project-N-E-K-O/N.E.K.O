@@ -37,7 +37,6 @@ def test_connect():
             model=model,
             base_url=base_url,
             api_key=qwen_key,
-            temperature=1.0,
             streaming=True,
             max_retries=0
         )

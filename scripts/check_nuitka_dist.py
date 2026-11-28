@@ -30,6 +30,11 @@ packaging into Electron.
 - Built-in plugins that lost their ``plugin.toml`` (means the plugin scanner
   will produce zero plugins at runtime).
 
+- A pinned plugin-tools uv that cannot download the CPython patch release
+  this build is frozen from (packaged plugin tool preparation would fail).
+  This is the one check that needs the network; it is skipped with a warning
+  when uv is not on PATH or the pinned uv or its list cannot be fetched.
+
 ## What it does NOT do
 
 - Does not launch the exe. That's expensive, platform-specific, and would
@@ -74,8 +79,14 @@ _REQUIRED_ASSETS: tuple[tuple[str, str | None], ...] = (
     ("static/libs", "livekit-client.umd.js"),
     ("static/libs/licenses", "TRTC.LICENSE"),
     ("static/libs/licenses", "LIVEKIT.LICENSE"),
+    ("static/libs", "fflate.umd.js"),
+    ("static/libs/licenses", "FFLATE-LICENSE.txt"),
+    ("static/libs/spine", "spine-webgl-4.3.13.min.js"),
+    ("static/libs/spine", "SPINE-RUNTIMES-LICENSE-4.3.13.txt"),
+    ("static/js", "emote_template_zip_worker.js"),
+    ("static/js", "emote_template_client_store.js"),
     # Built-in Live2D models: source archives are assets/<name>.tar.gz, and build_frontend extracts them to static/<name>/.
-    # The default character uses yui-lolita, which is also the fallback and tutorial model if loading fails; yui-origin is bundled too.
+    # The default character uses yui-lolita, which is also the fallback and tutorial model if loading fails; yui-origin and yui-sister are bundled too.
     # Checking only model3.json does not catch a partial extraction — moc3 and textures are required for loading, so assert all of them.
     ("static/yui-lolita", "yui-lolita.model3.json"),
     ("static/yui-lolita", "yui-lolita.moc3"),
@@ -83,6 +94,9 @@ _REQUIRED_ASSETS: tuple[tuple[str, str | None], ...] = (
     ("static/yui-origin", "yui-origin.model3.json"),
     ("static/yui-origin", "yui-origin.moc3"),
     ("static/yui-origin/yui-origin.4096", "texture_00.png"),
+    ("static/yui-sister", "yui-sister.model3.json"),
+    ("static/yui-sister", "yui-sister.moc3"),
+    ("static/yui-sister/yui-sister.4096", "texture_00.png"),
     ("static/pngtuber/yui-lolita", "model.json"),
     ("static/pngtuber/yui-origin", "model.json"),
     ("static/pngtuber/yui-sister", "model.json"),
@@ -91,8 +105,9 @@ _REQUIRED_ASSETS: tuple[tuple[str, str | None], ...] = (
     ("static/react/neko-chat", "neko-chat-window.iife.js"),
     ("static/react/neko-chat", "neko-chat-window.css"),
     ("templates", None),
+    ("templates", "emote_template_license.html"),
     ("assets", None),
-    ("data/browser_use_prompts", None),
+    # Built-in theater stories are JSON data; including the services package only bundles Python modules.
     # Offline model assets: prepare_*.py scripts download these before Nuitka; weights are not checked in, and frozen builds have no runtime download path;
     # if omitted, local endpoint detection, speaker recognition, and vector memory silently degrade. CI also checks every file ("Verify bundled
     # offline assets"); this check catches silent drift such as a missing directory or weights. For embeddings, assert the actual file:
@@ -114,6 +129,11 @@ _REQUIRED_ASSETS: tuple[tuple[str, str | None], ...] = (
     ("frontend/plugin-manager/dist", "index.html"),
     ("plugin/plugins", None),
     ("static/plugin-ui-sdk", "display.js"),
+    # Skill staged by prepare_nuitka_plugins.py prepare plus the guide
+    # templates; without them the frozen workbench cannot scaffold the agent kit.
+    ("plugin/neko_plugin_cli/agent_kit", "SKILL.md"),
+    ("plugin/neko_plugin_cli/templates/agent_guides", "AGENTS.md.tmpl"),
+    ("plugin/neko_plugin_cli/templates/agent_guides", "CLAUDE.md.tmpl"),
 )
 
 # Every subdirectory in the bundled plugins directory must contain plugin.toml; catches cases where the entire ``plugin/plugins``
@@ -247,6 +267,110 @@ def _check_plugin_stage(dist_root: Path, stage_root: Path) -> list[str]:
     return issues
 
 
+def _plugin_tool_check_skipped(reason: str) -> list[str]:
+    # Fetching the pinned uv or its list needs PyPI; a transient outage must not
+    # fail an otherwise good build. Only a list without this patch release fails.
+    print(f"[WARN] {reason}; skipped the plugin-tools Python check", file=sys.stderr)
+    return []
+
+
+def _pypi_lacks_uv_release(version: str) -> bool:
+    """True only when PyPI answers that this uv release does not exist."""
+    import http.client
+    import json
+    import urllib.error
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(f"https://pypi.org/pypi/uv/{version}/json", timeout=30):
+            return False
+    except urllib.error.HTTPError as exc:
+        with exc:
+            if exc.code != 404:
+                return False
+            # A proxy's own 404 page is not PyPI saying the release is missing.
+            try:
+                body = json.loads(exc.read(4096))
+            except (OSError, ValueError, http.client.HTTPException):
+                return False
+            return isinstance(body, dict) and body.get("message") == "Not Found"
+    except (OSError, ValueError, http.client.HTTPException):
+        return False  # Unreachable: the caller only warns.
+
+
+def _check_plugin_tool_python() -> list[str]:
+    """The pinned uv must be able to download this build's exact CPython.
+
+    A packaged server prepares its plugin tools with a pinned uv and the
+    CPython patch release it runs on (see
+    plugin/server/infrastructure/plugin_tool_runtime.py). uv carries its list
+    of downloadable Pythons inside each release, while the build's Python patch
+    floats with setup-python; when the build picks up a patch the pinned uv does
+    not know, every packaged plugin tool preparation would fail. Run with the build
+    interpreter, which is the one the dist is frozen from.
+    """
+    import json
+    import os
+    import shutil
+    import subprocess
+
+    repository_root = Path(__file__).resolve().parents[1]
+    if str(repository_root) not in sys.path:
+        sys.path.insert(0, str(repository_root))
+    from plugin.server.infrastructure.plugin_tool_runtime import (
+        packaged_python_request,
+        pinned_uv_version,
+    )
+
+    uv = shutil.which("uv")
+    if uv is None:
+        print("[WARN] uv not found on PATH; skipped the plugin-tools Python check", file=sys.stderr)
+        return []
+    version = pinned_uv_version()
+    request = packaged_python_request()
+    env = dict(os.environ)
+    # Read the list built into the pinned release, as the packaged server does.
+    for name in ("UV_PYTHON_DOWNLOADS", "UV_PYTHON_DOWNLOADS_JSON_URL", "UV_OFFLINE"):
+        env.pop(name, None)
+    command = [
+        uv, "tool", "run", "--no-config", "--from", f"uv=={version}", "uv",
+        "python", "list", request, "--only-downloads", "--output-format", "json", "--no-config",
+    ]
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=300, env=env)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return _plugin_tool_check_skipped(f"could not run uv {version} to list Python downloads: {exc}")
+    if result.returncode:
+        detail = (result.stderr or result.stdout).strip().splitlines()[-1:] or [""]
+        if _pypi_lacks_uv_release(version):
+            return [
+                f"pinned uv {version} is not published on PyPI; packaged plugin tool preparation "
+                "would fail. Fix PINNED_UV_VERSION in plugin_tool_runtime.py."
+            ]
+        return _plugin_tool_check_skipped(
+            f"uv {version} could not list Python downloads (exit {result.returncode}): {detail[0]}"
+        )
+    try:
+        downloads = json.loads(result.stdout)
+    except ValueError:
+        downloads = None
+    if not isinstance(downloads, list):
+        return _plugin_tool_check_skipped(f"uv {version} printed an unreadable Python download list")
+    current = ".".join(str(part) for part in sys.version_info[:3])
+    if not any(
+        isinstance(item, dict)
+        and item.get("implementation") == "cpython"
+        and item.get("version") == current
+        for item in downloads
+    ):
+        return [
+            f"pinned uv {version} cannot download {request}; packaged plugin tool "
+            "preparation would fail. Raise PINNED_UV_VERSION in plugin_tool_runtime.py to a uv release "
+            "that lists this Python patch (or pin the build's Python patch)."
+        ]
+    return []
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
     parser.add_argument(
@@ -279,6 +403,7 @@ def main(argv: list[str] | None = None) -> int:
     issues.extend(_check_plugin_tomls(dist_root))
     if args.plugin_stage is not None:
         issues.extend(_check_plugin_stage(dist_root, args.plugin_stage.resolve()))
+    issues.extend(_check_plugin_tool_python())
 
     if issues:
         print(f"[FAIL] Nuitka dist verification failed for {dist_root}:", file=sys.stderr)

@@ -1024,12 +1024,88 @@ async def test_voice_fast_path_passes_request_locale_without_mutating_manager(
         push_mini_game_invite_resolved=AsyncMock(),
     )
 
-    trigger.assert_awaited_once_with(language=expected_language)
+    trigger.assert_awaited_once_with(
+        language=expected_language, allow_vision=True, vision_consent_epoch=0,
+    )
     assert (
         manager.user_language,
         manager._user_language_explicit,
         manager._conversation_render_language,
     ) == original_language_state
+
+
+@pytest.mark.asyncio
+async def test_voice_fast_path_switch_off_during_entry_awaits_ends_the_nudge_vision(
+    monkeypatch,
+) -> None:
+    """A switch-off while the request awaits the mini-game invite push (#3800).
+
+    The nudge must judge vision against the epoch the request started under;
+    re-reading the epoch at the nudge would take the invalidated one as its
+    new baseline and still let the cached frame out.
+    """
+    class _VoiceSession:
+        pass
+
+    monkeypatch.setattr(service, "OmniRealtimeClient", _VoiceSession)
+    monkeypatch.setattr(
+        service,
+        "_advance_mini_game_invite_entry",
+        lambda *_args, **_kwargs: SimpleNamespace(session_id="s", action="dismissed"),
+    )
+    manager = SimpleNamespace(
+        is_active=True,
+        session=_VoiceSession(),
+        is_goodbye_silent=lambda: False,
+        last_user_message_time=None,
+        state=SimpleNamespace(can_start_proactive=lambda *, session: True),
+        user_language="en",
+        _user_language_explicit=False,
+        _conversation_render_language=None,
+        _proactive_vision_enabled=True,
+        _proactive_vision_revocation_epoch=0,
+    )
+    seen: list = []
+
+    async def _nudge(**kwargs):
+        # Same baseline rule as LLMSessionManager.trigger_voice_proactive_nudge.
+        epoch = kwargs.get("vision_consent_epoch")
+        if epoch is None:
+            epoch = manager._proactive_vision_revocation_epoch
+        seen.append(
+            kwargs["allow_vision"]
+            and manager._proactive_vision_revocation_epoch == epoch
+        )
+        return False
+
+    manager.trigger_voice_proactive_nudge = _nudge
+
+    async def _push_resolved(mgr, **_kwargs):
+        # The user turns Screen Share off while this push is awaited.
+        from main_logic.core import LLMSessionManager
+
+        LLMSessionManager.invalidate_proactive_vision_rounds(mgr)
+
+    await service.handle_proactive_chat(
+        contracts.ProactiveChatCommand(
+            lanlan_name="Yui",
+            voice_mode=True,
+            enabled_modes=["vision"],
+            enabled_modes_provided=True,
+        ),
+        config_manager=SimpleNamespace(),
+        session_manager=SimpleNamespace(get=lambda _lanlan_name: manager),
+        character_data=_CHARACTER_DATA,
+        game_route_active_for=lambda _lanlan_name: False,
+        break_config_manager_provider=lambda: SimpleNamespace(),
+        run_mini_game_invite_short_circuit=AsyncMock(),
+        push_mini_game_invite_options=AsyncMock(),
+        push_mini_game_invite_resolved=_push_resolved,
+    )
+
+    assert manager._proactive_vision_revocation_epoch == 1
+    assert seen == [False]
+
 
 
 @pytest.mark.parametrize(

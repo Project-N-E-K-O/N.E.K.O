@@ -60,7 +60,7 @@ Current source development requires:
 
 - Python **3.11**;
 - [`uv`](https://docs.astral.sh/uv/) for Python environments and commands;
-- Node compatible with the repository lockfiles—the plugin manager currently requires `^20.19.0 || >=22.12.0`;
+- Node compatible with the repository lockfiles—the plugin manager currently requires `>=22.12.0`;
 - the platform-specific dependencies required by the features you enable.
 
 Start with [Prerequisites](./prerequisites), [Development Setup](./dev-setup), and [Quick Start](./quick-start).

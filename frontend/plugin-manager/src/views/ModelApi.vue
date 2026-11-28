@@ -13,13 +13,19 @@
           <el-empty v-if="!loadingSlots && !slotsError && !slots.length" :description="t('modelApi.noSlots')" />
           <el-card v-for="slot in slots" :key="slot.id" shadow="never" class="slot-card" :data-slot-id="slot.id">
             <template #header>
-              <div class="slot-heading"><h2>{{ slot.name }}</h2><el-tag size="small" effect="plain">{{ protocolLabel(slot.protocol) }}</el-tag></div>
+              <div class="slot-heading"><h2>{{ slot.name }}</h2><el-tag size="small" effect="plain">{{ slot.source === 'host_follow' ? t(`modelApi.hostApi.${slot.host_api}`) : protocolLabel(slot.protocol) }}</el-tag></div>
             </template>
-            <div class="slot-model">{{ slot.model }}</div>
-            <p class="endpoint">{{ slot.base_url }}</p>
+            <template v-if="slot.source === 'host_follow'">
+              <div class="slot-model">{{ hostSlotModelLabel(slot) }}</div>
+              <p class="endpoint">{{ t('modelApi.hostManagedHint') }}</p>
+            </template>
+            <template v-else>
+              <div class="slot-model">{{ slot.model }}</div>
+              <p class="endpoint">{{ slot.base_url }}</p>
+            </template>
             <div class="capabilities"><el-tag v-for="capability in slot.capabilities" :key="capability" size="small" type="info">{{ t(`modelApi.capability.${capability}`) }}</el-tag></div>
             <dl class="slot-details">
-              <div><dt>{{ t('modelApi.key') }}</dt><dd>{{ t(slot.api_key ? 'modelApi.keySet' : 'modelApi.keyEmpty') }}</dd></div>
+              <div><dt>{{ t('modelApi.key') }}</dt><dd>{{ slot.source === 'host_follow' ? t('modelApi.hostManagedKey') : t(slot.api_key ? 'modelApi.keySet' : 'modelApi.keyEmpty') }}</dd></div>
               <div><dt>{{ t('modelApi.timeout') }}</dt><dd>{{ t('modelApi.seconds', { count: slot.timeout_seconds }) }}</dd></div>
               <div><dt>{{ t('modelApi.fallback') }}</dt><dd>{{ slot.fallback_slot_id ? slotName(slot.fallback_slot_id) : t('modelApi.noFallback') }}</dd></div>
             </dl>
@@ -43,7 +49,7 @@
 
       <el-tab-pane :label="t('modelApi.usage')" name="usage">
         <div class="usage-filters">
-          <el-input v-model="pluginFilter" clearable :placeholder="t('modelApi.pluginFilter')" :aria-label="t('modelApi.pluginFilter')" @keyup.enter="loadUsage" />
+          <el-input v-model="pluginFilter" clearable :placeholder="t('modelApi.pluginFilter')" :aria-label="t('modelApi.pluginFilter')" @keydown="enterKey.down" @keyup.enter="enterKey.up(loadUsage)" />
           <el-select v-model="slotFilter" clearable :placeholder="t('modelApi.allSlots')" :aria-label="t('modelApi.allSlots')"><el-option v-for="slot in slots" :key="slot.id" :label="slot.name" :value="slot.id" /></el-select>
           <el-button :loading="loadingUsage" @click="loadUsage">{{ t('common.refresh') }}</el-button>
         </div>
@@ -83,19 +89,37 @@
       <el-form label-position="top" @submit.prevent="saveSlot">
         <el-alert v-if="formError" :title="formError" type="error" :closable="false" show-icon />
         <el-form-item :label="t('modelApi.name')" required><el-input v-model="form.name" data-testid="slot-name" maxlength="128" :disabled="saving" /></el-form-item>
+        <el-form-item :label="t('modelApi.source')" required>
+          <el-select v-model="form.source" data-testid="slot-source" :disabled="saving">
+            <el-option :label="t('modelApi.sourceManual')" value="manual" />
+            <el-option :label="t('modelApi.sourceHost')" value="host_follow" />
+          </el-select>
+          <p class="field-hint">{{ t('modelApi.sourceHint') }}</p>
+        </el-form-item>
+        <template v-if="form.source === 'host_follow'">
+          <el-form-item :label="t('modelApi.hostApiLabel')" required>
+            <el-select v-model="form.host_api" data-testid="slot-host-api" :disabled="saving">
+              <el-option :label="t('modelApi.hostApi.agent_advanced')" value="agent_advanced" />
+              <el-option :label="t('modelApi.hostApi.agent')" value="agent" />
+              <el-option :label="t('modelApi.hostApi.agent_small')" value="agent_small" />
+            </el-select>
+            <p class="field-hint">{{ t(`modelApi.hostHint.${form.host_api}`) }}</p>
+          </el-form-item>
+        </template>
+        <template v-else>
         <div class="form-pair">
           <el-form-item :label="t('modelApi.protocol')" required><el-select v-model="form.protocol" :disabled="saving"><el-option label="OpenAI Chat Completions" value="openai_chat" /><el-option label="Anthropic Messages" value="anthropic_messages" /></el-select></el-form-item>
           <el-form-item :label="t('modelApi.model')" required><el-input v-model="form.model" data-testid="slot-model" maxlength="256" :disabled="saving" /></el-form-item>
         </div>
-        <el-form-item :label="t('modelApi.endpoint')" required><el-input v-model="form.base_url" data-testid="slot-endpoint" :placeholder="form.protocol === 'openai_chat' ? 'https://api.openai.com/v1' : 'https://api.anthropic.com'" :disabled="saving" /><p class="field-hint">{{ t('modelApi.endpointHint') }}</p></el-form-item>
+        <el-form-item :label="t('modelApi.endpoint')" required><el-input v-model="form.base_url" data-testid="slot-endpoint" :placeholder="endpointPlaceholder" :disabled="saving" /><p class="field-hint">{{ t('modelApi.endpointHint') }}</p></el-form-item>
         <el-form-item :label="t('modelApi.key')" @input.capture="form.key_edited = true">
           <el-input v-model="form.api_key" data-testid="slot-key" :type="form.key_edited ? 'password' : 'text'" autocomplete="new-password" :placeholder="t('modelApi.keyPlaceholder')" :disabled="saving" @copy="copyMaskedKey" @cut="copyMaskedKey" @focus="selectMaskedKey" />
           <p class="field-hint">{{ t('modelApi.keyEditHint') }}</p>
           <p v-if="keyUpdateRequired" class="field-error">{{ t('modelApi.keyUpdateRequired') }}</p>
         </el-form-item>
+        </template>
         <el-form-item :label="t('modelApi.capabilities')"><el-checkbox-group v-model="form.capabilities" :disabled="saving"><el-checkbox v-for="capability in capabilities" :key="capability" :value="capability" :disabled="capability === 'text'">{{ t(`modelApi.capability.${capability}`) }}</el-checkbox></el-checkbox-group><p class="field-hint">{{ t('modelApi.capabilitiesHint') }}</p></el-form-item>
         <div class="form-pair">
-          <el-form-item :label="t('modelApi.temperature')"><el-input-number v-model="form.temperature" :min="0" :max="form.protocol === 'anthropic_messages' ? 1 : 2" :step="0.1" :precision="2" :disabled="saving" :placeholder="t('modelApi.providerDefault')" /></el-form-item>
           <el-form-item :label="t('modelApi.maxTokens')"><el-input-number v-model="form.max_output_tokens" :min="1" :max="1000000" :precision="0" :disabled="saving" placeholder="1024" /></el-form-item>
           <el-form-item :label="t('modelApi.timeout')"><el-input-number v-model="form.timeout_seconds" :min="1" :max="300" :disabled="saving" /><p class="field-hint">{{ t('modelApi.timeoutHint') }}</p></el-form-item>
           <el-form-item :label="t('modelApi.fallback')"><el-select v-model="form.fallback_slot_id" clearable :placeholder="t('modelApi.noFallback')" :disabled="saving"><el-option v-for="slot in fallbackSlots" :key="slot.id" :value="slot.id" :label="slot.name" /></el-select><p class="field-hint">{{ t('modelApi.fallbackHint') }}</p></el-form-item>
@@ -112,6 +136,7 @@ import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { ElMessageBox } from 'element-plus'
 import { createModelSlot, deleteModelBinding, deleteModelSlot, getModelUsage, listModelSlots, testModelSlot, updateModelSlot } from '@/api/models'
+import { useEnterKey } from '@/utils/enterKey'
 import { bindingErrorKey } from '@/utils/model-binding-error'
 import { formatHttpError } from '@/utils/request'
 import type { ModelCapability, ModelSlot, ModelUsageAttempt, ModelUsageResult } from '@/types/model-api'
@@ -127,6 +152,8 @@ const usage = ref<ModelUsageResult | null>(null)
 const loadingUsage = ref(false)
 const usageError = ref('')
 const pluginFilter = ref(typeof route.query.plugin_id === 'string' ? route.query.plugin_id : '')
+// Enter that picks a word of an input method is not Enter that filters.
+const enterKey = useEnterKey()
 const slotFilter = ref(typeof route.query.slot_id === 'string' ? route.query.slot_id : '')
 const editorOpen = ref(false)
 const editingSlot = ref<ModelSlot | null>(null)
@@ -137,6 +164,8 @@ const testingId = ref('')
 const unbindingId = ref('')
 const testResults = reactive<Record<string, { ok: boolean; message: string }>>({})
 const capabilities: ModelCapability[] = ['text', 'image_input', 'tool_calling', 'streaming']
+// Worked out here and not in the template: compared there, vue-tsc 3.3 takes `form` for a ref in what follows.
+const endpointPlaceholder = computed(() => form.protocol === 'openai_chat' ? 'https://api.openai.com/v1' : 'https://api.anthropic.com')
 const keyUpdateRequired = computed(() => needsModelKeyUpdate(form, editingSlot.value))
 const fallbackSlots = computed(() => slots.value.filter(slot => slot.id !== editingSlot.value?.id && form.capabilities.every(capability => slot.capabilities.includes(capability))))
 const knownTokens = computed(() => {
@@ -146,6 +175,15 @@ const knownTokens = computed(() => {
 })
 const errorMessage = (error: unknown) => formatHttpError(error) || t('messages.requestFailed')
 const protocolLabel = (protocol: string) => protocol === 'openai_chat' ? 'OpenAI Chat' : 'Anthropic'
+const hostSlotModelLabel = (slot: ModelSlot) => {
+  if (slot.host_status?.configured) return slot.host_status.model
+  const code = slot.host_status?.error_code
+  // Known states use translated labels; the server message is English and
+  // only serves as a fallback for codes this UI does not know yet.
+  if (code === 'host_api_unsupported') return t('modelApi.hostUnsupported')
+  if (!code || code === 'host_api_not_configured') return t('modelApi.hostNotConfigured')
+  return slot.host_status?.message || t('modelApi.hostNotConfigured')
+}
 const slotName = (id: string) => slots.value.find(slot => slot.id === id)?.name ?? id
 const duration = (ms: number) => `${(ms / 1000).toFixed(1)} s`
 const tokenValue = (attempt: ModelUsageAttempt, field: 'prompt_tokens' | 'completion_tokens' | 'total_tokens') => attempt.usage_status === 'unknown' ? '—' : (attempt.usage?.[field]?.toLocaleString() ?? '—')
@@ -189,7 +227,7 @@ function copyMaskedKey(event: ClipboardEvent) {
 }
 async function saveSlot() {
   if (saving.value || keyUpdateRequired.value) return
-  if (!form.name.trim() || !form.model.trim() || !form.base_url.trim()) { formError.value = t('modelApi.requiredFields'); return }
+  if (!form.name.trim() || (form.source === 'manual' && (!form.model.trim() || !form.base_url.trim()))) { formError.value = t('modelApi.requiredFields'); return }
   saving.value = true
   formError.value = ''
   try {

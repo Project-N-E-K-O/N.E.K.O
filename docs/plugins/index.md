@@ -58,18 +58,20 @@ After a successful install, the platform analyzes the plugin's own Python source
 
 Static analysis reports possible use without determining whether a code path actually runs. Calls made through objects imported from another plugin-owned module may be missed. A failed scan neither disables the plugin nor revokes a saved decision. Decisions and analysis reports are stored separately; the analysis service is only notified after an install transaction commits, so a rollback never publishes a new report. The Permissions tab can revoke a saved decision at any time, returning the plugin to unconfirmed.
 
-Read [Getting Started with Plugin Development](./plugin-development) for the package structure and complete workflow. Then follow the [Quick Start](./quick-start) and use the [Plugin Capabilities and SDK Reference](./sdk-reference) while implementing features.
+Read [Build Plugins with Coding Agents](./coding-agents) if you want an AI coding agent (such as Codex, DeepSeek Harness, Trae, Claude Code, or Cursor) to scaffold and validate your first plugin automatically. To understand the package structure and manual workflow directly, read [Getting Started with Plugin Development](./plugin-development), follow the [Quick Start](./quick-start), and consult the [Plugin Capabilities and SDK Reference](./sdk-reference) while implementing features.
 
 ## Quick Links
 
+- [Build Plugins with Coding Agents](./coding-agents) — Create a project in Plugin studio and let an AI coding agent build it for you
 - [Getting Started with Plugin Development](./plugin-development) — Understand what a plugin contains and how to build one
 - [Quick Start](./quick-start) — Create your first plugin step by step
 - [Publish a Plugin](/plugins/cli) — Upload to GitHub, submit for review, and publish new versions
 - [v0.9 Migration](./migration-v0.9) — Removed surfaces and exact replacements
 - [SDK Reference](./sdk-reference) — Base classes, context API, Result types
+- [Message Delivery](./push-message) — `push_message` / `finish` delivery semantics, size limits, and role placeholders
 - [Decorators](./decorators) — All available decorators
 - [Hosted UI](./hosted-ui) — Build TSX panels and Markdown guides
 - [Examples](./examples) — Complete working examples
 - [Adapters & Concurrency](./advanced) — Adapter gateways, async entries, and thread safety
 - [LLM Tool Calling](./tool-calling) — Register plugin functions for the LLM to invoke during conversations
-- [Best Practices](./best-practices) — Error handling, testing, code organization
+- [Best Practices](./best-practices) — Error handling, code organization

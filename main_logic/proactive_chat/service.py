@@ -77,6 +77,7 @@ from main_logic.proactive_chat.decisions import (
     _should_fetch_activity_snapshot,
     _should_skip_source,
     _should_use_voice_fast_path,
+    _voice_fast_path_allows_vision,
 )
 from main_logic.proactive_chat.delivery import (
     CommitmentOffer,
@@ -116,6 +117,7 @@ from main_logic.proactive_chat.mini_game_invite import (
     _mini_game_invite_get_state,
     _mini_game_invite_record_delivered,
     _pick_mini_game_type,
+    _select_theater_story,
 )
 from main_logic.proactive_chat.music_recommendation import (
     _build_music_dynamic_context,
@@ -193,6 +195,40 @@ def _consume_repeat_suppressed_break_reminder(
 _MEME_PROXY_CANDIDATE_CHECK_LIMIT = 3
 # Sources that read the screen or the active window share the vision consent gate.
 _PROACTIVE_VISION_SOURCE_MODES = frozenset({"vision", "window"})
+
+
+def _proactive_model_config(
+    conversation_config: dict,
+    vision_config: dict | None,
+    vision_provider: str | None = None,
+):
+    """Model settings for one proactive turn, and the image choice behind them.
+
+    Screenshots go to the chat model, or to a retired, separately configured
+    vision model until the release removes it (``utils.legacy_vision``). A chat
+    model known to reject images gets no screenshot.
+    """
+    from utils.legacy_vision import chat_refuses_images, choose_image_model
+
+    image_choice = choose_image_model(conversation_config, vision_config, vision_provider)
+    image_config = image_choice.config
+    if not image_choice.using_legacy and chat_refuses_images(conversation_config):
+        # The chat model rejected a screenshot earlier: talk without one, as
+        # proactive chat did before when no vision model was usable.
+        image_config = {}
+    model_config = ProactiveModelConfig(
+        conversation_model=conversation_config.get("model"),
+        conversation_base_url=conversation_config.get("base_url"),
+        conversation_api_key=conversation_config.get("api_key"),
+        conversation_provider_type=conversation_config.get("provider_type"),
+        vision_model=image_config.get("model", ""),
+        vision_base_url=image_config.get("base_url", ""),
+        vision_api_key=image_config.get("api_key", ""),
+        vision_provider_type=image_config.get("provider_type"),
+        vision_is_custom=bool(image_config.get("is_custom")),
+        image_choice=image_choice,
+    )
+    return image_choice, model_config
 
 
 _PHASE1_FETCH_PER_SOURCE = (
@@ -759,6 +795,14 @@ async def handle_proactive_chat(
             voice_language = _resolve_proactive_locale(command, mgr, fmt="full")
             delivered = await mgr.trigger_voice_proactive_nudge(
                 language=voice_language,
+                allow_vision=_voice_fast_path_allows_vision(
+                    enabled_modes=command.enabled_modes,
+                    enabled_modes_provided=command.enabled_modes_provided,
+                ),
+                # The epoch this request started under, like the text path:
+                # a revocation or switch-off during the awaits above (e.g.
+                # the mini-game invite push) must already end its vision.
+                vision_consent_epoch=vision_consent_epoch,
             )
             if delivered:
                 # Chat counter for1h+10 chats cooldown: voice nudge counts as proactive delivery,
@@ -921,6 +965,7 @@ async def handle_proactive_chat(
         # after flag already bypassed upstream gates; toggle returned None there and caller
         # continued ordinary source picking, leaking through blocked contexts.
         _user_invite_toggle = command.mini_game_invite_enabled
+        _theater_invite_toggle = command.theater_invite_enabled
 
         # Non-None ``MINI_GAME_INVITE_FORCE_GAME_TYPE`` bypasses all upstream
         # early-return gates (closed / skip_probability / restricted_screen_only),
@@ -932,7 +977,9 @@ async def handle_proactive_chat(
         # CodeRabbit Major: checking outside ``_maybe_deliver_mini_game_invite`` is necessary,
         # since upstream gates already passed inside, too late to guarantee forced delivery.
         _debug_force_invite = (
-            MINI_GAME_INVITE_FORCE_GAME_TYPE is not None and _user_invite_toggle
+            MINI_GAME_INVITE_FORCE_GAME_TYPE is not None
+            and (_theater_invite_toggle if MINI_GAME_INVITE_FORCE_GAME_TYPE == "theater"
+                 else _user_invite_toggle)
         )
 
         # ========== Hard short-circuit: propensity=closed ==========
@@ -1134,18 +1181,27 @@ async def handle_proactive_chat(
                 _gi_prob = _gi_prob_default
             branch_game_invite = False
             chosen_game_type: str | None = None
+            selected_theater = None
             gi_prompt: str | None = None
-            if MINI_GAME_INVITE_ENABLED and _user_invite_toggle and _gi_prob > 0:
+            if MINI_GAME_INVITE_ENABLED and (_user_invite_toggle or _theater_invite_toggle) and _gi_prob > 0:
                 import random as _random
 
                 if _random.random() < _gi_prob:
-                    chosen_game_type = _pick_mini_game_type(lanlan_name, manager=mgr)
+                    chosen_game_type = _pick_mini_game_type(
+                        lanlan_name, manager=mgr, user_toggle_enabled=_user_invite_toggle,
+                        theater_toggle_enabled=_theater_invite_toggle,
+                    )
+                    if chosen_game_type == "theater":
+                        selected_theater = await _select_theater_story()
+                        if selected_theater is None:
+                            chosen_game_type = None
                     if chosen_game_type is not None:
                         gi_prompt = _render_work_break_game_invite_prompt(
                             pending=water_pending,
                             game_type=chosen_game_type,
                             master_name=master_name_current,
                             lang=_break_lang,
+                            theater_story=selected_theater,
                         )
                         if gi_prompt is not None:
                             branch_game_invite = True
@@ -1190,6 +1246,7 @@ async def handle_proactive_chat(
                     _mini_game_invite_get_state(lanlan_name)["last_game_type"] = (
                         chosen_game_type
                     )
+                    _mini_game_invite_get_state(lanlan_name)["theater_selection"] = selected_theater
                     # Persist counter+1 + ever_delivered atomically (mini-game cooldown
                     # contract). Track success so we can fall back to the plain
                     # _increment_proactive_chat_total if persistence fails — otherwise
@@ -1435,7 +1492,11 @@ async def handle_proactive_chat(
             invite_lang=invite_lang,
             master_name=master_name_current,
             user_toggle_enabled=_user_invite_toggle,
+            theater_toggle_enabled=_theater_invite_toggle,
             round_id=lifecycle.screenshot_request_id,
+            # A theater invite is spoken in the character's own voice.
+            character_prompt=lanlan_prompt_map.get(lanlan_name, "").replace(
+                "{LANLAN_NAME}", lanlan_name).replace("{MASTER_NAME}", master_name_current),
             **state_storage_kwargs,
         )
         if invite_short_circuit is not None:
@@ -1700,7 +1761,7 @@ async def handle_proactive_chat(
 
         # ========== 4. Fetch LLM configuration ==========
         # Entire proactive pipeline (Phase1 selection /Phase2 generation /regen) uses conversation tier,
-        # not correction: without thinking, correction models struggle to consistently
+        # not the memory (summary) tier: without thinking, those models struggle to consistently
         # put source tag on first line and may output persona-constraint blocks. Conversation
         # main model follows format more reliably. Retain disable_thinking (vision+thinking times out).
         try:
@@ -1713,7 +1774,7 @@ async def handle_proactive_chat(
             conversation_model = conversation_config.get("model")
             conversation_api_key = conversation_config.get("api_key")
 
-            if not conversation_model or not conversation_api_key:
+            if not conversation_model or (not conversation_api_key and conversation_config.get('provider_type') != 'chatgpt'):
                 logger.error("对话模型配置缺失: model或api_key未设置")
                 return await _end_proactive(
                     ProactiveChatResult(
@@ -1727,22 +1788,13 @@ async def handle_proactive_chat(
                     )
                 )
 
-            vision_config = await _config_manager.aget_model_api_config(
-                "vision", core_config=_fresh_core_config
+            image_choice, model_config = _proactive_model_config(
+                conversation_config,
+                await _config_manager.aget_model_api_config(
+                    "vision", core_config=_fresh_core_config
+                ),
+                _fresh_core_config.get("visionModelProvider"),
             )
-            model_config = ProactiveModelConfig(
-                conversation_model=conversation_model,
-                conversation_base_url=conversation_config.get("base_url"),
-                conversation_api_key=conversation_api_key,
-                conversation_provider_type=conversation_config.get("provider_type"),
-                vision_model=vision_config.get("model", ""),
-                vision_base_url=vision_config.get("base_url", ""),
-                vision_api_key=vision_config.get("api_key", ""),
-                vision_provider_type=vision_config.get("provider_type"),
-                vision_is_custom=bool(vision_config.get("is_custom")),
-            )
-            if not model_config.has_vision_model:
-                logger.info("Vision 模型未配置，Phase 2 将退回使用对话模型")
         except Exception as e:
             logger.error(f"获取模型配置失败: {e}")
             return await _end_proactive(
@@ -2676,6 +2728,7 @@ async def handle_proactive_chat(
             master_name=master_name_current,
             log=logger,
             round_id=lifecycle.screenshot_request_id,
+            vision_consent_epoch=vision_consent_epoch,
         )
         if delivery_commit.result is not None:
             return await _end_proactive(

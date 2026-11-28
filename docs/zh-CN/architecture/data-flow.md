@@ -60,6 +60,7 @@
 | `status` | 结构化状态或错误载荷 |
 | `expression`、`focus_state`、`focus_charge` | 角色表现状态 |
 | `agent_status_update`、`agent_task_update`、`agent_notification` | Agent 状态和任务投递 |
+| `agent_builtin_activity` | 某个任务开始或停止使用键鼠、浏览器 |
 | `request_screenshot`、`capture_bridge_request` | 客户端截图请求 |
 | `session_ended_by_server`、`reload_page`、`catgirl_switched` | 生命周期恢复或角色变更 |
 | `pong` | 心跳响应 |
@@ -84,7 +85,7 @@
 主对话模型
         │ dispatch_task / query_tasks（工具调用）
         ▼
-tool_calling.py ── HTTP :48915 /nekoclaw/* ──> 猫爪宿主 ──> 回执交还给模型
+tool_calling.py ── HTTP :48915 /nekopower/* ──> 喵能力宿主 ──> 回执交还给模型
 
 cross_server 的 turn end（这一轮没有调用会动手的工具）
         │ 用户原话 + 她的回复
@@ -92,7 +93,7 @@ cross_server 的 turn end（这一轮没有调用会动手的工具）
 MainServerAgentBridge ── ZMQ :48963 ──> AgentServerEventBridge ──> 事后检查
         ▲                                      │
         │ ACK / task_update / 汇报             ▼
-        └──────────── ZMQ :48962 ───── 猫爪宿主（outbox）
+        └──────────── ZMQ :48962 ───── 喵能力宿主（outbox）
         │
         ├─ task_update ──> WebSocket ──> Task HUD
         └─ task_result / proactive_message ──> LLMSessionManager 回调队列 ──> 聊天投递

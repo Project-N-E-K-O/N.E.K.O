@@ -1,0 +1,43 @@
+import bindingErrors from '../model-binding-errors/pt'
+import type { ModelApiMessages } from './en-US'
+
+const messages: ModelApiMessages = {
+  bindingErrors,
+  title: 'Plugin API', subtitle: 'Gerencie os modelos que seus plugins podem usar.',
+  slots: 'Configurações de modelos', addSlot: 'Adicionar modelo', editSlot: 'Editar modelo',
+  bindingHint: 'Crie uma configuração aqui e associe-a a um uso declarado nas configurações do plugin.',
+  noSlots: 'Nenhum modelo configurado. Adicione um para conectar seus plugins.',
+  name: 'Nome da configuração', protocol: 'Protocolo da API', model: 'ID do modelo', endpoint: 'URL base da API',
+  source: 'Origem das credenciais', sourceManual: 'Configuração manual', sourceHost: 'Seguir a API do app principal',
+  sourceHint: 'Uma configuração de seguimento lê as configurações de API do app principal a cada chamada; mudanças de provedor ou chave são aplicadas automaticamente. Configurações manuais guardam sua própria URL e chave.',
+  hostApiLabel: 'API do app principal', hostApi: { agent_advanced: 'Modelo do familiar (avançado) do app principal', agent: 'Modelo do familiar (geral) do app principal', agent_small: 'Modelo do familiar (pequeno) do app principal' },
+  hostHint: { agent_advanced: 'Segue o modelo de familiar avançado da página de configurações de API do app principal (sem configuração própria, é o modelo de familiar geral). Indicado para as tarefas mais difíceis; deve suportar chamadas de ferramentas e entrada de imagens.', agent: 'Segue o modelo de familiar da página de configurações de API do app principal: o que os familiares, o controle de teclado e mouse e o navegador usam. Deve suportar chamadas de ferramentas e entrada de imagens.', agent_small: 'Segue o modelo de familiar pequeno da página de configurações de API do app principal (sem configuração própria, é o modelo de reconhecimento). Indicado para tarefas simples e frequentes; deve suportar chamadas de ferramentas.' },
+  hostManagedHint: 'A URL e as credenciais seguem as configurações de API do app principal.',
+  hostManagedKey: 'Gerenciada pelo app principal', hostNotConfigured: 'API do app principal não configurada',
+  hostUnsupported: 'O modelo seguido do app principal não é um endpoint de chat HTTP: os plugins não podem chamá-lo',
+  endpointHint: "Inclua o prefixo de API exigido pelo provedor. APIs compatíveis com OpenAI geralmente precisam de /v1, por exemplo https://api.example.com/v1; adicione-o se estiver faltando. Não inclua /chat/completions ou /messages.",
+  key: 'Chave de API', keySet: 'Configurada', keyEmpty: 'Sem chave',
+  keyPlaceholder: 'Digite uma chave ou deixe em branco se não houver autenticação',
+  keyEditHint: "A chave salva aparece mascarada. Sem alterações é mantida; digite uma chave completa para substituir ou deixe vazio para remover. A cópia contém apenas o texto mascarado.",
+  keyUpdateRequired: 'A URL ou o protocolo mudou. Digite uma nova chave ou escolha remover a chave salva.',
+  capabilities: 'Recursos do modelo', capabilitiesHint: 'Ative apenas os recursos compatíveis com o modelo. Eles determinam quais usos do plugin podem ser associados.',
+  capability: { text: 'Texto', image_input: 'Entrada de imagens', tool_calling: 'Ferramentas de função', streaming: 'Streaming' },
+  maxTokens: 'Limite padrão de tokens de saída',
+  timeout: 'Tempo limite total', seconds: '{count} s', timeoutHint: 'De 1 a 300 segundos, incluindo a fila e a tentativa alternativa.',
+  fallback: 'Modelo alternativo', noFallback: 'Nenhum', fallbackHint: 'Uma nova tentativa para erros elegíveis do provedor, dentro do mesmo tempo limite; o modelo principal usa no máximo 2/3, para que uma solicitação travada ainda possa alternar. Exige os mesmos recursos.',
+  usedBy: 'Usado por', notBound: 'Nenhum plugin associado', deleteBlocked: 'Remova primeiro as associações de plugins e as referências como alternativa.',
+  deleteConfirm: 'Excluir a configuração de modelo “{name}”?', test: 'Testar conexão',
+  unbind: 'Desvincular', unbindConfirm: 'Remover a associação de modelo de {plugin} / {usage}? Esse uso precisará de uma nova associação para chamar um modelo.',
+  testHint: 'O teste envia uma solicitação curta de texto usando a configuração salva. O provedor pode cobrar por ela. Não verifica imagens, ferramentas ou streaming.',
+  testSuccess: 'Solicitação de texto bem-sucedida · {duration}', requiredFields: 'Digite um nome, um ID de modelo e uma URL base.',
+  usage: 'Uso recente', pluginFilter: 'Filtrar por ID do plugin', allSlots: 'Todos os modelos',
+  requests: 'Solicitações', attempts: 'Tentativas ao provedor', knownTokens: 'Tokens conhecidos (incluindo uso parcial)',
+  partialUnknown: 'Uso parcial / desconhecido', usageHint: 'Os totais abrangem até 1.000 solicitações salvas; a tabela mostra as últimas 100 correspondentes. Uso ausente é desconhecido, não zero. Expanda uma linha para ver cada tentativa.',
+  noUsage: 'Nenhuma solicitação de modelo nesta visualização.', noAttempt: 'Nenhuma tentativa ao provedor foi iniciada.',
+  time: 'Data e hora', consumer: 'Plugin / uso', slot: 'Configuração de modelo', result: 'Resultado', duration: 'Duração',
+  connectionTest: 'Teste de conexão', tokenCounts: 'Entrada {input} · Saída {output} · Total {total}',
+  status: { success: 'Sucesso', error: 'Falha', timeout: 'Tempo esgotado', cancelled: 'Cancelado' },
+  usageStatus: { reported: 'Uso informado', partial: 'Uso parcial', unknown: 'Uso desconhecido' },
+}
+
+export default messages

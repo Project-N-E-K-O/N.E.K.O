@@ -2439,22 +2439,22 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         except Exception as exc:  # noqa: BLE001 - Every finalization step is best effort; always deregister at the end.
             logger.error("visit %s: exit flow failed: %r", self.visit_id[:6], exc)
         finally:
-            if self._shutdown_started:
-                # Shutdown cancelled finalization: shutdown() handles files/takeover/deregistration in file-first order;
-                # never run concurrent teardown closing/deregistering before archival.
-                return
-            if not self._files_done:
-                # Prior steps failed: transcript/spool closure remains mandatory; shutdown handles its own path.
-                try:
-                    await self._finish_files(reason)
-                except Exception as exc:  # noqa: BLE001
-                    logger.error("visit %s: files not finalized: %r", self.visit_id[:6], exc)
-            if not self._handback_started:
-                # Intermediate failure/cancellation stops waiting for unqueued segments but still returns callbacks, neither dropping nor withholding forever.
-                if self.handoff is not None:
-                    self.handoff.abandon()
-                self._start_handback()
-            await self._teardown()
+            # Shutdown cancelled finalization: shutdown() handles files/takeover/deregistration in file-first order;
+            # never run concurrent teardown closing/deregistering before archival. Skip via a guard, not ``return``:
+            # returning from ``finally`` would swallow the in-flight CancelledError/BaseException (issue #3792).
+            if not self._shutdown_started:
+                if not self._files_done:
+                    # Prior steps failed: transcript/spool closure remains mandatory; shutdown handles its own path.
+                    try:
+                        await self._finish_files(reason)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.error("visit %s: files not finalized: %r", self.visit_id[:6], exc)
+                if not self._handback_started:
+                    # Intermediate failure/cancellation stops waiting for unqueued segments but still returns callbacks, neither dropping nor withholding forever.
+                    if self.handoff is not None:
+                        self.handoff.abandon()
+                    self._start_handback()
+                await self._teardown()
 
     def _start_handback(self) -> None:
         self._handback_started = True

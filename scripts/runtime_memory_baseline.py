@@ -758,6 +758,18 @@ async def _ocr_scenario(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def _browser_tools_session(*, headless: bool) -> Any:
+    """Return a session of the NekoPower browser tools on a throwaway profile directory."""
+    import tempfile
+
+    from nekopower.builtin.browser.session import BrowserSession
+    from nekopower.builtin.browser.settings import BrowserSettings, BrowserSettingsStore
+
+    store = BrowserSettingsStore(Path(tempfile.mkdtemp(prefix="neko-browser-memory-")))
+    store.save(BrowserSettings(headless=headless))
+    return BrowserSession(settings=store)
+
+
 async def _browser_scenario(args: argparse.Namespace) -> dict[str, Any]:
     checkpoints = [
         _in_process_checkpoint(
@@ -766,9 +778,7 @@ async def _browser_scenario(args: argparse.Namespace) -> dict[str, Any]:
             interval=args.interval,
         )
     ]
-    from brain.browser_use_adapter import BrowserUseAdapter
-
-    adapter = BrowserUseAdapter(headless=not args.headed)
+    session = _browser_tools_session(headless=not args.headed)
     checkpoints.append(
         _in_process_checkpoint(
             "browser_use_imported",
@@ -776,20 +786,20 @@ async def _browser_scenario(args: argparse.Namespace) -> dict[str, Any]:
             interval=args.interval,
         )
     )
-    session = await adapter._get_browser_session()
     try:
+        # Starts a browser installed on this machine on a throwaway profile
+        # and connects to it; the browser itself is another process.
         await session.start()
-        adapter._session_ever_started = True
         checkpoints.append(
             _in_process_checkpoint(
-                "browser_use_playwright_started",
+                "browser_use_started",
                 seconds=args.window,
                 interval=args.interval,
             )
         )
     finally:
-        await adapter.close()
-    del session, adapter
+        await session.close()
+    del session
     checkpoints.append(
         _in_process_checkpoint(
             "browser_use_released",
@@ -889,17 +899,7 @@ def _http_probe_validation_errors(
 
 
 def _assert_ports_available(ports: list[int]) -> None:
-    busy: list[int] = []
-    for port in ports:
-        probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        try:
-            if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
-                probe.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
-            probe.bind(("127.0.0.1", port))
-        except OSError:
-            busy.append(port)
-        finally:
-            probe.close()
+    busy = [port for port in ports if not _port_released(port)]
     if busy:
         raise RuntimeError(
             "benchmark ports must be free before startup; refusing launcher "

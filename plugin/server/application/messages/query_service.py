@@ -148,17 +148,19 @@ def _query_messages_sync(
     )
 
     try:
-        state.refresh_messages_cache_from_message_plane(
+        records = state.snapshot_messages_from_message_plane(
             limit=refresh_limit,
             timeout=1.0,
             ttl_seconds=0.5,
             force=False,
         )
+        records_iter = reversed(records)
     except (RuntimeError, OSError, ValueError, TypeError, AttributeError, KeyError):
         logger.debug("message cache refresh skipped due to transient sync error")
+        records_iter = state.iter_message_records_reverse()
 
     serialized_messages_reversed: list[SerializedMessage] = []
-    for item in state.iter_message_records_reverse():
+    for item in records_iter:
         if not isinstance(item, Mapping):
             continue
 

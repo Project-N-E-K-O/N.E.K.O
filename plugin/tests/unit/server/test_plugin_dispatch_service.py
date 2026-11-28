@@ -5,9 +5,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from plugin.core.rpc import RpcDeadlineExceededError
+from plugin._types.exceptions import OUTPUT_SCHEMA_VIOLATION_CODE, PluginExecutionError
+from plugin.core.rpc import RpcDeadlineExceededError, RpcRemoteError
 from plugin.server.application.plugins import dispatch_service as dispatch_module
 from plugin.server.application.plugins.dispatch_service import PluginDispatchService
+from plugin.server.domain.errors import ServerDomainError
 
 pytestmark = pytest.mark.plugin_unit
 
@@ -437,3 +439,100 @@ async def test_trigger_arbitrated_custom_event_returns_contract_result(
     assert result["priority"] == 5.0
     assert result["source_plugin"] == "beta"
     assert result["source_event_id"] == "context_handler"
+
+
+def _remote_failure(error: dict[str, object]) -> PluginExecutionError:
+    # Same wrapping as the host's command channel: the plugin's error reply
+    # becomes RpcRemoteError, re-raised as PluginExecutionError from it.
+    remote = RpcRemoteError(error)
+    try:
+        raise PluginExecutionError("alpha", "entry entry", remote.message) from remote
+    except PluginExecutionError as exc:
+        return exc
+
+
+@pytest.mark.asyncio
+async def test_trigger_custom_event_keeps_remote_details_under_local_ids(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    issues = [{"path": "$.items[0].name", "type": "type_mismatch"}]
+    failure = _remote_failure({
+        "code": OUTPUT_SCHEMA_VIOLATION_CODE,
+        "message": "output does not match output_schema",
+        "details": {
+            "plugin_id": "spoofed",
+            "event_id": "spoofed_entry",
+            "error_type": "PluginOutputSchemaError",
+            "issues": issues,
+        },
+    })
+    _patch_handlers_and_hosts(monkeypatch, {}, {"alpha": _Host({}, error=failure)})
+
+    with pytest.raises(ServerDomainError) as caught:
+        await PluginDispatchService().trigger_custom_event(
+            to_plugin="alpha",
+            event_type="plugin_entry",
+            event_id="entry",
+            args={},
+            timeout=1.0,
+        )
+
+    assert caught.value.code == OUTPUT_SCHEMA_VIOLATION_CODE
+    assert caught.value.details == {
+        "plugin_id": "alpha",
+        "event_id": "entry",
+        "error_type": "PluginOutputSchemaError",
+        "issues": issues,
+    }
+
+
+@pytest.mark.asyncio
+async def test_trigger_custom_event_ignores_non_mapping_remote_details(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    failure = _remote_failure({"code": "PLUGIN_EXECUTION_FAILED", "message": "boom", "details": ["x"]})
+    _patch_handlers_and_hosts(monkeypatch, {}, {"alpha": _Host({}, error=failure)})
+
+    with pytest.raises(ServerDomainError) as caught:
+        await PluginDispatchService().trigger_custom_event(
+            to_plugin="alpha",
+            event_type="plugin_entry",
+            event_id="entry",
+            args={},
+            timeout=1.0,
+        )
+
+    assert caught.value.code == "PLUGIN_EXECUTION_FAILED"
+    assert caught.value.details == {"plugin_id": "alpha", "event_id": "entry"}
+
+
+@pytest.mark.asyncio
+async def test_trigger_custom_event_subscribers_keep_failure_details(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    issues = [{"path": "$.action", "type": "type_mismatch"}]
+    failure = _remote_failure({
+        "code": OUTPUT_SCHEMA_VIOLATION_CODE,
+        "message": "output does not match output_schema",
+        "details": {"plugin_id": "spoofed", "event_id": "spoofed_entry", "issues": issues},
+    })
+    _patch_handlers_and_hosts(
+        monkeypatch,
+        {"alpha:voice_transcript:handle_transcript": _handler("voice_transcript", "handle_transcript")},
+        {"alpha": _Host({}, error=failure)},
+    )
+
+    results = await PluginDispatchService().trigger_custom_event_subscribers(
+        event_type="voice_transcript",
+        args={},
+        timeout=0.25,
+    )
+
+    assert results == [{
+        "plugin_id": "alpha",
+        "event_id": "handle_transcript",
+        "success": False,
+        "code": OUTPUT_SCHEMA_VIOLATION_CODE,
+        "error": failure.args[0],
+        "details": {"plugin_id": "alpha", "event_id": "handle_transcript", "issues": issues},
+    }]

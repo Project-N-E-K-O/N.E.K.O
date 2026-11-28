@@ -1206,6 +1206,23 @@ export function renderMarkdown(report) {
     `- 高曝光低 CTR 页面：${report.actions.lowCtr.length || '0'}`,
     `- GSC 新查询：${report.sites.flatMap(site => site.gsc?.newQueries ?? []).slice(0, 10).map(item => item.query).join('、') || 'N/A'}`,
     '- 限制：GSC 的最新完整日由 API `first_incomplete_date` 动态解析；query/page 维度仍可能受 API top rows 限制。',
+  )
+  for (const site of report.sites) {
+    const tracked = site.gsc?.trackedHomepageQueries
+    if (!tracked) continue
+    lines.push('', `### GSC 首页关键词 · ${escapeCell(site.label)}`, '')
+    lines.push(`- 页面 ${escapeCell(tracked.page)} · ${dateRangeLabel(tracked.window)}`)
+    if (tracked.status !== 'ok') {
+      lines.push(`- 取数失败 · ${escapeCell(tracked.reason)}`)
+      continue
+    }
+    lines.push('', '| 查询词 | 点击 | 展示 | CTR | 平均排名 |', '|---|---:|---:|---:|---:|')
+    for (const { query, metrics } of tracked.rows) {
+      lines.push(`| ${escapeCell(query)} | ${display(metrics?.clicks)} | ${display(metrics?.impressions)} | ${percentage(metrics?.ctr)} | ${display(metrics?.position, 2)} |`)
+    }
+    lines.push('', '- N/A 表示 Google 未返回该词的数据行。')
+  }
+  lines.push(
     '',
     '## 🤖 GEO / AI 搜索战况',
     '',

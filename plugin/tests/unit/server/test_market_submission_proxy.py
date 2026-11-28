@@ -29,6 +29,8 @@ _VERIFIED_TOKEN = {
     "subject_pending": False,
 }
 _BRIDGE = {"token": market_bridge.get_bridge_token()}
+_FEEDBACK_HEADER = "X-Market-Feedback-Session"
+_BRIDGE_HEADERS = {"Authorization": f"Bearer {_BRIDGE['token']}"}
 _EMPTY_PAGE = {"items": [], "total": 0, "page": 1, "page_size": 20, "total_pages": 0}
 
 
@@ -91,6 +93,269 @@ def _ok(payload):
         return httpx.Response(200, json=payload)
 
     return responder
+
+
+def _install_feedback(monkeypatch, responder):
+    token = {**_VERIFIED_TOKEN, "session_id": "feedback-login-a"}
+    client, upstream, _ = _install(monkeypatch, responder, token=token)
+    monkeypatch.setattr(market_bridge, "_read_json_file", lambda path: token)
+    monkeypatch.setattr(market_bridge, "MARKET_WEB_URL", "https://web.market.example.com")
+    return client, upstream, token
+
+
+def test_feedback_scopes_query_and_marks_the_message_seen_by_the_client(monkeypatch):
+    def responder(request, attempt):
+        if request.method == "POST":
+            return httpx.Response(204)
+        return httpx.Response(200, json={"items": [], "by_plugin": []})
+
+    client, upstream, _ = _install_feedback(monkeypatch, responder)
+    denied = client.get("/market/feedback", params=_BRIDGE)
+    assert denied.status_code == 403
+    response = client.get(
+        "/market/feedback",
+        params={"kind": "issue", "status": "unread", "cursor": "next", "extra": "drop"},
+        headers=_BRIDGE_HEADERS,
+    )
+    assert response.status_code == 200 and response.headers["Cache-Control"] == "no-store"
+    assert response.headers["X-Market-Web-Url"] == "https://web.market.example.com"
+    assert upstream.requests[0].url.path == "/api/v1/me/plugin-feedback"
+    assert dict(upstream.requests[0].url.params) == {
+        "kind": "issue", "status": "unread", "cursor": "next",
+    }
+    assert response.headers[_FEEDBACK_HEADER] != "feedback-login-a"
+    payload = {"thread_kind": "issue", "thread_id": 17, "through_message_id": 31}
+    marked = client.post(
+        "/market/feedback/mark-read",
+        headers={**_BRIDGE_HEADERS, _FEEDBACK_HEADER: response.headers[_FEEDBACK_HEADER]},
+        json=payload,
+    )
+    assert marked.status_code == 204
+    assert upstream.requests[1].url.path == "/api/v1/me/plugin-feedback/mark-read"
+    assert upstream.requests[1].headers["Authorization"] == f"Bearer {_ACCESS_TOKEN}"
+    assert _FEEDBACK_HEADER not in upstream.requests[1].headers
+    assert json.loads(upstream.requests[1].content) == payload
+
+
+def test_feedback_bulk_read_rejects_a_missing_or_replaced_session(monkeypatch):
+    client, upstream, token = _install_feedback(monkeypatch, _ok({"items": []}))
+    initial = client.get("/market/feedback", headers=_BRIDGE_HEADERS)
+    assert initial.status_code == 200
+    old_session = initial.headers[_FEEDBACK_HEADER]
+    token.update(session_id="feedback-login-b", subject="another-account")
+    for headers in (_BRIDGE_HEADERS, {**_BRIDGE_HEADERS, _FEEDBACK_HEADER: old_session}):
+        marked = client.post("/market/feedback/mark-read", headers=headers, json={"all": True})
+        assert marked.status_code == 409
+        assert marked.json()["detail"]["code"] == "market_feedback_session_changed"
+    assert len(upstream.requests) == 1
+
+
+@pytest.mark.parametrize("switch_account", [False, True])
+def test_feedback_refresh_retries_only_inside_the_original_session(monkeypatch, switch_account):
+    def responder(request, attempt):
+        if request.method == "POST":
+            return httpx.Response(401 if attempt == 1 else 204)
+        return httpx.Response(200, json={"items": []})
+
+    client, upstream, token = _install_feedback(monkeypatch, responder)
+    initial = client.get("/market/feedback", headers=_BRIDGE_HEADERS)
+    session = initial.headers[_FEEDBACK_HEADER]
+
+    async def refresh(*, force_refresh=False, rejected_access_token=None):
+        if force_refresh:
+            assert rejected_access_token == _ACCESS_TOKEN
+            token["access_token"] = "new-access-token"
+            if switch_account:
+                token.update(session_id="feedback-login-b", subject="another-account")
+        return dict(token)
+
+    monkeypatch.setattr(market_bridge, "_ensure_valid_oauth_token", refresh)
+    marked = client.post(
+        "/market/feedback/mark-read",
+        headers={**_BRIDGE_HEADERS, _FEEDBACK_HEADER: session},
+        json={"all": True},
+    )
+    if switch_account:
+        assert marked.status_code == 409 and len(upstream.requests) == 2
+    else:
+        assert marked.status_code == 204 and len(upstream.requests) == 3
+        assert upstream.requests[2].headers["Authorization"] == "Bearer new-access-token"
+        assert marked.headers[_FEEDBACK_HEADER] == session
+
+
+def _switch_account_during(status, payload=None):
+    """Let the first read succeed, then answer ``status`` while switching the login mid-flight."""
+
+    def responder(request, attempt):
+        body = payload if payload is not None else {}
+        if attempt == 0:
+            return httpx.Response(200, json=body)
+        responder.token.update(session_id="feedback-login-b", subject="another-account")
+        return httpx.Response(status, json=body)
+
+    return responder
+
+
+def test_a_write_the_market_applied_is_not_reported_failed_after_an_account_switch(monkeypatch):
+    message = {"id": 31, "body": "Reply text"}
+    responder = _switch_account_during(200, message)
+    client, upstream, token = _install_feedback(monkeypatch, responder)
+    responder.token = token
+    base = "/market/conversations/plugins/8"
+    login = client.get(f"{base}/issues/10", headers=_BRIDGE_HEADERS)
+    assert login.status_code == 200
+    headers = {**_BRIDGE_HEADERS, _FEEDBACK_HEADER: login.headers[_FEEDBACK_HEADER]}
+    draft = {"body": "Reply text", "reply_to_id": None, "client_message_id": "test-message-id"}
+    sent = client.post(f"{base}/issues/10/messages", headers=headers, json=draft)
+    assert sent.status_code == 200 and sent.json() == message
+    assert sent.headers["X-Market-Feedback-Session-Changed"] == "1"
+    # The old session is not handed back as if it were still current.
+    assert _FEEDBACK_HEADER not in sent.headers
+    assert len(upstream.requests) == 2
+    # The pre-flight check is unchanged: the stale session cannot write again.
+    again = client.post(f"{base}/issues/10/messages", headers=headers, json=draft)
+    assert again.status_code == 409 and len(upstream.requests) == 2
+
+
+@pytest.mark.parametrize(("method", "status"), [("GET", 200), ("POST", 422)])
+def test_a_read_or_refused_write_is_still_rejected_after_an_account_switch(monkeypatch, method, status):
+    responder = _switch_account_during(status, {"items": []})
+    client, upstream, token = _install_feedback(monkeypatch, responder)
+    responder.token = token
+    initial = client.get("/market/feedback", headers=_BRIDGE_HEADERS)
+    assert initial.status_code == 200
+    headers = {**_BRIDGE_HEADERS, _FEEDBACK_HEADER: initial.headers[_FEEDBACK_HEADER]}
+    if method == "GET":
+        response = client.get("/market/feedback", headers=headers)
+    else:
+        response = client.post("/market/feedback/mark-read", headers=headers, json={"all": True})
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "market_feedback_session_changed"
+    assert len(upstream.requests) == 2
+
+
+def test_a_write_5xx_after_an_account_switch_stays_uncertain_not_refused(monkeypatch):
+    # The Market may have applied a write that answered 5xx. Reporting it as the
+    # 409 refusal would tell the UI it is safe to post again under the new account.
+    responder = _switch_account_during(503, {"detail": "upstream unavailable"})
+    client, upstream, token = _install_feedback(monkeypatch, responder)
+    responder.token = token
+    base = "/market/conversations/plugins/8"
+    login = client.get(f"{base}/issues/10", headers=_BRIDGE_HEADERS)
+    assert login.status_code == 200
+    headers = {**_BRIDGE_HEADERS, _FEEDBACK_HEADER: login.headers[_FEEDBACK_HEADER]}
+    draft = {"body": "Reply text", "reply_to_id": None, "client_message_id": "test-message-id"}
+    response = client.post(f"{base}/issues/10/messages", headers=headers, json=draft)
+    assert response.status_code == 503
+    assert response.json() == {"detail": "upstream unavailable"}
+    assert _FEEDBACK_HEADER not in response.headers
+    assert "X-Market-Feedback-Session-Changed" not in response.headers
+    assert len(upstream.requests) == 2
+
+
+def test_feedback_session_survives_an_access_token_refresh_without_a_session_id():
+    legacy = {"access_token": "access-1", "subject": "ory-subject-abc", "subject_pending": False}
+    refreshed = {**legacy, "access_token": "access-2"}
+    switched = {**refreshed, "subject": "another-account"}
+    session = market_bridge._feedback_session(legacy)
+    assert session and session == market_bridge._feedback_session(refreshed)
+    assert session != market_bridge._feedback_session(switched)
+
+
+def test_feedback_avatars_refuse_plain_http_urls_and_oversized_responses(monkeypatch):
+    user = "123e4567-e89b-42d3-a456-426614174000"
+    profiles = {user: {"avatar": {"kind": "image", "url": "http://cdn.community.example.com/a.png"}}}
+    client, _, _ = _install_feedback(monkeypatch, _ok({"profiles": profiles}))
+    monkeypatch.setattr(market_bridge, "social_base_url", lambda: "https://community.example.com")
+    query = {"headers": _BRIDGE_HEADERS, "json": {"user_ids": [user]}}
+    result = client.post("/market/feedback/avatars", **query)
+    assert result.status_code == 200 and result.json() == {}
+    monkeypatch.setattr(market_bridge, "_AVATAR_QUERY_MAX_BYTES", 16)
+    oversized = client.post("/market/feedback/avatars", **query)
+    assert oversized.status_code == 502 and oversized.json() == {}
+
+
+def test_feedback_avatars_only_returns_requested_public_avatars_without_credentials(monkeypatch):
+    requested = "123e4567-e89b-42d3-a456-426614174000"
+    missing = "123e4567-e89b-42d3-a456-426614174001"
+    hue = "123e4567-e89b-42d3-a456-426614174002"
+    unsupported = "123e4567-e89b-42d3-a456-426614174003"
+    avatar = "https://cdn.community.example.com/avatar.png"
+    client, upstream, _ = _install_feedback(monkeypatch, _ok({
+        "profiles": {
+            requested: {"avatar": {"kind": "image", "url": avatar}, "display_name": "Author"},
+            hue: {"avatar": {"kind": "hue", "hue": 27, "url": None}},
+            unsupported: {"avatar": {"kind": "image", "url": "file:///local/avatar.png"}},
+            "unrequested": {"avatar": {"kind": "image", "url": avatar}},
+        },
+        "missing": [missing],
+    }))
+    monkeypatch.setattr(market_bridge, "social_base_url", lambda: "https://community.example.com")
+    result = client.post(
+        "/market/feedback/avatars",
+        headers=_BRIDGE_HEADERS,
+        json={"user_ids": [requested, missing, hue, unsupported, requested]},
+    )
+    assert result.status_code == 200 and result.json() == {requested: avatar}
+    request = upstream.requests[0]
+    assert str(request.url) == "https://community.example.com/api/v1/public-profiles/query"
+    assert json.loads(request.content) == {"user_ids": [requested, missing, hue, unsupported]}
+    assert "authorization" not in request.headers and "cookie" not in request.headers
+
+
+@pytest.mark.parametrize(
+    ("route", "query", "allowed", "page"),
+    [
+        ("comments", "after_id=4", {"after_id": "4"}, {"messages": [], "next_cursor": None}),
+        (
+            "issues",
+            "before_id=4&state=open",
+            {"before_id": "4", "state": "open"},
+            {"items": [], "next_cursor": None},
+        ),
+    ],
+)
+def test_market_conversation_reads_are_public_and_only_forward_allowed_queries(
+    monkeypatch, route, query, allowed, page,
+):
+    client, upstream, _ = _install(monkeypatch, _ok(page), token=None)
+    for headers in ({}, _BRIDGE_HEADERS):
+        response = client.get(
+            f"/market/conversations/plugins/8/{route}?{query}&extra=drop",
+            headers=headers,
+        )
+        assert response.status_code == 200 and _FEEDBACK_HEADER not in response.headers
+        assert response.json() == page
+        forwarded = upstream.requests[-1]
+        assert forwarded.url.path == f"/api/v1/plugins/8/{route}"
+        assert dict(forwarded.url.params) == allowed
+        assert "Authorization" not in forwarded.headers
+
+
+def test_market_conversation_writes_use_the_original_login_and_reject_unlisted_actions(monkeypatch):
+    client, upstream, token = _install_feedback(monkeypatch, _ok({"id": 10, "state": "closed"}))
+    base = "/market/conversations/plugins/8"
+    login = client.get(f"{base}/issues/10", headers=_BRIDGE_HEADERS)
+    headers = {**_BRIDGE_HEADERS, _FEEDBACK_HEADER: login.headers[_FEEDBACK_HEADER]}
+    draft = {"body": "Reply text", "reply_to_id": 12, "client_message_id": "test-message-id"}
+    assert client.post(f"{base}/comments/messages", headers=headers, json=draft).status_code == 200
+    assert client.post(f"{base}/issues/10/messages", headers=headers, json=draft).status_code == 200
+    assert client.post(f"{base}/issues/10/close", headers=headers).status_code == 200
+    assert client.post(f"{base}/issues/10/hide", headers=headers).status_code == 422
+    assert client.post(f"{base}/issues/10/reopen", headers=_BRIDGE_HEADERS).status_code == 409
+    assert [request.url.path for request in upstream.requests] == [
+        "/api/v1/plugins/8/issues/10",
+        "/api/v1/plugins/8/comments/messages",
+        "/api/v1/plugins/8/issues/10/messages",
+        "/api/v1/plugins/8/issues/10/close",
+    ]
+    assert json.loads(upstream.requests[1].content) == draft
+    assert upstream.requests[1].headers["Authorization"] == f"Bearer {_ACCESS_TOKEN}"
+    assert _FEEDBACK_HEADER not in upstream.requests[1].headers
+    assert not upstream.requests[3].content
+    token.update(session_id="new-feedback-session", subject="another-account")
+    rejected = client.post(f"{base}/comments/messages", headers=headers, json=draft)
+    assert rejected.status_code == 409 and len(upstream.requests) == 4
 
 
 def _forbidden_with_user(user):
@@ -569,3 +834,37 @@ def test_a_failed_refresh_after_401_stops_without_replaying_the_request(monkeypa
     assert refreshes == [_ACCESS_TOKEN]
     assert len(upstream.requests) == 1
     assert upstream.requests[0].headers["authorization"] == f"Bearer {_ACCESS_TOKEN}"
+
+
+@pytest.mark.parametrize("query", [{"request_id": "12"}, {"limit": "20", "offset": "20"}])
+def test_publication_requests_forward_the_plugin_path_and_receipt_query(monkeypatch, query):
+    receipts = [{"id": 12, "status": "verifying", "release_url": "https://x"}]
+    client, upstream, _ = _install(monkeypatch, _ok(receipts))
+    response = client.get(
+        "/market/publication-requests/42",
+        params={**_BRIDGE, **query, "extra": "1"},
+    )
+    assert response.status_code == 200
+    assert response.json() == receipts
+    forwarded = upstream.requests[0]
+    assert forwarded.method == "GET"
+    assert forwarded.url.path == "/api/v1/plugins/42/versions/publication-requests"
+    assert dict(forwarded.url.params) == query
+    assert forwarded.headers["authorization"] == f"Bearer {_ACCESS_TOKEN}"
+
+
+@pytest.mark.parametrize("plugin_id", [0, -1, 2**31])
+def test_publication_requests_reject_an_invalid_plugin_id(monkeypatch, plugin_id):
+    client, upstream, _ = _install(monkeypatch, _ok(_EMPTY_PAGE))
+    response = client.get(f"/market/publication-requests/{plugin_id}", params=_BRIDGE)
+    assert response.status_code == 422
+    assert upstream.requests == []
+
+
+def test_publication_requests_map_the_email_gate(monkeypatch):
+    client, _, _ = _install(
+        monkeypatch, _forbidden_with_user({"id": 3, "email_verified": False})
+    )
+    response = client.get("/market/publication-requests/42", params=_BRIDGE)
+    assert response.status_code == 409
+    assert response.json()["code"] == "market_email_unverified"

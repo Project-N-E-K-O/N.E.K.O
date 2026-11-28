@@ -3473,3 +3473,29 @@ async def test_a_capture_owed_after_extraction_survives_a_restart(owner, monkeyp
     # A capture that finds nothing to upload settles the mark as well.
     owner.adapter.owed_path(UID).touch()
     assert not owner.native._capture('Neko', False) and not owner.adapter.owed_path(UID).exists()
+
+
+def test_legacy_neko_fact_without_source_preserves_user_observation_roundtrip():
+    """Legacy neko facts lacking 'source' must export and import as user_observation, not ai_disclosure."""
+    legacy_neko = {
+        'id': 'f_neko_legacy',
+        'text': 'user observed neko habit',
+        'entity': 'neko',
+        'hash': 'h_neko',
+        'created_at': '2026-10-01T00:00:00',
+    }
+    views = {'persona': {}, 'facts': [legacy_neko], 'archive': [], 'reflections': []}
+    exported = export_document(views, 3000)
+    assert exported['entries'][0]['metadata']['source'] == 'user_observation'
+
+    imported = import_document(exported, {'persona': {}, 'facts': [], 'archive': [], 'reflections': []})
+    assert imported['facts'][0]['source'] == 'user_observation'
+
+    # Also test an older wire payload where metadata omits 'source' altogether.
+    wire_missing_source = deepcopy(exported)
+    wire_missing_source['entries'][0]['metadata'].pop('source', None)
+    imported_legacy_wire = import_document(
+        wire_missing_source,
+        {'persona': {}, 'facts': [], 'archive': [], 'reflections': []},
+    )
+    assert imported_legacy_wire['facts'][0]['source'] == 'user_observation'

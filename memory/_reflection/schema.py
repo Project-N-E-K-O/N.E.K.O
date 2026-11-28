@@ -66,6 +66,7 @@ def normalize_reflection(entry: dict) -> dict:
         "absorbed_into": None,
         "last_promote_attempt_at": None,
         "promote_attempt_count": 0,
+        "last_promote_failure": None,
         "promote_blocked_reason": None,
         "recent_mentions": [],
         "suppress": False,

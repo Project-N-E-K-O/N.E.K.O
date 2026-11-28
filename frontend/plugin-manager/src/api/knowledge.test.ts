@@ -7,6 +7,9 @@ const axiosMocks = vi.hoisted(() => ({
 
 vi.mock('axios', () => ({ default: axiosMocks }))
 
+// Nonempty ZIPs start with a local-file header; the browser only sniffs this prefix.
+const ZIP_PREFIX = new Uint8Array([0x50, 0x4b, 0x03, 0x04])
+
 async function loadKnowledgeApi() {
   return import('./knowledge')
 }
@@ -43,6 +46,40 @@ describe('knowledge API client', () => {
     })
   })
 
+  it.each([[true, false], [false, true]])('keeps global enabled=%s separate from saved pack_enabled=%s', async (enabled, packEnabled) => {
+    const payload = { ok: true, pack_id: 'p1', enabled, pack_enabled: packEnabled }
+    axiosMocks.request.mockResolvedValue({ data: payload })
+    const { knowledgeApi } = await loadKnowledgeApi()
+
+    await expect(knowledgeApi.setPackEnabled({ pack_id: 'p1', enabled: packEnabled })).resolves.toEqual(payload)
+    expect(axiosMocks.request.mock.calls[0]![0]).toMatchObject({
+      url: '/market/knowledge/packs/enabled', method: 'POST', data: { pack_id: 'p1', enabled: packEnabled },
+    })
+  })
+
+  it('sends the package content identity selected before enable confirmation', async () => {
+    const data = { pack_id: 'p1', enabled: true, expected_pack_sha256: 'a'.repeat(64) }
+    axiosMocks.request.mockResolvedValue({ data: { ok: true, pack_id: 'p1', enabled: false, pack_enabled: true } })
+    const { knowledgeApi } = await loadKnowledgeApi()
+    await knowledgeApi.setPackEnabled(data)
+    expect(axiosMocks.request.mock.calls[0]![0]).toMatchObject({
+      url: '/market/knowledge/packs/enabled', method: 'POST', data,
+    })
+  })
+
+  it.each(['artifact_hash_mismatch', 'pack_file_mismatch', 'pack_content_changed', 'package_artifact_hash_mismatch'])(
+    'preserves the actionable server failure reason %s for localized display', async reason => {
+      axiosMocks.request.mockResolvedValue({ data: { ok: false, reason } })
+      const { knowledgeApi, knowledgeFailureReason } = await loadKnowledgeApi()
+      const operation = reason === 'pack_content_changed'
+        ? knowledgeApi.setPackEnabled({ pack_id: 'p1', enabled: true, expected_pack_sha256: 'a'.repeat(64) })
+        : knowledgeApi.retryPackJob({ job_id: 'retry-1' })
+      const failure = await operation.catch(error => error)
+      expect(failure).toMatchObject({ reason })
+      expect(knowledgeFailureReason(failure)).toBe(reason)
+    },
+  )
+
   it('rejects a logical failure with its reason', async () => {
     axiosMocks.request.mockResolvedValue({ data: { ok: false, reason: 'duplicate_title' } })
     const { KnowledgeApiError, knowledgeApi } = await loadKnowledgeApi()
@@ -51,6 +88,47 @@ describe('knowledge API client', () => {
 
     expect(failure).toBeInstanceOf(KnowledgeApiError)
     expect(failure.reason).toBe('duplicate_title')
+  })
+
+  it('retries a saved task using only its existing identity', async () => {
+    axiosMocks.request.mockResolvedValue({ data: { ok: true, job_id: 'retry-1', state: 'queued' } })
+    const { knowledgeApi } = await loadKnowledgeApi()
+    await knowledgeApi.retryPackJob({ job_id: 'original-1' })
+    expect(axiosMocks.request.mock.calls[0]![0]).toMatchObject({
+      url: '/market/knowledge/packs/jobs/retry', method: 'POST', data: { job_id: 'original-1' },
+    })
+  })
+
+  it('keeps management search text and private entry titles out of request URLs', async () => {
+    axiosMocks.request.mockResolvedValue({ data: { ok: true } })
+    const { knowledgeApi } = await loadKnowledgeApi()
+    await knowledgeApi.entries({ query: '私密查询', pack_id: 'imp.demo', limit: 20 })
+    expect(axiosMocks.request.mock.calls[0]![0]).toMatchObject({
+      params: { pack_id: 'imp.demo', limit: 20 }, headers: { 'X-Knowledge-Query': encodeURIComponent('私密查询') },
+    })
+    expect(axiosMocks.request.mock.calls[0]![0].params).not.toHaveProperty('query')
+    await knowledgeApi.entry({ pack_id: 'imp.demo', title: '私密文件.txt · 1' })
+    expect(axiosMocks.request.mock.calls[1]![0]).toMatchObject({
+      params: { pack_id: 'imp.demo' }, headers: { 'X-Knowledge-Title': encodeURIComponent('私密文件.txt · 1') },
+    })
+    expect(axiosMocks.request.mock.calls[1]![0].params).not.toHaveProperty('title')
+  })
+
+  it('bounds the management search header to the server Unicode character limit', async () => {
+    axiosMocks.request.mockResolvedValue({ data: { ok: true } })
+    const { knowledgeApi } = await loadKnowledgeApi()
+    await knowledgeApi.entries({ query: '  ' + '😺'.repeat(201) + '  ' })
+    expect(axiosMocks.request.mock.calls[0]![0].headers['X-Knowledge-Query']).toBe(encodeURIComponent('😺'.repeat(200)))
+  })
+
+  it('waits longer than the bounded complete publication flow without changing normal mutations', async () => {
+    axiosMocks.request.mockResolvedValue({ data: { ok: true } })
+    const { knowledgeApi } = await loadKnowledgeApi()
+    await knowledgeApi.publish({ pack_id: 'p', artifact_id: 'a'.repeat(64), publish_confirmed: true,
+      client_request_id: 'request', title: 'Title', description: '' })
+    expect(axiosMocks.request.mock.calls[0]![0].timeout).toBe(250000)
+    await knowledgeApi.removePack({ pack_id: 'p' })
+    expect(axiosMocks.request.mock.calls[1]![0].timeout).toBe(50000)
   })
 
   it('reads the failure reason from a non-2xx reply body', async () => {
@@ -138,7 +216,7 @@ describe('knowledge API client', () => {
 
   it('refuses a pack file over 10 MiB before uploading', async () => {
     const { knowledgeApi, MAX_KNOWLEDGE_PACK_FILE_BYTES } = await loadKnowledgeApi()
-    const oversized = { size: MAX_KNOWLEDGE_PACK_FILE_BYTES + 1 } as Blob
+    const oversized = { size: MAX_KNOWLEDGE_PACK_FILE_BYTES + 1, type: 'application/json' } as Blob
 
     await expect(knowledgeApi.importPack(oversized)).rejects.toMatchObject({
       reason: 'pack_too_large',
@@ -147,8 +225,126 @@ describe('knowledge API client', () => {
     expect(axiosMocks.request).not.toHaveBeenCalled()
   })
 
+  it('uploads a document preview through the same bridge with its target identity', async () => {
+    axiosMocks.request.mockResolvedValue({ data: { ok: true, pack_id: 'imp.test', preview: { preview_id: 'preview-1' } } })
+    const { knowledgeApi } = await loadKnowledgeApi()
+    const file = new Blob(['source'], { type: 'text/plain' })
+    await knowledgeApi.previewSource(file, { filename: 'private.txt', pack_id: 'imp.test', doc_id: 'doc-1' })
+    expect(axiosMocks.request.mock.calls[0]![0]).toMatchObject({
+      url: '/market/knowledge/sources/preview', method: 'POST', data: file,
+      params: { token: 'fixture-token', pack_id: 'imp.test', doc_id: 'doc-1' },
+      headers: { 'Content-Type': 'application/octet-stream', 'X-Knowledge-Filename': 'private.txt' },
+    })
+  })
+
+  it.each(['application/zip', 'application/octet-stream'])('downloads a ZIP-signature export as %s while retaining the bridge token', async type => {
+    const blob = new Blob([ZIP_PREFIX, 'archive'], { type })
+    const slice = vi.spyOn(blob, 'slice')
+    const fullRead = vi.spyOn(blob, 'arrayBuffer')
+    axiosMocks.request.mockResolvedValue({ data: blob })
+    const { knowledgeApi } = await loadKnowledgeApi()
+    await expect(knowledgeApi.artifact('a'.repeat(64))).resolves.toEqual({ blob, filename: '' })
+    expect(axiosMocks.request.mock.calls[0]![0]).toMatchObject({
+      url: '/market/knowledge/packs/artifacts', method: 'GET', responseType: 'blob',
+      params: { artifact_id: 'a'.repeat(64), token: 'fixture-token' },
+    })
+    expect(slice).toHaveBeenCalledExactlyOnceWith(0, 4)
+    expect(fullRead).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    { label: 'HTML error page', blob: new Blob(['<html>Sign in</html>'], { type: 'text/html' }) },
+    { label: 'binary error page', blob: new Blob(['<html>Sign in</html>'], { type: 'application/octet-stream' }) },
+    { label: 'mislabelled text', blob: new Blob(['archive'], { type: 'application/zip' }) },
+    { label: 'empty response', blob: new Blob([], { type: 'application/zip' }) },
+    { label: 'truncated prefix', blob: new Blob(['PK'], { type: 'application/zip' }) },
+    { label: 'empty ZIP', blob: new Blob([new Uint8Array([0x50, 0x4b, 0x05, 0x06])], { type: 'application/zip' }) },
+  ])('rejects a successful-HTTP $label instead of downloading it', async ({ blob }) => {
+    axiosMocks.request.mockResolvedValue({ data: blob })
+    const { knowledgeApi } = await loadKnowledgeApi()
+    await expect(knowledgeApi.artifact('a'.repeat(64))).rejects.toMatchObject({ reason: 'knowledge_invalid_response' })
+  })
+
+  it('refreshes the bridge after a binary JSON error without losing the artifact', async () => {
+    const blob = new Blob([ZIP_PREFIX, 'archive'])
+    axiosMocks.get.mockResolvedValueOnce({ data: { bridge_token: 'stale' } }).mockResolvedValueOnce({ data: { bridge_token: 'fresh' } })
+    axiosMocks.request.mockRejectedValueOnce(httpError(403, new Blob([JSON.stringify({ detail: { code: 'invalid_bridge_token' } })])))
+      .mockResolvedValueOnce({ data: blob, headers: { 'content-disposition': 'attachment; filename="Notes_2026-11-19_15-30-42.neko-knowledge.zip"' } })
+    const { knowledgeApi } = await loadKnowledgeApi()
+    await expect(knowledgeApi.artifact('a'.repeat(64))).resolves.toEqual({ blob, filename: 'Notes_2026-11-19_15-30-42.neko-knowledge.zip' })
+    expect(axiosMocks.request.mock.calls[1]![0].params.token).toBe('fresh')
+  })
+
+  it('uses the readable Unicode filename in the download response', async () => {
+    const blob = new Blob([ZIP_PREFIX, 'archive'], { type: 'application/zip' })
+    const filename = '历史资料_2026-11-19_15-30-42.neko-knowledge.zip'
+    axiosMocks.request.mockResolvedValue({ data: blob, headers: {
+      'content-disposition': `attachment; filename*=utf-8''${encodeURIComponent(filename)}`,
+    } })
+    const { knowledgeApi } = await loadKnowledgeApi()
+    const result = await knowledgeApi.artifact('a'.repeat(64))
+    expect(result.blob).toBe(blob)
+    expect(result.filename).toBe(filename)
+  })
+
+  it.each(["attachment; filename*=utf-8''%E4%ZZ", 'attachment; filename="../notes.neko-knowledge.zip"',
+    "attachment; filename*=utf-8''notes%0D%0A.neko-knowledge.zip"])(
+    'does not use malformed or unsafe response filenames: %s', async disposition => {
+      axiosMocks.request.mockResolvedValue({ data: new Blob([ZIP_PREFIX, 'archive']), headers: { 'content-disposition': disposition } })
+      const { knowledgeApi } = await loadKnowledgeApi()
+      expect((await knowledgeApi.artifact('a'.repeat(64))).filename).toBe('')
+    },
+  )
+
+  it('does not download a successful-HTTP JSON failure as an artifact', async () => {
+    axiosMocks.request.mockResolvedValue({ data: new Blob([JSON.stringify({ ok: false, reason: 'vectors_not_ready' })], { type: 'application/json' }) })
+    const { knowledgeApi } = await loadKnowledgeApi()
+    await expect(knowledgeApi.artifact('a'.repeat(64))).rejects.toMatchObject({ reason: 'vectors_not_ready' })
+  })
+
+  it('rejects a text JSON pack returned instead of the finished ZIP', async () => {
+    axiosMocks.request.mockResolvedValue({ data: new Blob(['{"pack_id":"p1"}'], { type: 'application/json' }) })
+    const { knowledgeApi } = await loadKnowledgeApi()
+    await expect(knowledgeApi.artifact('a'.repeat(64))).rejects.toMatchObject({ reason: 'knowledge_invalid_response' })
+  })
+
+  it('does not forward custom release versions from an untyped caller', async () => {
+    axiosMocks.request.mockResolvedValue({ data: { ok: true, state: 'queued' } })
+    const { knowledgeApi } = await loadKnowledgeApi()
+    const input = { pack_id: 'p1', version: 'user-entered', format_version: 1 }
+    await knowledgeApi.exportPack(input)
+    expect(axiosMocks.request.mock.calls[0]![0].data).toEqual({ pack_id: 'p1', format_version: 2 })
+  })
+
+  it('uses the archive size limit and ZIP media type for finished packages', async () => {
+    axiosMocks.request.mockResolvedValue({ data: { ok: true, pack_id: 'p1', state: 'queued' } })
+    const { knowledgeApi, MAX_KNOWLEDGE_ARCHIVE_FILE_BYTES } = await loadKnowledgeApi()
+    const file = { size: 20 * 1024 * 1024, type: 'application/zip' } as Blob
+    await knowledgeApi.importPack(file)
+    expect(axiosMocks.request.mock.calls[0]![0].headers).toEqual({ 'Content-Type': 'application/zip' })
+    await expect(knowledgeApi.importPack({ size: MAX_KNOWLEDGE_ARCHIVE_FILE_BYTES + 1, type: 'application/zip' } as Blob))
+      .rejects.toMatchObject({ reason: 'pack_too_large' })
+  })
+
+  it('creates a publication UUID on LAN HTTP without randomUUID', async () => {
+    vi.stubGlobal('crypto', { getRandomValues: (bytes: Uint8Array) => { bytes.fill(7); return bytes } })
+    try {
+      const { createKnowledgePublicationId } = await loadKnowledgeApi()
+      expect(createKnowledgePublicationId()).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
+    } finally { vi.unstubAllGlobals() }
+  })
+
   it.each([
     ['setEnabled', [false], 'settings', { enabled: false }],
+    ['setPackEnabled', [{ pack_id: 'p1', enabled: false }], 'packs/enabled', { pack_id: 'p1', enabled: false }],
+    ['commitSource', [{ preview_id: 'preview-1', sha256: 'digest', enabled: false, enabled_confirmed: false }], 'sources/commit', { preview_id: 'preview-1', sha256: 'digest', enabled: false, enabled_confirmed: false }],
+    ['discardSourcePreview', [{ preview_id: 'preview-1' }], 'sources/preview/discard', { preview_id: 'preview-1' }],
+    ['removeSource', [{ pack_id: 'p1', doc_id: 'doc-1' }], 'sources/remove', { pack_id: 'p1', doc_id: 'doc-1' }],
+    ['restoreSource', [{ pack_id: 'p1', doc_id: 'doc-1', version: 1, enabled_confirmed: false }], 'sources/restore', { pack_id: 'p1', doc_id: 'doc-1', version: 1, enabled_confirmed: false }],
+    ['restoreSource', [{ pack_id: 'p1', doc_id: 'doc-1', version: 1, enabled_confirmed: true }], 'sources/restore', { pack_id: 'p1', doc_id: 'doc-1', version: 1, enabled_confirmed: true }],
+    ['exportPack', [{ pack_id: 'p1' }], 'packs/export', { pack_id: 'p1', format_version: 2 }],
+    ['deleteExport', [{ job_id: 'export-1' }], 'packs/exports/delete', { job_id: 'export-1' }],
+    ['publish', [{ pack_id: 'p1', artifact_id: 'artifact', client_request_id: 'request', publish_confirmed: true, title: 'Pack', description: '' }], 'publish', { pack_id: 'p1', artifact_id: 'artifact', client_request_id: 'request', publish_confirmed: true, title: 'Pack', description: '' }],
     ['setEntryDisabled', [{ pack_id: 'p1', title: 'T', disabled: true }], 'entry/disabled', { pack_id: 'p1', title: 'T', disabled: true }],
     ['cancelPackJob', [{ job_id: 'j1' }], 'packs/jobs/cancel', { job_id: 'j1' }],
     ['discardPackJob', [{ job_id: 'j1' }], 'packs/jobs/discard', { job_id: 'j1' }],
@@ -166,7 +362,7 @@ describe('knowledge API client', () => {
       url: `/market/knowledge/${path}`,
       method: 'POST',
       data: body,
-      timeout: 50000,
+      timeout: method === 'publish' ? 250000 : 50000,
     })
   })
 
@@ -193,10 +389,12 @@ describe('knowledge API client', () => {
       { default: { knowledge: { reasons: Record<string, string> } } }
     >
     expect(Object.keys(locales).length).toBeGreaterThanOrEqual(8)
+    const referenceKeys = Object.keys(Object.values(locales)[0]!.default.knowledge.reasons).sort()
     for (const [file, module] of Object.entries(locales)) {
       const reasons = module.default.knowledge.reasons
       const missing = KNOWLEDGE_FAILURE_REASONS.filter((reason) => !reasons[reason])
       expect(missing, file).toEqual([])
+      expect(Object.keys(reasons).sort(), file).toEqual(referenceKeys)
     }
   })
 

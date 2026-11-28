@@ -58,7 +58,7 @@ _PRE_RELEASE_RESERVE_SECONDS = 300.0
 _MIN_RELEASE_WAIT_SECONDS = 60.0
 _RELEASE_URL_PATTERN = re.compile(r"GitHub Release ready: (\S+)")
 # The CLI's one-line report of the Market's answer to the release notification.
-_MARKET_STATUS_PATTERN = re.compile(r"^\[MARKET\] status=([a-z_]+)(?: candidate=([0-9]+))?$")
+_MARKET_STATUS_PATTERN = re.compile(r"^\[MARKET\] status=([a-z_]+)(?: candidate=([0-9]+))?(?: request=([0-9]+))?$")
 _RELEASE_WORKFLOW = ".github/workflows/release.yml"
 # Lines the CLI starts itself; anything else after ``[FAIL]`` continues it.
 _MARKER_PATTERN = re.compile(r"^\[[^\]]+\]")
@@ -75,6 +75,7 @@ class _Task:
     release_url: str = ""
     market_status: str | None = None
     market_candidate_id: int | None = None
+    market_request_id: int | None = None
     log: deque[str] = field(default_factory=lambda: deque(maxlen=_LOG_LINES))
     started_at: float | None = None
     updated_at: float = field(default_factory=time.time)
@@ -103,6 +104,7 @@ def _snapshot(task: _Task) -> dict[str, object]:
             "release_url": task.release_url,
             "market_status": task.market_status,
             "market_candidate_id": task.market_candidate_id,
+            "market_request_id": task.market_request_id,
             "log": list(task.log),
             "started_at": task.started_at,
             "updated_at": task.updated_at,
@@ -122,17 +124,30 @@ class _Gate(NamedTuple):
 
 
 def _push_blockers(state: RepoState) -> list[str]:
+    from plugin.neko_plugin_cli.commands.release_cmd import (
+        _BRANCH_PLACEHOLDER,
+        _push_refspec,
+        _shell_argument,
+    )
+
     branch = state.branch
     if state.head is None:
         return ["the repository has no commits yet"]
     if state.detached:
         return ["HEAD is detached; check out the branch to publish from"]
+    # The messages name the branch; the command quotes it like the CLI's, and
+    # behind a placeholder a branch starting with + is named as its refspec.
+    refspec = _push_refspec(branch or "")
+    argument = _shell_argument(refspec, _BRANCH_PLACEHOLDER)
+    set_upstream = f"git push -u origin {argument}"
+    if argument == _BRANCH_PLACEHOLDER and refspec != branch:
+        set_upstream += f" (branch: {refspec})"
     if state.upstream is None:
-        return [f"branch {branch} has no upstream; run git push -u origin {branch}"]
+        return [f"branch {branch} has no upstream; run {set_upstream}"]
     if not state.upstream.startswith("origin/"):
         return [
             f"branch {branch} tracks {state.upstream}, which is not on origin; "
-            f"run git push -u origin {branch}"
+            f"run {set_upstream}"
         ]
     if state.head_pushed is not True:
         return [f"HEAD is not pushed to {state.upstream}; run git push"]
@@ -150,13 +165,16 @@ def _release_blockers(local: LocalStatus) -> list[str]:
             "the git working tree has uncommitted changes: " + ", ".join(state.dirty_paths)
         )
     reasons.extend(_push_blockers(state))
+    from plugin.neko_plugin_cli.commands.release_cmd import _placeholder_note, _plugin_dir_argument
     from plugin.neko_plugin_cli.repo_action_migration import ActionFileStatus
 
     workflow = local.actions.get(_RELEASE_WORKFLOW)
     if workflow != ActionFileStatus.CURRENT:
         reasons.append(
             f"the standard release workflow {_RELEASE_WORKFLOW} is {workflow or 'missing'}; "
-            "apply the workflow update in the plugin workbench"
+            "apply the workflow update in the plugin workbench, or run "
+            f"neko-plugin setup-repo {_plugin_dir_argument(local.source_dir, '')} "
+            f"--upgrade-github-actions{_placeholder_note(local.source_dir)}"
         )
     if state.tag_exists and state.tag_at_head is False:
         reasons.append(
@@ -426,16 +444,21 @@ def _extract_release_url(task: _Task) -> str:
     return ""
 
 
-def _extract_market_result(task: _Task) -> tuple[str | None, int | None]:
-    """The Market status and review candidate from the CLI's ``[MARKET]`` line."""
+def _extract_market_result(task: _Task) -> tuple[str | None, int | None, int | None]:
+    """The Market status, review candidate and receipt from the CLI's ``[MARKET]`` line."""
     with _lock:
         lines = list(task.log)
     for line in reversed(lines):
         match = _MARKET_STATUS_PATTERN.match(line.strip())
         if match:
             candidate = match.group(2)
-            return match.group(1), int(candidate) if candidate else None
-    return None, None
+            request = match.group(3)
+            return (
+                match.group(1),
+                int(candidate) if candidate else None,
+                int(request) if request else None,
+            )
+    return None, None, None
 
 
 async def _timeout_message(task: _Task, gate: _Gate, budget: float) -> str:
@@ -506,7 +529,9 @@ def _finalize(
             task.message = _failure_message(task, returncode)
         task.release_url = _extract_release_url(task) or task.release_url
         # A rejected notification exits 1, so the status is read on failure too.
-        task.market_status, task.market_candidate_id = _extract_market_result(task)
+        task.market_status, task.market_candidate_id, task.market_request_id = (
+            _extract_market_result(task)
+        )
         task.finished_at = time.time()
         task.updated_at = task.finished_at
         if _active.get(task.project_id) == task.task_id:

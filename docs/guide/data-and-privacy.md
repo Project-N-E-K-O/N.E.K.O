@@ -6,9 +6,9 @@ seoSchemaType: WebPage
 
 # Where does N.E.K.O send conversations and memory?
 
-N.E.K.O stores character memory locally by default, but relevant content can leave the device when you use a model provider, memory-processing task, free API route, cloud speech service, Steam Cloud, Workshop, online feed, browser feature, or remote Agent channel.
+N.E.K.O stores character memory locally by default, but relevant content can leave the device when you use a model provider, memory-processing task, free API route, cloud speech service, optional cross-device chat and memory sync, Steam Cloud, Workshop, online feed, browser feature, or remote Agent channel.
 
-Last fact review: **2026-07-23**.
+Last fact review: **2026-11-22**.
 
 ::: warning Technical data-flow notice
 This page explains the current implementation and official distribution statements. It is not a substitute for a jurisdiction-specific privacy policy, provider agreement, or legal review.
@@ -24,6 +24,7 @@ User input
 ├─ free API forwarding path
 ├─ optional telemetry
 ├─ optional proactive screen context
+├─ optional cross-device chat and memory sync
 ├─ user-triggered Steam Cloud or Workshop operation
 └─ online content, browser, speech, or Agent service
 ```
@@ -39,6 +40,7 @@ User input
 | Shipped free API path | Input needed for the free request | N.E.K.O forwarding service and service partner | Current Steam EULA distinguishes this from bring-your-own paid API use |
 | Telemetry | Usage and operational metadata described below | N.E.K.O telemetry service | Can be disabled with environment variables |
 | Proactive vision | Screen stream or screenshots needed by the enabled feature | Local pipeline and configured vision/model path | Privacy mode stops proactive viewing; manual screenshots are separate |
+| Cross-device chat and memory sync | Opt-in chat originals, recent memory, learned-memory snapshots (`facts`, `persona`, `reflections`), and approved character profiles or model bindings | N.E.K.O. sync service (`sync.nekotech.cn`, authenticated via Community login at `community.project-neko.cn`) | Disabled by default; enabling sync on a character card and saving includes existing recent-memory history (`includeHistory: true` from the UI, with no separate history toggle), while `includeHistory` defaults to `false` only on direct REST calls that omit the field; separate from Steam Cloud |
 | Steam Cloud | Allowlisted character settings and memory files | Steam Auto Cloud | Snapshot is not a full memory-directory backup |
 | Workshop publish | User-selected card, supported model files, preview, optional reference voice | Steam Workshop | Publication and asset licensing are user decisions |
 | DEBUG diagnostics | Query or tool arguments in some debug paths | Local logs unless the user shares them | Do not assume every log is content-free |
@@ -99,6 +101,10 @@ Cloud Save uploads and downloads a character unit through Steam Auto Cloud. The 
 
 A download can replace local same-name character data and therefore uses confirmation, active-session handling, and a local operation backup. Read [Cloud Save API](/api/rest/cloudsave) before calling it a backup or migration solution.
 
+## Cross-device chat and memory sync is opt-in per character
+
+Separate from Steam Auto Cloud, N.E.K.O. includes an optional cross-device chat and memory sync path (`services/chat_sync/`, exposed locally via `/api/chat-sync`). It is disabled by default: a character with no saved choice stays off and requires Community OAuth login (`community.project-neko.cn`). When you turn sync on in the character editor and save, the desktop UI unconditionally sends `includeHistory: true`—there is no separate UI toggle for historical turns, so saving enables sync for both future messages and that character's existing recent-memory history (`includeHistory` defaults to `false` only for direct REST API requests that omit the field). Once enabled, it transfers chat originals, recent memory, learned-memory snapshots (`facts`, `persona`, and `reflections`), and approved character profiles or model bindings to the N.E.K.O. sync service (`sync.nekotech.cn`).
+
 ## Controls available today
 
 | Control | What it does | What it does not prove |
@@ -107,6 +113,7 @@ A download can replace local same-name character data and therefore uses confirm
 | Disable telemetry | Stops the project telemetry path | That third-party providers receive no requests |
 | Enable privacy mode | Stops proactive screen viewing | That manual screenshots cannot be requested |
 | Disable Agent channels | Prevents those channels from dispatching | That chat or memory providers are local |
+| Keep chat sync off / pause sync | Stops automatic cross-device chat and memory sync for that character | That previously uploaded remote snapshots or other devices' copies are deleted |
 | Avoid Cloud / Workshop | Avoids those optional transfer paths | That model APIs are offline |
 | Delete a current character | Removes current runtime character memory paths | That every historical legacy directory or remote provider copy is removed |
 

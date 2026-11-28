@@ -4,7 +4,14 @@ import { createApp, markRaw, nextTick } from 'vue'
 import { createI18n } from 'vue-i18n'
 import ElementPlus from 'element-plus'
 import PluginAuthoring from './PluginAuthoring.vue'
-import { authoringMessages } from '@/i18n/authoring'
+import authoringEnUs from '@/i18n/authoring/en-US'
+import authoringZhCn from '@/i18n/authoring/zh-CN'
+import authoringZhTw from '@/i18n/authoring/zh-TW'
+import authoringJa from '@/i18n/authoring/ja'
+import authoringKo from '@/i18n/authoring/ko'
+import authoringRu from '@/i18n/authoring/ru'
+import authoringEs from '@/i18n/authoring/es'
+import authoringPt from '@/i18n/authoring/pt'
 import type {
   AuthoringProject,
   CreatedPluginProject,
@@ -13,6 +20,8 @@ import type {
   Toolchain,
 } from '@/api/pluginProjects'
 import { RELEASE_WORKFLOW_PATH } from '@/api/pluginProjects'
+
+const authoringMessages = { 'en-US': authoringEnUs, 'zh-CN': authoringZhCn, 'zh-TW': authoringZhTw, ja: authoringJa, ko: authoringKo, ru: authoringRu, es: authoringEs, pt: authoringPt }
 
 const api = vi.hoisted(() => ({
   listPluginProjects: vi.fn(),
@@ -73,12 +82,14 @@ vi.mock('vue-router', () => ({
 // publish steps; only its Market login and network calls are replaced.
 const market = vi.hoisted(() => ({
   listMarketSubmissions: vi.fn(),
+  listMarketPublicationReceipts: vi.fn().mockResolvedValue([]),
   listMarketZones: vi.fn(),
   authenticated: false,
 }))
 vi.mock('@/api/marketSubmissions', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/api/marketSubmissions')>()),
   listMarketSubmissions: market.listMarketSubmissions,
+  listMarketPublicationReceipts: market.listMarketPublicationReceipts,
   listMarketZones: market.listMarketZones,
 }))
 vi.mock('@/composables/useMarketAuth', async () => {
@@ -188,6 +199,7 @@ const publishTask = (overrides: Partial<PublishTask> = {}): PublishTask => ({
   release_url: '',
   market_status: null,
   market_candidate_id: null,
+  market_request_id: null,
   log: [],
   started_at: null,
   updated_at: 1,
@@ -345,6 +357,7 @@ async function settle() {
 
 beforeEach(() => {
   vi.resetAllMocks()
+  market.listMarketPublicationReceipts.mockResolvedValue([])
   api.route.query = {}
   vi.stubGlobal(
     'MutationObserver',
@@ -616,6 +629,180 @@ describe('authoring workbench backed by the server project list', () => {
     expect(steps()[4]!.textContent).not.toContain(en.marketVersionListed)
     finish([{ version: 'v0.2.0' }])
     await settle()
+  })
+
+  it('shows the Market receipt of the current Release and ignores the others', async () => {
+    api.route.query = { project: 'p1' }
+    api.listPluginProjects.mockResolvedValue([listed])
+    api.getPluginProjectPublishStatus.mockResolvedValue(
+      publishStatus({ remote: { release: { state: 'published', missing_assets: [], workflow: 'success' as const, ready: true } } })
+    )
+    api.getPluginProjectPublishTask.mockResolvedValue(
+      publishTask({
+        mode: 'market_notify',
+        status: 'succeeded',
+        release_url: 'https://github.com/owner/hello_world/releases/tag/v0.2.0',
+        market_request_id: 55,
+        finished_at: 1_700_000_000,
+      })
+    )
+    market.listMarketPublicationReceipts.mockResolvedValue([
+      // Another Release, and a tag that only differs in case: neither is this one.
+      { id: 1, release_url: 'https://github.com/owner/hello_world/releases/tag/v0.1.0', status: 'rejected' },
+      { id: 2, release_url: 'https://github.com/owner/hello_world/releases/tag/V0.2.0', status: 'rejected' },
+      // The owner's case does not matter on GitHub.
+      { id: 3, release_url: 'https://github.com/Owner/Hello_World/releases/tag/v0.2.0', status: 'verifying' },
+    ])
+    approvedSubmission()
+    const container = await mount()
+    await openPublish(container)
+    // The task's request id is only passed for the task of this Release.
+    expect(market.listMarketPublicationReceipts).toHaveBeenLastCalledWith(7, 55)
+    const marketVersion = steps()[4]!
+    expect(marketVersion.textContent).toContain(en.marketVersionVerifying)
+    expect(marketVersion.textContent).not.toContain(en.marketVersionRejectedReceipt)
+  })
+
+  it('picks the task receipt by its request id before matching the Release URL', async () => {
+    api.route.query = { project: 'p1' }
+    api.listPluginProjects.mockResolvedValue([listed])
+    api.getPluginProjectPublishStatus.mockResolvedValue(
+      publishStatus({ remote: { release: { state: 'published', missing_assets: [], workflow: 'success' as const, ready: true } } })
+    )
+    api.getPluginProjectPublishTask.mockResolvedValue(
+      publishTask({
+        mode: 'market_notify',
+        status: 'succeeded',
+        release_url: 'https://github.com/owner/hello_world/releases/tag/v0.2.0',
+        market_request_id: 55,
+        finished_at: 1_700_000_000,
+      })
+    )
+    market.listMarketPublicationReceipts.mockResolvedValue([
+      { id: 54, release_url: 'https://github.com/owner/hello_world/releases/tag/v0.2.0', status: 'rejected' },
+      // An old receipt names the Release by its numeric ID; its request id still identifies it.
+      { id: 55, release_url: 'https://github.com/owner/hello_world/releases/123456', status: 'platform_attention' },
+    ])
+    approvedSubmission()
+    const container = await mount()
+    await openPublish(container)
+    const marketVersion = steps()[4]!
+    expect(marketVersion.textContent).toContain(en.publishTaskFailed)
+    expect(marketVersion.textContent).toContain(en.marketVersionPlatformAttention)
+    expect(marketVersion.textContent).not.toContain(en.marketVersionRejectedReceipt)
+  })
+
+  it('shows a superseded Market receipt as a failed publication step', async () => {
+    api.route.query = { project: 'p1' }
+    api.listPluginProjects.mockResolvedValue([listed])
+    api.getPluginProjectPublishStatus.mockResolvedValue(
+      publishStatus({ remote: { release: { state: 'published', missing_assets: [], workflow: 'success' as const, ready: true } } })
+    )
+    market.listMarketPublicationReceipts.mockResolvedValue([
+      { id: 59, release_url: 'https://github.com/owner/hello_world/releases/tag/v0.2.0', status: 'superseded' },
+    ])
+    approvedSubmission()
+    const container = await mount()
+    await openPublish(container)
+    expect(page('market').textContent).toContain(en.marketVersionSuperseded)
+    expect(page('market').textContent).toContain(en.publishTaskFailed)
+  })
+
+  it.each([
+    ['verifying', en.marketVersionVerifying],
+    ['pending_review', en.marketVersionAwaitingReview],
+    ['unavailable', en.marketVersionSuperseded],
+    ['no replacement', en.marketVersionSuperseded],
+  ])('shows the Release status after a superseded task: %s', async (status, expected) => {
+    api.route.query = { project: 'p1' }
+    api.listPluginProjects.mockResolvedValue([listed])
+    api.getPluginProjectPublishStatus.mockResolvedValue(
+      publishStatus({ remote: { release: { state: 'published', missing_assets: [], workflow: 'success', ready: true } } })
+    )
+    const release = 'https://github.com/owner/hello_world/releases/tag/v0.2.0'
+    api.getPluginProjectPublishTask.mockResolvedValue(publishTask({
+      mode: 'market_notify', status: 'failed', release_url: release, market_request_id: 55, market_status: 'superseded',
+    }))
+    const pinned = { id: 55, channel: 'stable', release_url: release, status: 'superseded' }
+    const others = [
+      { ...pinned, id: 70, release_url: release.replace('owner/', 'other/'), status: 'rejected' },
+      { ...pinned, id: 69, release_url: release.replace('v0.2.0', 'v0.3.0'), status: 'rejected' },
+      { ...pinned, id: 66, channel: 'beta', status: 'rejected' },
+      { ...pinned, id: 52, status: 'rejected' },
+    ]
+    market.listMarketPublicationReceipts.mockImplementation(async (_pluginId: number, requestId?: number, offset = 0) => {
+      if (requestId === pinned.id) return [pinned]
+      if (status === 'unavailable') throw new Error('Market unavailable')
+      if (status === 'no replacement') return others
+      // The replacement is older than a full page of receipts for a different tag.
+      if (offset === 0) return Array.from({ length: 20 }, (_, i) => ({ ...others[1], id: 100 - i }))
+      const replacement = status === 'verifying'
+        ? { ...pinned, id: 61, status }
+        : { ...pinned, id: 61, release_url: release.replace('tag/v0.2.0', '123456'), target_version: 'v0.2.0', status }
+      return [...others, { ...pinned, id: 58 }, replacement, pinned]
+    })
+    approvedSubmission()
+    const container = await mount()
+    await openPublish(container)
+    const versionStep = page('market')
+    expect(versionStep.textContent).toContain(expected)
+    expect(versionStep.querySelector('.authoring-publish-task .el-tag')?.textContent).toContain(en.publishTaskFailed)
+    expect(market.listMarketPublicationReceipts).toHaveBeenCalledWith(7, undefined, 0)
+    if (status === 'verifying' || status === 'pending_review') {
+      expect(versionStep.textContent).not.toContain(en.marketVersionSuperseded)
+      expect(versionStep.querySelector('header .el-tag')?.textContent).toContain(en.publishStatusWaiting)
+      expect(versionStep.classList.contains('authoring-publish-step--current')).toBe(false)
+      expect(market.listMarketPublicationReceipts).toHaveBeenCalledWith(7, undefined, 20)
+    } else {
+      expect(versionStep.querySelector('header .el-tag')?.textContent).toContain(en.publishTaskFailed)
+    }
+  })
+
+  it('takes the newest receipt when the Release was sent again under the same tag', async () => {
+    api.route.query = { project: 'p1' }
+    api.listPluginProjects.mockResolvedValue([listed])
+    api.getPluginProjectPublishStatus.mockResolvedValue(
+      publishStatus({ remote: { release: { state: 'published', missing_assets: [], workflow: 'success' as const, ready: true } } })
+    )
+    market.listMarketPublicationReceipts.mockResolvedValue([
+      { id: 60, release_url: 'https://github.com/owner/hello_world/releases/tag/v0.2.0', status: 'rejected' },
+      { id: 61, release_url: 'https://github.com/owner/hello_world/releases/tag/v0.2.0', status: 'verifying' },
+      { id: 59, release_url: 'https://github.com/owner/hello_world/releases/tag/v0.2.0', status: 'superseded' },
+    ])
+    approvedSubmission()
+    const container = await mount()
+    await openPublish(container)
+    expect(market.listMarketPublicationReceipts).toHaveBeenLastCalledWith(7, undefined)
+    const marketVersion = steps()[4]!
+    expect(marketVersion.textContent).toContain(en.marketVersionVerifying)
+    expect(marketVersion.textContent).not.toContain(en.marketVersionRejectedReceipt)
+  })
+
+  it('reads no request id from a task of another Release, nor a receipt of another tag', async () => {
+    api.route.query = { project: 'p1' }
+    api.listPluginProjects.mockResolvedValue([listed])
+    api.getPluginProjectPublishStatus.mockResolvedValue(
+      publishStatus({ remote: { release: { state: 'published', missing_assets: [], workflow: 'success' as const, ready: true } } })
+    )
+    api.getPluginProjectPublishTask.mockResolvedValue(
+      publishTask({
+        mode: 'market_notify',
+        status: 'succeeded',
+        release_url: 'https://github.com/owner/hello_world/releases/tag/v0.1.0',
+        market_request_id: 44,
+        finished_at: 1_700_000_000,
+      })
+    )
+    market.listMarketPublicationReceipts.mockResolvedValue([
+      { id: 1, release_url: 'https://github.com/owner/hello_world/releases/tag/v0.1.0', status: 'rejected' },
+    ])
+    approvedSubmission()
+    const container = await mount()
+    await openPublish(container)
+    expect(market.listMarketPublicationReceipts).toHaveBeenLastCalledWith(7, undefined)
+    const marketVersion = steps()[4]!
+    expect(marketVersion.textContent).not.toContain(en.marketVersionRejectedReceipt)
+    expect(marketVersion.textContent).toContain('Release v0.2.0 is ready; notify the Market to list it.')
   })
 
   it('starts the full publish after the second confirmation, with its task in the Release step', async () => {
@@ -1342,6 +1529,31 @@ describe('authoring workbench backed by the server project list', () => {
     expect(api.downloadPluginPackage).toHaveBeenCalledWith('D:/packages/hello_world.neko-plugin')
     await settle()
     expect(document.body.textContent).toContain(en.buildPackageDone)
+  })
+
+  it.each([
+    ['E:/Projects/hello-world'],
+    ['E:\\Projects\\hello-world'],
+  ])('builds a kebab-case project folder (source_dir=%s)', async (sourceDir) => {
+    // A cloned repository keeps its kebab-case folder while the plugin ID stays
+    // snake_case; the CLI resolves projects by folder name, not by ID.
+    api.route.query = { project: 'p1' }
+    api.listPluginProjects.mockResolvedValue([{ ...listed, source_dir: sourceDir }])
+    api.buildPluginCli.mockResolvedValue({
+      built: [{ package_path: 'D:/packages/hello-world.neko-plugin' }],
+      built_count: 1,
+      failed: [],
+      failed_count: 0,
+      ok: true,
+    })
+
+    await mount()
+    await click(en.buildPackage)
+
+    expect(api.buildPluginCli).toHaveBeenCalledWith({
+      mode: 'single',
+      plugin_ref: { root_id: 'project', directory_name: 'hello-world' },
+    }, { timeout: 300_000 })
   })
 
   it('reports a failed build and downloads nothing', async () => {

@@ -34,21 +34,35 @@ import os
 import json
 import pathlib
 import hashlib
+from collections import Counter, deque
 from copy import deepcopy
 from pathlib import Path
 from urllib.parse import unquote
 
 from fastapi import APIRouter, Request, File, UploadFile
 from fastapi.responses import JSONResponse
+from fastapi.routing import APIRoute
 
 from .shared_state import get_config_manager
+from .system_router._shared import _validate_local_mutation_request
 from .workshop_router import get_subscribed_workshop_items
 from contextlib import suppress
 
 from utils.file_utils import atomic_write_json_async, read_json_async
-from utils.frontend_utils import find_models, find_model_directory, find_workshop_item_by_id
+from utils.frontend_utils import (
+    _is_within,
+    _resolve_workshop_search_dirs,
+    find_model_directory,
+    find_models,
+    find_workshop_item_by_id,
+    find_workshop_item_model_file,
+    is_valid_live2d_model_name as _is_valid_live2d_model_name,
+    model_url_dir,
+)
+from utils.live2d_model_refs import is_unsafe_model_ref as _is_unsafe_model_ref
+from utils.live2d_model_refs import sanitize_emotion_mapping as _sanitize_emotion_mapping
 from utils.logger_config import get_module_logger
-from utils.url_utils import encode_url_path
+from utils.url_utils import drop_non_utf8_entries, encode_url_path, is_utf8_text
 from utils.workshop_utils import get_workshop_path
 
 router = APIRouter(prefix="/api/live2d", tags=["live2d"])
@@ -126,6 +140,76 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _iter_live2d_search_roots() -> list[pathlib.Path]:
+    """Collect candidate Live2D search root directories safely."""
+    roots: list[pathlib.Path] = [pathlib.Path("static"), pathlib.Path("static") / "live2d"]
+    try:
+        workshop_root = get_workshop_path()
+        if isinstance(workshop_root, (str, os.PathLike)):
+            roots.append(pathlib.Path(workshop_root))
+    except Exception:
+        pass
+    try:
+        for ws_dir in _resolve_workshop_search_dirs():
+            if isinstance(ws_dir, (str, os.PathLike)):
+                roots.append(pathlib.Path(ws_dir))
+    except Exception:
+        pass
+    try:
+        config_mgr = get_config_manager()
+    except Exception:
+        config_mgr = None
+    if config_mgr is not None:
+        for attr in ("live2d_dir", "readable_live2d_dir"):
+            try:
+                candidate = getattr(config_mgr, attr, None)
+                if isinstance(candidate, (str, os.PathLike)):
+                    roots.append(pathlib.Path(candidate))
+            except Exception:
+                pass
+        try:
+            project_root = getattr(config_mgr, "project_root", None)
+            if isinstance(project_root, (str, os.PathLike)):
+                roots.append(pathlib.Path(project_root) / "static")
+                roots.append(pathlib.Path(project_root) / "static" / "live2d")
+        except Exception:
+            pass
+        try:
+            workshop_fn = getattr(config_mgr, "get_workshop_path", None)
+            if callable(workshop_fn):
+                ws = workshop_fn()
+                if isinstance(ws, (str, os.PathLike)):
+                    roots.append(pathlib.Path(ws))
+        except Exception:
+            pass
+    return roots
+
+
+def _is_live2d_search_root(model_dir: str | os.PathLike) -> bool:
+    """Return True if ``model_dir`` resolves to one of the Live2D search roots."""
+    try:
+        resolved_model_dir = pathlib.Path(model_dir).resolve()
+    except (OSError, RuntimeError):
+        return True
+    for root in _iter_live2d_search_roots():
+        try:
+            if resolved_model_dir == root.resolve():
+                return True
+        except (OSError, RuntimeError):
+            continue
+    return False
+
+
+def _resolve_safe_model_directory(model_name: str) -> tuple[str | None, str | None]:
+    """Resolve a validated Live2D model directory, rejecting dot names and search roots."""
+    if not _is_valid_live2d_model_name(model_name):
+        return None, None
+    model_dir, url_prefix = find_model_directory(model_name)
+    if not model_dir or _is_live2d_search_root(model_dir):
+        return None, None
+    return model_dir, url_prefix
+
+
 def _resolve_model_url_to_file_path(path: str, config_manager) -> Path | None:
     normalized_path = str(path or "").strip().replace("\\", "/")
     if not normalized_path:
@@ -145,8 +229,38 @@ def _resolve_model_url_to_file_path(path: str, config_manager) -> Path | None:
     if parts[0] == "static":
         return Path("static") / Path(*parts[1:]) if len(parts) > 1 else None
     if parts[0] == "workshop":
-        workshop_root = get_workshop_path()
-        return Path(workshop_root) / Path(*parts[1:]) if workshop_root and len(parts) > 1 else None
+        roots = _workshop_url_roots()
+        if not roots or len(parts) <= 1:
+            return None
+        relative = Path(*parts[1:])
+        # /workshop serves every Steam library; use the one that holds the file.
+        found = _find_workshop_url_file(relative, roots)
+        return found if found is not None else Path(roots[0]) / relative
+    return None
+
+
+def _workshop_url_roots() -> list[str]:
+    """Directories a /workshop URL can resolve to: the configured root, then the other Steam libraries."""
+    roots = []
+    primary = get_workshop_path()
+    if primary:
+        roots.append(str(primary))
+    for root in _resolve_workshop_search_dirs():
+        if root not in roots:
+            roots.append(root)
+    return roots
+
+
+def _find_workshop_url_file(relative: Path, roots: list[str]) -> Path | None:
+    """First existing file ``root/relative`` whose real path stays inside its root."""
+    for root in roots:
+        try:
+            root_real = Path(root).resolve()
+            candidate = (Path(root) / relative).resolve()
+            if candidate.is_relative_to(root_real) and candidate.is_file():
+                return candidate
+        except (OSError, RuntimeError, ValueError):
+            continue
     return None
 
 
@@ -160,20 +274,24 @@ def _resolve_sync_model_file(path: str, config_manager) -> Path | None:
     parts = normalized.split("/")
     if not normalized or ":" in normalized or any(part in {".", ".."} for part in parts):
         return None
+    if parts[0] == "workshop":
+        # Every Steam library /workshop serves; each candidate stays inside its own root.
+        if len(parts) <= 1:
+            return None
+        return _find_workshop_url_file(Path(*parts[1:]), _workshop_url_roots())
     direct = _resolve_model_url_to_file_path(path, config_manager)
     if direct is not None:
         roots = {
             'user_live2d': getattr(config_manager, 'readable_live2d_dir', None) or getattr(config_manager, 'live2d_dir', None),
             'user_live2d_local': getattr(config_manager, 'live2d_dir', None),
             'static': 'static',
-            'workshop': get_workshop_path(),
         }
         root = roots.get(parts[0])
         if root is None:
             return None
         candidate = direct.resolve()
         return candidate if candidate.is_relative_to(Path(root).resolve()) and candidate.is_file() else None
-    directory, _ = find_model_directory(parts[0])
+    directory, _ = _resolve_safe_model_directory(parts[0])
     if not directory:
         return None
     root = Path(directory).resolve()
@@ -335,33 +453,207 @@ def _upsert_model(
     })
 
 
+def _is_inside_model_dir(model_dir_real: str, path: str) -> bool:
+    """
+    Whether the real path of *path* (links resolved) stays inside *model_dir_real*,
+    the real path of the model folder, checked with ``utils.frontend_utils._is_within``
+    (the same boundary rule as ``find_workshop_item_model_file``): links
+    pointing inside the folder keep working, entries whose real path leaves it are
+    skipped. Skipped entries are logged so a missing motion or expression can be traced.
+    """
+    try:
+        inside = _is_within(model_dir_real, os.path.realpath(path))
+    except (OSError, ValueError):
+        inside = False
+    if not inside:
+        logger.info("跳过真实路径不在模型目录内的条目: %s (模型目录: %s)", path, model_dir_real)
+    return inside
+
+
 def _locate_model_config(model_dir: str):
     """
     Probe *model_dir* (root) and its single-level subdirectories for a
-    ``.model3.json`` file.
+    ``.model3.json`` file. Entries whose real path leaves *model_dir*
+    (file or directory links pointing elsewhere) are skipped.
 
     Returns ``(actual_model_dir, model_config_file, subdir_name)`` on
     success, or ``(None, None, None)`` when nothing is found.
     """
     if not os.path.isdir(model_dir):
         return None, None, None
+    model_dir_real = os.path.realpath(model_dir)
 
     for file in os.listdir(model_dir):
-        if file.endswith('.model3.json'):
+        if file.endswith('.model3.json') and _is_inside_model_dir(model_dir_real, os.path.join(model_dir, file)):
             return model_dir, file, None
 
     try:
         for subdir in os.listdir(model_dir):
             subdir_path = os.path.join(model_dir, subdir)
-            if not os.path.isdir(subdir_path):
+            if not os.path.isdir(subdir_path) or not _is_inside_model_dir(model_dir_real, subdir_path):
                 continue
             for file in os.listdir(subdir_path):
-                if file.endswith('.model3.json'):
+                if file.endswith('.model3.json') and _is_inside_model_dir(model_dir_real, os.path.join(subdir_path, file)):
                     return subdir_path, file, subdir
     except Exception as e:
         logger.warning(f"检查子目录时出错: {e}")
 
     return None, None, None
+
+
+# Error body for a config file whose real path leaves the model folder: refused, never read or written.
+_OUTSIDE_MODEL_DIR_ERROR = {"success": False, "error": "模型配置文件不在模型目录内"}
+
+
+def _find_model_root_file(model_dir: str, suffix: str) -> tuple[str | None, bool]:
+    """
+    Return ``(path, escaped)`` for the first file directly in *model_dir* whose name
+    ends with *suffix* and whose real path stays inside *model_dir*.
+
+    Candidates leaving the folder are skipped. ``escaped`` is True when nothing
+    inside was found but at least one candidate was skipped for leaving the folder,
+    so callers can refuse with a 4xx instead of reporting the file as missing.
+    """
+    model_dir_real = os.path.realpath(model_dir)
+    escaped = False
+    for file in os.listdir(model_dir):
+        if not file.endswith(suffix):
+            continue
+        path = os.path.join(model_dir, file)
+        if _is_inside_model_dir(model_dir_real, path):
+            return path, False
+        escaped = True
+    return None, escaped
+
+
+def _find_invalid_file_reference(data, config_dir: str, model_root_real: str) -> str | None:
+    """
+    Check the ``FileReferences`` a ``model_config`` POST would store. Return a short
+    reason when the request is not an object, when ``Motions`` / ``Expressions`` are not
+    the Cubism shape (``{group: [{"File": str, "Sound": str, ...}]}`` /
+    ``[{"File": str, ...}]``; ``File`` required, ``Sound`` optional and ``null`` or ``""``
+    meaning absent), or when a path would point outside the model folder; else None.
+    Sections the request does not send are not stored, so they are not checked.
+    """
+    if not isinstance(data, dict):
+        return "request is not an object"
+    if 'FileReferences' not in data:
+        return None
+    file_refs = data['FileReferences']
+    if not isinstance(file_refs, dict):
+        return "FileReferences is not an object"
+    entries = []
+    if 'Motions' in file_refs:
+        motions = file_refs['Motions']
+        if not isinstance(motions, dict) or not all(isinstance(items, list) for items in motions.values()):
+            return "Motions is not {group: [entry, ...]}"
+        for items in motions.values():
+            entries.extend(items)
+    if 'Expressions' in file_refs:
+        expressions = file_refs['Expressions']
+        if not isinstance(expressions, list):
+            return "Expressions is not a list"
+        entries.extend(expressions)
+    for item in entries:
+        if not isinstance(item, dict):
+            return "entry is not an object"
+        for key in ('File', 'Sound'):
+            file_path = item.get(key)
+            if key == 'Sound' and file_path in (None, ''):
+                continue  # Sound is optional (null / "" mean no audio); File is required
+            if not isinstance(file_path, str):
+                return f"{key} is not a string"
+            if _is_unsafe_model_ref(file_path, config_dir, model_root_real):
+                return f"{key} points outside the model folder"
+    return None
+
+
+def _find_invalid_emotion_mapping_reference(data, config_dir: str, model_root_real: str) -> str | None:
+    """
+    Check an emotion-mapping request (``{"motions": {group: [path, ...]}, "expressions": {...}}``).
+    Return a short reason when a present section (an explicit ``null`` included) is not
+    ``{group: [str, ...]}`` or a path would point outside the model folder; else None.
+    The whole request is also stored as ``EmotionMapping``, so every path under these two
+    sections is checked, not only the ones written to FileReferences; other top-level
+    keys are stored as sent and are not interpreted as paths here.
+    """
+    if not isinstance(data, dict):
+        return "request is not an object"
+    for section in ('motions', 'expressions'):
+        if section not in data:
+            continue
+        groups = data[section]
+        if not isinstance(groups, dict):
+            return f"{section} is not an object"
+        for files in groups.values():
+            if not isinstance(files, list):
+                return f"{section} group is not a list"
+            for file_path in files:
+                if not isinstance(file_path, str):
+                    return f"{section} entry is not a string"
+                if _is_unsafe_model_ref(file_path, config_dir, model_root_real):
+                    return f"{section} entry points outside the model folder"
+    return None
+
+
+# Upper bounds for the motion / expression listing walk. Links between inside folders
+# are followed (alias folders are listed twice), so stacked aliases can grow the walk
+# exponentially; real models stay far below both limits. The entry limit counts every
+# directory entry visited (textures, sounds and skipped links included), per listing walk.
+_MODEL_SCAN_MAX_DEPTH = 32
+_MODEL_SCAN_MAX_ENTRIES = 10000
+_MODEL_SCAN_LIMIT_ERROR = "模型目录层级或条目数量超过上限"
+
+
+class _ModelScanLimitExceeded(Exception):
+    """The listing walk exceeded ``_MODEL_SCAN_MAX_DEPTH`` or ``_MODEL_SCAN_MAX_ENTRIES``."""
+
+
+def _search_model_files(model_root_real: str, start_dir: str, target_ext: str) -> list[str]:
+    """
+    List files ending with *target_ext* under *start_dir*, as slash-separated paths
+    relative to *start_dir*.
+
+    Entries whose real path leaves *model_root_real* are skipped. Links back to a
+    directory on the current recursion chain (e.g. ``loop -> .``) are not entered;
+    links to other inside directories are still listed, so alias folders show up
+    twice. Raises ``_ModelScanLimitExceeded`` once the walk goes deeper than
+    ``_MODEL_SCAN_MAX_DEPTH`` or visits more than ``_MODEL_SCAN_MAX_ENTRIES`` entries.
+    """
+    result: list[str] = []
+    visited = 0
+
+    def walk(directory: str, ancestors: tuple[str, ...]) -> None:
+        nonlocal visited
+        if len(ancestors) > _MODEL_SCAN_MAX_DEPTH:
+            raise _ModelScanLimitExceeded(f"depth > {_MODEL_SCAN_MAX_DEPTH}")
+        try:
+            chain = ancestors + (os.path.normcase(os.path.realpath(directory)),)
+            # scandir streams names, so the entry limit also bounds what is read from a huge folder.
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    visited += 1
+                    if visited > _MODEL_SCAN_MAX_ENTRIES:
+                        raise _ModelScanLimitExceeded(f"entries > {_MODEL_SCAN_MAX_ENTRIES}")
+                    item = entry.name
+                    item_path = os.path.join(directory, item)
+                    if not _is_inside_model_dir(model_root_real, item_path):
+                        continue
+                    if os.path.isfile(item_path):
+                        if item.endswith(target_ext):
+                            # Normalize forward slashes across platforms.
+                            result.append(os.path.relpath(item_path, start_dir).replace('\\', '/'))
+                    elif os.path.isdir(item_path):
+                        if os.path.normcase(os.path.realpath(item_path)) in chain:
+                            continue
+                        walk(item_path, chain)
+        except _ModelScanLimitExceeded:
+            raise
+        except Exception as e:
+            logger.warning(f"搜索目录 {directory} 时出错: {e}")
+
+    walk(start_dir, ())
+    return result
 
 
 @router.get("/models")
@@ -374,6 +666,7 @@ async def get_live2d_models(simple: bool = False):
     try:
         # Fetch local models first.
         models = find_models()
+        skipped = 0
         
         # Then Steam Workshop models.
         try:
@@ -393,6 +686,9 @@ async def get_live2d_models(simple: bool = False):
                         # Check installation directory for .model3.json.
                         for filename in os.listdir(installed_folder):
                             if filename.endswith('.model3.json'):
+                                if not is_utf8_text(filename):
+                                    skipped += 1
+                                    continue
                                 model_name = os.path.splitext(os.path.splitext(filename)[0])[0]
                                 path_value = _normalize_model_path(f'/workshop/{item_id}/{filename}')
                                 logger.debug(f"添加模型路径: {path_value!r}, item_id类型: {type(item_id)}, filename类型: {type(filename)}")
@@ -411,6 +707,9 @@ async def get_live2d_models(simple: bool = False):
                                 model_name = subdir
                                 json_file = os.path.join(subdir_path, f'{model_name}.model3.json')
                                 if os.path.exists(json_file):
+                                    if not is_utf8_text(model_name):
+                                        skipped += 1
+                                        continue
                                     path_value = _normalize_model_path(f'/workshop/{item_id}/{model_name}/{model_name}.model3.json')
                                     logger.debug(f"添加子目录模型路径: {path_value!r}, item_id类型: {type(item_id)}, model_name类型: {type(model_name)}")
                                     _upsert_model(
@@ -423,6 +722,11 @@ async def get_live2d_models(simple: bool = False):
         except Exception as e:
             logger.error(f"获取创意工坊模型时出错: {e}")
 
+        # One bad name must not empty the whole list (#3230); count only, names may be private.
+        models, dropped = drop_non_utf8_entries(models)
+        skipped += dropped
+        if skipped:
+            logger.warning(f"跳过 {skipped} 个文件名不是合法 UTF-8 的 Live2D 模型")
         models = _dedupe_live2d_models_for_display(models)
         
         if simple:
@@ -449,17 +753,15 @@ def get_model_config(model_name: str):
     """
     try:
         # Find model directory under static or user documents.
-        model_dir, url_prefix = find_model_directory(model_name)
+        model_dir, url_prefix = _resolve_safe_model_directory(model_name)
         if not model_dir or not os.path.exists(model_dir):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型目录不存在"})
         
-        # Find .model3.json.
-        model_json_path = None
-        for file in os.listdir(model_dir):
-            if file.endswith('.model3.json'):
-                model_json_path = os.path.join(model_dir, file)
-                break
-        
+        # Find .model3.json; a file whose real path leaves the model folder is refused.
+        model_json_path, escaped = _find_model_root_file(model_dir, '.model3.json')
+        if escaped:
+            return JSONResponse(status_code=403, content=_OUTSIDE_MODEL_DIR_ERROR)
+
         if not model_json_path or not os.path.exists(model_json_path):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型配置文件不存在"})
         
@@ -495,20 +797,26 @@ async def update_model_config(model_name: str, request: Request):
         data = await request.json()
         
         # Find model directory under static or user documents.
-        model_dir, url_prefix = find_model_directory(model_name)
+        model_dir, url_prefix = _resolve_safe_model_directory(model_name)
         if not model_dir or not os.path.exists(model_dir):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型目录不存在"})
         
-        # Find .model3.json.
-        model_json_path = None
-        for file in os.listdir(model_dir):
-            if file.endswith('.model3.json'):
-                model_json_path = os.path.join(model_dir, file)
-                break
-        
+        # Find .model3.json; a file whose real path leaves the model folder is refused.
+        model_json_path, escaped = _find_model_root_file(model_dir, '.model3.json')
+        if escaped:
+            return JSONResponse(status_code=403, content=_OUTSIDE_MODEL_DIR_ERROR)
+
         if not model_json_path or not os.path.exists(model_json_path):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型配置文件不存在"})
         
+        # References from the request must stay inside the model folder; refuse before any read or write.
+        invalid_ref = _find_invalid_file_reference(
+            data, os.path.dirname(model_json_path), os.path.realpath(model_dir)
+        )
+        if invalid_ref is not None:
+            logger.info("拒绝无效的模型文件引用: %s", invalid_ref)
+            return JSONResponse(status_code=400, content={"success": False, "error": "文件引用无效或超出模型目录"})
+
         # Safety: modify Motions/Expressions only.
         # Lock entire read/modify/write; write-only locks let both requests read same base,
         # then last writer overwrites whole file, silently losing earlier edits.
@@ -537,17 +845,15 @@ def get_emotion_mapping(model_name: str):
     """
     try:
         # Find model directory under static or user documents.
-        model_dir, url_prefix = find_model_directory(model_name)
+        model_dir, url_prefix = _resolve_safe_model_directory(model_name)
         if not model_dir or not os.path.exists(model_dir):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型目录不存在"})
         
-        # Find .model3.json.
-        model_json_path = None
-        for file in os.listdir(model_dir):
-            if file.endswith('.model3.json'):
-                model_json_path = os.path.join(model_dir, file)
-                break
-        
+        # Find .model3.json; a file whose real path leaves the model folder is refused.
+        model_json_path, escaped = _find_model_root_file(model_dir, '.model3.json')
+        if escaped:
+            return JSONResponse(status_code=403, content=_OUTSIDE_MODEL_DIR_ERROR)
+
         if not model_json_path or not os.path.exists(model_json_path):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型配置文件不存在"})
         
@@ -555,16 +861,22 @@ def get_emotion_mapping(model_name: str):
             config_data = json.load(f)
 
         # Prefer EmotionMapping; derive from FileReferences if absent.
-        emotion_mapping = config_data.get('EmotionMapping')
-        if not emotion_mapping:
+        emotion_mapping = config_data.get('EmotionMapping') if isinstance(config_data, dict) else None
+        # A stored mapping that is not an object (a corrupted file) is ignored like a missing one.
+        if not isinstance(emotion_mapping, dict) or not emotion_mapping:
             derived_mapping = {"motions": {}, "expressions": {}}
-            file_refs = config_data.get('FileReferences', {}) or {}
+            # Unexpected shapes on disk are skipped, never a 500.
+            file_refs = config_data.get('FileReferences') if isinstance(config_data, dict) else None
+            if not isinstance(file_refs, dict):
+                file_refs = {}
 
             # Derive from standard Motions structure.
-            motions = file_refs.get('Motions', {}) or {}
+            motions = file_refs.get('Motions')
+            if not isinstance(motions, dict):
+                motions = {}
             for group_name, items in motions.items():
                 files = []
-                for item in items or []:
+                for item in items if isinstance(items, list) else []:
                     try:
                         file_path = item.get('File') if isinstance(item, dict) else None
                         if file_path:
@@ -574,13 +886,17 @@ def get_emotion_mapping(model_name: str):
                 derived_mapping["motions"][group_name] = files
 
             # Derive standard Expressions, grouping by Name prefixes such as happy_xxx.
-            expressions = file_refs.get('Expressions', []) or []
+            expressions = file_refs.get('Expressions')
+            if not isinstance(expressions, list):
+                expressions = []
             for item in expressions:
                 if not isinstance(item, dict):
                     continue
-                name = item.get('Name') or ''
+                name = item.get('Name')
+                if not isinstance(name, str):
+                    name = ''
                 file_path = item.get('File') or ''
-                if not file_path:
+                if not isinstance(file_path, str) or not file_path:
                     continue
                 file_path = file_path.replace('\\', '/')
                 # Split groups at first underscore.
@@ -592,11 +908,39 @@ def get_emotion_mapping(model_name: str):
                 derived_mapping["expressions"].setdefault(group, []).append(file_path)
 
             emotion_mapping = derived_mapping
-        
+
+        # Leave out what the POST would refuse, so GET -> edit -> POST always round-trips.
+        emotion_mapping = _sanitize_emotion_mapping(
+            emotion_mapping, os.path.dirname(model_json_path), os.path.realpath(model_dir)
+        )
         return {"success": True, "config": emotion_mapping}
     except Exception as e:
         logger.error(f"获取情绪映射配置失败: {e}")
         return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
+
+
+def _normalize_posix_model_ref(file_path: str) -> str:
+    """Normalize a relative Live2D model asset path to POSIX forward slashes."""
+    return str(pathlib.PurePosixPath(file_path.replace("\\", "/")))
+
+
+def _has_nonempty_mapping_files(value: object) -> bool:
+    """Return True when an emotion mapping group contains at least one file entry."""
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, list):
+        return any(isinstance(item, str) and bool(item.strip()) for item in value)
+    return False
+
+
+def _match_managed_expression_group(name: str, managed_prefixes: list[str]) -> str | None:
+    """Match an expression Name against managed group prefixes sorted longest-first."""
+    if not name:
+        return None
+    for group in managed_prefixes:
+        if name.startswith(f"{group}_"):
+            return group
+    return None
 
 
 @router.post('/emotion_mapping/{model_name}')
@@ -611,81 +955,283 @@ async def update_emotion_mapping(model_name: str, request: Request):
             return JSONResponse(status_code=400, content={"success": False, "error": "无效的数据"})
 
         # Find model directory under static or user documents.
-        model_dir, url_prefix = find_model_directory(model_name)
+        model_dir, url_prefix = _resolve_safe_model_directory(model_name)
         if not model_dir or not os.path.exists(model_dir):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型目录不存在"})
         
-        # Find .model3.json.
-        model_json_path = None
-        for file in os.listdir(model_dir):
-            if file.endswith('.model3.json'):
-                model_json_path = os.path.join(model_dir, file)
-                break
-        
+        # Find .model3.json; a file whose real path leaves the model folder is refused.
+        model_json_path, escaped = _find_model_root_file(model_dir, '.model3.json')
+        if escaped:
+            return JSONResponse(status_code=403, content=_OUTSIDE_MODEL_DIR_ERROR)
+
         if not model_json_path or not os.path.exists(model_json_path):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型配置文件不存在"})
 
-        # Lock entire read/modify/write as update_model_config. Cubism transformation below is pure CPU
-        # with no await; enclosing it changes no logic (git diff -w shows indentation-only changes).
+        # Every submitted path must stay inside the model folder; refuse the whole request
+        # before any read or write (the request is also stored verbatim as EmotionMapping).
+        invalid_ref = _find_invalid_emotion_mapping_reference(
+            data, os.path.dirname(model_json_path), os.path.realpath(model_dir)
+        )
+        if invalid_ref is not None:
+            logger.info("拒绝无效的情绪映射引用: %s", invalid_ref)
+            return JSONResponse(status_code=400, content={"success": False, "error": "文件引用无效或超出模型目录"})
+
+        # Lock entire read/modify/write as update_model_config while atomically
+        # preserving existing Cubism entry metadata (FadeInTime, FadeOutTime, Sound, custom Name)
+        # and unmanaged groups.
         async with _model_config_write_lock(model_json_path):
             config_data = await read_json_async(model_json_path)
+
+            previous_emotion_mapping = config_data.get('EmotionMapping') if isinstance(config_data, dict) else None
+            previous_had_emotion_mapping = isinstance(previous_emotion_mapping, dict) and bool(previous_emotion_mapping)
+            prev_motions_map = (
+                previous_emotion_mapping.get('motions')
+                if previous_had_emotion_mapping and isinstance(previous_emotion_mapping.get('motions'), dict)
+                else {}
+            )
+            prev_expressions_map = (
+                previous_emotion_mapping.get('expressions')
+                if previous_had_emotion_mapping and isinstance(previous_emotion_mapping.get('expressions'), dict)
+                else {}
+            )
 
             # Write standard Cubism structure (FileReferences.Motions / FileReferences.Expressions).
             file_refs = config_data.setdefault('FileReferences', {})
 
             # Motions input: { motions: { emotion: ["motions/xxx.motion3.json", ...] }, expressions: {...} }.
             motions_input = (data.get('motions') if isinstance(data, dict) else None) or {}
+            existing_motions = file_refs.get('Motions') if isinstance(file_refs.get('Motions'), dict) else {}
             motions_output = {}
             for group_name, files in motions_input.items():
                 # Forbid motions in "常驻" group.
                 if group_name == '常驻':
                     logger.info("忽略常驻组中的motion配置（只允许expression）")
                     continue
+                existing_by_file: dict[str, deque[dict]] = {}
+                raw_group_items = existing_motions.get(group_name)
+                if isinstance(raw_group_items, list):
+                    for item in raw_group_items:
+                        if not isinstance(item, dict):
+                            continue
+                        raw_file = item.get('File')
+                        if isinstance(raw_file, str) and raw_file.strip():
+                            norm_file = _normalize_posix_model_ref(raw_file)
+                            existing_by_file.setdefault(norm_file, deque()).append(item)
+
+                files_iter = [files] if isinstance(files, str) else (files or [])
                 items = []
-                for file_path in files or []:
+                for file_path in files_iter:
                     if not isinstance(file_path, str):
                         continue
-                    normalized = file_path.replace('\\', '/')
-                    p = pathlib.PurePosixPath(normalized)
-                    if p.is_absolute() or ".." in p.parts:
-                        continue
-                    normalized = str(p)
-
-                    items.append({"File": normalized})
+                    normalized = _normalize_posix_model_ref(file_path)
+                    bucket = existing_by_file.get(normalized)
+                    if bucket:
+                        reused = deepcopy(bucket.popleft())
+                        reused['File'] = normalized
+                        items.append(reused)
+                    else:
+                        items.append({"File": normalized})
                 motions_output[group_name] = items
+
+            if previous_had_emotion_mapping:
+                prev_motion_keys = set(prev_motions_map.keys())
+                for group_name, orig_items in existing_motions.items():
+                    if group_name == '常驻' or group_name in motions_output or group_name in prev_motion_keys:
+                        continue
+                    motions_output[group_name] = deepcopy(orig_items)
+
             file_refs['Motions'] = motions_output
 
-            # Flatten expressions by emotion prefix, with Name convention "{emotion}_{basename}".
+            # Flatten expressions by emotion prefix, preserving metadata and unmanaged entries.
             expressions_input = (data.get('expressions') if isinstance(data, dict) else None) or {}
+            existing_expressions = file_refs.get('Expressions') if isinstance(file_refs.get('Expressions'), list) else []
 
-            # Preserve original expressions outside our emotion prefixes, avoiding custom-data overwrites.
-            existing_expressions = file_refs.get('Expressions', []) or []
-            emotion_prefixes = set(expressions_input.keys())
+            prev_nonempty_expr_groups = {
+                group_name
+                for group_name, files in prev_expressions_map.items()
+                if isinstance(group_name, str) and group_name and _has_nonempty_mapping_files(files)
+            }
+            input_expr_groups = {
+                group_name
+                for group_name, files in expressions_input.items()
+                if isinstance(group_name, str) and group_name and (
+                    not previous_had_emotion_mapping or _has_nonempty_mapping_files(files)
+                )
+            }
+            managed_expression_groups = prev_nonempty_expr_groups | input_expr_groups
+            # A group the caller sends as an explicit empty list while the previous mapping had
+            # files in it is a user clear: untracked raw entries under its prefix go too, or the
+            # runtime prefix fallback (e.g. 常驻) would bring them back with an empty mapping.
+            explicitly_cleared_expr_groups = {
+                group_name
+                for group_name, files in expressions_input.items()
+                if isinstance(group_name, str)
+                and group_name in prev_nonempty_expr_groups
+                and not _has_nonempty_mapping_files(files)
+            }
+
+            known_expression_groups = {
+                group_name
+                for group_name in (*prev_expressions_map.keys(), *expressions_input.keys())
+                if isinstance(group_name, str) and group_name
+            }
+            known_prefixes = sorted(known_expression_groups, key=len, reverse=True)
+
+            def _collect_group_norm_file_counts(mapping: dict) -> dict[str, Counter[str]]:
+                grouped: dict[str, Counter[str]] = {}
+                for group_name, files in mapping.items():
+                    if not isinstance(group_name, str) or not group_name:
+                        continue
+                    files_iter = [files] if isinstance(files, str) else (files if isinstance(files, list) else [])
+                    counts = Counter(
+                        _normalize_posix_model_ref(file_path)
+                        for file_path in files_iter
+                        if isinstance(file_path, str) and file_path.strip()
+                    )
+                    if counts:
+                        grouped[group_name] = counts
+                return grouped
+
+            prev_group_file_counts = _collect_group_norm_file_counts(prev_expressions_map)
+            input_group_file_counts = _collect_group_norm_file_counts(expressions_input)
+            prev_known_prefixes = sorted(
+                (group_name for group_name in prev_expressions_map.keys() if isinstance(group_name, str) and group_name),
+                key=len,
+                reverse=True,
+            )
+
+            prev_group_file_remaining = {
+                group_name: Counter(counts)
+                for group_name, counts in prev_group_file_counts.items()
+            }
+            ambiguous_prev_items: list[tuple[int, str, str, list[str]]] = []
+            assigned_prev_group: dict[int, str] = {}
+            for idx, item in enumerate(existing_expressions):
+                if not isinstance(item, dict):
+                    continue
+                name = item.get('Name') if isinstance(item.get('Name'), str) else ''
+                raw_file = item.get('File')
+                norm_file = _normalize_posix_model_ref(raw_file) if isinstance(raw_file, str) and raw_file.strip() else ''
+                if not norm_file:
+                    continue
+                matching_prev = [
+                    prev_group
+                    for prev_group in prev_known_prefixes
+                    if name.startswith(f"{prev_group}_") and norm_file in prev_group_file_counts.get(prev_group, ())
+                ]
+                if len(matching_prev) == 1:
+                    chosen = matching_prev[0]
+                    assigned_prev_group[idx] = chosen
+                    if prev_group_file_remaining[chosen][norm_file] > 0:
+                        prev_group_file_remaining[chosen][norm_file] -= 1
+                elif len(matching_prev) > 1:
+                    ambiguous_prev_items.append((idx, name, norm_file, matching_prev))
+
+            # For entries matching multiple prefix-related prior groups that share a file,
+            # let exact canonical "{group}_{base}" entries claim their longer group's quota first.
+            unresolved_prev_items: list[tuple[int, str, str, list[str]]] = []
+            for idx, name, norm_file, matching_prev in ambiguous_prev_items:
+                base_no_ext = os.path.basename(norm_file).replace('.exp3.json', '')
+                chosen = None
+                for prev_group in matching_prev:
+                    if name == f"{prev_group}_{base_no_ext}" and prev_group_file_remaining[prev_group][norm_file] > 0:
+                        chosen = prev_group
+                        break
+                if chosen is not None:
+                    assigned_prev_group[idx] = chosen
+                    prev_group_file_remaining[chosen][norm_file] -= 1
+                else:
+                    unresolved_prev_items.append((idx, name, norm_file, matching_prev))
+
+            for idx, _name, norm_file, matching_prev in unresolved_prev_items:
+                chosen = next(
+                    (g for g in matching_prev if prev_group_file_remaining[g][norm_file] > 0),
+                    matching_prev[0],
+                )
+                assigned_prev_group[idx] = chosen
+                if prev_group_file_remaining[chosen][norm_file] > 0:
+                    prev_group_file_remaining[chosen][norm_file] -= 1
+
             preserved_expressions = []
-            for item in existing_expressions:
-                try:
-                    name = (item.get('Name') or '') if isinstance(item, dict) else ''
-                    prefix = name.split('_', 1)[0] if '_' in name else None
-                    if not prefix or prefix not in emotion_prefixes:
-                        preserved_expressions.append(item)
-                except Exception:
+            existing_by_group_file: dict[tuple[str, str], deque[dict]] = {}
+            for idx, item in enumerate(existing_expressions):
+                if not isinstance(item, dict):
                     preserved_expressions.append(item)
+                    continue
+                name = item.get('Name') if isinstance(item.get('Name'), str) else ''
+                raw_file = item.get('File')
+                norm_file = _normalize_posix_model_ref(raw_file) if isinstance(raw_file, str) and raw_file.strip() else ''
 
-            new_expressions = []
+                matched_group = assigned_prev_group.get(idx)
+                if matched_group is None:
+                    matched_group = _match_managed_expression_group(name, known_prefixes)
+
+                if matched_group is None or matched_group not in managed_expression_groups:
+                    preserved_expressions.append(item)
+                    continue
+                if previous_had_emotion_mapping and (
+                    not norm_file
+                    or (
+                        matched_group not in explicitly_cleared_expr_groups
+                        and norm_file not in prev_group_file_counts.get(matched_group, ())
+                        and norm_file not in input_group_file_counts.get(matched_group, ())
+                    )
+                ):
+                    preserved_expressions.append(item)
+                    continue
+                if norm_file:
+                    existing_by_group_file.setdefault((matched_group, norm_file), deque()).append(item)
+
+            used_expression_names: set[str] = {
+                item['Name']
+                for item in preserved_expressions
+                if isinstance(item, dict) and isinstance(item.get('Name'), str) and item['Name']
+            }
+            pending_expressions: list[tuple[str, str, dict | None]] = []
             for emotion, files in expressions_input.items():
-                for file_path in files or []:
+                files_iter = [files] if isinstance(files, str) else (files or [])
+                for file_path in files_iter:
                     if not isinstance(file_path, str):
                         continue
-                    normalized = file_path.replace('\\', '/')
-                    p = pathlib.PurePosixPath(normalized)
-                    if p.is_absolute() or ".." in p.parts:
-                        continue
-                    normalized = str(p)
+                    normalized = _normalize_posix_model_ref(file_path)
+                    bucket = existing_by_group_file.get((emotion, normalized))
+                    if bucket:
+                        reused = deepcopy(bucket.popleft())
+                        reused['File'] = normalized
+                        reused_name = reused.get('Name')
+                        if isinstance(reused_name, str) and reused_name:
+                            used_expression_names.add(reused_name)
+                        pending_expressions.append((emotion, normalized, reused))
+                    else:
+                        pending_expressions.append((emotion, normalized, None))
 
+            def _conflicts_with_longer_group(cand: str, group: str) -> bool:
+                return any(
+                    len(other) > len(group) and cand.startswith(f"{other}_")
+                    for other in known_expression_groups
+                )
+
+            new_expressions = []
+            for emotion, normalized, reused in pending_expressions:
+                if reused is not None:
+                    new_expressions.append(reused)
+                else:
                     base = os.path.basename(normalized)
                     base_no_ext = base.replace('.exp3.json', '')
-                    name = f"{emotion}_{base_no_ext}"
-                    new_expressions.append({"Name": name, "File": normalized})
+                    base_name = f"{emotion}_{base_no_ext}"
+                    candidate_name = base_name
+                    if candidate_name in used_expression_names or _conflicts_with_longer_group(candidate_name, emotion):
+                        suffix = 2
+                        while True:
+                            cand = f"{base_name}_{suffix}"
+                            if _conflicts_with_longer_group(cand, emotion):
+                                cand = f"{emotion}_{suffix}_{base_no_ext}"
+                            if cand not in used_expression_names and not _conflicts_with_longer_group(cand, emotion):
+                                candidate_name = cand
+                                break
+                            suffix += 1
+                    used_expression_names.add(candidate_name)
+                    new_expressions.append({"Name": candidate_name, "File": normalized})
 
             file_refs['Expressions'] = preserved_expressions + new_expressions
 
@@ -709,7 +1255,7 @@ def get_model_files(model_name: str):
     """
     try:
         # Find model directory under static or user documents.
-        model_dir, url_prefix = find_model_directory(model_name)
+        model_dir, url_prefix = _resolve_safe_model_directory(model_name)
         
         if not model_dir or not os.path.exists(model_dir):
             return {"success": False, "error": f"模型 {model_name} 不存在"}
@@ -725,41 +1271,15 @@ def get_model_files(model_name: str):
             )
             return {"success": False, "error": "模型配置文件(.model3.json)不存在"}
 
-        model_dir = actual_model_dir
-        motion_files = []
-        expression_files = []
+        # Listings stay inside the model folder: entries whose real path leaves it are skipped.
+        model_root_real = os.path.realpath(model_dir)
+        try:
+            motion_files = _search_model_files(model_root_real, actual_model_dir, '.motion3.json')
+            expression_files = _search_model_files(model_root_real, actual_model_dir, '.exp3.json')
+        except _ModelScanLimitExceeded as e:
+            logger.warning("模型 %s 文件扫描超过上限，已停止: %s", model_name, e)
+            return {"success": False, "error": _MODEL_SCAN_LIMIT_ERROR}
 
-        # Recursively search all subfolders.
-        def search_files_recursive(directory, target_ext, result_list):
-            """
-            Recursively search for files with the given extension.
-            args:
-            - directory: directory to search
-            - target_ext: target file extension
-            - result_list: list to store results
-            """
-            try:
-                for item in os.listdir(directory):
-                    item_path = os.path.join(directory, item)
-                    if os.path.isfile(item_path):
-                        if item.endswith(target_ext):
-                            # Calculate path relative to model root.
-                            relative_path = os.path.relpath(item_path, model_dir)
-                            # Normalize forward slashes across platforms.
-                            relative_path = relative_path.replace('\\', '/')
-                            result_list.append(relative_path)
-                    elif os.path.isdir(item_path):
-                        # Search subdirectories recursively.
-                        search_files_recursive(item_path, target_ext, result_list)
-            except Exception as e:
-                logger.warning(f"搜索目录 {directory} 时出错: {e}")
-        
-        # Search motion files.
-        search_files_recursive(model_dir, '.motion3.json', motion_files)
-        
-        # Search expression files.
-        search_files_recursive(model_dir, '.exp3.json', expression_files)
-        
         logger.debug(f"模型 {model_name} 文件统计: {len(motion_files)} 个动作文件, {len(expression_files)} 个表情文件")
         return {
             "success": True, 
@@ -784,18 +1304,16 @@ def get_model_parameters(model_name: str):
     """
     try:
         # Find model directory.
-        model_dir, url_prefix = find_model_directory(model_name)
+        model_dir, url_prefix = _resolve_safe_model_directory(model_name)
         
         if not model_dir or not os.path.exists(model_dir):
             return {"success": False, "error": f"模型 {model_name} 不存在"}
         
-        # Find .cdi3.json.
-        cdi3_file = None
-        for file in os.listdir(model_dir):
-            if file.endswith('.cdi3.json'):
-                cdi3_file = os.path.join(model_dir, file)
-                break
-        
+        # Find .cdi3.json; a file whose real path leaves the model folder is refused.
+        cdi3_file, escaped = _find_model_root_file(model_dir, '.cdi3.json')
+        if escaped:
+            return JSONResponse(status_code=403, content=_OUTSIDE_MODEL_DIR_ERROR)
+
         if not cdi3_file or not os.path.exists(cdi3_file):
             return {"success": False, "error": "未找到.cdi3.json文件"}
         
@@ -844,7 +1362,7 @@ async def save_model_parameters(model_name: str, request: Request):
     """
     try:
         # Find model directory.
-        model_dir, url_prefix = find_model_directory(model_name)
+        model_dir, url_prefix = _resolve_safe_model_directory(model_name)
         
         if not model_dir or not os.path.exists(model_dir):
             return JSONResponse(status_code=404, content={"success": False, "error": f"模型 {model_name} 不存在"})
@@ -856,8 +1374,10 @@ async def save_model_parameters(model_name: str, request: Request):
         if not isinstance(parameters, dict):
             return JSONResponse(status_code=400, content={"success": False, "error": "参数格式错误"})
         
-        # Save parameters.json.
+        # Save parameters.json; an existing entry whose real path leaves the model folder is refused.
         parameters_file = os.path.join(model_dir, 'parameters.json')
+        if os.path.lexists(parameters_file) and not _is_inside_model_dir(os.path.realpath(model_dir), parameters_file):
+            return JSONResponse(status_code=403, content={"success": False, "error": "参数文件不在模型目录内"})
         await atomic_write_json_async(parameters_file, parameters, indent=2, ensure_ascii=False)
         
         logger.info(f"已保存模型参数到: {parameters_file}, 参数数量: {len(parameters)}")
@@ -879,7 +1399,7 @@ def load_model_parameters(model_name: str):
     """
     try:
         # Find model directory.
-        model_dir, url_prefix = find_model_directory(model_name)
+        model_dir, url_prefix = _resolve_safe_model_directory(model_name)
         
         if not model_dir or not os.path.exists(model_dir):
             return {"success": False, "error": f"模型 {model_name} 不存在"}
@@ -889,7 +1409,14 @@ def load_model_parameters(model_name: str):
         
         if not os.path.exists(parameters_file):
             return {"success": True, "parameters": {}}  # Missing file returns empty parameters.
-        
+
+        # A parameters.json whose real path leaves the model folder is refused, not read.
+        if not _is_inside_model_dir(os.path.realpath(model_dir), parameters_file):
+            return JSONResponse(
+                status_code=403,
+                content={"success": False, "error": "参数文件不在模型目录内", "parameters": {}},
+            )
+
         with open(parameters_file, 'r', encoding='utf-8') as f:
             parameters = json.load(f)
         
@@ -914,6 +1441,9 @@ def get_model_config_by_id(model_id: str):
     - config: model config dict
     """
     try:
+        if not _is_valid_live2d_model_name(model_id):
+            return JSONResponse(status_code=404, content={"success": False, "error": "模型目录不存在"})
+
         # Find model directory under static or user documents.
         try:
             model_dir, url_prefix = find_workshop_item_by_id(model_id)
@@ -922,15 +1452,11 @@ def get_model_config_by_id(model_id: str):
             model_dir = ""
             logger.warning(f"通过model_id查找失败: {e}")
 
-        if not model_dir or not os.path.exists(model_dir):
+        if not model_dir or _is_live2d_search_root(model_dir) or not os.path.exists(model_dir):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型目录不存在"})
         
-        # Find .model3.json.
-        model_json_path = None
-        for file in os.listdir(model_dir):
-            if file.endswith('.model3.json'):
-                model_json_path = os.path.join(model_dir, file)
-                break
+        # Find .model3.json (directly in the item first, then nested), inside the item only.
+        model_json_path = find_workshop_item_model_file(model_dir)
         
         if not model_json_path or not os.path.exists(model_json_path):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型配置文件不存在"})
@@ -963,6 +1489,9 @@ async def update_model_config_by_id(model_id: str, request: Request):
     - config: updated model config dict
     """
     try:
+        if not _is_valid_live2d_model_name(model_id):
+            return JSONResponse(status_code=404, content={"success": False, "error": "模型目录不存在"})
+
         data = await request.json()
         
         # Find model directory under static or user documents.
@@ -973,19 +1502,23 @@ async def update_model_config_by_id(model_id: str, request: Request):
             model_dir = ""
             logger.warning(f"通过model_id查找失败: {e}")
 
-        if not model_dir or not os.path.exists(model_dir):
+        if not model_dir or _is_live2d_search_root(model_dir) or not os.path.exists(model_dir):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型目录不存在"})
         
-        # Find .model3.json.
-        model_json_path = None
-        for file in os.listdir(model_dir):
-            if file.endswith('.model3.json'):
-                model_json_path = os.path.join(model_dir, file)
-                break
+        # Find .model3.json (directly in the item first, then nested), inside the item only.
+        model_json_path = find_workshop_item_model_file(model_dir)
         
         if not model_json_path or not os.path.exists(model_json_path):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型配置文件不存在"})
         
+        # References from the request must stay inside the model folder; refuse before any read or write.
+        invalid_ref = _find_invalid_file_reference(
+            data, os.path.dirname(model_json_path), os.path.realpath(model_dir)
+        )
+        if invalid_ref is not None:
+            logger.info("拒绝无效的模型文件引用: %s", invalid_ref)
+            return JSONResponse(status_code=400, content={"success": False, "error": "文件引用无效或超出模型目录"})
+
         # Safety: modify Motions/Expressions only, locking entire read/modify/write,
         # symmetric with update_model_config. Resolved-file lock keys let by-name/by-ID
         # routes share one lock for the same Workshop model.
@@ -1020,7 +1553,7 @@ def get_model_files_by_id(model_id: str):
     """
     try:
         # Reject invalid model_id directly.
-        if not model_id or model_id.lower() == 'undefined':
+        if not _is_valid_live2d_model_name(model_id) or model_id.lower() == 'undefined':
             logger.warning("接收到无效的model_id请求，返回失败")
             return {"success": False, "error": "无效的模型ID"}
         
@@ -1031,15 +1564,20 @@ def get_model_files_by_id(model_id: str):
         # First try Workshop item_id.
         try:
             model_dir, url_prefix = find_workshop_item_by_id(model_id)
+            if model_dir and _is_live2d_search_root(model_dir):
+                model_dir = None
             logger.debug(f"通过model_id {model_id} 查找模型目录: {model_dir}")
         except Exception as e:
             logger.warning(f"通过model_id查找失败: {e}")
+        # Any directory the by-id lookup returned (/workshop or its /static fallback)
+        # uses the shared model choice; only the by-name fallback below keeps the old rule.
+        found_by_item_id = bool(model_dir and os.path.exists(model_dir))
         
         # If model_id yields no valid directory, fall back treating it as model_name.
         if not model_dir or not os.path.exists(model_dir):
             logger.info(f"尝试将 {model_id} 作为模型名称回退查找")
             try:
-                model_dir, url_prefix = find_model_directory(model_id)
+                model_dir, url_prefix = _resolve_safe_model_directory(model_id)
                 logger.debug(f"作为模型名称查找的目录: {model_dir}")
             except Exception as e:
                 logger.warning(f"作为模型名称查找失败: {e}")
@@ -1053,59 +1591,49 @@ def get_model_files_by_id(model_id: str):
             logger.warning(f"模型目录不存在: {model_dir}")
             return {"success": False, "error": "模型不存在"}
 
-        actual_model_dir, model_config_file, model_name_subdir = _locate_model_config(model_dir)
+        if found_by_item_id:
+            # Same file the by-id config routes and the model URL use, so motion and
+            # expression paths saved through those routes belong to this model.
+            chosen = find_workshop_item_model_file(model_dir)
+            if chosen:
+                actual_model_dir, model_config_file = os.path.split(chosen)
+                subdir = os.path.relpath(actual_model_dir, model_dir)
+                model_name_subdir = None if subdir == os.curdir else subdir.replace(os.sep, '/')
+            else:
+                actual_model_dir, model_config_file, model_name_subdir = None, None, None
+        else:
+            actual_model_dir, model_config_file, model_name_subdir = _locate_model_config(model_dir)
 
         if not model_config_file:
             logger.warning(f"未找到模型 {model_id} 的 .model3.json 文件: {model_dir}")
             return {"success": False, "error": "未找到模型配置文件(.model3.json)"}
         
-        motion_files = []
-        expression_files = []
-        
-        # Recursively search all subfolders.
-        def search_files_recursive(directory, target_ext, result_list):
-            """
-            Recursively search for files with the given extension.
-            args:
-            - directory: directory path to search
-            - target_ext: target file extension (e.g. '.motion3.json')
-            - result_list: list to store the found file paths
-            """
-            try:
-                for item in os.listdir(directory):
-                    item_path = os.path.join(directory, item)
-                    if os.path.isfile(item_path):
-                        if item.endswith(target_ext):
-                            # Calculate path relative to model root.
-                            relative_path = os.path.relpath(item_path, actual_model_dir)
-                            # Normalize forward slashes across platforms.
-                            relative_path = relative_path.replace('\\', '/')
-                            result_list.append(relative_path)
-                    elif os.path.isdir(item_path):
-                        # Search subdirectories recursively.
-                        search_files_recursive(item_path, target_ext, result_list)
-            except Exception as e:
-                logger.warning(f"搜索目录 {directory} 时出错: {e}")
-        
-        # Search motion files.
-        search_files_recursive(actual_model_dir, '.motion3.json', motion_files)
+        # Listings stay inside the model folder: entries whose real path leaves it are skipped.
+        model_root_real = os.path.realpath(model_dir)
+        try:
+            motion_files = _search_model_files(model_root_real, actual_model_dir, '.motion3.json')
+            expression_files = _search_model_files(model_root_real, actual_model_dir, '.exp3.json')
+        except _ModelScanLimitExceeded as e:
+            logger.warning("模型 %s 文件扫描超过上限，已停止: %s", model_id, e)
+            return {"success": False, "error": _MODEL_SCAN_LIMIT_ERROR}
 
-        # Search expression files.
-        search_files_recursive(actual_model_dir, '.exp3.json', expression_files)
-        
         # Build model-config URL.
         model_config_url = None
         if url_prefix:
-            # Workshop model URLs follow actual directory structure.
-            if url_prefix == '/workshop':
-                if model_name_subdir:
-                    # Model in subdirectory: workshop/{item_id}/{model_name}/{model_name}.model3.json.
-                    model_config_url = encode_url_path(f"{url_prefix}/{model_id}/{model_name_subdir}/{model_config_file}")
-                else:
-                    # Model directly in item directory: workshop/{item_id}/{model_name}.model3.json.
-                    model_config_url = encode_url_path(f"{url_prefix}/{model_id}/{model_config_file}")
+            # URL path of model_dir under the mount that serves it.
+            if found_by_item_id and url_prefix == '/workshop':
+                # By-id lookups return <library root>/<item_id>.
+                url_dir = model_id
             else:
-                model_config_url = encode_url_path(f"{url_prefix}/{model_config_file}")
+                # By-name fallback (or the by-id /static fallback, static/<model_id>):
+                # the same rule as find_model_config_file, e.g. <item_id>/<model_name>
+                # under /workshop or <mod folder>/<model_name> under /user_mods.
+                url_dir = model_url_dir(model_dir, url_prefix, model_id)
+            # Keep any subfolder the config file sits in.
+            if model_name_subdir:
+                model_config_url = encode_url_path(f"{url_prefix}/{url_dir}/{model_name_subdir}/{model_config_file}")
+            else:
+                model_config_url = encode_url_path(f"{url_prefix}/{url_dir}/{model_config_file}")
             logger.debug(f"为模型 {model_id} 构建的配置URL: {model_config_url} (模型子目录: {model_name_subdir})")
         
         logger.debug(f"文件统计: {len(motion_files)} 个动作文件, {len(expression_files)} 个表情文件")
@@ -1123,11 +1651,74 @@ def get_model_files_by_id(model_id: str):
 # Steam Workshop management API routes.
 # Ensure route registered correctly.
 
-@router.post('/upload_model')
+class _Live2dUploadGuardedRoute(APIRoute):
+    """Reject unauthenticated or cross-site Live2D uploads before multipart parsing."""
+
+    def get_route_handler(self):
+        downstream = super().get_route_handler()
+
+        async def guarded(request: Request):
+            if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+                rejected = _validate_local_mutation_request(
+                    request,
+                    error_defaults={"success": False},
+                )
+                if rejected is not None:
+                    return rejected
+            return await downstream(request)
+
+        return guarded
+
+
+upload_router = APIRouter(route_class=_Live2dUploadGuardedRoute)
+
+
+def _is_windows() -> bool:
+    """Return True when running on Windows."""
+    return os.name == "nt"
+
+
+def _sanitize_live2d_upload_relpath(raw_filename: str | None) -> pathlib.PurePosixPath | None:
+    """Validate and sanitize a multipart upload filename into a relative POSIX path."""
+    if not isinstance(raw_filename, str) or not raw_filename:
+        return None
+    windows = _is_windows()
+    if "\x00" in raw_filename or (windows and ":" in raw_filename):
+        return None
+    if raw_filename.startswith(("/", "\\")):
+        return None
+    normalized = raw_filename.replace("\\", "/")
+    parts = normalized.split("/")
+    if not parts:
+        return None
+    for part in parts:
+        if part in ("", ".", ".."):
+            return None
+        if windows and any(ch in part for ch in '<>:"|?*'):
+            return None
+    return pathlib.PurePosixPath(*parts)
+
+
+async def _run_cancellation_safe_io(func, *args, **kwargs):
+    """Run blocking filesystem I/O in a worker and wait for it before propagating cancellation."""
+    task = asyncio.ensure_future(asyncio.to_thread(func, *args, **kwargs))
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        while not task.done():
+            with suppress(asyncio.CancelledError):
+                await asyncio.wait({task})
+        raise
+
+
+async def _write_staged_upload_bytes(target_file_path: pathlib.Path, content: bytes) -> None:
+    """Write staged upload bytes without letting cancellation exit TemporaryDirectory early."""
+    await _run_cancellation_safe_io(target_file_path.write_bytes, content)
+
+
+@upload_router.post('/upload_model')
 async def upload_live2d_model(files: list[UploadFile] = File(...)):
-    """
-    Upload a Live2D model to the user documents directory.
-    """
+    """Upload a Live2D model to the user documents directory."""
     import shutil
     import tempfile
     
@@ -1139,23 +1730,25 @@ async def upload_live2d_model(files: list[UploadFile] = File(...)):
         # Create temporary directory for uploaded files.
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = pathlib.Path(temp_dir)
+            resolved_temp = temp_path.resolve()
             
             # Save all uploads there, preserving directory layout.
             for file in files:
-                # Extract directory layout from file-relative paths.
-                file_path = file.filename
-                # Ensure safe paths, removing dangerous components.
-                file_path = file_path.replace('\\', '/').lstrip('/')
-                if not file_path or file_path.startswith(("/", "../")) or "/../" in f"/{file_path}":
+                rel_path = _sanitize_live2d_upload_relpath(file.filename)
+                if rel_path is None:
                     return JSONResponse(status_code=400, content={"success": False, "error": "非法文件路径"})
                 
-                target_file_path = temp_path / file_path
+                target_file_path = temp_path / rel_path
+                resolved_target = target_file_path.resolve()
+                if not resolved_target.is_relative_to(resolved_temp) or resolved_target == resolved_temp:
+                    return JSONResponse(status_code=400, content={"success": False, "error": "非法文件路径"})
                 target_file_path.parent.mkdir(parents=True, exist_ok=True)
+                if not target_file_path.resolve().is_relative_to(resolved_temp):
+                    return JSONResponse(status_code=400, content={"success": False, "error": "非法文件路径"})
                 
-                # Save file.
-                with open(target_file_path, 'wb') as f:
-                    content = await file.read()
-                    f.write(content)
+                # Save file via asyncio.to_thread to avoid blocking the event loop.
+                content = await file.read()
+                await _write_staged_upload_bytes(target_file_path, content)
             
             # Recursively find .model3.json in temp directory.
             model_json_files = list(temp_path.rglob('*.model3.json'))
@@ -1170,7 +1763,11 @@ async def upload_live2d_model(files: list[UploadFile] = File(...)):
             
             # Determine model root, parent of .model3.json.
             model_root_dir = model_json_file.parent
+            if model_root_dir.resolve() == resolved_temp:
+                return JSONResponse(status_code=400, content={"success": False, "error": "模型文件必须位于模型子目录中"})
             model_name = model_root_dir.name
+            if not _is_valid_live2d_model_name(model_name):
+                return JSONResponse(status_code=400, content={"success": False, "error": "非法模型名称"})
             
             # Get user-documents live2d directory.
             config_mgr = get_config_manager()
@@ -1179,6 +1776,13 @@ async def upload_live2d_model(files: list[UploadFile] = File(...)):
             
             # Target directory.
             target_model_dir = user_live2d_dir / model_name
+            resolved_user_dir = user_live2d_dir.resolve()
+            resolved_target_dir = target_model_dir.resolve()
+            if (
+                not resolved_target_dir.is_relative_to(resolved_user_dir)
+                or resolved_target_dir == resolved_user_dir
+            ):
+                return JSONResponse(status_code=400, content={"success": False, "error": "非法模型路径"})
             
             # Existing target: error or overwrite; choose error here.
             if target_model_dir.exists():
@@ -1191,10 +1795,10 @@ async def upload_live2d_model(files: list[UploadFile] = File(...)):
                     })
                 else:
                     logger.info(f"清理残留的无效模型目录: {target_model_dir}")
-                    await asyncio.to_thread(shutil.rmtree, target_model_dir, ignore_errors=True)
+                    await _run_cancellation_safe_io(shutil.rmtree, target_model_dir, ignore_errors=True)
 
             # Copy model root to user-documents live2d directory.
-            await asyncio.to_thread(shutil.copytree, model_root_dir, target_model_dir)
+            await _run_cancellation_safe_io(shutil.copytree, model_root_dir, target_model_dir)
 
             # After upload iterate all *.motion3.json files,
             # empty Segments=[] for official whitelist and model-declared .model3.json LipSync parameters.
@@ -1315,7 +1919,7 @@ async def upload_live2d_model(files: list[UploadFile] = File(...)):
         return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
 
 
-@router.post('/upload_file/{model_name}')
+@upload_router.post('/upload_file/{model_name}')
 async def upload_file_to_model(model_name: str, file: UploadFile = File(...), file_type: str = "motion"):
     """
     Upload a single motion or expression file to the specified model.
@@ -1325,6 +1929,11 @@ async def upload_file_to_model(model_name: str, file: UploadFile = File(...), fi
     - file_type: file type, must be "motion" or "expression"
     """
     try:
+        if not _is_valid_live2d_model_name(model_name):
+            if file:
+                await file.close()
+            return JSONResponse(status_code=400, content={"success": False, "error": "非法模型名称"})
+
         if not file:
             return JSONResponse(status_code=400, content={"success": False, "error": "没有上传文件"})
         
@@ -1359,25 +1968,57 @@ async def upload_file_to_model(model_name: str, file: UploadFile = File(...), fi
         # Validate JSON.
         try:
             json.loads(file_content.decode('utf-8'))
-        except (json.JSONDecodeError, UnicodeDecodeError):
+        except (json.JSONDecodeError, UnicodeDecodeError, RecursionError):
             return JSONResponse(status_code=400, content={"success": False, "error": "文件内容不是有效的 JSON 格式"})
 
         # Find model directory.
-        model_dir, _url_prefix = find_model_directory(model_name)
+        model_dir, _url_prefix = _resolve_safe_model_directory(model_name)
         if not model_dir or not os.path.exists(model_dir):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型目录不存在"})
-        
-        # Create target subdirectory if absent.
+
+        resolved_model_dir = pathlib.Path(model_dir).resolve()
         target_dir = pathlib.Path(model_dir) / target_subdir
+        if target_dir.is_symlink() or (target_dir.exists() and not target_dir.is_dir()):
+            return JSONResponse(status_code=400, content={"success": False, "error": "非法目标目录"})
+        resolved_target_dir = target_dir.resolve()
+        if not resolved_target_dir.is_relative_to(resolved_model_dir) or resolved_target_dir == resolved_model_dir:
+            return JSONResponse(status_code=400, content={"success": False, "error": "非法目标目录"})
+
+        # Create target subdirectory if absent.
         target_dir.mkdir(parents=True, exist_ok=True)
+        resolved_target_dir = target_dir.resolve()
+        if (
+            target_dir.is_symlink()
+            or not resolved_target_dir.is_relative_to(resolved_model_dir)
+            or resolved_target_dir == resolved_model_dir
+        ):
+            return JSONResponse(status_code=400, content={"success": False, "error": "非法目标目录"})
         
         # Basename only, avoiding traversal.
-        safe_filename = pathlib.Path(filename).name
-        
+        safe_filename = pathlib.Path(filename.replace("\\", "/")).name
+        if (
+            not safe_filename
+            or safe_filename in {".", ".."}
+            or "\x00" in safe_filename
+            or (_is_windows() and any(ch in safe_filename for ch in '<>:"|?*'))
+        ):
+            return JSONResponse(status_code=400, content={"success": False, "error": "非法文件名"})
+
         target_file_path = target_dir / safe_filename
+        resolved_target_file = target_file_path.resolve()
+        if (
+            target_file_path.is_symlink()
+            or not resolved_target_file.is_relative_to(resolved_model_dir)
+            or not resolved_target_file.is_relative_to(resolved_target_dir)
+        ):
+            return JSONResponse(status_code=400, content={"success": False, "error": "非法文件路径"})
+
+        def _write_exclusive(path_obj: pathlib.Path, data: bytes) -> None:
+            with open(path_obj, 'xb') as f:
+                f.write(data)
+
         try:
-            with open(target_file_path, 'xb') as f:
-                f.write(file_content)
+            await asyncio.to_thread(_write_exclusive, target_file_path, bytes(file_content))
         except FileExistsError:
             return JSONResponse(status_code=400, content={"success": False, "error": f"文件 {safe_filename} 已存在"})
         
@@ -1405,7 +2046,7 @@ def open_model_directory(model_name: str):
     try:
         import sys
         # Find model directory.
-        model_dir, url_prefix = find_model_directory(model_name)
+        model_dir, url_prefix = _resolve_safe_model_directory(model_name)
         
         if not model_dir or not os.path.exists(model_dir):
             return JSONResponse(status_code=404, content={"success": False, "error": f"模型目录不存在: {model_dir}"})
@@ -1431,8 +2072,11 @@ def delete_model(model_name: str):
     - model_name: model name (without path or extension)
     """
     try:
+        if not _is_valid_live2d_model_name(model_name):
+            return JSONResponse(status_code=400, content={"success": False, "error": "非法模型名称"})
+
         # Find model directory.
-        model_dir, _url_prefix = find_model_directory(model_name)
+        model_dir, _url_prefix = _resolve_safe_model_directory(model_name)
         
         # If find_model_directory fails, search user-import directory directly as deletion fallback.
         if not model_dir or not os.path.exists(model_dir):
@@ -1441,10 +2085,13 @@ def delete_model(model_name: str):
                 config_mgr.ensure_live2d_directory()
                 fallback_dir = config_mgr.live2d_dir / model_name
                 if fallback_dir.exists():
-                    # Validate path safety against traversal.
+                    # Validate strict non-root containment against traversal.
                     fallback_real = os.path.realpath(str(fallback_dir))
                     live2d_real = os.path.realpath(str(config_mgr.live2d_dir))
-                    if os.path.commonpath([fallback_real, live2d_real]) == live2d_real:
+                    if (
+                        os.path.commonpath([fallback_real, live2d_real]) == live2d_real
+                        and os.path.normcase(fallback_real) != os.path.normcase(live2d_real)
+                    ):
                         model_dir = str(fallback_dir)
                         _url_prefix = '/user_live2d'
                         logger.info(f"通过降级路径找到用户模型: {model_dir}")
@@ -1468,7 +2115,7 @@ def delete_model(model_name: str):
             user_live2d_dir = os.path.realpath(str(config_mgr.live2d_dir))
             try:
                 common = os.path.commonpath([user_live2d_dir, model_dir_real])
-                if common == user_live2d_dir:
+                if common == user_live2d_dir and os.path.normcase(model_dir_real) != os.path.normcase(user_live2d_dir):
                     is_user_model = True
             except ValueError:
                 pass
@@ -1480,7 +2127,7 @@ def delete_model(model_name: str):
                     readable_live2d_real = os.path.realpath(str(readable_live2d))
                     try:
                         common = os.path.commonpath([readable_live2d_real, model_dir_real])
-                        if common == readable_live2d_real:
+                        if common == readable_live2d_real and os.path.normcase(model_dir_real) != os.path.normcase(readable_live2d_real):
                             is_user_model = True
                             _model_in_readonly_dir = True  # Inside CFA-protected read-only directory.
                     except ValueError:
@@ -1604,7 +2251,18 @@ def get_user_models():
             config_mgr.ensure_vrm_directory()
             vrm_dir = config_mgr.vrm_dir
             if vrm_dir.exists():
-                for vrm_file in vrm_dir.glob('*.vrm'):
+                for vrm_file in vrm_dir.iterdir():
+                    # Any letter case, like the VRM upload check ('Foo.VRM'); folders
+                    # and dangling links are skipped as in the VRM model list.
+                    if vrm_file.suffix.lower() != '.vrm':
+                        continue
+                    try:
+                        if not vrm_file.is_file():
+                            continue
+                    except OSError:
+                        # Type cannot be checked (e.g. EACCES on Python 3.11): skip
+                        # this entry and keep scanning the rest.
+                        continue
                     user_models.append({
                         'name': vrm_file.stem,
                         'path': f'/user_vrm/{vrm_file.name}',
@@ -1614,7 +2272,13 @@ def get_user_models():
         except Exception as e:
             logger.warning(f"扫描用户VRM模型目录时出错: {e}")
 
+        user_models, skipped = drop_non_utf8_entries(user_models)
+        if skipped:
+            logger.warning(f"跳过 {skipped} 个文件名不是合法 UTF-8 的用户模型")
         return {"success": True, "models": user_models}
     except Exception as e:
         logger.error(f"获取用户模型列表失败: {e}")
         return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
+
+
+router.include_router(upload_router)

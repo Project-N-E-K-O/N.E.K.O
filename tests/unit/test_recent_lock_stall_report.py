@@ -168,7 +168,7 @@ def test_read_queued_behind_a_full_executor_times_out_and_reports(
 ):
     from concurrent.futures import ThreadPoolExecutor
 
-    from tests.unit.test_recent_file_lock import _make_manager
+    from tests.unit.test_recent_file_lock import _make_manager, _run_on_private_loop
 
     mgr, name, _path = _make_manager(tmp_path)
     if config_on_executor:
@@ -180,7 +180,6 @@ def test_read_queued_behind_a_full_executor_times_out_and_reports(
 
     async def _run():
         loop = asyncio.get_running_loop()
-        loop.set_default_executor(executor)
         busy = loop.run_in_executor(None, release.wait, 10)
         started = time.monotonic()
         try:
@@ -192,7 +191,9 @@ def test_read_queued_behind_a_full_executor_times_out_and_reports(
             await busy
 
     try:
-        elapsed = asyncio.run(_run())
+        # A private loop keeps the single-worker executor (shut down below) off the
+        # shared loop that nest_asyncio's asyncio.run() reuses across tests.
+        elapsed = _run_on_private_loop(_run(), executor)
     finally:
         executor.shutdown(wait=True)
     assert elapsed < 2
@@ -328,6 +329,7 @@ def test_get_recent_history_budget_covers_the_character_check(captured_reports, 
     from concurrent.futures import ThreadPoolExecutor
 
     from app import memory_server
+    from tests.unit.test_recent_file_lock import _run_on_private_loop
 
     monkeypatch.setattr(memory_server.routes, "_RECENT_HISTORY_LOCK_TIMEOUT_SECONDS", 0.2)
     release = threading.Event()
@@ -339,7 +341,6 @@ def test_get_recent_history_budget_covers_the_character_check(captured_reports, 
 
     async def _run():
         loop = asyncio.get_running_loop()
-        loop.set_default_executor(executor)
         busy = loop.run_in_executor(None, release.wait, 10)
         started = time.monotonic()
         try:
@@ -351,7 +352,7 @@ def test_get_recent_history_budget_covers_the_character_check(captured_reports, 
 
     try:
         with patch.object(memory_server.runtime, "_config_manager", fake_config):
-            response, elapsed = asyncio.run(_run())
+            response, elapsed = _run_on_private_loop(_run(), executor)
     finally:
         executor.shutdown(wait=True)
     assert response.status_code == 503

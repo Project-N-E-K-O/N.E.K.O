@@ -18,7 +18,6 @@ export type GithubMirrorMode = 'direct' | 'auto' | 'specified'
 export const GITHUB_PROXY_SOURCES = [
   { id: 'gh-proxy-com', label: 'https://gh-proxy.com/' },
   { id: 'gh-proxy-org', label: 'https://gh-proxy.org/' },
-  { id: 'hk-gh-proxy-org', label: 'https://hk.gh-proxy.org/' },
   { id: 'cdn-gh-proxy-org', label: 'https://cdn.gh-proxy.org/' },
   { id: 'edgeone-gh-proxy-org', label: 'https://edgeone.gh-proxy.org/' },
 ] as const

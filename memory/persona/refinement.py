@@ -516,7 +516,7 @@ class RefinementMixin:
                     new_attempts = safe_int_field(e, 'refine_attempts') + 1
                     e['refine_attempts'] = new_attempts
                     # Stamp failure time for dead-letter cooldown_elapsed self-healing:
-                    # transient correction-model outage reaching MAX can probe candidates again
+                    # transient summary-model outage reaching MAX can probe candidates again
                     # after five-hour cooldown, avoiding permanent freeze after recovery.
                     e['last_refine_attempt_at'] = datetime.now().isoformat()
                     modified = True

@@ -52,6 +52,19 @@ export default defineConfig({
       '@': fileURLToPath(new URL('./src', import.meta.url))
     },
   },
+  build: {
+    rolldownOptions: {
+      output: {
+        codeSplitting: {
+          groups: [
+            // Keep the router's dependency closure stable as optional dialogs
+            // change shared chunks, so it stays outside the bootstrap budget.
+            { name: 'vue-router', test: /[\\/]node_modules[\\/]vue-router[\\/]/ },
+          ],
+        },
+      },
+    },
+  },
   server: {
     port: 5173,
     fs: {
@@ -99,8 +112,13 @@ export default defineConfig({
         changeOrigin: true,
         secure: false,
       },
+      '^/plugin-permissions(?:/.*)?(?:\\?.*)?$': {
+        target: BACKEND_TARGET,
+        changeOrigin: true,
+        secure: false,
+      },
       // Market Bridge API endpoints only. Keep the SPA route /market on Vite.
-      '^/market/(status|bridge-token|pair-code|install|installed|token-exchange|download-preferences|download-history/reset|catalog(?:/.*)?|oauth(?:/.*)?|tasks(?:/.*)?|knowledge(?:/.*)?|submissions(?:/.*)?)(?:\\?.*)?$': {
+      '^/market/(status|bridge-token|pair-code|install|installed|token-exchange|download-preferences|download-history/reset|catalog(?:/.*)?|oauth(?:/.*)?|tasks(?:/.*)?|knowledge(?:/.*)?|submissions(?:/.*)?|feedback(?:/(?:mark-read|avatars))?|conversations/plugins/.*)(?:\\?.*)?$': {
         target: BACKEND_TARGET,
         changeOrigin: true,
         secure: false,
@@ -149,6 +167,16 @@ export default defineConfig({
         secure: false
       },
       '/health': {
+        target: BACKEND_TARGET,
+        changeOrigin: true,
+        secure: false
+      },
+      // What the pages about the task agents read and change; the backend
+      // passes it on to the agent process. A change sent from this dev
+      // server carries its own origin, which the backend does not trust:
+      // start the backend with NEKO_PLUGIN_MUTATION_ALLOWED_ORIGINS set to
+      // this server's address to save settings from here.
+      '^/console/': {
         target: BACKEND_TARGET,
         changeOrigin: true,
         secure: false

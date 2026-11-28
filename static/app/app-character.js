@@ -326,7 +326,11 @@
      * @param {string} newCatgirl - Name of the new character
      * @param {string} oldCatgirl - Name of the previous character
      */
-    async function handleCatgirlSwitch(newCatgirl, oldCatgirl) {
+    async function handleCatgirlSwitch(newCatgirl, oldCatgirl, options = {}) {
+        const forceReload = !!options.forceReload;
+        const switchRevision = Number.isSafeInteger(options.switchRevision) && options.switchRevision > 0
+            ? options.switchRevision
+            : 0;
         console.log('[猫娘切换] ========== 开始切换 ==========');
         console.log('[猫娘切换] 从', oldCatgirl, '切换到', newCatgirl);
         console.log('[猫娘切换] isSwitchingCatgirl:', S.isSwitchingCatgirl);
@@ -385,27 +389,82 @@
             _mmdDeferredDispose = null;
         };
 
+        // forceReload bypasses same-name dedupe, never backend commit order.
+        if (switchRevision) {
+            const pageRevision = Number.isSafeInteger(window.lanlan_config?.switch_revision)
+                && window.lanlan_config.switch_revision > 0
+                ? window.lanlan_config.switch_revision
+                : 0;
+            const stateRevision = Number.isSafeInteger(S._latestCatgirlSwitchRevision)
+                ? S._latestCatgirlSwitchRevision
+                : 0;
+            if (pageRevision > stateRevision) {
+                S._latestCatgirlSwitchRevision = pageRevision;
+            }
+            const latestRevision = Math.max(pageRevision, stateRevision);
+            if (switchRevision < latestRevision) {
+                console.log('[character switch] stale revision ignored:', switchRevision, latestRevision, newCatgirl);
+                return false;
+            }
+            if (switchRevision > latestRevision) {
+                S._latestCatgirlSwitchRevision = switchRevision;
+                if (window.lanlan_config) {
+                    window.lanlan_config.switch_revision = switchRevision;
+                }
+            }
+        }
+
         if (S.isSwitchingCatgirl) {
-            console.log('[猫娘切换] 正在切换中，忽略本次请求');
+            if (newCatgirl) {
+                const queuedSwitch = S._pendingCatgirlSwitch;
+                if (!switchRevision && queuedSwitch?.switchRevision > 0) {
+                    console.log('[猫娘切换] 保留已排队的带版本目标，忽略无版本回执:', newCatgirl);
+                    return false;
+                }
+                // 快速 A→B→A 时，旧逻辑会把第二次请求直接丢掉；而第一轮已经开始清理
+                // A 的模型，最终就可能出现“后端已回到 A、前端模型为空”。这里只保留最新
+                // 目标（last intent wins），等当前 attempt 收尾后强制重放一次。
+                S._pendingCatgirlSwitch = { newCatgirl, oldCatgirl, switchRevision };
+                console.log('[猫娘切换] 正在切换中，记录最新待切换目标:', newCatgirl);
+            } else {
+                console.log('[猫娘切换] 正在切换中且 newCatgirl 为空，忽略');
+            }
             return;
         }
         if (!newCatgirl) {
             console.log('[猫娘切换] newCatgirl为空，返回');
             return;
         }
-        if (newCatgirl === oldCatgirl) {
-            console.log('[猫娘切换] 新旧角色相同，跳过切换');
-            return;
-        }
+
+        // 角色名相同并不总等于“已经完成切换”。目标角色加载失败时 catch 会恢复
+        // previousLanlanConfig，但 VRM 清理发生在更早阶段：此时 lanlan_name 已回到旧角色，
+        // currentModel 却可能已经是 null。随后后端真正切回该角色的事件若只按名字去重，
+        // 就会永久留下空白桌宠。仅在当前配置明确要求 VRM 且实例缺失时把同名事件视为
+        // recovery，而不是 duplicate；正常 BC + WS 双通道重复事件仍保持原去重行为。
+        const currentModelType = String(window.lanlan_config?.model_type || '').trim().toLowerCase();
+        const currentLive3dSubType = String(window.lanlan_config?.live3d_sub_type || '').trim().toLowerCase();
+        const currentConfigWantsVrm = currentModelType === 'vrm'
+            || (currentModelType === 'live3d' && currentLive3dSubType === 'vrm');
+        const sameCurrentCharacterMissingVrm = !!(
+            supportsLocalModelRuntime()
+            && window.lanlan_config
+            && window.lanlan_config.lanlan_name === newCatgirl
+            && currentConfigWantsVrm
+            && !window.vrmManager?.currentModel?.vrm
+        );
+
         // 已是当前角色：BroadcastChannel 兜底 + WebSocket 后端通知会让同一次切换在两条
         // 通道各到一份。BC 先到的话 handleCatgirlSwitch 跑完 lanlan_name 已是 newCatgirl，
         // 接踵而至的 WS 事件参数还是 (newCatgirl, 上一次的 oldCatgirl)，原本只 newCatgirl
         // !== oldCatgirl 的 dedupe 拦不住，会重新清 chat / 关 socket / 重连 / 重加载模型。
         // app-interpage 的 BC handler 已加同样守护作为外层防御，这里在源头再加一道，
         // 让所有调用方（不光 BC/WS handler）自动受益。
-        if (window.lanlan_config && window.lanlan_config.lanlan_name === newCatgirl) {
-            console.log('[猫娘切换] 已经是当前角色', newCatgirl, '，跳过重复事件（BC + WS 双通道收到同一切换）');
-            return;
+        if (!forceReload && window.lanlan_config && window.lanlan_config.lanlan_name === newCatgirl) {
+            if (!sameCurrentCharacterMissingVrm) {
+                console.log('[猫娘切换] 已经是当前角色', newCatgirl, '，跳过重复事件（BC + WS 双通道收到同一切换）');
+                return;
+            }
+            console.warn('[猫娘切换] 角色名已是', newCatgirl, '但 VRM 实例缺失，执行一致性恢复');
         }
         // 确认切换到不同角色后，清空上一任的搜歌任务
         window.invalidatePendingMusicSearch();
@@ -465,6 +524,86 @@
         // 才 set true（这点说明模型/socket/UI/lanlan_config 都到位、只剩 unlockAchievement
         // 等末尾副作用 await），watchdog 检测这个 flag 精准。
         let switchHasCommitted = false;
+        let chatUiClearedForSwitch = false;
+        let previousChatContainerNodes = null;
+        let previousReactMessages = null;
+        let previousReactSwitchSnapshot = null;
+        let previousDocumentTitle = document.title;
+        let previousChatTurnState = null;
+
+        const restorePreviousChatUi = () => {
+            if (!chatUiClearedForSwitch || switchHasCommitted) return;
+            chatUiClearedForSwitch = false;
+
+            try {
+                if (typeof previousDocumentTitle === 'string') {
+                    document.title = previousDocumentTitle;
+                }
+                const chatContainer = document.getElementById('chatContainer');
+                if (chatContainer && Array.isArray(previousChatContainerNodes)) {
+                    const postClearNodes = Array.from(chatContainer.childNodes);
+                    chatContainer.innerHTML = '';
+                    previousChatContainerNodes.forEach(node => {
+                        try { chatContainer.appendChild(node); } catch (_e) { /* ignore */ }
+                    });
+                    postClearNodes.forEach(node => {
+                        if (!previousChatContainerNodes.includes(node)) {
+                            try { chatContainer.appendChild(node); } catch (_e) { /* ignore */ }
+                        }
+                    });
+                }
+                if (previousReactSwitchSnapshot
+                        && window.reactChatWindowHost
+                        && typeof window.reactChatWindowHost.restoreSwitchSnapshot === 'function') {
+                    window.reactChatWindowHost.restoreSwitchSnapshot(previousReactSwitchSnapshot);
+                } else if (Array.isArray(previousReactMessages) && window.reactChatWindowHost) {
+                    const currentReactState = (typeof window.reactChatWindowHost.getState === 'function')
+                        ? window.reactChatWindowHost.getState()
+                        : null;
+                    const liveReactMessages = (currentReactState && Array.isArray(currentReactState.messages))
+                        ? currentReactState.messages
+                        : [];
+                    const seenIds = new Set(
+                        previousReactMessages
+                            .map(msg => (msg && msg.id !== undefined && msg.id !== null && msg.id !== '' ? String(msg.id) : ''))
+                            .filter(Boolean)
+                    );
+                    const postClearReactMessages = liveReactMessages.filter(msg => {
+                        if (!msg) return false;
+                        const msgId = (msg.id !== undefined && msg.id !== null && msg.id !== '') ? String(msg.id) : '';
+                        if (!msgId) return true;
+                        if (seenIds.has(msgId)) return false;
+                        seenIds.add(msgId);
+                        return true;
+                    });
+                    const mergedReactMessages = previousReactMessages.concat(postClearReactMessages);
+                    if (typeof window.reactChatWindowHost.setMessages === 'function') {
+                        window.reactChatWindowHost.setMessages(mergedReactMessages);
+                    } else if (typeof window.reactChatWindowHost.appendMessage === 'function') {
+                        mergedReactMessages.forEach(msg => {
+                            try { window.reactChatWindowHost.appendMessage(msg); } catch (_e) { /* ignore */ }
+                        });
+                    }
+                }
+                const hasNewTurnState = !!(
+                    window.currentGeminiMessage
+                    || window._geminiTurnFullText
+                    || window._geminiTurnEndSealed
+                    || (Array.isArray(window.currentTurnGeminiBubbles) && window.currentTurnGeminiBubbles.length > 0)
+                    || (Array.isArray(window.currentTurnGeminiAttachments) && window.currentTurnGeminiAttachments.length > 0)
+                );
+                const socketStillBelongsToOldSession = !S.socket || S.socket === _switchOldSocket;
+                if (previousChatTurnState && !hasNewTurnState && socketStillBelongsToOldSession) {
+                    window.currentGeminiMessage = previousChatTurnState.currentGeminiMessage;
+                    window._geminiTurnFullText = previousChatTurnState._geminiTurnFullText;
+                    window._geminiTurnEndSealed = previousChatTurnState._geminiTurnEndSealed;
+                    window.currentTurnGeminiBubbles = previousChatTurnState.currentTurnGeminiBubbles;
+                    window.currentTurnGeminiAttachments = previousChatTurnState.currentTurnGeminiAttachments;
+                }
+            } catch (chatRestoreErr) {
+                console.warn('[猫娘切换] 恢复聊天 UI 失败:', chatRestoreErr);
+            }
+        };
         // try 体里 line 486 / 489 / 493 那一段是关键全局副作用区段：S.socket.close()、
         // lanlan_config.lanlan_name = newCatgirl、connectWebSocket()。老 attempt 卡在
         // removeModel/clearAudioQueue 这类无 timeout 的 await 上苏醒后会接着跑这一段，
@@ -499,6 +638,7 @@
                     // 用户重试同名角色被 dedupe 拦掉、且 model_type 跟实际仍跑的旧模型不一致让
                     // 后续分支走偏。
                     restorePreviousLanlanConfig();
+                    restorePreviousChatUi();
                     // socket 收尾：line 529 早期 retire 把 S.socket 置 null，卡死场景下 catch/finally
                     // 永远不到，_switchOldSocket 既不会被关也不会被恢复——orphan 连接到 server，
                     // 同时当前页 S.socket=null 是断联态。复用 catch+finally 的 socket 处理：
@@ -546,6 +686,21 @@
                 }
                 S.isSwitchingCatgirl = false;
                 S._currentSwitchAttemptId = null;
+                const pendingSwitch = S._pendingCatgirlSwitch;
+                S._pendingCatgirlSwitch = null;
+                const pendingAlreadySatisfied = !!(
+                    switchAlreadyCompleted
+                    && pendingSwitch?.newCatgirl === newCatgirl
+                );
+                if (pendingSwitch?.newCatgirl && !pendingAlreadySatisfied) {
+                    Promise.resolve().then(() => handleCatgirlSwitch(
+                        pendingSwitch.newCatgirl,
+                        pendingSwitch.oldCatgirl || '',
+                        { forceReload: true, queuedReason: 'watchdog', switchRevision: pendingSwitch.switchRevision || 0 }
+                    )).catch(err => console.error('[character switch] watchdog pending replay failed:', err));
+                } else if (pendingAlreadySatisfied) {
+                    console.log('[character switch] watchdog target already satisfied; skip duplicate replay:', newCatgirl);
+                }
                 if (!switchAlreadyCompleted) {
                     try {
                         showStatusToast((window.t && window.t('app.switchCatgirlWatchdog')) || '上次切换似乎卡住了，请再点一次切换', 5000);
@@ -889,8 +1044,32 @@
                 S.socket = null;
             }
 
-            // 清空聊天记录和相关全局状态
+            // 先保存旧角色聊天 UI 与全局 turn 状态快照，以便未 commit 前失败回滚时恢复
             const chatContainer = document.getElementById('chatContainer');
+            previousChatContainerNodes = chatContainer ? Array.from(chatContainer.childNodes) : null;
+            previousReactSwitchSnapshot = (window.reactChatWindowHost && typeof window.reactChatWindowHost.captureSwitchSnapshot === 'function')
+                ? window.reactChatWindowHost.captureSwitchSnapshot()
+                : null;
+            const reactState = (window.reactChatWindowHost && typeof window.reactChatWindowHost.getState === 'function')
+                ? window.reactChatWindowHost.getState()
+                : null;
+            previousReactMessages = (reactState && Array.isArray(reactState.messages))
+                ? reactState.messages.slice()
+                : null;
+            previousChatTurnState = {
+                currentGeminiMessage: window.currentGeminiMessage ?? null,
+                _geminiTurnFullText: window._geminiTurnFullText ?? '',
+                _geminiTurnEndSealed: !!window._geminiTurnEndSealed,
+                currentTurnGeminiBubbles: Array.isArray(window.currentTurnGeminiBubbles)
+                    ? window.currentTurnGeminiBubbles.slice()
+                    : [],
+                currentTurnGeminiAttachments: Array.isArray(window.currentTurnGeminiAttachments)
+                    ? window.currentTurnGeminiAttachments.slice()
+                    : [],
+            };
+            chatUiClearedForSwitch = true;
+
+            // 清空聊天记录和相关全局状态
             if (chatContainer) {
                 chatContainer.innerHTML = '';
             }
@@ -1916,10 +2095,10 @@
             // commit 前 dispose 会让中途失败的 rollback 没法恢复旧 MMD（容器没渲染 + 实例已销毁）。
             _disposeDeferredMmd();
             clearGoodbyeStateForCharacterSwitch();
-            // 角色卡切换后猫爪必须重新归零并拉取新快照，防止工具服务的旧全局状态污染新角色。
+            // 角色卡切换后喵能力必须重新归零并拉取新快照，防止工具服务的旧全局状态污染新角色。
             if (typeof window.resetAgentUiForCharacterSwitch === 'function') {
                 Promise.resolve(window.resetAgentUiForCharacterSwitch(newCatgirl))
-                    .catch(err => console.warn('[猫娘切换] 刷新猫爪状态失败:', err));
+                    .catch(err => console.warn('[猫娘切换] 刷新喵能力状态失败:', err));
             }
             rehideMainUIIfModelManagerOwnsVisibility('character-switch-commit');
             showStatusToast(window.t ? window.t('app.switchedCatgirl', { name: newCatgirl }) : `已切换到 ${newCatgirl}`, 3000);
@@ -1982,6 +2161,7 @@
                 // 分支后用自己看到的 snapshot 覆盖新 attempt 的成功状态。
                 if (S._currentSwitchAttemptId === myAttemptId && !switchHasCommitted) {
                     restorePreviousLanlanConfig();
+                    restorePreviousChatUi();
                     console.log('[猫娘切换] 切换失败，已恢复切换前的 lanlan_config（', previousLanlanConfig.lanlan_name, '/', previousLanlanConfig.model_type, '/', previousLanlanConfig.live3d_sub_type, '），允许用户重试同一目标');
                     // 恢复 S.socket 引用：line 530 早期 retire 把 S.socket 设成 null（让 stale
                     // onmessage/onclose 在清空会话期间走 stale guard）。如果新 connectWebSocket
@@ -2080,6 +2260,23 @@
             if (isCurrentAttempt) {
                 S.isSwitchingCatgirl = false;
                 S._currentSwitchAttemptId = null;
+                const pendingSwitch = S._pendingCatgirlSwitch;
+                S._pendingCatgirlSwitch = null;
+                const pendingAlreadySatisfied = !!(
+                    switchHasCommitted
+                    && pendingSwitch?.newCatgirl === newCatgirl
+                );
+                if (pendingSwitch?.newCatgirl && !pendingAlreadySatisfied) {
+                    // A failed attempt may roll the name back to the pending target after
+                    // model cleanup. Keep forceReload unless this attempt already committed it.
+                    Promise.resolve().then(() => handleCatgirlSwitch(
+                        pendingSwitch.newCatgirl,
+                        pendingSwitch.oldCatgirl || '',
+                        { forceReload: true, queuedReason: 'finally', switchRevision: pendingSwitch.switchRevision || 0 }
+                    )).catch(err => console.error('[character switch] pending replay failed:', err));
+                } else if (pendingAlreadySatisfied) {
+                    console.log('[character switch] latest target already satisfied; skip duplicate replay:', newCatgirl);
+                }
                 // window._currentCatgirlSwitchId 故意不清——它是 VRM applyLighting retry loop
                 // 的 ownership token（line 794-800 用 Symbol() 标识 attempt，retry 比对
                 // !== currentSwitchId 自我退出）。retry 是 setTimeout 链，可能跨 finally 还在跑；

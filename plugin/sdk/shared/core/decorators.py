@@ -19,6 +19,10 @@ from plugin.sdk.shared.constants import (
     PERSIST_ATTR,
 )
 from .events import EventMeta, QuickActionConfig
+from plugin.sdk.shared.permissions.narrowing import normalize_narrowing
+from plugin._types.entry_metadata import check_schema_depth, detached_copy
+
+from .output_contract import is_pydantic_model
 from .result_contract import (
     fields_from_schema,
     model_schema_from_type,
@@ -33,6 +37,7 @@ _SKIP_PARAMS = frozenset({"self", "cls", "kwargs", "_ctx", "args"})
 _PARAMS_MODEL_ATTR = "_neko_params_model"
 _AUTO_INFER_PARAMS_ATTR = "_neko_auto_infer_params"
 _AUTO_INFER_LLM_RESULT_ATTR = "_neko_auto_infer_llm_result"
+_AUTO_INFER_OUTPUT_ATTR = "_neko_auto_infer_output"
 _QUICK_ACTION_CONFIG_ATTR = "_neko_quick_action_config"
 _TYPE_HINT_ERRORS = (NameError, TypeError, AttributeError, ValueError)
 _PY_TYPE_TO_JSON: dict[type, str] = {
@@ -51,6 +56,8 @@ class HookDecoratorMeta:
     timing: str
     priority: int
     condition: str | None
+    # Joined into every entry ``target`` matches (see permissions.narrowing).
+    permissions: tuple[str, ...] | None = None
 
 
 def _unwrap_model_annotation(hint: object) -> type | None:
@@ -245,6 +252,65 @@ def _infer_llm_result_model_from_signature(
     return model_type, schema
 
 
+def _infer_output_contract_from_func(
+    fn: Callable[..., object],
+    *,
+    localns: Mapping[str, object] | None = None,
+) -> tuple[type | None, dict[str, object] | None]:
+    hints = _get_type_hints_safe(fn, localns=localns)
+    return _output_contract_from_signature(inspect.signature(fn), hints)
+
+
+def _infer_output_contract_from_owner(
+    fn: Callable[..., object],
+    owner: type,
+) -> tuple[type | None, dict[str, object] | None]:
+    hints = _get_type_hints_for_owner_safe(fn, owner)
+    return _output_contract_from_signature(inspect.signature(fn), hints)
+
+
+def _output_contract_from_signature(
+    signature: inspect.Signature,
+    hints: Mapping[str, object],
+) -> tuple[type | None, dict[str, object] | None]:
+    """The llm_result inference, plus nullability: ``Model | None`` may return None.
+
+    llm_result_* drop the ``None`` arm (they only describe a payload), but the
+    output contract describes the whole return value, so it must accept it.
+    """
+    model, schema = _infer_llm_result_model_from_signature(signature, hints)
+    if model is None or schema is None or not is_pydantic_model(model):
+        # llm_result inference also accepts any class with a schema(); the
+        # output contract is checked at runtime, so only Pydantic models,
+        # which can validate themselves, are inferred.
+        return None, None
+    # Published like params=Model publishes input_schema (model_json_schema(),
+    # validation mode), matching the runtime check, which builds the model.
+    schema = dict(schema)
+    if _hint_allows_none(hints.get("return", signature.return_annotation)):
+        schema = dict(schema)
+        defs = schema.pop("$defs", None)
+        # Keep $defs at the root so "#/$defs/..." references still resolve.
+        nullable: dict[str, object] = {"anyOf": [schema, {"type": "null"}]}
+        if defs is not None:
+            nullable["$defs"] = defs
+        schema = nullable
+    # Inferred contracts are bounded like explicit ones; both inference paths
+    # (decoration time and the owner-class pass) come through here.
+    check_schema_depth(schema, "output_schema")
+    return model, schema
+
+
+def _hint_allows_none(hint: object) -> bool:
+    metadata_items = getattr(hint, "__metadata__", None)
+    annotated_args = getattr(hint, "__args__", None)
+    if metadata_items is not None and annotated_args:
+        hint = annotated_args[0]
+    if get_origin(hint) in (Union, types.UnionType):
+        return type(None) in get_args(hint)
+    return False
+
+
 def _attach_event_meta(fn: F, meta: EventMeta) -> F:
     setattr(fn, EVENT_META_ATTR, meta)
     if meta.persist is not None:
@@ -285,26 +351,58 @@ def neko_plugin(cls: type) -> type:
 
 def _finalize_plugin_entry_inference(owner: type) -> None:
     for member in vars(owner).values():
-        if not callable(member):
+        # Same unwrapping as the entry collectors: a classmethod/staticmethod
+        # object is not callable itself, its function carries the metadata.
+        target = member.__func__ if isinstance(member, (staticmethod, classmethod)) else member
+        if not callable(target):
             continue
-        meta = getattr(member, EVENT_META_ATTR, None)
+        meta = getattr(target, EVENT_META_ATTR, None)
         if not isinstance(meta, EventMeta) or meta.event_type != "plugin_entry":
             continue
 
-        if getattr(member, _AUTO_INFER_PARAMS_ATTR, False):
-            inferred_model, inferred_schema = _infer_single_params_model_from_owner(member, owner)
-            if inferred_model is not None and inferred_schema is not None:
-                meta.params = inferred_model
-                meta.input_schema = cast(InputSchema, inferred_schema)
-                setattr(member, _PARAMS_MODEL_ATTR, inferred_model)
+        inferred = _deferred_entry_inference(target, owner)
+        for field_name, value in inferred.items():
+            setattr(meta, field_name, value)
+        if "params" in inferred:
+            setattr(target, _PARAMS_MODEL_ATTR, inferred["params"])
 
-        if getattr(member, _AUTO_INFER_LLM_RESULT_ATTR, False):
-            inferred_llm_model, inferred_llm_schema = _infer_llm_result_model_from_owner(member, owner)
-            if inferred_llm_model is not None and inferred_llm_schema is not None:
-                meta.llm_result_model = inferred_llm_model
-                meta.llm_result_schema = cast(InputSchema, inferred_llm_schema)
-                fields = fields_from_schema(inferred_llm_schema)
-                meta.llm_result_fields = fields if fields else None
+
+def _deferred_entry_inference(
+    fn: Callable[..., object],
+    owner: type,
+    *,
+    include_params: bool = True,
+) -> dict[str, object]:
+    """EventMeta fields whose decoration-time inference failed and now resolve against ``owner``.
+
+    Only inferences still marked pending by ``@plugin_entry`` run, so an
+    explicit ``params``/``input_schema``, ``llm_result_*`` or ``output_schema``
+    is never replaced. Nothing is written here: the class marker applies the
+    result to the shared metadata, routers apply it to their own copy.
+    """
+    inferred: dict[str, object] = {}
+    if include_params and getattr(fn, _AUTO_INFER_PARAMS_ATTR, False):
+        inferred_model, inferred_schema = _infer_single_params_model_from_owner(fn, owner)
+        if inferred_model is not None and inferred_schema is not None:
+            inferred["params"] = inferred_model
+            inferred["input_schema"] = cast(InputSchema, inferred_schema)
+
+    if getattr(fn, _AUTO_INFER_LLM_RESULT_ATTR, False):
+        inferred_llm_model, inferred_llm_schema = _infer_llm_result_model_from_owner(fn, owner)
+        if inferred_llm_model is not None and inferred_llm_schema is not None:
+            inferred["llm_result_model"] = inferred_llm_model
+            inferred["llm_result_schema"] = cast(InputSchema, inferred_llm_schema)
+            fields = fields_from_schema(inferred_llm_schema)
+            inferred["llm_result_fields"] = fields if fields else None
+
+    if getattr(fn, _AUTO_INFER_OUTPUT_ATTR, False):
+        # Same return-annotation inference as llm_result_*, resolved
+        # against the owner class for forward references.
+        inferred_output_model, inferred_output_schema = _infer_output_contract_from_owner(fn, owner)
+        if inferred_output_model is not None and inferred_output_schema is not None:
+            inferred["output_model"] = inferred_output_model
+            inferred["output_schema"] = cast(InputSchema, inferred_output_schema)
+    return inferred
 
 
 def on_event(
@@ -321,10 +419,12 @@ def on_event(
     seconds: int | None = None,
     extra: dict[str, object] | None = None,
     metadata: dict[str, object] | None = None,
+    permissions: list[str] | tuple[str, ...] | None = None,
 ) -> Callable[[F], F]:
     event_type_clean = event_type.strip()
     if event_type_clean == "":
         raise ValueError("event_type must be non-empty")
+    narrowed = normalize_narrowing(permissions, where="@on_event")
 
     def _decorator(fn: F) -> F:
         event_id = (id or fn.__name__).strip()
@@ -346,6 +446,7 @@ def on_event(
             timeout=None,
             extra=_json_compatible_mapping(_merge_metadata(extra, mode=mode, seconds=seconds)),
             metadata=_json_compatible_mapping(metadata),
+            permissions=narrowed,
         )
         return _attach_event_meta(fn, meta)
 
@@ -369,8 +470,19 @@ def plugin_entry(
     fields: type | None = None,
     metadata: dict[str, object] | None = None,
     quick_action: bool = False,
+    output_schema: Mapping[str, object] | None = None,
+    strict_output: bool = False,
+    permissions: list[str] | tuple[str, ...] | None = None,
     _localns: Mapping[str, object] | None = None,
 ) -> Callable[[F], F]:
+    narrowed = normalize_narrowing(permissions, where="@plugin_entry")
+    if output_schema is not None and not isinstance(output_schema, Mapping):
+        raise ValueError("output_schema must be a JSON schema mapping")
+    if output_schema is not None:
+        check_schema_depth(output_schema, "output_schema")
+        # Snapshot what was checked: the decorator reads it later, and the
+        # caller could change its dict in between.
+        output_schema = cast(Mapping[str, object], detached_copy(output_schema))
     if input_schema is not None and params is not None:
         raise ValueError("input_schema and params are mutually exclusive")
     if sum(
@@ -435,6 +547,20 @@ def plugin_entry(
             llm_schema = schema_from_fields(normalized_llm_fields)
         if normalized_llm_fields is None and llm_schema is not None:
             normalized_llm_fields = fields_from_schema(llm_schema)
+        # Output contract: an explicit schema wins; otherwise a Pydantic return
+        # annotation is inferred like llm_result_* (its own lookup, so an
+        # explicit llm_result_model does not become the output contract).
+        output_model: type | None = None
+        effective_output_schema: dict[str, object] | None = (
+            cast(dict[str, object], detached_copy(output_schema)) if output_schema is not None else None
+        )
+        if effective_output_schema is None:
+            output_model, effective_output_schema = _infer_output_contract_from_func(
+                fn,
+                localns=declaration_locals,
+            )
+            if output_model is None or effective_output_schema is None:
+                output_model, effective_output_schema = None, None
         meta = EventMeta(
             event_type="plugin_entry",
             id=event_id,
@@ -450,7 +576,11 @@ def plugin_entry(
             llm_result_fields=list(normalized_llm_fields) if normalized_llm_fields else None,
             llm_result_schema=cast(InputSchema | None, llm_schema),
             llm_result_model=llm_model,
+            output_schema=cast(InputSchema | None, effective_output_schema),
+            output_model=output_model,
+            strict_output=bool(strict_output),
             metadata=_json_compatible_mapping(metadata),
+            permissions=narrowed,
         )
         wrapped = _attach_event_meta(fn, meta)
         # Read @quick_action config stored on fn by the decorator below
@@ -461,6 +591,7 @@ def plugin_entry(
                 meta.quick_action_config = qa_cfg
         setattr(wrapped, _AUTO_INFER_PARAMS_ATTR, params is None and input_schema is None)
         setattr(wrapped, _AUTO_INFER_LLM_RESULT_ATTR, llm_model is None and normalized_llm_fields is None)
+        setattr(wrapped, _AUTO_INFER_OUTPUT_ATTR, output_schema is None and output_model is None)
         if effective_params_model is not None:
             setattr(wrapped, _PARAMS_MODEL_ATTR, effective_params_model)
         return wrapped
@@ -513,6 +644,7 @@ def timer_interval(
     description: str = "",
     auto_start: bool = True,
     metadata: dict[str, object] | None = None,
+    permissions: list[str] | tuple[str, ...] | None = None,
 ) -> Callable[[F], F]:
     if seconds <= 0:
         raise ValueError("seconds must be > 0")
@@ -526,6 +658,7 @@ def timer_interval(
         mode="interval",
         seconds=seconds,
         metadata=_merge_metadata(metadata, seconds=seconds),
+        permissions=normalize_narrowing(permissions, where="@timer_interval"),
     )
 
 
@@ -540,6 +673,7 @@ def custom_event(
     auto_start: bool = False,
     trigger_method: str = "message",
     metadata: dict[str, object] | None = None,
+    permissions: list[str] | tuple[str, ...] | None = None,
 ) -> Callable[[F], F]:
     return on_event(
         event_type=event_type,
@@ -551,36 +685,65 @@ def custom_event(
         auto_start=auto_start,
         extra=_merge_metadata(None, trigger_method=trigger_method),
         metadata=_merge_metadata(metadata, trigger_method=trigger_method),
+        permissions=normalize_narrowing(permissions, where="@custom_event"),
     )
 
 
-def hook(*, target: str = "*", timing: str = "before", priority: int = 0, condition: str | None = None) -> Callable[[F], F]:
+_Narrowing = list[str] | tuple[str, ...] | None
+
+
+def hook(
+    *,
+    target: str = "*",
+    timing: str = "before",
+    priority: int = 0,
+    condition: str | None = None,
+    permissions: _Narrowing = None,
+) -> Callable[[F], F]:
+    """Mark an entry hook.
+
+    ``permissions`` narrows the hook like a component; it is joined into
+    every entry ``target`` matches. Left out, the hook needs every declared
+    permission, so the entries it targets inherit everything as well: one
+    such hook on ``target="*"`` cancels the narrowing of every entry.
+    """
     if timing not in {"before", "after", "around", "replace"}:
         raise ValueError("timing must be one of: before, after, around, replace")
+    narrowed = normalize_narrowing(permissions, where="@hook")
 
     def _decorator(fn: F) -> F:
         return _attach_hook_meta(
             fn,
-            HookDecoratorMeta(target=target, timing=timing, priority=priority, condition=condition),
+            HookDecoratorMeta(
+                target=target, timing=timing, priority=priority, condition=condition, permissions=narrowed,
+            ),
         )
 
     return _decorator
 
 
-def before_entry(*, target: str = "*", priority: int = 0, condition: str | None = None) -> Callable[[F], F]:
-    return hook(target=target, timing="before", priority=priority, condition=condition)
+def before_entry(
+    *, target: str = "*", priority: int = 0, condition: str | None = None, permissions: _Narrowing = None,
+) -> Callable[[F], F]:
+    return hook(target=target, timing="before", priority=priority, condition=condition, permissions=permissions)
 
 
-def after_entry(*, target: str = "*", priority: int = 0, condition: str | None = None) -> Callable[[F], F]:
-    return hook(target=target, timing="after", priority=priority, condition=condition)
+def after_entry(
+    *, target: str = "*", priority: int = 0, condition: str | None = None, permissions: _Narrowing = None,
+) -> Callable[[F], F]:
+    return hook(target=target, timing="after", priority=priority, condition=condition, permissions=permissions)
 
 
-def around_entry(*, target: str = "*", priority: int = 0, condition: str | None = None) -> Callable[[F], F]:
-    return hook(target=target, timing="around", priority=priority, condition=condition)
+def around_entry(
+    *, target: str = "*", priority: int = 0, condition: str | None = None, permissions: _Narrowing = None,
+) -> Callable[[F], F]:
+    return hook(target=target, timing="around", priority=priority, condition=condition, permissions=permissions)
 
 
-def replace_entry(*, target: str = "*", priority: int = 0, condition: str | None = None) -> Callable[[F], F]:
-    return hook(target=target, timing="replace", priority=priority, condition=condition)
+def replace_entry(
+    *, target: str = "*", priority: int = 0, condition: str | None = None, permissions: _Narrowing = None,
+) -> Callable[[F], F]:
+    return hook(target=target, timing="replace", priority=priority, condition=condition, permissions=permissions)
 
 
 class _PluginDecorators:

@@ -338,8 +338,16 @@ async def fetch_weibo_trending(limit: int = 10) -> Dict[str, Any]:
         # Add a random delay.
         await asyncio.sleep(random.uniform(0.1, 0.5))
         
-        client = get_external_http_client()
-        response = await client.get(url, headers=headers, timeout=5.0)
+        if cookie_header:
+            async with httpx.AsyncClient(
+                timeout=5.0,
+                trust_env=True,
+                follow_redirects=True,
+            ) as client:
+                response = await client.get(url, headers=headers, timeout=5.0)
+        else:
+            client = get_external_http_client()
+            response = await client.get(url, headers=headers, timeout=5.0)
         response.raise_for_status()
 
         # Check for login-page redirection.
@@ -2313,12 +2321,27 @@ async def fetch_xhh_feed_content(limit: int = 10) -> dict[str, Any]:
     last_error = "小黑盒 feeds 未返回可用帖子"
     for attempt_name, headers in attempts:
         try:
-            response = await get_external_http_client().get(
-                f"{XHH_API_BASE}{XHH_FEEDS_PATH}",
-                params=build_xhh_request_params(XHH_FEEDS_PATH, extra={"pull": "1"}),
-                headers=headers,
-                timeout=10.0,
-            )
+            request_url = f"{XHH_API_BASE}{XHH_FEEDS_PATH}"
+            request_params = build_xhh_request_params(XHH_FEEDS_PATH, extra={"pull": "1"})
+            if attempt_name == "登录态":
+                async with httpx.AsyncClient(
+                    timeout=10.0,
+                    trust_env=True,
+                    follow_redirects=True,
+                ) as client:
+                    response = await client.get(
+                        request_url,
+                        params=request_params,
+                        headers=headers,
+                        timeout=10.0,
+                    )
+            else:
+                response = await get_external_http_client().get(
+                    request_url,
+                    params=request_params,
+                    headers=headers,
+                    timeout=10.0,
+                )
             response.raise_for_status()
             payload = response.json()
             if not isinstance(payload, dict):

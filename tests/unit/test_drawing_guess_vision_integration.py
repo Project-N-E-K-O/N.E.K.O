@@ -145,7 +145,7 @@ async def test_real_service_cancellation_keeps_slot_until_provider_settles(monke
     monkeypatch.setattr(game_router, "_get_character_info", lambda name: {"lanlan_name": name})
 
     async def config(slot):
-        assert slot == "vision"
+        assert slot in ("conversation", "vision")
         return {"model": "test-vision"}
 
     class LLM:

@@ -400,17 +400,19 @@ async def test_market_notify_verifies_the_release_before_asking(
 
 
 @pytest.mark.parametrize(
-    ("lines", "returncode", "status", "market_status", "candidate"),
+    ("lines", "returncode", "status", "market_status", "candidate", "request_id"),
     [
-        (["[OK] GitHub Release ready", "[MARKET] status=published"], 0, "succeeded", "published", None),
-        (["[MARKET] status=pending_review candidate=17"], 0, "succeeded", "pending_review", 17),
-        (["[MARKET] status=rejected candidate=9"], 1, "failed", "rejected", 9),
-        (["[OK] GitHub Release ready: https://github.com/owner/repo/releases/tag/v0.1.0", "[MARKET] status=rejected candidate=9"], 1, "failed", "rejected", 9),
-        (["[OK] done"], 0, "succeeded", None, None),
+        (["[OK] GitHub Release ready", "[MARKET] status=published"], 0, "succeeded", "published", None, None),
+        (["[MARKET] status=pending_review candidate=17"], 0, "succeeded", "pending_review", 17, None),
+        (["[MARKET] status=pending_review candidate=7"], 0, "succeeded", "pending_review", 7, None),
+        (["[MARKET] status=verifying request=12"], 0, "succeeded", "verifying", None, 12),
+        (["[MARKET] status=rejected candidate=9"], 1, "failed", "rejected", 9, None),
+        (["[OK] GitHub Release ready: https://github.com/owner/repo/releases/tag/v0.1.0", "[MARKET] status=rejected candidate=9"], 1, "failed", "rejected", 9, None),
+        (["[OK] done"], 0, "succeeded", None, None, None),
     ],
 )
 async def test_the_task_reports_the_market_status_line(
-    app, tmp_path, monkeypatch, no_psutil, lines, returncode, status, market_status, candidate
+    app, tmp_path, monkeypatch, no_psutil, lines, returncode, status, market_status, candidate, request_id
 ):
     record = store.add_record(tmp_path)
     _ready_gate(monkeypatch, tmp_path)
@@ -424,6 +426,7 @@ async def test_the_task_reports_the_market_status_line(
     assert latest["status"] == status
     assert latest["market_status"] == market_status
     assert latest["market_candidate_id"] == candidate
+    assert latest["market_request_id"] == request_id
     if any("https://github.com/owner/repo/releases/tag/v0.1.0" in line for line in lines):
         assert latest["release_url"] == "https://github.com/owner/repo/releases/tag/v0.1.0"
     if returncode:
@@ -494,6 +497,14 @@ async def test_task_lookup_for_a_project_that_never_published(app, tmp_path):
             "HEAD is detached",
         ),
         ({"upstream": "fork/main", "head_pushed": False}, "tracks fork/main, which is not on origin"),
+        # The branch name is quoted like the CLI's push hint (POSIX quoting off Windows).
+        pytest.param(
+            {"branch": "feat;$(x)", "upstream": None, "head_pushed": None},
+            "run git push -u origin 'feat;$(x)'",
+            marks=pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell quoting"),
+        ),
+        # A leading + would make git force-push main instead.
+        ({"branch": "+main", "upstream": None, "head_pushed": None}, "run git push -u origin refs/heads/+main"),
         ({"head_pushed": False}, "HEAD is not pushed to origin/main; run git push"),
         ({"tag_exists": True, "tag_at_head": False}, "tag v0.1.0 already points at another commit"),
     ],
@@ -506,12 +517,52 @@ def test_the_gate_names_what_publish_github_would_refuse(monkeypatch, tmp_path, 
     assert expected in caught.value.message
 
 
+def test_the_gate_names_a_plus_branch_behind_a_placeholder_as_its_refspec(monkeypatch, tmp_path):
+    from plugin.neko_plugin_cli.commands import release_cmd
+
+    monkeypatch.setattr(release_cmd, "_WINDOWS_SHELL", True)
+    # Typed back in, a bare "+a%b" would force-push "a%b".
+    _ready_gate(monkeypatch, tmp_path, branch="+a%b", upstream=None, head_pushed=None)
+    with pytest.raises(ServerDomainError) as caught:
+        tasks._local_gate("p", "github")
+    assert 'run git push -u origin "<branch>" (branch: refs/heads/+a%b)' in caught.value.message
+
+
 def test_the_gate_requires_the_current_release_workflow(monkeypatch, tmp_path):
     _ready_gate(monkeypatch, tmp_path, actions={".github/workflows/release.yml": "UPGRADE"})
     with pytest.raises(ServerDomainError) as caught:
         tasks._local_gate("p", "github_and_market")
     assert "release.yml is UPGRADE" in caught.value.message
     assert "apply the workflow update in the plugin workbench" in caught.value.message
+
+
+def test_the_release_workflow_hint_names_the_directory_behind_a_placeholder(monkeypatch, tmp_path):
+    from plugin.neko_plugin_cli.commands import release_cmd
+
+    monkeypatch.setattr(release_cmd, "_WINDOWS_SHELL", True)
+    # No Windows quoting keeps %VAR% literal, so the command shows a placeholder.
+    source_dir = tmp_path / "%USERPROFILE%"
+    source_dir.mkdir()
+    _ready_gate(monkeypatch, source_dir, actions={".github/workflows/release.yml": "UPGRADE"})
+    with pytest.raises(ServerDomainError) as caught:
+        tasks._local_gate("p", "github_and_market")
+    assert (
+        'run neko-plugin setup-repo "<plugin directory>" --upgrade-github-actions '
+        f"(plugin directory: {source_dir})"
+    ) in caught.value.message
+
+
+def test_the_release_workflow_hint_quotes_the_source_directory(monkeypatch, tmp_path):
+    from plugin.neko_plugin_cli.commands.release_cmd import _plugin_dir_argument
+
+    source_dir = tmp_path / "my plugins"
+    source_dir.mkdir()
+    _ready_gate(monkeypatch, source_dir, actions={".github/workflows/release.yml": "UPGRADE"})
+    with pytest.raises(ServerDomainError) as caught:
+        tasks._local_gate("p", "github_and_market")
+    target = _plugin_dir_argument(source_dir, "")
+    assert target != str(source_dir)
+    assert f"run neko-plugin setup-repo {target} --upgrade-github-actions" in caught.value.message
 
 
 @pytest.mark.parametrize(

@@ -895,29 +895,42 @@ class BehaviorNoteStore:
         return os.path.join(ensure_character_dir(memory_dir, name), BEHAVIOR_NOTES_FILENAME)
 
     def read(self, name: str) -> Optional[Dict[str, Any]]:
-        """The stored payload, normalized; None when absent or unreadable."""
+        """The stored payload, normalized; None when absent or damaged.
+
+        Raises OSError on filesystem read errors (other than FileNotFoundError)
+        and ValueError when an on-disk dict carries an unsupported schema_version.
+        """
         if not name:
             return None
         path = self._file_path(name)
         with _file_lock(f"{name}/{BEHAVIOR_NOTES_FILENAME}"):
-            if not os.path.exists(path):
-                return None
             try:
                 with open(path, encoding="utf-8") as f:
                     raw = json.load(f)
-            except Exception as exc:  # A damaged file reads as absent.
+            except FileNotFoundError:
+                return None
+            except (json.JSONDecodeError, UnicodeDecodeError) as exc:
                 logger.warning(
-                    "[BehaviorNotes] load failed for %s, treating as absent: %s",
+                    "[BehaviorNotes] damaged file for %s, treating as absent: %s",
                     name, type(exc).__name__,
                 )
                 return None
+        if isinstance(raw, dict) and raw.get("schema_version") != SCHEMA_VERSION:
+            logger.warning(
+                "[BehaviorNotes] unsupported schema_version %r for %s",
+                raw.get("schema_version"),
+                name,
+            )
+            raise ValueError(
+                f"Unsupported behavior notes schema_version: {raw.get('schema_version')!r}"
+            )
         return _normalize_payload(raw)
 
     async def aread(self, name: str) -> Optional[Dict[str, Any]]:
         return await asyncio.to_thread(self.read, name)
 
     def write(self, name: str, payload: Mapping[str, Any]) -> bool:
-        """Replace the file; False when fenced or the write failed.
+        """Replace the file; False when fenced, foreign-schema, or the write failed.
 
         Raises MaintenanceModeError while a cloud apply is replacing the
         character's memory, like every other memory writer.
@@ -933,6 +946,25 @@ class BehaviorNoteStore:
                 target = self._write_file_path(name)
                 if target is None:
                     logger.info("[BehaviorNotes] %s: write fenced, update dropped", name)
+                    return False
+                try:
+                    with open(target, encoding="utf-8") as f:
+                        existing_raw = json.load(f)
+                except FileNotFoundError:
+                    existing_raw = None
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    existing_raw = None
+                except OSError as exc:
+                    logger.warning(
+                        "[BehaviorNotes] save refused for %s: cannot inspect existing file (%s)",
+                        name, type(exc).__name__,
+                    )
+                    return False
+                if isinstance(existing_raw, dict) and existing_raw.get("schema_version") != SCHEMA_VERSION:
+                    logger.warning(
+                        "[BehaviorNotes] save refused for %s: foreign schema_version %r",
+                        name, existing_raw.get("schema_version"),
+                    )
                     return False
                 try:
                     atomic_write_json(target, dict(payload), indent=2, ensure_ascii=False)
@@ -953,7 +985,14 @@ class BehaviorNoteStore:
         session speaks yields nothing, and neither does a lapsed note. Whole notes
         drop, oldest renewal first, until the block fits the token budget.
         """
-        payload = self.read(name)
+        try:
+            payload = self.read(name)
+        except (OSError, ValueError) as exc:
+            logger.warning(
+                "[BehaviorNotes] prompt_block skipped for %s: %s",
+                name, type(exc).__name__,
+            )
+            return ""
         if payload is None or _short_language(payload["language"]) != _short_language(lang):
             return ""
         ts = float(now if now is not None else time.time())
@@ -1127,7 +1166,7 @@ async def _ainvoke(config_manager, prompt: str, *, name: str):
     set_call_type("memory_behavior_review")
     # The same tier as introspection, thinking on: what comes out is read at
     # every session start, so a wrong note costs more than the call does.
-    api_config = await config_manager.aget_model_api_config('correction')
+    api_config = await config_manager.aget_model_api_config('memory')
     resp, cap = await ainvoke_thinking(  # noqa: LLM_INPUT_BUDGET  # build_review_prompt and build_review_sample bound every block by token budget.
         api_config, prompt,
         timeout=MEMORY_LLM_HARD_TIMEOUT_SECONDS,

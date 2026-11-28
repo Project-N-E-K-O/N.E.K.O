@@ -22,6 +22,7 @@ Split out of the former monolithic ``main_routers/characters_router.py``.
 from ._shared import logger, router
 from .voice_providers import _config_value_is_enabled
 
+import asyncio
 import re
 import os
 import math
@@ -32,18 +33,48 @@ from ..shared_state import (
     get_config_manager,
     get_init_one_catgirl,
 )
-from utils.asyncio_retirement import await_retirement
+from utils.asyncio_retirement import await_completion_with_cancel, await_retirement
 from utils.character_memory import character_config_mutation_lock
 from utils.config_manager import (
     get_reserved,
     set_reserved,
 )
-from utils.frontend_utils import find_models, find_model_directory
+from utils.frontend_utils import (
+    find_model_directory,
+    find_models,
+    find_workshop_item_by_id,
+    find_workshop_item_model_file,
+    model_url_dir,
+)
 from utils.url_utils import encode_url_path
 from utils.cloudsave_runtime import MaintenanceModeError
 from config import (
     DEFAULT_LIVE2D_MODEL_NAME,
 )
+
+
+async def _finish_catgirl_runtime_refresh(
+    name: str,
+    *,
+    apply_runtime: bool,
+    cancelled: bool,
+) -> bool:
+    """Refresh one character's runtime state after a saved config change before propagating cancellation."""
+    refreshed = False
+    try:
+        if apply_runtime:
+            init_one_catgirl = get_init_one_catgirl()
+            if init_one_catgirl:
+                await await_retirement(init_one_catgirl(name, is_new=False))
+                refreshed = True
+    except Exception as exc:
+        if cancelled:
+            logger.warning("取消后刷新角色 %s 运行时配置失败: %s", name, exc, exc_info=exc)
+            raise asyncio.CancelledError from exc
+        raise
+    if cancelled:
+        raise asyncio.CancelledError
+    return refreshed
 
 
 def _derive_live2d_model_name(model_ref: str) -> str:
@@ -206,6 +237,27 @@ def _get_persisted_avatar_model_type(catgirl: dict) -> str:
     if vrm_path or mmd_path:
         return 'live3d'
     return 'live2d'
+
+
+def _fallback_workshop_item_id(url_dir: str, model_file_path: str) -> str:
+    """Item id to report for a /workshop model found by name, or '' (blocking; run in a thread).
+
+    The frontend loads the model files with /api/live2d/model_files_by_id/<item_id>, so
+    the id must make that lookup pick this very file. The candidate is the item folder
+    (first segment of url_dir); it is reported only if the by-id choice
+    (find_workshop_item_by_id + find_workshop_item_model_file, as model_files_by_id uses)
+    is model_file_path. Otherwise (stale saved id, or another model of the same item
+    would win) no id is reported and the frontend looks the model up by name.
+    """
+    candidate_id = url_dir.split('/', 1)[0]
+    try:
+        item_dir, _ = find_workshop_item_by_id(candidate_id)
+        chosen = find_workshop_item_model_file(item_dir) if item_dir else None
+        if chosen and os.path.realpath(chosen) == os.path.realpath(model_file_path):
+            return candidate_id
+    except Exception as e:
+        logger.debug(f"按物品ID核对回退模型失败: {e}")
+    return ''
 
 
 def _find_live2d_model_catalog_entry(
@@ -483,7 +535,7 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
                         if model_files:
                             model_file = model_files[0]
 
-                            # Build model_path using the saved item_id; get saved_item_id from the earlier logic.
+                            # Get saved_item_id from the earlier logic.
                             saved_item_id = (
                                 get_reserved(
                                     catgirl_data,
@@ -494,22 +546,26 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
                                 ) if 'catgirl_data' in locals() else ''
                             )
 
-                            # If an item_id was saved, use it to build the path.
-                            if saved_item_id:
-                                if url_prefix == '/workshop':
-                                    model_subdir = os.path.basename(model_dir.rstrip('/\\'))
-                                    model_path = encode_url_path(f'{url_prefix}/{saved_item_id}/{model_subdir}/{model_file}')
-                                else:
-                                    model_path = encode_url_path(f'{url_prefix}/{saved_item_id}/{model_file}')
-                                logger.debug(f"使用保存的item_id构建模型路径: {model_path}")
-                            else:
-                                # Original path construction logic.
-                                model_path = encode_url_path(f'{url_prefix}/{live2d_model_name}/{model_file}')
-                                logger.debug(f"使用模型名称构建路径: {model_path}")
+                            # model_dir was found by name, so build the URL from where it really
+                            # sits under its mount (same as find_model_config_file), not from the
+                            # saved item_id, which need not be the folder that was found.
+                            url_dir = await asyncio.to_thread(
+                                model_url_dir, model_dir, url_prefix, live2d_model_name
+                            )
+                            model_path = encode_url_path(f'{url_prefix}/{url_dir}/{model_file}')
+                            logger.debug(f"按模型目录构建路径: {model_path}")
+
+                            # The frontend loads the model files by item_id, so only report
+                            # an id whose by-id lookup picks this very file (see helper).
+                            found_item_id = ''
+                            if saved_item_id and url_prefix == '/workshop':
+                                found_item_id = await asyncio.to_thread(
+                                    _fallback_workshop_item_id, url_dir, os.path.join(model_dir, model_file)
+                                )
 
                             model_info = {
                                 'name': live2d_model_name,
-                                'item_id': saved_item_id,
+                                'item_id': found_item_id,
                                 'path': model_path
                             }
             except Exception as e:
@@ -549,7 +605,10 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
                         model_files = [f for f in os.listdir(model_dir) if f.endswith('.model3.json')]
                         if model_files:
                             model_file = model_files[0]
-                            model_path = f'{url_prefix}/{DEFAULT_LIVE2D_MODEL_NAME}/{model_file}'
+                            url_dir = await asyncio.to_thread(
+                                model_url_dir, model_dir, url_prefix, DEFAULT_LIVE2D_MODEL_NAME
+                            )
+                            model_path = f'{url_prefix}/{url_dir}/{model_file}'
                             model_info = {
                                 'name': DEFAULT_LIVE2D_MODEL_NAME,
                                 'path': model_path,
@@ -644,16 +703,18 @@ async def update_catgirl_l2d(name: str, request: Request):
                     'idle_animation',
                     live2d_idle_animation,
                 )
-                await await_retirement(_config_manager.asave_characters(characters))
+                _, cancelled = await await_completion_with_cancel(_config_manager.asave_characters(characters))
 
-            if apply_runtime:
-                init_one_catgirl = get_init_one_catgirl()
-                await init_one_catgirl(name, is_new=False)
+            applied_runtime = await _finish_catgirl_runtime_refresh(
+                name,
+                apply_runtime=apply_runtime,
+                cancelled=cancelled,
+            )
 
             return JSONResponse(content={
                 'success': True,
                 'idle_animation_updated': True,
-                'applied_runtime': apply_runtime,
+                'applied_runtime': applied_runtime,
             })
 
         live2d_model = data.get('live2d')
@@ -1016,7 +1077,7 @@ async def update_catgirl_l2d(name: str, request: Request):
                     logger.debug(f"已保存角色 {name} 的模型 {live2d_model}，asset_source={resolved_asset_source or 'local_imported'}")
 
             # Save the configuration.
-            await await_retirement(_config_manager.asave_characters(characters))
+            _, cancelled = await await_completion_with_cancel(_config_manager.asave_characters(characters))
         # Telemetry: which avatar type the user actively picks (live2d / vrm / mmd / pngtuber).
         # Complements the startup snapshot, which misses a switch until the next launch.
         try:
@@ -1029,9 +1090,11 @@ async def update_catgirl_l2d(name: str, request: Request):
         except Exception:
             pass  # Telemetry must never affect saving the model.
         # Fast path: refresh only the edited character's session_manager (avatar configuration), without iterating over the other N-1 entries.
-        init_one_catgirl = get_init_one_catgirl()
-        if apply_runtime:
-            await init_one_catgirl(name, is_new=False)
+        applied_runtime = await _finish_catgirl_runtime_refresh(
+            name,
+            apply_runtime=apply_runtime,
+            cancelled=cancelled,
+        )
 
 
         if model_type_str == 'live3d':
@@ -1046,7 +1109,7 @@ async def update_catgirl_l2d(name: str, request: Request):
         return JSONResponse(content={
             'success': True,
             'message': message,
-            'applied_runtime': apply_runtime,
+            'applied_runtime': applied_runtime,
         })
 
     except MaintenanceModeError:
@@ -1098,28 +1161,31 @@ async def update_catgirl_touch_set(name: str, request: Request):
             )
 
         _config_manager = get_config_manager()
-        characters = await _config_manager.aload_characters()
+        async with character_config_mutation_lock:
+            characters = await _config_manager.aload_characters()
 
-        if '猫娘' not in characters or name not in characters['猫娘']:
-            return JSONResponse(
-                content={'success': False, 'error': '角色不存在'},
-                status_code=404
-            )
+            if '猫娘' not in characters or name not in characters['猫娘']:
+                return JSONResponse(
+                    content={'success': False, 'error': '角色不存在'},
+                    status_code=404
+                )
 
-        existing_touch_set = get_reserved(characters['猫娘'][name], 'touch_set', default={})
+            existing_touch_set = get_reserved(characters['猫娘'][name], 'touch_set', default={})
 
-        if not existing_touch_set:
-            existing_touch_set = {}
+            if not existing_touch_set:
+                existing_touch_set = {}
 
-        existing_touch_set[model_name] = touch_set_data
+            existing_touch_set[model_name] = touch_set_data
 
-        set_reserved(characters['猫娘'][name], 'touch_set', existing_touch_set)
-        await _config_manager.asave_characters(characters)
+            set_reserved(characters['猫娘'][name], 'touch_set', existing_touch_set)
+            _, cancelled = await await_completion_with_cancel(_config_manager.asave_characters(characters))
 
         # Fast path: refresh only the edited character's session_manager (touch_set), without iterating over the other N-1 entries.
-        init_one_catgirl = get_init_one_catgirl()
-        if init_one_catgirl:
-            await init_one_catgirl(name, is_new=False)
+        await _finish_catgirl_runtime_refresh(
+            name,
+            apply_runtime=True,
+            cancelled=cancelled,
+        )
 
         logger.debug(f"已更新角色 {name} 模型 {model_name} 的触摸配置")
 
@@ -1129,6 +1195,8 @@ async def update_catgirl_touch_set(name: str, request: Request):
             'touch_set': existing_touch_set
         })
 
+    except MaintenanceModeError:
+        raise
     except Exception as e:
         logger.exception("更新触摸配置失败")
         return JSONResponse(content={
@@ -1156,105 +1224,105 @@ async def update_catgirl_lighting(name: str, request: Request):
             apply_runtime = query_params.get('apply_runtime', '').lower() in ('true', '1', 'yes')
 
         _config_manager = get_config_manager()
-        characters = await _config_manager.aload_characters()
+        async with character_config_mutation_lock:
+            characters = await _config_manager.aload_characters()
 
-        if '猫娘' not in characters or name not in characters['猫娘']:
-            return JSONResponse(content={
-                'success': False,
-                'error': '角色不存在'
-            }, status_code=404)
-
-        model_type = get_reserved(
-            characters['猫娘'][name],
-            'avatar',
-            'model_type',
-            default='live2d',
-            legacy_keys=('model_type',),
-        )
-        # Normalize with .lower() so case differences / empty values do not cause a false mismatch.
-        model_type_normalized = str(model_type).lower() if model_type else 'live2d'
-        if model_type_normalized not in ('vrm', 'live3d'):
-            logger.warning(f"角色 {name} 不是VRM/Live3D模型，但仍保存打光配置")
-
-        from config import get_default_vrm_lighting
-        existing_lighting = get_reserved(
-            characters['猫娘'][name],
-            'avatar',
-            'vrm',
-            'lighting',
-            default=None,
-            legacy_keys=('lighting',),
-        )
-        if isinstance(existing_lighting, dict):
-            base_lighting = existing_lighting
-        else:
-            base_lighting = get_default_vrm_lighting()
-
-        if not isinstance(lighting, dict):
-            return JSONResponse(content={
-                'success': False,
-                'error': 'lighting 必须是对象'
-            }, status_code=400)
-
-        lighting = {**base_lighting, **lighting}
-
-        from config import VRM_LIGHTING_RANGES
-        lighting_ranges = VRM_LIGHTING_RANGES
-
-        for key, (min_val, max_val) in lighting_ranges.items():
-            if key not in lighting:
+            if '猫娘' not in characters or name not in characters['猫娘']:
                 return JSONResponse(content={
                     'success': False,
-                    'error': f'缺少打光参数: {key}'
-                }, status_code=400)
+                    'error': '角色不存在'
+                }, status_code=404)
 
-            val = lighting[key]
-            if not isinstance(val, (int, float)) or not (min_val <= val <= max_val):
+            model_type = get_reserved(
+                characters['猫娘'][name],
+                'avatar',
+                'model_type',
+                default='live2d',
+                legacy_keys=('model_type',),
+            )
+            # Normalize with .lower() so case differences / empty values do not cause a false mismatch.
+            model_type_normalized = str(model_type).lower() if model_type else 'live2d'
+            if model_type_normalized not in ('vrm', 'live3d'):
+                logger.warning(f"角色 {name} 不是VRM/Live3D模型，但仍保存打光配置")
+
+            from config import get_default_vrm_lighting
+            existing_lighting = get_reserved(
+                characters['猫娘'][name],
+                'avatar',
+                'vrm',
+                'lighting',
+                default=None,
+                legacy_keys=('lighting',),
+            )
+            if isinstance(existing_lighting, dict):
+                base_lighting = existing_lighting
+            else:
+                base_lighting = get_default_vrm_lighting()
+
+            if not isinstance(lighting, dict):
                 return JSONResponse(content={
                     'success': False,
-                    'error': f'打光参数 {key} 超出范围 ({min_val}-{max_val})'
+                    'error': 'lighting 必须是对象'
                 }, status_code=400)
 
+            lighting = {**base_lighting, **lighting}
 
-        set_reserved(
-            characters['猫娘'][name],
-            'avatar',
-            'vrm',
-            'lighting',
-            {key: float(lighting[key]) for key in lighting_ranges.keys()},
-        )
+            from config import VRM_LIGHTING_RANGES
+            lighting_ranges = VRM_LIGHTING_RANGES
 
+            for key, (min_val, max_val) in lighting_ranges.items():
+                if key not in lighting:
+                    return JSONResponse(content={
+                        'success': False,
+                        'error': f'缺少打光参数: {key}'
+                    }, status_code=400)
 
+                val = lighting[key]
+                if not isinstance(val, (int, float)) or not (min_val <= val <= max_val):
+                    return JSONResponse(content={
+                        'success': False,
+                        'error': f'打光参数 {key} 超出范围 ({min_val}-{max_val})'
+                    }, status_code=400)
 
-        logger.info(
-            "已保存角色 %s 的打光配置: %s",
+            set_reserved(
+                characters['猫娘'][name],
+                'avatar',
+                'vrm',
+                'lighting',
+                {key: float(lighting[key]) for key in lighting_ranges.keys()},
+            )
+
+            logger.info(
+                "已保存角色 %s 的打光配置: %s",
+                name,
+                get_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'lighting', default=None),
+            )
+
+            _, cancelled = await await_completion_with_cancel(_config_manager.asave_characters(characters))
+
+        # Fast path: refresh only the edited character's session_manager (lighting), without iterating over the other N-1 entries.
+        applied_runtime = await _finish_catgirl_runtime_refresh(
             name,
-            get_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'lighting', default=None),
+            apply_runtime=apply_runtime,
+            cancelled=cancelled,
         )
-
-        await _config_manager.asave_characters(characters)
-
-        if apply_runtime:
-            # Fast path: refresh only the edited character's session_manager (lighting), without iterating over the other N-1 entries.
-            init_one_catgirl = get_init_one_catgirl()
-            if init_one_catgirl:
-                await init_one_catgirl(name, is_new=False)
-                logger.info(f"已应用到运行时（角色 {name} 的打光配置）")
-        else:
-            logger.debug("跳过运行时刷新（apply_runtime=False），配置已保存到磁盘，需要刷新页面或调用重载才能生效")
-
-        if apply_runtime:
+        if applied_runtime:
+            logger.info(f"已应用到运行时（角色 {name} 的打光配置）")
             message = f'已保存角色 {name} 的打光配置并已应用到运行时'
         else:
+            if not apply_runtime:
+                logger.debug("跳过运行时刷新（apply_runtime=False），配置已保存到磁盘，需要刷新页面或调用重载才能生效")
             message = f'已保存角色 {name} 的打光配置到磁盘（需要刷新页面或调用重载才能生效）'
 
         return JSONResponse(content={
             'success': True,
             'message': message,
-            'applied_runtime': apply_runtime,
-            'needs_reload': not apply_runtime
+            'applied_runtime': applied_runtime,
+            'needs_reload': not applied_runtime
         })
 
+    except MaintenanceModeError:
+        raise
     except Exception as e:
         logger.error(f"保存打光配置失败: {e}")
         return JSONResponse(content={
@@ -1277,73 +1345,74 @@ async def update_catgirl_mmd_settings(name: str, request: Request):
         data = await request.json()
 
         _config_manager = get_config_manager()
-        characters = await _config_manager.aload_characters()
+        async with character_config_mutation_lock:
+            characters = await _config_manager.aload_characters()
 
-        if '猫娘' not in characters or name not in characters['猫娘']:
-            return JSONResponse(content={
-                'success': False,
-                'error': '角色不存在'
-            }, status_code=404)
+            if '猫娘' not in characters or name not in characters['猫娘']:
+                return JSONResponse(content={
+                    'success': False,
+                    'error': '角色不存在'
+                }, status_code=404)
 
-        from config import (
-            get_default_mmd_settings,
-            MMD_LIGHTING_RANGES,
-            MMD_RENDERING_RANGES,
-            MMD_PHYSICS_RANGES,
-            MMD_CURSOR_FOLLOW_RANGES,
-        )
+            from config import (
+                get_default_mmd_settings,
+                MMD_LIGHTING_RANGES,
+                MMD_RENDERING_RANGES,
+                MMD_PHYSICS_RANGES,
+                MMD_CURSOR_FOLLOW_RANGES,
+            )
 
-        defaults = get_default_mmd_settings()
+            defaults = get_default_mmd_settings()
 
-        # --- Lighting ---
-        if 'lighting' in data and isinstance(data['lighting'], dict):
-            lighting = {**defaults['lighting'], **data['lighting']}
-            for key, (min_val, max_val) in MMD_LIGHTING_RANGES.items():
-                if key in lighting:
-                    val = lighting[key]
-                    if isinstance(val, (int, float)):
-                        lighting[key] = max(min_val, min(max_val, float(val)))
-            set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'lighting', lighting)
+            # --- Lighting ---
+            if 'lighting' in data and isinstance(data['lighting'], dict):
+                lighting = {**defaults['lighting'], **data['lighting']}
+                for key, (min_val, max_val) in MMD_LIGHTING_RANGES.items():
+                    if key in lighting:
+                        val = lighting[key]
+                        if isinstance(val, (int, float)):
+                            lighting[key] = max(min_val, min(max_val, float(val)))
+                set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'lighting', lighting)
 
-        # --- Rendering ---
-        if 'rendering' in data and isinstance(data['rendering'], dict):
-            rendering = {**defaults['rendering'], **data['rendering']}
-            for key, (min_val, max_val) in MMD_RENDERING_RANGES.items():
-                if key in rendering:
-                    val = rendering[key]
-                    if isinstance(val, (int, float)):
-                        rendering[key] = max(min_val, min(max_val, float(val)))
-            if 'outline' in rendering:
-                rendering['outline'] = _to_bool(rendering['outline'])
-            set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'rendering', rendering)
+            # --- Rendering ---
+            if 'rendering' in data and isinstance(data['rendering'], dict):
+                rendering = {**defaults['rendering'], **data['rendering']}
+                for key, (min_val, max_val) in MMD_RENDERING_RANGES.items():
+                    if key in rendering:
+                        val = rendering[key]
+                        if isinstance(val, (int, float)):
+                            rendering[key] = max(min_val, min(max_val, float(val)))
+                if 'outline' in rendering:
+                    rendering['outline'] = _to_bool(rendering['outline'])
+                set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'rendering', rendering)
 
-        # --- Physics ---
-        if 'physics' in data and isinstance(data['physics'], dict):
-            physics = {**defaults['physics'], **data['physics']}
-            if 'enabled' in physics:
-                physics['enabled'] = _to_bool(physics['enabled'])
-            for key, (min_val, max_val) in MMD_PHYSICS_RANGES.items():
-                if key in physics:
-                    val = physics[key]
-                    if isinstance(val, (int, float)):
-                        physics[key] = max(min_val, min(max_val, float(val)))
-            set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'physics', physics)
+            # --- Physics ---
+            if 'physics' in data and isinstance(data['physics'], dict):
+                physics = {**defaults['physics'], **data['physics']}
+                if 'enabled' in physics:
+                    physics['enabled'] = _to_bool(physics['enabled'])
+                for key, (min_val, max_val) in MMD_PHYSICS_RANGES.items():
+                    if key in physics:
+                        val = physics[key]
+                        if isinstance(val, (int, float)):
+                            physics[key] = max(min_val, min(max_val, float(val)))
+                set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'physics', physics)
 
-        # --- Mouse tracking ---
-        # The frontend sends camelCase (cursorFollow); also support snake_case (cursor_follow).
-        cursor_follow_data = data.get('cursorFollow') or data.get('cursor_follow')
-        if cursor_follow_data and isinstance(cursor_follow_data, dict):
-            cursor_follow = {**defaults['cursor_follow'], **cursor_follow_data}
-            for key, (min_val, max_val) in MMD_CURSOR_FOLLOW_RANGES.items():
-                if key in cursor_follow:
-                    val = cursor_follow[key]
-                    if isinstance(val, (int, float)):
-                        cursor_follow[key] = max(min_val, min(max_val, float(val)))
-            if 'enabled' in cursor_follow:
-                cursor_follow['enabled'] = _to_bool(cursor_follow['enabled'])
-            set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'cursor_follow', cursor_follow)
+            # --- Mouse tracking ---
+            # The frontend sends camelCase (cursorFollow); also support snake_case (cursor_follow).
+            cursor_follow_data = data.get('cursorFollow') or data.get('cursor_follow')
+            if cursor_follow_data and isinstance(cursor_follow_data, dict):
+                cursor_follow = {**defaults['cursor_follow'], **cursor_follow_data}
+                for key, (min_val, max_val) in MMD_CURSOR_FOLLOW_RANGES.items():
+                    if key in cursor_follow:
+                        val = cursor_follow[key]
+                        if isinstance(val, (int, float)):
+                            cursor_follow[key] = max(min_val, min(max_val, float(val)))
+                if 'enabled' in cursor_follow:
+                    cursor_follow['enabled'] = _to_bool(cursor_follow['enabled'])
+                set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'cursor_follow', cursor_follow)
 
-        await _config_manager.asave_characters(characters)
+            await await_retirement(_config_manager.asave_characters(characters))
 
         logger.info("已保存角色 %s 的MMD模型设置", name)
         return JSONResponse(content={
@@ -1351,6 +1420,8 @@ async def update_catgirl_mmd_settings(name: str, request: Request):
             'message': f'已保存角色 {name} 的MMD模型设置'
         })
 
+    except MaintenanceModeError:
+        raise
     except Exception as e:
         logger.error(f"保存MMD设置失败: {e}")
         return JSONResponse(content={

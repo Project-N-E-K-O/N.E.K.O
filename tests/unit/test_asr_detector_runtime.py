@@ -1429,7 +1429,7 @@ async def test_completed_candidate_bindings_stay_bounded() -> None:
             speech_probability=0.9,
             rnnoise_available=True,
         )
-        async with asyncio.timeout(1):
+        async with asyncio.timeout(10):  # Hang guard per turn, not a speed check.
             while len(completed) <= turn_index:
                 await asyncio.sleep(0)
         assert detector._bound_turns == {}

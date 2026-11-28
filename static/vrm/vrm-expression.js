@@ -4,6 +4,18 @@
  * 支持从后端动态加载情感映射配置
  */
 
+const FORBIDDEN_EXPRESSION_KEYS = new Set([
+    ...Object.getOwnPropertyNames(Object.prototype),
+    'prototype',
+]);
+
+function hasOwnExpressionKey(obj, key) {
+    return Boolean(obj)
+        && typeof key === 'string'
+        && !FORBIDDEN_EXPRESSION_KEYS.has(key)
+        && Object.prototype.hasOwnProperty.call(obj, key);
+}
+
 class VRMExpression {
     constructor(manager) {
         this.manager = manager;
@@ -102,7 +114,7 @@ class VRMExpression {
         this.customMoodKeys = new Set();
         this._moodMapLoadGeneration = 0;
         this._resetMoodMapToDefaults();
-        this.currentWeights = {};
+        this.currentWeights = Object.create(null);
     }
 
     _resetMoodMapToDefaults() {
@@ -134,10 +146,11 @@ class VRMExpression {
 
             const data = await response.json();
             if (loadGeneration !== this._moodMapLoadGeneration) return;
-            if (data.success && data.config) {
+            if (data.success && data.config && typeof data.config === 'object') {
                 // 规范化配置：确保每个映射值都是字符串数组
                 const normalizedConfig = {};
                 for (const [key, value] of Object.entries(data.config)) {
+                    if (FORBIDDEN_EXPRESSION_KEYS.has(key)) continue;
                     const normalized = this._normalizeMoodMapValue(value);
                     if (normalized) {
                         normalizedConfig[key] = normalized;
@@ -197,47 +210,66 @@ class VRMExpression {
     }
 
     _resolveMoodWeights(moodName, expressionNames) {
-        const mood = String(moodName || 'neutral');
         const weights = {};
-        if (mood === 'neutral') return weights;
+        if (moodName !== undefined && moodName !== null && typeof moodName !== 'string') {
+            return weights;
+        }
+        const mood = typeof moodName === 'string' && moodName ? moodName : 'neutral';
+        if (mood === 'neutral' || FORBIDDEN_EXPRESSION_KEYS.has(mood)) return weights;
 
         // Model-specific mappings are an explicit user choice and must take
         // priority over native/direct and composite fallbacks. This preserves
         // the previous moodMap override behavior even when the model also
         // exposes a same-named expression such as happy.
         if (this.customMoodKeys.has(mood)) {
-            const configuredExpression = this._findExpression(expressionNames, this.moodMap[mood] || []);
-            if (configuredExpression) {
+            const customCandidates = hasOwnExpressionKey(this.moodMap, mood) && Array.isArray(this.moodMap[mood])
+                ? this.moodMap[mood]
+                : [];
+            const configuredExpression = this._findExpression(expressionNames, customCandidates);
+            if (configuredExpression && !FORBIDDEN_EXPRESSION_KEYS.has(configuredExpression)) {
                 weights[configuredExpression] = 1.0;
                 return weights;
             }
         }
 
         const direct = this._findExpression(expressionNames, [mood]);
-        if (direct) {
+        if (direct && !FORBIDDEN_EXPRESSION_KEYS.has(direct)) {
             weights[direct] = 1.0;
             return weights;
         }
 
-        const nativeCandidates = this.nativeExtendedMoodMap[mood];
+        const nativeCandidates = hasOwnExpressionKey(this.nativeExtendedMoodMap, mood) && Array.isArray(this.nativeExtendedMoodMap[mood])
+            ? this.nativeExtendedMoodMap[mood]
+            : null;
         if (nativeCandidates) {
             const nativeExpression = this._findExpression(expressionNames, nativeCandidates);
-            if (nativeExpression) {
+            if (nativeExpression && !FORBIDDEN_EXPRESSION_KEYS.has(nativeExpression)) {
                 weights[nativeExpression] = 1.0;
                 return weights;
             }
 
-            const composite = this.compositeMoodMap[mood] || [];
+            const composite = hasOwnExpressionKey(this.compositeMoodMap, mood) && Array.isArray(this.compositeMoodMap[mood])
+                ? this.compositeMoodMap[mood]
+                : [];
             composite.forEach(item => {
-                const candidates = this.moodMap[item.mood] || [item.mood];
+                if (!item || typeof item.mood !== 'string' || FORBIDDEN_EXPRESSION_KEYS.has(item.mood)) return;
+                const candidates = hasOwnExpressionKey(this.moodMap, item.mood) && Array.isArray(this.moodMap[item.mood])
+                    ? this.moodMap[item.mood]
+                    : [item.mood];
                 const expression = this._findExpression(expressionNames, candidates);
-                if (expression) weights[expression] = Math.max(weights[expression] || 0, item.weight);
+                if (expression && !FORBIDDEN_EXPRESSION_KEYS.has(expression)) {
+                    const prev = hasOwnExpressionKey(weights, expression) ? weights[expression] : 0;
+                    weights[expression] = Math.max(prev, item.weight);
+                }
             });
             return weights;
         }
 
-        const mappedExpression = this._findExpression(expressionNames, this.moodMap[mood] || [mood]);
-        if (mappedExpression) weights[mappedExpression] = 1.0;
+        const fallbackCandidates = hasOwnExpressionKey(this.moodMap, mood) && Array.isArray(this.moodMap[mood])
+            ? this.moodMap[mood]
+            : [mood];
+        const mappedExpression = this._findExpression(expressionNames, fallbackCandidates);
+        if (mappedExpression && !FORBIDDEN_EXPRESSION_KEYS.has(mappedExpression)) weights[mappedExpression] = 1.0;
         return weights;
     }
 
@@ -250,6 +282,7 @@ class VRMExpression {
             // 归一化配置：确保每个映射值都是字符串数组
             const normalizedConfig = {};
             for (const [key, value] of Object.entries(newMoodMap)) {
+                if (FORBIDDEN_EXPRESSION_KEYS.has(key)) continue;
                 const normalized = this._normalizeMoodMapValue(value);
                 if (normalized) {
                     normalizedConfig[key] = normalized;
@@ -265,8 +298,8 @@ class VRMExpression {
      * @param {string} moodName - 情绪名称 (如 'neutral', 'happy')
      */
     setMood(moodName) {
-        // 检查情绪是否存在于映射表中
-        if (this.moodMap && this.moodMap[moodName]) {
+        // 检查情绪是否存在于映射表中（禁止命中 Object.prototype 键）
+        if (typeof moodName === 'string' && hasOwnExpressionKey(this.moodMap, moodName) && Array.isArray(this.moodMap[moodName])) {
             this.currentMood = moodName;
             this.moodTimer = 0; // 重置自动切换计时器，避免马上被切走
 
@@ -471,7 +504,9 @@ class VRMExpression {
         const modelExpressionNames = this._getExpressionNames(expressionManager);
 
         // 2. 获取当前目标表情 (例如 "angry" 或 "blinkLeft")
-        const targetName = this.currentMood;
+        const targetName = typeof this.currentMood === 'string' && !FORBIDDEN_EXPRESSION_KEYS.has(this.currentMood)
+            ? this.currentMood
+            : 'neutral';
         const resolvedWeights = this._resolveMoodWeights(targetName, modelExpressionNames);
 
         // 判断用户是否正在手动测试眨眼
@@ -479,6 +514,9 @@ class VRMExpression {
 
         // 3. 遍历每一个表情进行设置
         modelExpressionNames.forEach(name => {
+            if (typeof name !== 'string' || FORBIDDEN_EXPRESSION_KEYS.has(name)) {
+                return;
+            }
             let targetWeight = 0.0;
             const lowerName = name.toLowerCase();
 
@@ -496,7 +534,7 @@ class VRMExpression {
                 return;
             }
 
-            targetWeight = resolvedWeights[name] || 0.0;
+            targetWeight = hasOwnExpressionKey(resolvedWeights, name) ? (resolvedWeights[name] || 0.0) : 0.0;
             
             // 处理自动眨眼 (次优先级)
             // 条件：
@@ -511,7 +549,7 @@ class VRMExpression {
            
             // 如果当前权重很小(接近0) 且 目标权重也是0，说明这个表情处于静止状态，直接跳过
             // 这能节省大量 CPU 计算资源
-            const currentWeight = this.currentWeights[name] || 0.0;
+            const currentWeight = hasOwnExpressionKey(this.currentWeights, name) ? (this.currentWeights[name] || 0.0) : 0.0;
             if (targetWeight === 0 && currentWeight < 0.001) {
                 if (currentWeight !== 0) {
                     // 确保最后一次归零
@@ -522,7 +560,7 @@ class VRMExpression {
             }
 
             // 执行插值和应用
-            if (this.currentWeights[name] === undefined) this.currentWeights[name] = 0.0;
+            if (!hasOwnExpressionKey(this.currentWeights, name)) this.currentWeights[name] = 0.0;
             
             const diff = targetWeight - this.currentWeights[name];
             
@@ -544,15 +582,24 @@ class VRMExpression {
     }
 
     setBaseExpression(name) {
-        // 彻底关闭自动切换，防止干扰
-        this.autoChangeMood = false;
+        if (name !== undefined && name !== null && typeof name !== 'string') {
+            console.warn('[VRM Expression] 无效表情名，忽略切换:', name);
+            return;
+        }
+        const targetName = name || 'neutral';
+        if (FORBIDDEN_EXPRESSION_KEYS.has(targetName)) {
+            console.warn(`[VRM Expression] 非法表情名: ${targetName}，忽略切换`);
+            return;
+        }
 
         // 如果是眨眼表情，区分处理单眼和双眼
-        const lowerName = (name || '').toLowerCase();
+        const lowerName = targetName.toLowerCase();
         if (lowerName.includes('blink')) {
             if (!this.manager.currentModel || !this.manager.currentModel.vrm || !this.manager.currentModel.vrm.expressionManager) {
                 return;
             }
+            // 彻底关闭自动切换，防止干扰
+            this.autoChangeMood = false;
 
             const expressionManager = this.manager.currentModel.vrm.expressionManager;
 
@@ -561,19 +608,19 @@ class VRMExpression {
                 // 单眼眨眼：直接设置权重，不使用 blinkWeight 动画
 
                 // 设置手动眨眼标志，防止 _updateWeights 干扰
-                this.manualBlinkInProgress = name;
+                this.manualBlinkInProgress = targetName;
 
                 // 立即设置为1.0（闭眼）
-                expressionManager.setValue(name, 1.0);
+                expressionManager.setValue(targetName, 1.0);
 
                 // 150ms后保持闭眼状态（确保眼睛完全闭上）
                 setTimeout(() => {
-                    expressionManager.setValue(name, 1.0);
+                    expressionManager.setValue(targetName, 1.0);
                 }, 150);
 
                 // 300ms后开始睁眼
                 setTimeout(() => {
-                    expressionManager.setValue(name, 0.0);
+                    expressionManager.setValue(targetName, 0.0);
                     this.currentMood = 'neutral';
                     this.manualBlinkInProgress = null; // 清除标志
                 }, 300);
@@ -600,8 +647,20 @@ class VRMExpression {
             return;
         }
 
+        const expressionManager = this.manager?.currentModel?.vrm?.expressionManager;
+        const expressionNames = expressionManager ? this._getExpressionNames(expressionManager) : [];
+        const isKnownMood = targetName === 'neutral' || hasOwnExpressionKey(this.moodMap, targetName);
+        const isDirectModelExpression = Boolean(expressionManager && this._findExpression(expressionNames, [targetName]));
+        if (expressionManager && !isKnownMood && !isDirectModelExpression) {
+            console.warn(`[VRM Expression] 未知表情: ${targetName}，忽略切换`);
+            return;
+        }
+
+        // 彻底关闭自动切换，防止干扰
+        this.autoChangeMood = false;
+
         // 非眨眼表情：复用 _applyMoodImmediately 逻辑
-        this.currentMood = name || 'neutral';
+        this.currentMood = targetName;
 
         // 清除之前的回到 neutral 定时器
         if (this.neutralReturnTimer) {
@@ -610,10 +669,10 @@ class VRMExpression {
         }
 
         // 统一使用 _applyMoodImmediately 处理（支持映射表和直接表情名）
-        this._applyMoodImmediately(name || 'neutral');
+        this._applyMoodImmediately(targetName);
 
         // 设置自动返回 neutral 的定时器
-        if (name && name !== 'neutral' && this.autoReturnToNeutral) {
+        if (targetName !== 'neutral' && this.autoReturnToNeutral) {
             this.neutralReturnTimer = setTimeout(() => {
                 this.currentMood = 'neutral';
                 this.manualExpressionInProgress = null;

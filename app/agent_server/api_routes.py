@@ -24,17 +24,24 @@ from .api_shared import (  # noqa: F401
     Optional,
     USER_PLUGIN_SERVER_PORT,
     _agent_flags_snapshot,
-    _browser_use_dependency_status,
+    _browser_dependency_status,
     _bump_state_revision,
-    _close_browser_use_adapter,
+    _close_browser,
     _collect_agent_status_snapshot,
     _create_tracked_task,
     _emit_agent_status_update,
     _ensure_plugin_lifecycle_started,
     _ensure_plugin_lifecycle_stopped,
-    _fire_agent_llm_connectivity_check,
+    _browser_availability,
+    _keyboard_mouse_availability,
+    _model_images_status,
+    _put_switch_off,
+    _refresh_tool_capabilities,
+    _refresh_tool_capabilities_and_tell,
     _set_capability,
-    _try_refresh_computer_use_adapter,
+    _capability_ticket_now,
+    _capability_latest_answer,
+    MODEL_SETUP_REASONS,
     app,
     asyncio,
     builtin_provider,
@@ -57,12 +64,13 @@ from .api_runtime import (  # noqa: F401
     _user_plugins_enabled,
     _voice_transcript_plugin_gate_reason,
     cancel_task,
+    forget_turns_for_task_agents,
     complete_deferred_task,
     get_task,
     health,
-    nekoclaw_brief,
-    nekoclaw_dispatch,
-    nekoclaw_query,
+    nekopower_brief,
+    nekopower_dispatch,
+    nekopower_query,
     shutdown,
     startup,
 )
@@ -82,8 +90,24 @@ async def get_agent_flags():
         "analyzer_enabled": Modules.analyzer_enabled,
         "agent_api_gate": _check_agent_api_gate(),
         "revision": Modules.state_revision,
+        # False until the startup replay of the saved switches has finished, so the
+        # page can tell "not replayed yet" apart from "switched off".
+        "intent_restore_finished": _intent_restore_finished,
+        # The saved switch intents. A switch the backend put off after a failed
+        # start keeps its intent; one the user switched off has it False.
+        "intent": _agent_intent_snapshot(),
         "notification": note
     }
+
+
+def _agent_intent_snapshot() -> Dict[str, bool]:
+    from app.agent_runtime_intent import load_intent
+
+    try:
+        return dict(load_intent() or {})
+    except Exception as exc:
+        logger.warning("[Agent] reading the saved switch intent failed (exc_type=%s)", type(exc).__name__)
+        return {}
 
 
 @app.get("/agent/state")
@@ -99,6 +123,11 @@ _USER_PLUGIN_REGISTRY_CHECK_INTERVAL_S = 0.75
 _USER_PLUGIN_REGISTRY_CHECK_TIMEOUT_S = 8.0
 _USER_PLUGIN_REGISTRY_CHECK_MAX_DURATION_S = 12.0
 _USER_PLUGIN_EMPTY_CONFIRMATIONS = 3
+# What the task that brings the plugins up answers when it is not the one to say (``_bg_plugin_enable``):
+# a newer toggle took its generation over, or the plugin server did not answer in time. A task agent that
+# asked for the plugins reads these (``nekopower_mount``): the first is followed to the newer task.
+PLUGIN_ENABLE_SUPERSEDED = "plugin state changed while starting"
+PLUGIN_ENABLE_UNAVAILABLE = "the plugin server did not respond in time"
 
 
 async def _check_user_plugin_registry_readiness() -> Dict[str, Any]:
@@ -119,7 +148,14 @@ async def _check_user_plugin_registry_readiness() -> Dict[str, Any]:
     )
 
     try:
-        async with httpx.AsyncClient(timeout=timeout, proxy=None, trust_env=False) as client:
+        from utils.internal_http_client import internal_service_event_hooks
+
+        async with httpx.AsyncClient(
+            timeout=timeout,
+            proxy=None,
+            trust_env=False,
+            event_hooks=internal_service_event_hooks(),
+        ) as client:
             async with asyncio.timeout(_USER_PLUGIN_REGISTRY_CHECK_MAX_DURATION_S):
                 for attempt in range(_USER_PLUGIN_REGISTRY_CHECK_ATTEMPTS):
                     await asyncio.sleep(_USER_PLUGIN_REGISTRY_CHECK_INTERVAL_S)
@@ -216,18 +252,43 @@ async def set_agent_flags(payload: Dict[str, Any]):
     # past intents through this same function with ``_persist_intent=False``
     # so the replay doesn't re-write what it's reading.
     persist_intent = bool((payload or {}).get("_persist_intent", True))
+    # ``_still_valid`` (an in-process callable, never part of a request body): the user's
+    # answer to a task agent's request may stop standing while the checks below are
+    # awaited. A switch is not written once it no longer stands; nothing is switched off
+    # for it either (the switch was off when the request came).
+    still_valid = (payload or {}).get("_still_valid")
+
+    def _approval_stands() -> bool:
+        return not callable(still_valid) or bool(still_valid())
+
+    if callable(still_valid) and not _approval_stands():
+        # Already stale at the door: nothing is touched, no later toggle is overtaken by it.
+        return {"success": True, "agent_flags": _agent_flags_snapshot()}
     # Agent API gate: if any agent sub-feature is being enabled, gate must pass.
     gate = _check_agent_api_gate()
     changed = False
     old_flags = dict(Modules.agent_flags)
     old_analyzer_enabled = bool(Modules.analyzer_enabled)
     browser_use_close_reason: Optional[str] = None
+    # A request that turns something on for a task agent (``_still_valid`` given) does not
+    # take a place in the order of the switch's settings until it writes the switch: one
+    # that fell meanwhile must not overtake a toggle the user made while it waited. A later
+    # setting still overtakes it, as ever.
+    conditional = callable(still_valid)
+    conditional_bf = conditional and bf is True
+    conditional_cf = conditional and cf is True
+    conditional_uf = conditional and uf is True
     browser_use_lifecycle_seq = Modules.browser_use_lifecycle_seq
-    if isinstance(bf, bool):
+    bumped_bf = isinstance(bf, bool) and not conditional_bf
+    if bumped_bf:
         Modules.browser_use_lifecycle_seq += 1
         browser_use_lifecycle_seq = Modules.browser_use_lifecycle_seq
     user_plugin_lifecycle_seq = Modules.user_plugin_lifecycle_seq
-    if isinstance(uf, bool):
+    bumped_cf = isinstance(cf, bool) and not conditional_cf
+    if bumped_cf:
+        Modules.computer_use_switch_seq += 1
+    computer_use_switch_seq = Modules.computer_use_switch_seq
+    if isinstance(uf, bool) and not conditional_uf:
         Modules.user_plugin_lifecycle_seq += 1
         user_plugin_lifecycle_seq = Modules.user_plugin_lifecycle_seq
     # Agent LLM gate fail (endpoint/key not configured) blocks **only** the
@@ -240,11 +301,14 @@ async def set_agent_flags(payload: Dict[str, Any]):
     # nullifying them, then fall through to the per-flag handling so uf still
     # processes normally.
     if gate.get("ready") is not True and any(x is True for x in (cf, bf)):
-        if not isinstance(bf, bool) and old_flags.get("browser_use_enabled", False):
+        if not bumped_bf and old_flags.get("browser_use_enabled", False):
             Modules.browser_use_lifecycle_seq += 1
             browser_use_lifecycle_seq = Modules.browser_use_lifecycle_seq
-        Modules.agent_flags["computer_use_enabled"] = False
-        Modules.agent_flags["browser_use_enabled"] = False
+        if not bumped_cf:
+            Modules.computer_use_switch_seq += 1
+            computer_use_switch_seq = Modules.computer_use_switch_seq
+        _put_switch_off("computer_use_enabled")
+        _put_switch_off("browser_use_enabled")
         first_reason = (gate.get('reasons') or ['AGENT_ENDPOINT_NOT_CONFIGURED'])[0]
         browser_use_close_reason = first_reason
         _set_capability("computer_use", False, first_reason)
@@ -256,74 +320,117 @@ async def set_agent_flags(payload: Dict[str, Any]):
 
     prev_up = Modules.agent_flags.get("user_plugin_enabled", False)
 
-    # 1. Handle Computer Use Flag with Capability Check
+    # 1. Handle Computer Use Flag with Capability Check. Whether the tools
+    # can be used is what is filled in and what is on this computer; the
+    # agent model is not asked anything (a model that does not answer shows
+    # when a task agent first uses it, and is reported with its reason).
     if isinstance(cf, bool):
         if cf: # Attempting to enable
-            if not Modules.computer_use:
-                _try_refresh_computer_use_adapter(force=True)
-            if not Modules.computer_use:
-                Modules.agent_flags["computer_use_enabled"] = False
-                Modules.notification = json.dumps({"code": "AGENT_CU_MODULE_NOT_LOADED"})
-                logger.warning("[Agent] Cannot enable Computer Use: Module not loaded")
-            elif not getattr(Modules.computer_use, "init_ok", False):
-                Modules.agent_flags["computer_use_enabled"] = True
-                Modules.notification = json.dumps({"code": "AGENT_CU_ENABLED_CHECKING"})
-                asyncio.ensure_future(_fire_agent_llm_connectivity_check())
+            started = _capability_ticket_now()
+            try:
+                avail = await asyncio.to_thread(_keyboard_mouse_availability)
+                failed: Optional[Exception] = None
+            except Exception as e:
+                avail, failed = None, e
+            if Modules.computer_use_switch_seq != computer_use_switch_seq:
+                # The switch was set anew while this one waited for the
+                # check: that later setting stands.
+                logger.info("[Agent] Computer Use enable request overtaken by a later one; left as it is")
+            elif not _approval_stands():
+                # Looked at with nothing awaited between it and the write below.
+                logger.info("[Agent] Computer Use enable skipped: the approval no longer stands")
+            elif conditional_cf and Modules.agent_flags.get("computer_use_enabled", False):
+                # Turned on meanwhile by someone else (the user at the panel): left as it is.
+                logger.info("[Agent] Computer Use already on while a conditional request waited; left as it is")
+            elif failed is not None:
+                _put_switch_off("computer_use_enabled")
+                Modules.notification = json.dumps({"code": "AGENT_CU_ENABLE_FAILED", "details": {"error": str(failed)}})
+                logger.error(f"[Agent] Cannot enable Computer Use: Check failed {failed}")
             else:
-                try:
-                    avail = await asyncio.to_thread(Modules.computer_use.is_available)
-                    reasons = avail.get('reasons', []) if isinstance(avail, dict) else []
-                    _set_capability("computer_use", bool(avail.get("ready")) if isinstance(avail, dict) else False, reasons[0] if reasons else "")
-                    if avail.get("ready"):
-                        Modules.agent_flags["computer_use_enabled"] = True
-                    else:
-                        Modules.agent_flags["computer_use_enabled"] = False
-                        reason = avail.get('reasons', [])[0] if avail.get('reasons') else 'unknown'
-                        Modules.notification = json.dumps({"code": "AGENT_CU_UNAVAILABLE", "details": {"reason_code": reason}})
-                        logger.warning(f"[Agent] Cannot enable Computer Use: {avail.get('reasons')}")
-                except Exception as e:
-                    Modules.agent_flags["computer_use_enabled"] = False
-                    Modules.notification = json.dumps({"code": "AGENT_CU_ENABLE_FAILED", "details": {"error": str(e)}})
-                    logger.error(f"[Agent] Cannot enable Computer Use: Check failed {e}")
+                reasons = avail.get('reasons', []) if isinstance(avail, dict) else []
+                ready = bool(avail.get("ready")) if isinstance(avail, dict) else False
+                reason = reasons[0] if reasons else "unknown"
+                if not _set_capability("computer_use", ready, reasons[0] if reasons else "", started=started):
+                    # A check that started later (the configuration saved
+                    # meanwhile, say) has written its answer: that one decides.
+                    current = _capability_latest_answer("computer_use")
+                    ready, reason = bool(current.get("ready")), current.get("reason") or "unknown"
+                if ready:
+                    if conditional_cf:
+                        # Takes its place in the order now, as the write is made.
+                        Modules.computer_use_switch_seq += 1
+                    Modules.agent_flags["computer_use_enabled"] = True
+                else:
+                    _put_switch_off("computer_use_enabled")
+                    Modules.notification = json.dumps({"code": "AGENT_CU_UNAVAILABLE", "details": {"reason_code": reason}})
+                    logger.warning(f"[Agent] Cannot enable Computer Use: {reason}")
         else: # Disabling
-            Modules.agent_flags["computer_use_enabled"] = False
+            _put_switch_off("computer_use_enabled")
 
     # 2.5. Handle Browser Use Flag with Capability Check
     if isinstance(bf, bool):
         if bf:
-            dependency_ready, dependency_error = _browser_use_dependency_status()
-            if not dependency_ready:
-                Modules.agent_flags["browser_use_enabled"] = False
-                Modules.notification = json.dumps({"code": "AGENT_BU_NOT_INSTALLED", "details": {"error": dependency_error}})
-            elif not getattr(Modules.computer_use, "init_ok", False):
-                Modules.agent_flags["browser_use_enabled"] = True
-                Modules.notification = json.dumps({"code": "AGENT_BU_ENABLED_CHECKING"})
-                asyncio.ensure_future(_fire_agent_llm_connectivity_check())
+            started = _capability_ticket_now()
+            # The model set up as well as a browser found: the configuration
+            # may have changed while an earlier part of this request waited.
+            dependency_ready, dependency_error = await asyncio.to_thread(_browser_availability)
+            if Modules.browser_use_lifecycle_seq != browser_use_lifecycle_seq:
+                # The switch was set anew while this one looked for a
+                # browser: that later setting stands.
+                logger.info("[Agent] Browser Use enable request overtaken by a later one; left as it is")
+            elif not _approval_stands():
+                # Looked at with nothing awaited between it and the write below.
+                logger.info("[Agent] Browser Use enable skipped: the approval no longer stands")
+            elif conditional_bf and Modules.agent_flags.get("browser_use_enabled", False):
+                # Turned on meanwhile by someone else (the user at the panel): left as it is.
+                logger.info("[Agent] Browser Use already on while a conditional request waited; left as it is")
             else:
-                Modules.agent_flags["browser_use_enabled"] = True
-                _set_capability("browser_use", True, "")
+                ready, reason = dependency_ready, dependency_error
+                if not _set_capability("browser_use", ready, reason, started=started):
+                    # A check that started later (the configuration saved
+                    # meanwhile, say) has written its answer: that one decides.
+                    current = _capability_latest_answer("browser_use")
+                    ready, reason = bool(current.get("ready")), current.get("reason") or "unknown"
+                if ready:
+                    if conditional_bf:
+                        # Takes its place in the order now, as the write is made (a close that
+                        # was meant for an earlier setting then finds it is not its own).
+                        Modules.browser_use_lifecycle_seq += 1
+                        browser_use_lifecycle_seq = Modules.browser_use_lifecycle_seq
+                    Modules.agent_flags["browser_use_enabled"] = True
+                else:
+                    _put_switch_off("browser_use_enabled")
+                    Modules.notification = json.dumps({"code": "AGENT_BU_UNAVAILABLE", "details": {"reason_code": reason}})
         else:
-            Modules.agent_flags["browser_use_enabled"] = False
+            _put_switch_off("browser_use_enabled")
 
-    # Explicit disable and automatic gate demotion both release the heavy
-    # browser-use graph and any keep-alive Chromium subprocess immediately.
+    # Explicit disable and automatic gate demotion: a browser the tools
+    # started that shows no window is closed; one with a window is left to
+    # the user as it is, connected to (so kept from this application's own
+    # ports), and no call of the tools is carried out while they are off.
     if bf is False or (
         old_flags.get("browser_use_enabled", False)
         and not Modules.agent_flags.get("browser_use_enabled", False)
     ):
         _create_tracked_task(
-            _close_browser_use_adapter(
+            _close_browser(
                 capability_reason=browser_use_close_reason,
                 expected_lifecycle_seq=browser_use_lifecycle_seq,
+                leave_window=True,
             )
         )
 
     if isinstance(uf, bool):
-        if uf:  # Attempting to enable UserPlugin — non-blocking (like CUA)
+        if uf and not _approval_stands():
+            logger.info("[Agent] UserPlugin enable skipped: the approval no longer stands")
+        elif uf:  # Attempting to enable UserPlugin — non-blocking (like CUA)
+            if conditional_uf:
+                Modules.user_plugin_lifecycle_seq += 1
+                user_plugin_lifecycle_seq = Modules.user_plugin_lifecycle_seq
             Modules.agent_flags["user_plugin_enabled"] = True
             Modules.notification = json.dumps({"code": "AGENT_UP_ENABLED_CHECKING"})
 
-            async def _bg_plugin_enable():
+            async def _bg_plugin_enable() -> tuple[bool, str]:
                 _ln = lanlan_name
 
                 def _owns_generation() -> bool:
@@ -343,28 +450,28 @@ async def set_agent_flags(payload: Dict[str, Any]):
                         logger.info(
                             "[Agent] UserPlugin enable deferred until the master switch is ON"
                         )
-                        return
+                        return False, "NekoPower is switched off"
 
                     started = await _ensure_plugin_lifecycle_started(
                         should_start=_may_start_generation
                     )
                     if not _owns_generation():
-                        return
+                        return False, PLUGIN_ENABLE_SUPERSEDED
                     if not Modules.analyzer_enabled:
-                        return
+                        return False, "NekoPower is switched off"
                     if not started:
-                        Modules.agent_flags["user_plugin_enabled"] = False
+                        _put_switch_off("user_plugin_enabled")
                         Modules.notification = json.dumps({"code": "AGENT_PLUGIN_SERVER_ERROR"})
                         logger.warning("[Agent] Cannot enable UserPlugin: lifecycle startup failed")
-                        return
+                        return False, "the plugin server failed to start"
 
                     registry = await _check_user_plugin_registry_readiness()
                     if not _owns_generation():
-                        return
+                        return False, PLUGIN_ENABLE_SUPERSEDED
 
                     registry_status = registry.get("status")
                     if registry_status == "empty":
-                        Modules.agent_flags["user_plugin_enabled"] = False
+                        _put_switch_off("user_plugin_enabled")
                         Modules.notification = json.dumps({"code": "AGENT_NO_PLUGINS_FOUND"})
                         logger.warning(
                             "[Agent] Cannot enable UserPlugin: registry confirmed empty "
@@ -372,12 +479,14 @@ async def set_agent_flags(payload: Dict[str, Any]):
                             registry.get("empty_responses", 0),
                         )
                         await _ensure_plugin_lifecycle_stopped(should_stop=_owns_generation)
+                        return False, "no plugins are installed or enabled"
                     elif registry_status == "ready":
                         _set_capability("user_plugin", True, "")
                         logger.info(
                             "[Agent] UserPlugin lifecycle ready (%d plugins)",
                             registry.get("plugin_count", 0),
                         )
+                        return True, ""
                     else:
                         # A slow or temporarily unreachable registry is not an
                         # authoritative empty registry.  Preserve the user's ON
@@ -392,21 +501,31 @@ async def set_agent_flags(payload: Dict[str, Any]):
                             registry.get("empty_responses", 0),
                             registry.get("last_error", "unknown"),
                         )
+                        return False, PLUGIN_ENABLE_UNAVAILABLE
                 except Exception as exc:
                     if _owns_generation():
-                        Modules.agent_flags["user_plugin_enabled"] = False
+                        _put_switch_off("user_plugin_enabled")
                         Modules.notification = json.dumps({"code": "AGENT_PLUGIN_SERVER_ERROR"})
                         logger.error("[Agent] Background plugin enable failed: %s", exc)
+                    return False, "starting the plugin server failed"
                 finally:
                     if _owns_generation():
                         _bump_state_revision()
                         await _emit_agent_status_update(lanlan_name=_ln)
 
             _bg = asyncio.create_task(_bg_plugin_enable())
+            Modules.user_plugin_enable_task = _bg
+            # Handed to whoever asked for it before anything is awaited again: the global may be
+            # another task by the time this call returns (a task agent that asked for the plugins
+            # waits for the one its own call made).
+            on_plugin_task = (payload or {}).get("_on_plugin_task")
+            if callable(on_plugin_task):
+                on_plugin_task(_bg)
             Modules._persistent_tasks.add(_bg)
             _bg.add_done_callback(Modules._persistent_tasks.discard)
         else:  # Disabling UserPlugin — non-blocking
-            Modules.agent_flags["user_plugin_enabled"] = False
+            Modules.user_plugin_enable_task = None
+            _put_switch_off("user_plugin_enabled")
             _set_capability("user_plugin", True, "")
 
             async def _bg_plugin_disable():
@@ -437,14 +556,10 @@ async def set_agent_flags(payload: Dict[str, Any]):
     # Persist user intent for each explicitly-requested flag.
     # Rule: a flag is persisted only when the user's request actually took
     # effect in-memory. If the user requested ON but capability auto-rejected
-    # (LLM unreachable, module not loaded, etc.), the in-memory flag stays
+    # (model not set up, no input, no browser), the in-memory flag stays
     # False — we do NOT persist a True intent for that case, because the
     # toggle visibly didn't take. Disable requests (False) are always
     # persisted faithfully (no capability check involved).
-    # The capability-auto-disable path inside
-    # ``_fire_agent_llm_connectivity_check`` also intentionally does NOT
-    # touch intent — it flips the in-memory flag but leaves persisted intent
-    # so a transient LLM blip doesn't wipe the user's preference.
     if persist_intent:
         try:
             from app.agent_runtime_intent import set_intent
@@ -486,35 +601,53 @@ async def agent_command(payload: Dict[str, Any]):
         persist_intent = bool((payload or {}).get("_persist_intent", True))
         gate = _check_agent_api_gate()
         if enabled:
+            was_on = bool(Modules.analyzer_enabled)
             Modules.analyzer_enabled = True
             Modules.analyzer_profile = (payload or {}).get("profile", {}) or {}
             if gate.get("ready") is True:
-                adapter_refreshed = _try_refresh_computer_use_adapter(force=True)
-                if not adapter_refreshed and Modules.computer_use is not None:
-                    logger.info("[Agent] ComputerUse adapter refresh failed; falling back to existing adapter")
-                if Modules.computer_use is not None:
-                    _set_capability("computer_use", False, "AGENT_PRECHECK_PENDING")
-                    _set_capability("browser_use", False, "AGENT_PRECHECK_PENDING")
-                    asyncio.ensure_future(_fire_agent_llm_connectivity_check(queue=True))
-                else:
-                    _set_capability("computer_use", False, "AGENT_CU_MODULE_NOT_LOADED")
-                    _set_capability("browser_use", False, "AGENT_CU_MODULE_NOT_LOADED")
+                if not was_on:
+                    # Until the check below answers, "not ready" with no
+                    # reason: what was kept from before the master switch
+                    # went off may no longer hold. Not when it was on
+                    # already: a task at work keeps its tools. Provisional:
+                    # a switch-on already waiting for its own check is not
+                    # held back by it.
+                    _set_capability("computer_use", False, "", provisional=True)
+                    _set_capability("browser_use", False, "", provisional=True)
+                # From the configuration and this computer alone: the agent
+                # model is not asked anything. In the background: nothing
+                # here waits on it, so no later request (the plugins
+                # switched off, the master switched off) is overtaken by
+                # this one's writes; and started now, so that a step below
+                # that fails does not leave the tools unanswered.
+                _create_tracked_task(_refresh_tool_capabilities_and_tell(lanlan_name))
             else:
                 first_reason = (gate.get("reasons") or ["AGENT_ENDPOINT_NOT_CONFIGURED"])[0]
                 _set_capability("computer_use", False, first_reason)
                 _set_capability("browser_use", False, first_reason)
-            if Modules.agent_flags.get("user_plugin_enabled"):
-                # Master OFF preserves sub-feature intent but stops the plugin
-                # lifecycle. Replaying the existing ON intent schedules a new,
-                # generation-owned startup for the re-enabled master.
+            # Plugins come on with the switch: the user has one switch for
+            # all of it, and each plugin has its own. Master OFF stops the
+            # plugin lifecycle; this schedules a new, generation-owned
+            # startup for the re-enabled master.
+            # A restore at start replays the switch (``_persist_intent``
+            # False) and is not the user switching it on: plugins the user
+            # switched off by their own switch since then stay off. When
+            # the user switches it on, that is kept for the plugins as
+            # well: an older "off" of theirs does not undo it at the
+            # next start.
+            from app.agent_runtime_intent import get_intent
+
+            if persist_intent or get_intent("user_plugin_enabled") is not False:
                 await set_agent_flags({
                     "user_plugin_enabled": True,
                     "lanlan_name": lanlan_name,
-                    "_persist_intent": False,
+                    "_persist_intent": persist_intent,
                 })
         else:
             Modules.analyzer_enabled = False
             Modules.analyzer_profile = {}
+            # Nothing of the main dialogue is kept for task agents while it is off.
+            forget_turns_for_task_agents()
             # Invalidate an in-flight user-plugin enable/readiness task before
             # stopping its lifecycle.  The sub-flag intent itself remains ON.
             Modules.user_plugin_lifecycle_seq += 1
@@ -561,6 +694,30 @@ async def agent_command(payload: Dict[str, Any]):
         total_ms = round((time.perf_counter() - t0) * 1000, 2)
         logger.info("[AgentTiming] request_id=%s command=%s key=%s set_flags_ms=%s total_ms=%s", request_id, command, key, set_ms, total_ms)
         return {"success": True, "request_id": request_id, "timing": {"set_flags_ms": set_ms, "agent_total_ms": total_ms}}
+    if command == "set_task_hud_visible":
+        # Whether the main page shows the task HUD (``app.agent_task_hud``): one setting for every
+        # character, so every main page is told.
+        value = (payload or {}).get("value")
+        if not isinstance(value, bool):
+            raise HTTPException(400, "invalid task hud value")
+        # ``if_unset``: a main page handing in what its own storage said; kept only while nothing
+        # is set here yet, so it never overwrites a choice made in the meantime.
+        if_unset = (payload or {}).get("if_unset") is True
+        from app.agent_task_hud import get_visible as _task_hud_visible
+        from app.agent_task_hud import set_visible as _set_task_hud_visible
+
+        # The file is written off the event loop (it is shared with the main and memory servers).
+        try:
+            changed = await asyncio.to_thread(_set_task_hud_visible, value, only_if_unset=if_unset)
+        except Exception as exc:  # noqa: BLE001 - told as not taken; the setting is left as it was
+            logger.warning("[Agent] saving the task HUD setting failed (exc_type=%s)", type(exc).__name__)
+            raise HTTPException(500, "task hud setting not saved") from None
+        if changed:
+            _bump_state_revision()
+            await _emit_agent_status_update()
+        # What is kept now (memory only: the call above has read it).
+        kept = await asyncio.to_thread(_task_hud_visible)
+        return {"success": True, "request_id": request_id, "changed": changed, "task_hud_visible": kept}
     if command == "refresh_state":
         snapshot = _collect_agent_status_snapshot()
         await _emit_agent_status_update(lanlan_name=lanlan_name)
@@ -585,29 +742,24 @@ async def agent_command(payload: Dict[str, Any]):
 # the replay non-recursive (it doesn't overwrite the intent file it's
 # reading).
 #
-# Failure mode: LLM-dependent flags get a 15s probe window (3 × 4s ping with
-# 5s spacing). Any permanent reason or all-three failure clears that intent
-# to False and surfaces ``AGENT_AUTO_DISABLED_*`` notifications — the goal
-# is to tell the user "your API is dead, fix it" rather than retry forever.
+# Nothing is sent to the agent model on the way: a switch that cannot come
+# on now (model not set up, no input, no browser) stays off for this run
+# with its reason, and the intent is kept for the next start.
 
 _intent_restore_done = False
+_intent_restore_finished = False
+# Background replay tasks (keyboard-and-mouse / browser, user plugin) started by the current
+# restore; ``_intent_restore_finished`` turns True only after they end. Work
+# those tasks hand off on their own is not tracked: the plugin start that
+# ``set_agent_flags`` schedules only switches the plugin off when the start
+# fails while its generation is still current, which reports a real failure
+# rather than replaying an older intent over a newer value.
+_intent_restore_background_tasks: List[asyncio.Task] = []
 _intent_restore_lock: Optional[asyncio.Lock] = None
-
-# Restore probe budget. Worst-case wall time when probes keep timing out:
-#   3 attempts × 6s timeout + 2 inter-attempt sleeps × 7s = ~32s.
-# In practice the ping resolves in <1s on a healthy connection so users
-# typically see toggles flip back within the first attempt. Tuning rationale:
-# 6s per-call timeout gives cold-start DNS / TLS handshake comfortable room
-# without dragging out the failure path; 7s gap lets a transient burst
-# throttle window expire between attempts.
-_RESTORE_PING_TIMEOUT_S = 6.0
-_RESTORE_PING_INTERVAL_S = 7.0
-_RESTORE_PING_MAX_ATTEMPTS = 3
-
 
 async def _maybe_restore_agent_intent() -> None:
     """Idempotent restore entry. Safe to call from every greeting_check."""
-    global _intent_restore_done, _intent_restore_lock
+    global _intent_restore_done, _intent_restore_finished, _intent_restore_lock
     if _intent_restore_done:
         return
     if os.environ.get("NEKO_DISABLE_AGENT_AUTO_RESTORE") == "1":
@@ -615,6 +767,7 @@ async def _maybe_restore_agent_intent() -> None:
         # the user can launch with this env var to skip restore entirely
         # and re-toggle manually.
         _intent_restore_done = True
+        _intent_restore_finished = True
         logger.info("[Agent] NEKO_DISABLE_AGENT_AUTO_RESTORE=1, skipping intent restore")
         return
     if _intent_restore_lock is None:
@@ -627,6 +780,23 @@ async def _maybe_restore_agent_intent() -> None:
             await _do_restore_agent_intent()
         except Exception as exc:
             logger.error("[Agent] Intent restore failed: %s", exc, exc_info=True)
+        background = [t for t in _intent_restore_background_tasks if not t.done()]
+        _intent_restore_background_tasks.clear()
+        if background:
+            watcher = asyncio.create_task(_mark_intent_restore_finished_after(background))
+            Modules._persistent_tasks.add(watcher)
+            watcher.add_done_callback(Modules._persistent_tasks.discard)
+        else:
+            _intent_restore_finished = True
+
+
+async def _mark_intent_restore_finished_after(tasks: List[asyncio.Task]) -> None:
+    """Flip ``_intent_restore_finished`` once the background replay writes are done."""
+    global _intent_restore_finished
+    try:
+        await asyncio.gather(*tasks, return_exceptions=True)
+    finally:
+        _intent_restore_finished = True
 
 
 async def _do_restore_agent_intent() -> None:
@@ -644,7 +814,7 @@ async def _do_restore_agent_intent() -> None:
     # legitimate persisted state to have e.g. ``analyzer_enabled=False``
     # alongside ``user_plugin_enabled=True`` (the user toggled the master
     # off but kept their sub-flag preferences). In that case we must NOT
-    # spin up plugin lifecycle / probe LLM — the
+    # spin up plugin lifecycle / the tool switches — the
     # user explicitly disabled the master. Sub-flag intents stay in the
     # file untouched, so the next time the user turns the master back on
     # those flags will activate via the normal toggle path.
@@ -670,13 +840,12 @@ async def _do_restore_agent_intent() -> None:
         # Master gate failed to activate → don't even try sub flags
         return
 
-    # 2. Two fully-independent parallel tracks. CU/BU are LLM-coupled
-    # (probe-gated). user_plugin runs on its own lifecycle and explicitly
-    # does NOT wait for the LLM — plugins don't depend on the agent model.
+    # 2. Two fully-independent parallel tracks: the keyboard-and-mouse and
+    # browser switches, and the plugins (on their own lifecycle).
     parallel: List[asyncio.Task] = []
 
     if intent.get("computer_use_enabled") or intent.get("browser_use_enabled"):
-        t = asyncio.create_task(_restore_llm_dependent_flags(intent))
+        t = asyncio.create_task(_restore_tool_flags(intent))
         Modules._persistent_tasks.add(t)
         t.add_done_callback(Modules._persistent_tasks.discard)
         parallel.append(t)
@@ -687,120 +856,56 @@ async def _do_restore_agent_intent() -> None:
         t.add_done_callback(Modules._persistent_tasks.discard)
         parallel.append(t)
 
+    _intent_restore_background_tasks.extend(parallel)
+
     # We deliberately don't gather() the parallel tasks — they update
-    # capability + flags + intent on their own, and the user sees the
-    # results via the normal status snapshot push. Awaiting here would
-    # block the greeting_check handler for up to 15s.
+    # capability + flags on their own, and the user sees the results via the
+    # normal status snapshot push. Awaiting here would hold up the
+    # greeting_check handler while the plugins start.
 
 
-async def _restore_llm_dependent_flags(intent: dict) -> None:
-    """Probe LLM ≤3 times with 5s spacing. On success flip the in-memory
-    CU/BU flags via set_agent_flags; on permanent failure or all-three
-    fail, clear those intents and emit AGENT_AUTO_DISABLED_* notifications."""
-    from app.agent_runtime_intent import set_intent
-    from brain.computer_use import PERMANENT_CONNECTIVITY_REASONS
+async def _restore_tool_flags(intent: dict) -> None:
+    """Put the keyboard-and-mouse and browser switches the user left on back on, through the regular toggle path.
 
-    adapter = Modules.computer_use
-    if adapter is None:
-        # Module not loaded is permanent — no point retrying.
-        logger.warning("[Agent] Restore: computer_use module not loaded; clearing CU/BU intent")
-        for key, code in (
-            ("computer_use_enabled", "AGENT_AUTO_DISABLED_COMPUTER"),
-            ("browser_use_enabled", "AGENT_AUTO_DISABLED_BROWSER"),
-        ):
-            if intent.get(key):
-                set_intent(key, False)
-                Modules.notification = json.dumps({
-                    "code": code,
-                    "details": {"reason_code": "AGENT_CU_MODULE_NOT_LOADED"},
-                })
+    Nothing is sent to the agent model first: whether the tools can be used
+    is what is filled in and what is on this computer (``set_agent_flags``).
+    A switch that cannot come on now stays off for this run and says why;
+    what the user chose is kept (``_persist_intent`` False), so it comes back
+    on at a later start once it can.
+    """
+    payload: Dict[str, Any] = {"_persist_intent": False}
+    # Wayland display capture requires a fresh user gesture. A persisted
+    # keyboard-control flag cannot restore the prior process's MediaStream.
+    needs_screen_reauthorization = (
+        sys.platform.startswith("linux")
+        and (os.environ.get("XDG_SESSION_TYPE") == "wayland" or bool(os.environ.get("WAYLAND_DISPLAY")))
+    )
+    if intent.get("computer_use_enabled") and needs_screen_reauthorization:
+        started = _capability_ticket_now()
+        availability = await asyncio.to_thread(_keyboard_mouse_availability)
+        reasons = availability.get("reasons", []) if isinstance(availability, dict) else []
+        ready = bool(availability.get("ready")) if isinstance(availability, dict) else False
+        _set_capability("computer_use", ready, reasons[0] if reasons else "", started=started)
+        if ready:
+            Modules.notification = json.dumps({"code": "AGENT_SCREEN_SHARE_REQUIRED"})
         _bump_state_revision()
         await _emit_agent_status_update()
-        return
-
-    last_reason = "AGENT_LLM_UNREACHABLE"
-    success = False
-    for attempt in range(_RESTORE_PING_MAX_ATTEMPTS):
+    elif intent.get("computer_use_enabled"):
+        payload["computer_use_enabled"] = True
+    if intent.get("browser_use_enabled"):
+        payload["browser_use_enabled"] = True
+    if len(payload) > 1:
         try:
-            ok, reason = await asyncio.to_thread(
-                adapter.check_connectivity,
-                timeout_s=_RESTORE_PING_TIMEOUT_S,
-            )
-            if ok:
-                success = True
-                last_reason = ""
-                break
-            last_reason = reason or "AGENT_LLM_UNREACHABLE"
-            if last_reason in PERMANENT_CONNECTIVITY_REASONS:
-                logger.info(
-                    "[Agent] Restore: permanent connectivity reason %s after %d/%d attempts; not retrying",
-                    last_reason, attempt + 1, _RESTORE_PING_MAX_ATTEMPTS,
-                )
-                break
+            await set_agent_flags(payload)
+            logger.info("[Agent] Restore: keyboard-and-mouse / browser switches requested")
         except Exception as exc:
-            logger.warning(
-                "[Agent] Restore probe attempt %d/%d raised: %s",
-                attempt + 1, _RESTORE_PING_MAX_ATTEMPTS, exc,
-            )
-            last_reason = "AGENT_LLM_UNREACHABLE"
-        if attempt < _RESTORE_PING_MAX_ATTEMPTS - 1:
-            await asyncio.sleep(_RESTORE_PING_INTERVAL_S)
-
-    if success:
-        # Hand off to the regular toggle path so capability cache + UI
-        # snapshot stay consistent with manual toggling.
-        payload: Dict[str, Any] = {"_persist_intent": False}
-        # Wayland display capture requires a fresh user gesture. A persisted
-        # keyboard-control flag cannot restore the prior process's MediaStream.
-        needs_screen_reauthorization = (
-            sys.platform.startswith("linux")
-            and (os.environ.get("XDG_SESSION_TYPE") == "wayland" or bool(os.environ.get("WAYLAND_DISPLAY")))
-        )
-        if intent.get("computer_use_enabled") and needs_screen_reauthorization:
-            availability = await asyncio.to_thread(Modules.computer_use.is_available)
-            reasons = availability.get("reasons", []) if isinstance(availability, dict) else []
-            ready = bool(availability.get("ready")) if isinstance(availability, dict) else False
-            _set_capability("computer_use", ready, reasons[0] if reasons else "")
-            if ready:
-                Modules.notification = json.dumps({"code": "AGENT_SCREEN_SHARE_REQUIRED"})
-            _bump_state_revision()
-            await _emit_agent_status_update()
-        elif intent.get("computer_use_enabled"):
-            payload["computer_use_enabled"] = True
-        if intent.get("browser_use_enabled"):
-            payload["browser_use_enabled"] = True
-        if len(payload) > 1:
-            try:
-                await set_agent_flags(payload)
-                logger.info("[Agent] Restored CU/BU flags after successful probe")
-            except Exception as exc:
-                logger.warning("[Agent] Failed to apply CU/BU after probe: %s", exc)
-        return
-
-    # All retries exhausted (or permanent error): tell the user, clear intent.
-    for key, code in (
-        ("computer_use_enabled", "AGENT_AUTO_DISABLED_COMPUTER"),
-        ("browser_use_enabled", "AGENT_AUTO_DISABLED_BROWSER"),
-    ):
-        if intent.get(key):
-            set_intent(key, False)
-            Modules.notification = json.dumps({
-                "code": code,
-                "details": {"reason_code": last_reason},
-            })
-            logger.info(
-                "[Agent] Restore: cleared intent for %s after %d failed probes (reason=%s)",
-                key, _RESTORE_PING_MAX_ATTEMPTS, last_reason,
-            )
-    _bump_state_revision()
-    await _emit_agent_status_update()
+            logger.warning("[Agent] Failed to restore the keyboard-and-mouse / browser switches: %s", exc)
 
 
 async def _restore_user_plugin() -> None:
-    """Hand off to the standard /agent/flags path. user_plugin does NOT
-    require the LLM probe to be green — plugins run on their own lifecycle,
-    so we trigger them straight away in parallel. Any startup failure goes
-    through the existing _bg_plugin_enable async path."""
+    """Hand off to the standard /agent/flags path. Plugins run on their own
+    lifecycle, so we trigger them straight away in parallel. Any startup
+    failure goes through the existing _bg_plugin_enable async path."""
     try:
         await set_agent_flags({
             "user_plugin_enabled": True,
@@ -813,8 +918,10 @@ async def _restore_user_plugin() -> None:
 
 def _reset_intent_restore_for_testing() -> None:
     """Test helper: clear the once-flag so a test can re-run restore."""
-    global _intent_restore_done, _intent_restore_lock
+    global _intent_restore_done, _intent_restore_finished, _intent_restore_lock
     _intent_restore_done = False
+    _intent_restore_finished = False
+    _intent_restore_background_tasks.clear()
     _intent_restore_lock = None
 
 
@@ -823,56 +930,55 @@ async def computer_use_availability():
     gate = _check_agent_api_gate()
     if gate.get("ready") is not True:
         return {"ready": False, "reasons": gate.get("reasons", ["Agent API 未配置"])}
-    if not Modules.computer_use:
-        _try_refresh_computer_use_adapter(force=True)
-        asyncio.ensure_future(_fire_agent_llm_connectivity_check())
-    if not Modules.computer_use:
-        if Modules.agent_flags.get("computer_use_enabled"):
-            Modules.agent_flags["computer_use_enabled"] = False
-            Modules.notification = json.dumps({"code": "AGENT_CU_AUTO_CLOSED"})
-        raise HTTPException(503, "ComputerUse not ready")
-    if not getattr(Modules.computer_use, "init_ok", False):
-        asyncio.ensure_future(_fire_agent_llm_connectivity_check())
 
-    status = await asyncio.to_thread(Modules.computer_use.is_available)
+    started = _capability_ticket_now()
+    status = await asyncio.to_thread(_keyboard_mouse_availability)
     reasons = status.get("reasons", []) if isinstance(status, dict) else []
-    _set_capability("computer_use", bool(status.get("ready")) if isinstance(status, dict) else False, reasons[0] if reasons else "")
-
-    # Auto-update flag if capability lost
-    if not status.get("ready") and Modules.agent_flags.get("computer_use_enabled"):
+    ready = bool(status.get("ready")) if isinstance(status, dict) else False
+    if not _set_capability("computer_use", ready, reasons[0] if reasons else "", started=started):
+        # A check that started later has written its answer: that one is
+        # told, and nothing is switched off for this older one.
+        current = _capability_latest_answer("computer_use")
+        status["ready"] = bool(current.get("ready"))
+        status["reasons"] = [current["reason"]] if current.get("reason") else []
+    # Auto-update flag if capability lost. Not for the agent model not being
+    # set up (the configuration changed meanwhile): that does not put a
+    # switch off, it only says the tools cannot be used.
+    elif (
+        not status.get("ready")
+        and Modules.agent_flags.get("computer_use_enabled")
+        and not (reasons and all(reason in MODEL_SETUP_REASONS for reason in reasons))
+    ):
         logger.info("[Agent] Computer Use capability lost, disabling flag")
-        Modules.agent_flags["computer_use_enabled"] = False
+        _put_switch_off("computer_use_enabled")
         Modules.notification = json.dumps({"code": "AGENT_CU_CAPABILITY_LOST", "details": {"reason_code": status.get('reasons', [])[0] if status.get('reasons') else 'unknown'}})
 
+    # The tool works from screenshots: whether the model is sent any, and why not.
+    status["model_images"] = await _model_images_status()
     return status
 
 
 @app.post("/notify_config_changed")
 async def notify_config_changed():
     """Called by the main server after API-key / model config is saved.
-    Rebuilds the CUA adapter with fresh config and kicks off a non-blocking
-    LLM connectivity check — but only when the user actually has the master
-    switch on AND at least one LLM-dependent sub flag enabled.
 
-    The master gate is required because with the new master-OFF semantics
-    (sub flags carry user intent and survive master cycling),
-    ``computer_use_enabled``/``browser_use_enabled`` can legitimately stay
-    True while the master is off. The old ``or`` condition would otherwise
-    fire a probe on every voice/chat config save and pop a transient
-    "cat-paw preflight failed" toast for a feature the user has explicitly
-    disabled at the master.
+    Works out anew whether the keyboard-and-mouse and browser tools can be
+    used: the agent model may have been filled in, or taken away. Only while
+    the master switch is on, which is when that shows. The model is not
+    asked anything: a key that is wrong shows when a task agent first uses
+    it, and is reported with its reason.
+    """
+    # The main server just wrote the configuration; this process may hold the old
+    # text in its read cache for up to two seconds, and the refresh below reads it now.
+    from utils.config_manager import read_cache
 
-    Sub-flag check still gates probes when the master is on but the user
-    isn't using CU/BU — same rationale as the original docstring: routine
-    config saves shouldn't probe for a feature nobody's using."""
-    _try_refresh_computer_use_adapter(force=True)
-    flags = Modules.agent_flags or {}
-    if Modules.analyzer_enabled and (
-        flags.get("computer_use_enabled") or flags.get("browser_use_enabled")
-    ):
-        asyncio.ensure_future(_fire_agent_llm_connectivity_check())
-        return {"success": True, "message": "CUA adapter refreshed, connectivity check started"}
-    return {"success": True, "message": "CUA adapter refreshed; probe skipped (agent idle)"}
+    read_cache.invalidate()
+    if not Modules.analyzer_enabled:
+        return {"success": True, "message": "agent idle; nothing to refresh"}
+    # In the background: the main server waits a few seconds for the answer,
+    # and the first check of the keyboard and mouse imports pyautogui.
+    _create_tracked_task(_refresh_tool_capabilities_and_tell())
+    return {"success": True, "message": "tool readiness refresh started"}
 
 
 @app.get("/browser_use/availability")
@@ -880,22 +986,14 @@ async def browser_use_availability():
     gate = _check_agent_api_gate()
     if gate.get("ready") is not True:
         return {"ready": False, "reasons": gate.get("reasons", ["Agent API 未配置"])}
-    dependency_ready, dependency_error = _browser_use_dependency_status()
-    if not dependency_ready:
-        reason = f"browser-use not installed: {dependency_error}"
-        _set_capability("browser_use", False, reason)
-        return {"enabled": True, "ready": False, "reasons": [reason], "provider": "browser-use"}
-    # LLM connectivity — reuse the shared agent-LLM check
-    cua = Modules.computer_use
-    if cua and not getattr(cua, "init_ok", False):
-        asyncio.ensure_future(_fire_agent_llm_connectivity_check())
-    llm_ok = cua is not None and getattr(cua, "init_ok", False)
-    reasons = []
-    if not llm_ok:
-        reasons.append(cua.last_error if cua and cua.last_error else "Agent LLM not connected")
-    ready = llm_ok and dependency_ready
-    _set_capability("browser_use", ready, reasons[0] if reasons else "")
-    return {"enabled": True, "ready": ready, "reasons": reasons, "provider": "browser-use"}
+    started = _capability_ticket_now()
+    ready, reason = await asyncio.to_thread(_browser_availability)
+    # No browser comes with the application; one the user has is used.
+    if not _set_capability("browser_use", ready, reason, started=started):
+        # A check that started later has written its answer: that one is told.
+        current = _capability_latest_answer("browser_use")
+        ready, reason = bool(current.get("ready")), current.get("reason") or ""
+    return {"enabled": True, "ready": ready, "reasons": [reason] if reason else [], "provider": "nekopower"}
 
 
 @app.get("/tasks")
@@ -910,6 +1008,46 @@ async def list_tasks():
     await restore_hud()
     items = [dict(task, source="runtime") for task in hud.all()]
     return {"tasks": items, "debug": {"total_returned": len(items)}}
+
+
+async def _close_browser_at_end_all() -> None:
+    """Close what the browser tools started when every task is stopped and it is not to stay open.
+
+    That is: a browser without a window, which nobody could close by hand;
+    and one that was started with browser settings the user has changed
+    since (the task that closes it then is a tracked one and may have been
+    cancelled by the drain of ``end_all``). Within a time of its own: its
+    steps add up to
+    more than the page waits for the request.
+    """
+    from config.nekopower_settings import BROWSER_CLOSE_AT_END_ALL_SECONDS
+
+    # From before the closing begins until the kill, if it comes to one, is
+    # on record: a browser call of a new task that waits its turn behind the
+    # closing gets it the moment the closing is given up, which is before
+    # this request has asked for the kill. Let through, it would start a
+    # browser for the kill to take.
+    with builtin_provider.stopping_browser():
+        closed_in_time = True
+        try:
+            await asyncio.wait_for(_close_browser(update_capability=False), timeout=BROWSER_CLOSE_AT_END_ALL_SECONDS)
+        except asyncio.TimeoutError:
+            closed_in_time = False
+            logger.warning("[Agent] end_all: the browser did not close in time; killing it")
+        if closed_in_time and builtin_provider.browser_unclosed():
+            # Asked in time, and closing it failed: it would be kept to be
+            # closed some other time, and run on meanwhile although the user
+            # stopped everything.
+            closed_in_time = False
+            logger.warning("[Agent] end_all: the browser could not be closed; killing it")
+        if not closed_in_time:
+            # Not waited for: killing waits for the processes to be gone,
+            # which takes seconds more, and the answer to this request does
+            # not depend on it. A browser call that comes meanwhile waits
+            # until the kill is over (the provider sees to it): the kill
+            # takes what it finds when its turn comes, and must not find a
+            # browser that a later task has started.
+            builtin_provider.kill_browser_unwaited()
 
 
 @app.post("/admin/control")
@@ -949,43 +1087,33 @@ async def admin_control(payload: Dict[str, Any]):
                     logger.warning(f"[Agent] Error awaiting cancelled background task: {exc}")
         Modules._background_tasks.clear()
 
-        # A keyboard-and-mouse call the stop above did not reach (its
-        # commission ended on its own meanwhile) is told to stop as well, and
-        # its worker thread is waited for, so no pyautogui calls are still
-        # in-flight when new tasks are allowed.
-        cu = Modules.computer_use
-        if cu is not None:
-            cu.cancel_running()
-            # Waited for whether or not a call is on record as running (see
-            # the same wait at shutdown); an idle adapter returns at once.
-            if hasattr(cu, "wait_for_completion"):
-                loop = asyncio.get_running_loop()
-                finished = await loop.run_in_executor(None, cu.wait_for_completion, 10.0)
-                if not finished:
-                    logger.warning("[Agent] CUA thread did not stop within 10s during end_all")
+        # Stopping a commission cancels its calls of the built-in tools and
+        # gives the desktop and the browser back. Keys a stopped call left
+        # held are let go of, and begun with: a key that stays down is in
+        # the user's way at once. The browser is not kept waiting for that
+        # (a worker that still has the mouse holds it up for seconds), nor
+        # the keys for the browser: the two go on side by side.
+        async def _release_keys() -> None:
+            try:
+                from nekopower.host.capabilities import BUILTIN_GROUP_KEYBOARD_MOUSE
 
-        # Signal browser-use adapter to cancel at next step boundary
-        try:
-            if Modules.browser_use:
-                Modules.browser_use.cancel_running()
-                Modules.browser_use._stop_overlay()
-                try:
-                    if Modules.browser_use._browser_session is not None:
-                        await Modules.browser_use._remove_overlay(Modules.browser_use._browser_session)
-                except Exception:
-                    pass
-        except Exception as e:
-            logger.warning(f"[Agent] Error cleaning browser-use adapter during end_all: {e}")
-        # A disable-triggered close is itself tracked above and may have been
-        # cancelled by this drain. Retry teardown after the calls quiesce so
-        # keep-alive Chromium cannot survive end_all.
-        await _close_browser_use_adapter(update_capability=False)
-        # Reset computer-use step history so stale context is cleared
-        try:
-            if Modules.computer_use:
-                Modules.computer_use.reset()
-        except Exception:
-            pass
+                await builtin_provider.released(BUILTIN_GROUP_KEYBOARD_MOUSE, "")
+            except Exception as e:
+                logger.warning(f"[Agent] Error releasing held keys during end_all: {e}")
+
+        releasing_keys = asyncio.ensure_future(_release_keys())
+        # Stopping the tasks is not saying that the browser is not wanted,
+        # nor is switching the master switch off (which comes through
+        # here). A window of it that the user can see stays open, as it
+        # does after a task that ended, for them to go on reading what is
+        # in it; it stays connected to, and so kept from this application's
+        # own ports. (Nothing is awaited between asking and acting on the
+        # answer.)
+        if builtin_provider.browser_window_stays():
+            logger.info("[Agent] end_all: the browser window is left open")
+        else:
+            await _close_browser_at_end_all()
+        await releasing_keys
         return {"success": True, "message": "all tasks terminated and cleared"}
     elif action == "enable_analyzer":
         Modules.analyzer_enabled = True
@@ -994,6 +1122,7 @@ async def admin_control(payload: Dict[str, Any]):
     elif action == "disable_analyzer":
         Modules.analyzer_enabled = False
         Modules.analyzer_profile = {}
+        forget_turns_for_task_agents()
         # cascade end_all
         await admin_control({"action": "end_all"})
         return {"success": True, "analyzer_enabled": False}
