@@ -170,6 +170,19 @@ export function firstUse(
   return item ? { count: item.count, atLeast: item.count_is_lower_bound } : null
 }
 
+/**
+ * The plugin's entries of "never decided" and "more after an update", left
+ * out when the list could not be read again: they belong to an older answer.
+ */
+export function withoutStartEntries(
+  pending: PendingPermissions,
+  pluginId: string,
+): Pick<PendingPermissions, 'to_confirm' | 'upgraded'> {
+  const keep = (entries: unknown) =>
+    Array.isArray(entries) ? entries.filter((entry) => entry?.plugin_id !== pluginId) : []
+  return { to_confirm: keep(pending.to_confirm), upgraded: keep(pending.upgraded) }
+}
+
 /** The declaration is unknown this time: the tab is incomplete. */
 export function incomplete(panel: PermissionPanel, pending: PendingPermissions | null): boolean {
   return panel.manifest === 'unavailable' || Boolean(pending?.incomplete.includes(panel.plugin_id))

@@ -365,6 +365,27 @@ describe('PluginPermissions tab', () => {
       expect((dialogStub.props.at(-1)!.catalog as { privacy_groups: unknown[] }).privacy_groups).toHaveLength(2)
     })
 
+    it('is no longer offered when the pending list cannot be read again', async () => {
+      serve(undecided(), { pending: { first_use: [], incomplete: [], to_confirm: [{ plugin_id: 'demo', items: [NET] }] } })
+      const root = await mount()
+      expect(q(root, 'decide-items')).not.toBeNull()
+      api.getPendingPermissions.mockRejectedValue(new Error('offline'))
+      reload()
+      await flush()
+      expect(q(root, 'decide-items')).toBeNull()
+    })
+
+    it('is no longer offered after a save when the pending list cannot be read again', async () => {
+      serve(undecided(), { pending: { first_use: [], incomplete: [], upgraded: [{ plugin_id: 'demo', items: [NET] }] } })
+      const root = await mount()
+      expect(q(root, 'decide-items')).not.toBeNull()
+      api.getPendingPermissions.mockRejectedValue(new Error('offline'))
+      api.decidePermission.mockResolvedValue(panel())
+      q(root, `switch-${NET}`)!.dispatchEvent(new Event('change'))
+      await flush()
+      expect(q(root, 'decide-items')).toBeNull()
+    })
+
     it('reads the tab again only when the dialog saved something', async () => {
       serve(undecided(), { pending: { first_use: [], incomplete: [], to_confirm: [{ plugin_id: 'demo', items: [NET] }] } })
       const root = await mount()

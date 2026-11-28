@@ -367,6 +367,7 @@ import {
   validHistory,
   validPanel,
   validPending,
+  withoutStartEntries,
 } from '@/utils/permissionTab'
 
 const props = defineProps<{ pluginId: string }>()
@@ -494,6 +495,7 @@ async function load(timed = false) {
       // The old counts belong to the rows before this answer: not shown for them.
       pending.value = {
         ...pending.value,
+        ...withoutStartEntries(pending.value, props.pluginId),
         first_use: pending.value.first_use.filter((use) => use.plugin_id !== props.pluginId),
         incomplete: pending.value.incomplete.filter((id) => id !== props.pluginId),
       }
@@ -689,6 +691,7 @@ async function save(row: PanelRow, run: () => Promise<PermissionPanel>) {
       // The old count belongs to the answer before this one: not shown for it.
       pending.value = {
         ...pending.value,
+        ...withoutStartEntries(pending.value, props.pluginId),
         first_use: pending.value.first_use.filter(
           (use) => !(use.plugin_id === props.pluginId && use.permission === row.permission),
         ),
