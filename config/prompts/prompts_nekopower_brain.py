@@ -241,7 +241,7 @@ JSON 객체만 반환하세요.""",
 - Плагины с пометкой [KEYWORD MATCH] прошли отбор по ключевым словам; рассмотрите их первыми.
 Верните только объект JSON, больше ничего.""",
 
-    'es': """Eres un User Plugin automation assessment agent que enruta tareas. PLUGINS DISPONIBLES:
+    'es': """Eres un User Plugin automation assessment agent, que enruta tareas. PLUGINS DISPONIBLES:
 {plugins_desc}
 
 El mensaje del usuario trae TASK (lo que hay que hacer) y USER_SAID (las palabras del propio usuario), y puede traer ACTIVE_TASKS y PREFERENCES.
@@ -275,7 +275,7 @@ MUY IMPORTANTE:
 - Los plugins marcados con [KEYWORD MATCH] pasaron un prefiltro de palabras clave; considéralos primero.
 Devuelve solo el objeto JSON, nada más.""",
 
-    'pt': """Você é um User Plugin automation assessment agent que roteia tarefas. PLUGINS DISPONÍVEIS:
+    'pt': """Você é um User Plugin automation assessment agent, que roteia tarefas. PLUGINS DISPONÍVEIS:
 {plugins_desc}
 
 A mensagem do usuário traz TASK (o que precisa ser feito) e USER_SAID (as palavras do próprio usuário), e pode trazer ACTIVE_TASKS e PREFERENCES.
@@ -415,7 +415,7 @@ JSON 배열만 반환하세요.""",
 
 Инструкции: Верните JSON-массив всех возможно релевантных ID плагинов. Если нет релевантных, верните [].
 Верните ТОЛЬКО JSON-массив, ничего больше.""",
-    'es': """Eres un agentic automation assessment agent en etapa de filtrado grueso. Dada la solicitud del usuario, selecciona TODOS los IDs de plugins posiblemente relevantes de la lista siguiente.
+    'es': """Eres un agentic automation assessment agent, en etapa de filtrado grueso. Dada la solicitud del usuario, selecciona TODOS los IDs de plugins posiblemente relevantes de la lista siguiente.
 
 Plugins disponibles (id: descripción breve):
 {plugin_summaries}
@@ -424,7 +424,7 @@ Solicitud del usuario: {user_text}
 
 Instrucciones: Devuelve un array JSON con todos los IDs de plugins posiblemente relevantes. Si ninguno es relevante, devuelve [].
 Devuelve SOLO el array JSON, nada más.""",
-    'pt': """Você é um agentic automation assessment agent na etapa de triagem grosseira. Dada a solicitação do usuário, selecione TODOS os IDs de plugins possivelmente relevantes da lista abaixo.
+    'pt': """Você é um agentic automation assessment agent, na etapa de triagem grosseira. Dada a solicitação do usuário, selecione TODOS os IDs de plugins possivelmente relevantes da lista abaixo.
 
 Plugins disponíveis (id: breve descrição):
 {plugin_summaries}
@@ -949,7 +949,7 @@ JSON만 반환하세요: {"verdict": "...", "task": "요청된 작업을 한 문
 Не судите, выполнимо ли действие.
 Верните только JSON: {"verdict": "...", "task": "действие одним предложением на языке пользователя; пусто для none"}""",
 
-    'es': """Eres un agentic automation assessment agent en etapa de contraste entre lo dicho y lo hecho. Abajo están lo que el usuario dijo en este turno y la respuesta del personaje. En este turno el personaje no llamó a ninguna herramienta de tareas. Decide cuál es la respuesta; elige exactamente una:
+    'es': """Eres un agentic automation assessment agent, en etapa de contraste entre lo dicho y lo hecho. Abajo están lo que el usuario dijo en este turno y la respuesta del personaje. En este turno el personaje no llamó a ninguna herramienta de tareas. Decide cuál es la respuesta; elige exactamente una:
 - "none": el usuario no pidió ninguna acción real fuera de la conversación; o el personaje solo charló, preguntó de vuelta o respondió con lo que sabe; o se negó a propósito (no quiere, le parece inapropiado).
 - "unable": el usuario pidió una acción real (manejar el ordenador, un navegador, un dispositivo, un plugin, buscar información actual, poner un recordatorio...) y el personaje dijo que no puede o que no tiene cómo.
 - "promised": el usuario pidió una acción real y el personaje aceptó hacerla, o dijo que la está haciendo.
@@ -957,7 +957,7 @@ JSON만 반환하세요: {"verdict": "...", "task": "요청된 작업을 한 문
 No juzgues si la acción es posible.
 Devuelve solo JSON: {"verdict": "...", "task": "la acción en una frase, en el idioma del usuario; vacío para none"}""",
 
-    'pt': """Você é um agentic automation assessment agent na etapa de conferir o dito com o feito. Abaixo estão o que o usuário disse neste turno e a resposta da personagem. Neste turno a personagem não chamou nenhuma ferramenta de tarefas. Decida qual é a resposta; escolha exatamente uma:
+    'pt': """Você é um agentic automation assessment agent, na etapa de conferir o dito com o feito. Abaixo estão o que o usuário disse neste turno e a resposta da personagem. Neste turno a personagem não chamou nenhuma ferramenta de tarefas. Decida qual é a resposta; escolha exatamente uma:
 - "none": o usuário não pediu nenhuma ação real fora da conversa; ou a personagem só conversou, perguntou de volta ou respondeu com o que sabe; ou recusou de propósito (não quer, acha inadequado).
 - "unable": o usuário pediu uma ação real (operar o computador, um navegador, um dispositivo, um plugin, buscar informação atual, criar um lembrete...) e a personagem disse que não consegue ou que não tem como.
 - "promised": o usuário pediu uma ação real e a personagem aceitou fazer, ou disse que está fazendo.
@@ -2297,3 +2297,107 @@ TASK_AGENT_FORKED_WORK_HANDED_ITEM = (
     '- The user asked "{asked}" (it needs a change, in session {session}): handed back to this '
     "session, it waits until you are through with what you are at, and comes with what the copy found."
 )
+
+
+# ---------------------------------------------------------------------------
+# Decision questions (owner decisions D16, D19, D28)
+# ---------------------------------------------------------------------------
+# Asked on a native decision model, or rehosted on a chat model that returns
+# token probabilities, in place of (or, for the turn check, after) the chat
+# prompts above. English for every language: the decision models judged worse
+# with translated questions (D9). Not system prompts of their own, so they are
+# not under the opening-words check above.
+
+# The coarse screen as one single choice over the plugins (q_onec, D16).
+COARSE_SCREEN_DECISION_STATE = "User request:\n{user_text}"
+COARSE_SCREEN_DECISION_INSTRUCTIONS = "Which plugin best fits the user request? Pick none only if no plugin relates."
+COARSE_SCREEN_DECISION_NONE = "no plugin relates to the request"
+
+# Whether a commission is a side question, as the kind of request it is (q2, D19).
+SIDE_QUESTION_DECISION_INSTRUCTIONS = (
+    "A request was handed to an agent that is busy with something else in the same project. Read the "
+    "request together with what the user said and anything added after it, and say what kind of "
+    "request it is. If it mixes a question with something to change, run, send or decide, pick that "
+    "other kind. When unsure, do not pick look."
+)
+SIDE_QUESTION_DECISION_OPTIONS = {
+    "look": (
+        "Only asks to be told something: how things stand, where something is, what something does, why "
+        "something was done, what was found, or what a change would involve. Answered by reading what was "
+        "said and the files; nothing is changed, run or sent."
+    ),
+    "change": (
+        "Asks to write, edit, fix, create, delete, rename, move, install, translate or otherwise change "
+        "something, even politely or as a question (\"can you add ...\"), or together with a question."
+    ),
+    "run_or_send": (
+        "Asks to run a command, script, build, server or test, or to send, post, upload, deploy or publish "
+        "something to someone, or to use a tool or service that acts."
+    ),
+    "decide": "Asks the agent to make a choice or decision for the user and go by it.",
+}
+# Offered only while the session waits for the user to answer a question.
+SIDE_QUESTION_DECISION_PENDING = (
+    "Answers, goes on with, or depends on the question the agent is waiting for the user to answer "
+    "(including asking about the options of that question)."
+)
+
+# Where a commission belongs (q1, D19): none, or a candidate with the relation.
+ORCHESTRATOR_DECISION_TAIL = (
+    "\nChoose the one option that says where the request goes: none of the candidates, or one candidate "
+    "together with how the request relates to that candidate's work."
+)
+ORCHESTRATOR_DECISION_NONE = (
+    "It belongs with none of the candidates: a separate errand that only looks alike (the same kind of task "
+    "about another thing: another parcel, another trip, another product), or one that only shares a topic, a "
+    "tool, a file type or a few words with a candidate; or it is unclear. Starting fresh is the safe answer."
+)
+# Rendered with str.format (k).
+ORCHESTRATOR_DECISION_FOLLOW_UP = (
+    "It belongs with candidate {k} and follows its work up: it changes, fixes, extends or asks about "
+    "what candidate {k} made or found."
+)
+ORCHESTRATOR_DECISION_RECURRENCE = (
+    "It belongs with candidate {k} as the next round of the same recurring job candidate {k} does, done "
+    "the same way and kept in the same place (the report for the next week, the changelog for the next "
+    "version, one more piece in a series candidate {k} started)."
+)
+
+# The second look of the turn check (r1, D7, D28): asked only when the chat
+# check found something to act on; each option counts for one verdict.
+TURN_CHECK_DECISION_INSTRUCTIONS = (
+    "Below are what the user said this turn (USER) and the character's reply (REPLY). "
+    "The character called no tool this turn. Judge only what the reply says, not whether the action is possible. "
+    "A real action means something outside the conversation: operating the computer, a browser, an app, files, "
+    "a device or smart home, a plugin; looking up live or personal information; setting a reminder, alarm or timer; "
+    "sending a message; ordering, booking or buying; playing or downloading media. "
+    "Which option best describes the reply?"
+)
+TURN_CHECK_DECISION_OPTIONS = {
+    "done_action": ("She says a real action is already finished (it is set, sent, turned off, paused, downloaded, "
+                    "booked, the volume is down now), whether or not the user asked. If she adds that the alarm or "
+                    "timer she set will ring or that she will tell the user then, it is still this option."),
+    "live_fact": ("She states as fact a result only a real lookup could give: the current weather, today's news, a "
+                  "live price or exchange rate, a delivery status, details of a specific shop she says she found, "
+                  "or the user's own calendar, email or files. General knowledge that never changes is not this."),
+    "will_do": ("She agrees to do a real action, says she will do it or is doing it now, or says she will remind or "
+                "notify the user later ('let me check', 'playing it now', 'I'll remind you', 'leave it to me'), even "
+                "if she also asks for a detail. If she says she cannot do one request but commits to another, choose this."),
+    "cannot": ("She says she cannot do the requested real action: no ability, no permission, no access, cannot reach "
+               "or connect to it, does not know how. Still this if she apologizes, says she tried first, or suggests "
+               "the user do it themselves."),
+    "decline": ("She refuses on purpose without saying she is unable: she does not want to, or thinks it is wrong, "
+                "unfair or bad for the user (cheating, hacking someone, staying up all night)."),
+    "ask_or_offer": ("She only asks back for missing details without committing ('sure, which city?'), only offers "
+                     "('want me to check?'), or the user only asked whether she could do something and she says yes "
+                     "or 'just tell me when'; nothing is agreed to be done now."),
+    "knowledge": ("She answers from general knowledge that does not change (history, geography, who wrote a book, how "
+                  "tall a mountain is), even if the user said 'look it up'; or she writes the translation, summary, "
+                  "poem or email draft directly in the reply."),
+    "chat": ("Only chatting, comforting, giving advice, role-play or a story, an openly marked guess, or 'I will "
+             "remember that'; no real action is requested or claimed."),
+}
+TURN_CHECK_DECISION_VERDICT_OF = {
+    "done_action": "claimed_done", "live_fact": "claimed_done", "will_do": "promised", "cannot": "unable",
+    "decline": "none", "ask_or_offer": "none", "knowledge": "none", "chat": "none",
+}

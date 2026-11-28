@@ -61,11 +61,26 @@ async def hosts() -> Any:
         await host.shutdown()
 
 
+class _WarmUnlessRecorded(dict):
+    """A session's last request: just now unless a test records one.
+
+    Only a session whose provider cache is warm is copied (owner decision D19);
+    the scripted sessions here make no timed requests of their own, so they
+    count as warm unless a test records a time or makes the cache window empty.
+    """
+
+    def get(self, key: Any, default: Any = None) -> Any:
+        if key in self:
+            return self[key]
+        return asyncio.get_running_loop().time()
+
+
 def _host(hosts: list[Any], tmp_path: Path, scripts: dict[str, ScriptedLLM], **kwargs: Any) -> Any:
     kwargs.setdefault("task_agent_model", fake_model)
     kwargs.setdefault("decision_llm", FakeDecisionLLM())
     kwargs.setdefault("conversation", RecentConversation())
     host = make_host(tmp_path, None, runtime_factory=scripted_runtime(scripts_by_commission(scripts)), **kwargs)
+    host.task_agents._last_request_at = _WarmUnlessRecorded(host.task_agents._last_request_at)
     hosts.append(host)
     return host
 
@@ -349,7 +364,7 @@ async def test_a_session_waiting_for_its_user_is_copied_too(hosts, tmp_path):
     assert (await host.ledger.get(first.id)).status == "waiting_user"
 
 
-@pytest.mark.parametrize("why", ["switched_off", "cold_and_long", "too_many", "not_dispatched"])
+@pytest.mark.parametrize("why", ["switched_off", "cold", "no_record", "too_many", "not_dispatched"])
 async def test_a_commission_waits_for_its_session_where_it_is_not_carried_on(hosts, tmp_path, monkeypatch, why):
     release, wait = _gate()
     scripts = {
@@ -360,12 +375,16 @@ async def test_a_commission_waits_for_its_session_where_it_is_not_carried_on(hos
     }
     if why == "switched_off":
         monkeypatch.setattr(settings, "TASK_AGENT_FORK_CONTINUE_ENABLED", False)
-    elif why == "cold_and_long":
-        # No request of the session lately, and any length is too long.
-        monkeypatch.setattr(settings, "TASK_AGENT_FORK_CONTINUE_COLD_MAX_TOKENS", -1)
+    elif why == "cold":
+        # No request of the session lately: however short, it is not copied (D19).
+        monkeypatch.setattr(settings, "TASK_AGENT_FORK_CONTINUE_HOT_SECONDS", -1.0)
     elif why == "too_many":
         monkeypatch.setattr(settings, "TASK_AGENT_FORK_CONTINUE_MAX_PER_SESSION", 1)
     host = _host(hosts, tmp_path, scripts)
+    if why == "no_record":
+        # As in production: no request of the session on record (its first one
+        # still under way) counts as a cold cache, and the commission waits.
+        host.task_agents._last_request_at = dict(host.task_agents._last_request_at)
     copied = _copies_made(host, monkeypatch)
     first = await _export_at_work(host, scripts)
     if why == "too_many":
@@ -415,7 +434,6 @@ async def test_as_many_copies_as_may_be_at_work_at_once_are(hosts, tmp_path, mon
 
 
 async def test_a_session_that_made_a_request_lately_is_copied_however_long(hosts, tmp_path, monkeypatch):
-    monkeypatch.setattr(settings, "TASK_AGENT_FORK_CONTINUE_COLD_MAX_TOKENS", -1)
     release, wait = _gate()
     scripts = {
         # A request that is answered, then one that waits: the session made a request a moment ago.
@@ -884,7 +902,6 @@ async def test_a_copy_that_cannot_be_put_on_record_leaves_the_commission_waiting
 
 
 async def test_a_copy_whose_session_went_cold_while_it_was_made_is_not_taken(hosts, tmp_path, monkeypatch):
-    monkeypatch.setattr(settings, "TASK_AGENT_FORK_CONTINUE_COLD_MAX_TOKENS", -1)
     release, wait = _gate()
     scripts = {EXPORT: ScriptedLLM([[wait, *_report("export added")]]), FILES: ScriptedLLM([_report("tables.py")])}
     host = _host(hosts, tmp_path, scripts)
@@ -1286,15 +1303,15 @@ async def test_a_commission_that_is_not_told_to_be_a_side_question_waits_for_its
     assert (await wait_status(host, second.id, "done")).session_id == first.session_id
 
 
-@pytest.mark.parametrize("why", ["switched_off", "cold_and_long", "not_dispatched", "no_place"])
+@pytest.mark.parametrize("why", ["switched_off", "cold", "not_dispatched", "no_place"])
 async def test_whether_it_is_a_side_question_is_not_asked_where_it_is_not_carried_on_anyway(hosts, tmp_path, monkeypatch, why):
     release, wait = _gate()
     decisions = FakeDecisionLLM()
     scripts = {EXPORT: ScriptedLLM([[wait, *_report("export added")]]), FILES: ScriptedLLM([_report("tables.py")])}
     if why == "switched_off":
         monkeypatch.setattr(settings, "TASK_AGENT_FORK_CONTINUE_ENABLED", False)
-    elif why == "cold_and_long":
-        monkeypatch.setattr(settings, "TASK_AGENT_FORK_CONTINUE_COLD_MAX_TOKENS", -1)
+    elif why == "cold":
+        monkeypatch.setattr(settings, "TASK_AGENT_FORK_CONTINUE_HOT_SECONDS", -1.0)
     host = _host(hosts, tmp_path, scripts, decision_llm=decisions)
     await _export_at_work(host, scripts)
     if why == "no_place":

@@ -15,7 +15,9 @@
 """Presets of task agent sessions: the built-in ones and the user's template files.
 
 Every session has a preset (``ledger.Session.preset``), set when it is made
-and never changed. A preset is a ``Template``: one sentence that says when
+and changed afterwards only for a member of a project or a session of one
+commission (``TaskAgentManager.change_duty``): what such a session may do
+and is told is the new preset's from its next start. A preset is a ``Template``: one sentence that says when
 it is used, what a session of it is told of its role, and what it is opened
 without. Six come with the program (``PRESETS``):
 
@@ -35,9 +37,11 @@ without. Six come with the program (``PRESETS``):
   agent space keeps: it judges with nothing but the work before it. It is
   told the user's rules like every session (``TaskAgentSpace.brief``).
 
-A session whose preset withholds a tool, or caps its requests, is opened in
-the built-in runtime (``Template.needs_builtin``): dsh has file and command
-tools of its own, which the host cannot keep from a session there.
+A session whose preset withholds a tool is held to it for certain in the
+built-in runtime only (``Template.needs_builtin``): dsh has file and command
+tools of its own, which the host cannot keep from a session there. In dsh
+such a session is told its role and not to use those tools, and is opened
+without the host's own tools its preset withholds; that is all that holds it.
 
 Withholding the tools that write files is not a sandbox. A preset that
 keeps the shell (the inspector, or a template with ``writes: none`` alone)
@@ -66,8 +70,8 @@ agents that session starts as well (``Template.under``), except what it
 names under ``withhold_own``: tools a session of it is without itself and
 the task agents it starts keep, for one that is to hand work out and not
 do it. It names no model, address or key (``model`` says only
-whose model a session of it follows by default, and is kept for the pull
-request that makes use of it). What a file gets wrong is an error with a
+whose model a session of it follows by default, as ``role_models.py``
+settles it). What a file gets wrong is an error with a
 reason, never ignored: a field this does not know, a value that is not one
 of those allowed, a text over its cap. A file that is wrong takes the place
 of the template it would have replaced all the same: a session of that
@@ -105,7 +109,7 @@ WRITES: tuple[str, ...] = ("inherit", "none")
 # In a work tree of its own: for the pull request that makes them.
 WRITES_LATER = "tree"
 MEMORIES: tuple[str, ...] = ("project", "none")
-MODELS: tuple[str, ...] = ("agent", "inherit")
+MODELS: tuple[str, ...] = ("agent", "inherit", "advanced")
 
 # What a session that reads only is opened without: what writes files, runs
 # commands, calls capabilities (which can write as well), files notes for
@@ -176,8 +180,9 @@ class Template:
     # it. ``none``: neither; it is told the user's rules and nothing else.
     memory: str = "project"
     # Whose model its sessions use unless the user says otherwise: the task
-    # agents' (``agent``) or that of the session that started it
-    # (``inherit``). Kept and shown; nothing goes by it yet.
+    # agents' (``agent``), the advanced one of the main app (``advanced``)
+    # or that of the session that started it (``inherit``); see
+    # ``role_models.py``.
     model: str = "inherit"
     # Most model requests one run of its sessions may make; None sets none.
     max_requests: int | None = None
@@ -263,13 +268,15 @@ class Template:
 
     @property
     def needs_builtin(self) -> bool:
-        """Whether its sessions are opened in the built-in runtime, whatever else would be chosen.
+        """Whether the host holds its sessions to it in the built-in runtime only.
 
-        dsh has tools of its own that write files and run commands, and
-        makes its model requests by itself: the host can neither keep a
-        tool from a session there nor count its requests. A preset that
-        withholds a tool or caps the requests is held to only where the
-        host opens the session itself.
+        Not where they run: dsh has tools of its own that write files and
+        run commands, and makes its model requests by itself, so the host
+        can neither keep a tool from a session there nor count its
+        requests. A session of such a preset is opened in dsh like any
+        other all the same, where it is held to its preset by what it is
+        told (``TaskAgentManager._start``); only one whose requests are
+        capped is not opened there.
         """
         return bool(self.withheld()) or self.max_requests is not None
 
@@ -319,6 +326,13 @@ class Listed:
             "writes": found.writes if found else None,
             "memory": found.memory if found else None,
             "model": found.model if found else None,
+            # Whether its sessions can change files, with a tool or through the shell
+            # (``Template.changes_files``): what a page warns of before a session is made one.
+            "changes_files": found.changes_files if found else None,
+            # Whether its sessions are held to it for certain in the built-in runtime only
+            # (``Template.needs_builtin``): one that was begun in dsh stays there when it is
+            # made one, held to it by what it is told, which a page says before it is.
+            "needs_builtin": found.needs_builtin if found else None,
             "valid": found is not None,
             "error": self.error,
         }
@@ -362,7 +376,7 @@ def builtin_templates() -> dict[str, Template]:
             writes="none",
             memory="none",
         ),
-        "planner": _builtin("planner", read_only=True, writes="none"),
+        "planner": _builtin("planner", read_only=True, writes="none", model="advanced"),
         "general": _builtin("general", model="agent"),
     }
     return {name: made[name] for name in PRESETS}

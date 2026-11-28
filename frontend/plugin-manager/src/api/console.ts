@@ -251,6 +251,8 @@ export interface BoardCard {
   runtime: string | null
   workdir: string | null
   preset: string
+  /** The kind it still works as, where its kind was changed and it has not started work since; else null. */
+  preset_was?: string | null
   avatar: string
   /** The name a template of the user's gave itself; empty for a built-in preset. */
   label: string
@@ -371,8 +373,24 @@ export interface FamiliarTemplate {
   description: string
   avatar: string
   source: string
+  /** Whether a familiar of it can change files, with a tool or through a command. */
+  changes_files?: boolean | null
+  /** Whether a familiar of it is held to it for certain in the built-in runtime only: in dsh it runs too, held to it by what it is told. */
+  needs_builtin?: boolean | null
   valid: boolean
   error: string
+}
+
+/** What came of changing what kind of familiar a session is. */
+export interface DutyChange {
+  session_id: string
+  preset: string
+  was: string
+  seat: string
+  changed: boolean
+  widened: boolean
+  /** A run of it is under way, which goes on as the kind it was. */
+  at_work: boolean
 }
 
 /** The form of a new familiar, as the user fills it in or as the model drafted it. */
@@ -400,6 +418,9 @@ export const makeFamiliar = (form: FamiliarForm & { workdir?: string }) =>
   send<{ project: SpaceProject; session_id: string }>('post', '/console/familiars', { ...form, workdir: form.workdir || undefined })
 export const writeCard = (sessionId: string, lines: { title?: string; duty?: string; summary?: string }) =>
   send<{ written: string[] }>('patch', `/console/familiars/${encodeURIComponent(sessionId)}/card`, lines)
+/** Make a familiar another kind (its preset); it holds from the next time the familiar starts work. */
+export const changeDuty = (sessionId: string, preset: string) =>
+  send<DutyChange>('post', `/console/familiars/${encodeURIComponent(sessionId)}/duty`, { preset })
 export const describeProject = (project: string, description: string) =>
   send<{ project: SpaceProject }>('post', '/console/space/projects/description', { project, description })
 export const tellCommission = (commissionId: string, text: string) =>
@@ -671,7 +692,7 @@ export interface RoleModelPreset {
   valid: boolean
   /** The id of a slot, "inherit", or null for its default. */
   setting: string | null
-  default: 'agent' | 'inherit' | (string & {})
+  default: 'agent' | 'advanced' | 'inherit' | (string & {})
   can_inherit: boolean
   in_effect: RoleModelInEffect
 }

@@ -7,7 +7,7 @@ header, a displayable ``detail.message`` and ``detail.details``.
 import asyncio
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from plugin.logging_config import get_logger
@@ -57,6 +57,31 @@ async def get_plugin_permission_panel(plugin_id: str):
     """Permission tab data: declaration vs. scan, decisions, counts, last use."""
     try:
         return await asyncio.to_thread(permission_panel.plugin_panel, plugin_id)
+    except ServerDomainError as exc:
+        raise_http_from_domain(exc, logger=logger, include_details=True)
+
+
+@router.get("/plugins/{plugin_id}/audit")
+async def get_plugin_permission_audit(
+    plugin_id: str,
+    permission: str | None = None,
+    outcome: Literal["allowed", "would_block", "blocked"] | None = None,
+    offset: int = Query(0, ge=0),
+    limit: int = Query(permission_panel.AUDIT_PAGE_DEFAULT, ge=1, le=permission_panel.AUDIT_PAGE_MAX),
+):
+    """Recorded uses of one plugin, newest first: time, operation, target
+    summary and outcome only."""
+    try:
+        if permission is not None:
+            _known_permission(permission)
+        return await asyncio.to_thread(
+            permission_panel.plugin_audit,
+            plugin_id,
+            permission=permission,
+            outcome=outcome,
+            offset=offset,
+            limit=limit,
+        )
     except ServerDomainError as exc:
         raise_http_from_domain(exc, logger=logger, include_details=True)
 
@@ -112,7 +137,10 @@ async def _decide(plugin_id: str, permission: str, decision: PermissionDecision)
 @serialized_plugin_operation
 async def _clear(plugin_id: str, permission: str) -> None:
     await asyncio.to_thread(permission_panel.ensure_plugin_known, plugin_id)
-    await asyncio.to_thread(clear_permission, plugin_id, permission)
+    # Refusals listed for it are answered by this even when nothing changes:
+    # the time is stored then too, so they do not come back after a restart.
+    answer = await asyncio.to_thread(permission_panel.has_refused, plugin_id, permission)
+    await asyncio.to_thread(clear_permission, plugin_id, permission, answer=answer)
     await asyncio.to_thread(permission_panel.forget_refused, plugin_id, permission)
 
 

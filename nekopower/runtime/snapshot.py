@@ -26,7 +26,10 @@ A snapshot is replaced after the conversation was summed up
 (``TaskAgentSession``), when the head of the request changes anyway; and
 when the session's working directory is no longer the one the snapshot was
 made for (the data was moved), because the system prompt names that
-directory and every path the task agent writes would be the old one.
+directory and every path the task agent writes would be the old one;
+and when it was made for another preset than the one the host opens the
+session as (``TaskAgentSpec.head_of``, kept with the snapshot), because
+what it is told of its role and which tools it has are the preset's.
 Until then the session is told of the tools it was opened with: one that is
 gone since is answered for by a stand-in, and one that came since is not
 told of. (A change every session has to take up when it is next opened is
@@ -66,6 +69,7 @@ _VERSION = 3
 REASON_OPENED = "opened"
 REASON_COMPACTED = "compacted"
 REASON_MOVED = "moved"
+REASON_PRESET = "preset"
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,6 +95,9 @@ class SystemSnapshot:
     # when not on record. One made before the latest summary is replaced.
     compactions: int | None = None
     refresh_on_resume: bool = False
+    # What it was put together for, as the host named it (``TaskAgentSpec.head_of``);
+    # empty when the host named nothing, and for one of a build that did not keep it.
+    head_of: str = ""
 
     @property
     def tool_names(self) -> frozenset[str]:
@@ -140,6 +147,7 @@ def read_snapshot(session_dir: Path) -> SystemSnapshot | None:
         workdir=workdir if isinstance(workdir, str) else "",
         compactions=compactions if isinstance(compactions, int) and not isinstance(compactions, bool) else None,
         refresh_on_resume=raw.get("refresh_on_resume") is True,
+        head_of=raw.get("head_of") if isinstance(raw.get("head_of"), str) else "",
     )
 
 
@@ -156,6 +164,7 @@ def write_snapshot(session_dir: Path, snapshot: SystemSnapshot) -> None:
             "workdir": snapshot.workdir,
             "compactions": snapshot.compactions,
             **({"refresh_on_resume": True} if snapshot.refresh_on_resume else {}),
+            **({"head_of": snapshot.head_of} if snapshot.head_of else {}),
             "system": snapshot.system,
             "tools": [
                 {"name": tool.name, "description": tool.description, "parameters": tool.parameters}

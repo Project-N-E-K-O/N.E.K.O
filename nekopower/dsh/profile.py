@@ -94,10 +94,12 @@ UNASKED_TOOLS: tuple[str, ...] = (
 )
 
 # The host's own tools that may have to wait for the user: a web search
-# when the user set plugin entries to be asked about. dsh gives a call less
-# than a minute, so the host is asked before the call, as for the gateway's
-# tools, though the rest of the host's tools pass unasked.
-ASKED_HOST_TOOLS: tuple[str, ...] = ("web_search",)
+# when the user set plugin entries to be asked about, and what a leader hands
+# work out by, when it opens a task agent that changes files (the user is
+# asked first by default). dsh gives a call less than a minute, so the host
+# is asked before the call, as for the gateway's tools, though the rest of
+# the host's tools pass unasked.
+ASKED_HOST_TOOLS: tuple[str, ...] = ("web_search", "hand_over", "start_team")
 
 # What the guard goes by is a tool's name, nothing else: one of the names
 # above, or one that starts with the prefix dsh gives the tools of the host's

@@ -2809,6 +2809,22 @@ def get_negative_target_check_prompt(lang: str = "zh") -> str:
     return _loc(NEGATIVE_TARGET_CHECK_PROMPT, _norm_lang(lang))
 
 
+# The same check as one decision question for vendors with a native decision model
+# (owner decisions D2, D16): a single choice among "none" and the observations.
+# English for every language (D9).
+NEGATIVE_TARGET_DECISION_HEADERS = ("User messages:", "Observations the system remembers:")
+NEGATIVE_TARGET_DECISION_INSTRUCTIONS = (
+    "The user's recent messages contain a pushback or annoyance phrase (such as 'drop it', 'change the topic', "
+    "'stop mentioning', 'so annoying'). Which single observation in the list is that pushback mainly aimed at, "
+    "meaning the user wants its topic dropped or says what it records is wrong? Choose 'none' if it is only general "
+    "mood or venting, about something not in the list, a vague 'that/it' whose topic is never named, quoting someone "
+    "else, joking, or the user is still happily engaged with the topic."
+)
+NEGATIVE_TARGET_DECISION_NONE = (
+    "no specific observation: general mood, an unlisted topic, unclear referent, or not real pushback"
+)
+
+
 # =====================================================================
 # ======= Negative-keyword scanning (RFC §3.4.5 Layer 1) ==============
 # =====================================================================

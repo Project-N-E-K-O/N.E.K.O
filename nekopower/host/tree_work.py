@@ -55,7 +55,7 @@ from pathlib import Path
 from collections.abc import AsyncIterator, Iterator
 from typing import Any
 
-from nekopower.host.ledger import ENDED_STATUSES, TREE_STATES, TREE_STATES_LEFT, Commission, Session, Tree
+from nekopower.host.ledger import ENDED_STATUSES, TREE_STATES, TREE_STATES_LEFT, Commission, SeatChanged, Session, Tree
 from nekopower.host.permissions import OPEN_SESSION
 
 logger = logging.getLogger(__name__)
@@ -320,6 +320,9 @@ class TreeWork:
         # What is said to one of them meanwhile waits until that is written (``_nothing_more_said``);
         # so it is with one whose changes are being left for the user.
         self._landing_ends: dict[str, asyncio.Future[None]] = {}
+        # How many hold each of them back this moment: the end of a run may be written within a
+        # landing's hold. Kept until the last of them is through.
+        self._landing_holds: dict[str, int] = {}
         # Projects that are being given another directory this moment (``project_changing``).
         self._projects_changing: set[str] = set()
         # Held while a project's worktrees are counted and one more is put on record: two that
@@ -418,7 +421,7 @@ class TreeWork:
             return True
         return await self.tree_possible(member.project, member.workdir)
 
-    async def seat_of_new_member(self, project: str) -> str:
+    async def seat_of_new_member(self, project: str, *, but: str = "") -> str:
         """Return the seat a new member that changes files gets in a project: ``tree`` beside one that works in its directory.
 
         The first member that changes files works in the project's
@@ -426,10 +429,12 @@ class TreeWork:
         work has a worktree made for each of its commissions, and so
         does not wait for it. One that only reads is nobody to wait
         for. (Of every character: the directory is the project's.)
+        ``but`` is a member that is not counted: the one a seat is
+        chosen for, where it is a member already (``change_duty``).
         """
         rows = await self._ledger.find_sessions(project=project, kind="line", limit=500, commissions_each=0)
         for row in rows:
-            if row.session.seat != "" or not await self._ledger.session_alive(row.session):
+            if row.session.id == but or row.session.seat != "" or not await self._ledger.session_alive(row.session):
                 continue
             try:
                 writes = bool((await self._template_of(row.session)).changes_files)
@@ -814,7 +819,13 @@ class TreeWork:
                     project_dir=home,
                     path=str(path),
                     workdir=str(path / probe.subpath) if probe.subpath else str(path),
+                    # Only while it is still to have one: read a while ago, and it may have been
+                    # given a preset that cannot change files since (``change_duty``), which
+                    # found no worktree of it then and is to find none later.
+                    seat=kept.seat,
                 )
+            except SeatChanged as exc:
+                return None, "seat_changed", str(exc)
             except ValueError as exc:
                 return None, "name_taken", str(exc)
             self._trees_mine.add(row.id)
@@ -1080,8 +1091,16 @@ class TreeWork:
         (``_pause_for_landing``). Each goes by how the commission
         stands once it is written. Entered with nothing awaited since
         it was last looked at whether more was said (``_stale``).
+
+        The end of a run that leaves a commission done outside a worktree
+        holds it the same way while that is written (``_end``'s ``hold``),
+        entered right after ``unless``, which is that last look. Held so more
+        than once at a time, it is let go once the last of them is through.
         """
-        written = self._landing_ends[commission_id] = asyncio.get_running_loop().create_future()
+        holds = self._landing_holds.get(commission_id, 0)
+        if not holds:
+            self._landing_ends[commission_id] = asyncio.get_running_loop().create_future()
+        self._landing_holds[commission_id] = holds + 1
         live = self._sessions.get(commission_id)
         if live is not None:
             live.settling += 1
@@ -1090,8 +1109,13 @@ class TreeWork:
         finally:
             if live is not None:
                 live.settling -= 1
-            del self._landing_ends[commission_id]
-            written.set_result(None)
+            # Held by more than one at once (or one within another): what waits goes on once the
+            # last of them is through, whichever that is.
+            holds = self._landing_holds.pop(commission_id) - 1
+            if holds:
+                self._landing_holds[commission_id] = holds
+            else:
+                self._landing_ends.pop(commission_id).set_result(None)
 
     def _stale(self, commission_id: str, done: _Done) -> bool:
         """Whether a commission went on working since it said it is done: what it changed is not landed under it."""
@@ -1271,8 +1295,9 @@ class TreeWork:
         Asked before every model request of a run (``_cb_budget``):
         between two steps, with no tool of the run at work.
         """
-        # A landing is writing how its commission ends this moment, and this is a run its runtime
-        # began by itself meanwhile (nothing else of the host's begins one then): asked on once
+        # A landing is writing how its commission ends this moment (or the end of a run is, ``_end``'s
+        # ``hold``), and this is a run its runtime began by itself meanwhile (nothing else of the
+        # host's begins one then): asked on once
         # that is written, so that it changes nothing in a worktree on record as one to remove.
         commission_id = self._at_work_in(session_id)
         if commission_id in self._landing_ends:
@@ -2325,7 +2350,7 @@ class TreeWork:
                 return dict(event.payload)
         return {}
 
-    async def _cb_start_team(self, session_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    async def _cb_start_team(self, session_id: str, payload: dict[str, Any], *, ahead: bool = False) -> dict[str, Any]:
         """Start several task agents for the commission a leader is at, each with a part of it (the ``start_team`` tool).
 
         The leader keeps the commission. Each part is started as a task
@@ -2336,6 +2361,9 @@ class TreeWork:
         is asked once for a team that changes files (``OPEN_SESSION``,
         with who is to be started); allowed, the rest of this
         commission's team is not asked about again.
+
+        ``ahead`` of the call (``TaskAgentManager._rule_on_host_tool``)
+        the user is asked what the call would ask, and nobody is started.
         """
         from config import nekopower_settings as settings
         from config.prompts import prompts_nekopower_brain as texts
@@ -2406,9 +2434,9 @@ class TreeWork:
                     )
                     for part in writers
                 ]
-                decision = await self._permissions.check(
+                decision = await self._may_open(
                     commission_id,
-                    OPEN_SESSION,
+                    ahead=ahead,
                     detail={
                         "tool": "start_team",
                         "title": "; ".join(members),
@@ -2437,6 +2465,8 @@ class TreeWork:
                 if live.handing_over is not None:
                     raise RuntimeError(texts.HANDED_OVER_ALREADY)
                 self._team_allowed.add(commission_id)
+        if ahead:
+            return {}
         inspect = bool(payload.get("inspect"))
         taken: list[dict[str, Any]] = []
         refused: list[tuple[str, str]] = []

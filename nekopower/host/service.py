@@ -309,7 +309,7 @@ class NekoPowerHost:
             self.task_agents.set_beside_judge(beside)
         # Where a new commission belongs, when its words neither name nor
         # clearly match what is there: one request of the small model.
-        belongs = getattr(decision, "belongs", None)
+        belongs = getattr(decision, "belongs_counted", None) or getattr(decision, "belongs", None)
         if belongs is not None:
             self.task_agents.set_orchestrator_judge(belongs)
         self.brain = TaskBrain(
@@ -622,8 +622,9 @@ class NekoPowerHost:
         ``templates(None)`` lists them; never a copy's, which has no
         setting) is ``{"preset", "label", "source", "valid", "setting",
         "default", "can_inherit", "in_effect"}``: ``setting`` is a slot's
-        id, ``"inherit"`` or None (its default); ``default`` is ``"agent"``
-        or ``"inherit"``, as its template says; ``can_inherit`` whether it
+        id, ``"inherit"`` or None (its default); ``default`` is ``"agent"``,
+        ``"advanced"`` (the advanced task agent model of the main app) or
+        ``"inherit"``, as its template says; ``can_inherit`` whether it
         can be set to the model of the session that starts it;
         ``in_effect`` is what a new session of it is sent to now
         (``RoleModels.describe``), with why its setting could not be used.
@@ -1632,6 +1633,25 @@ class NekoPowerHost:
             )
         await self.task_agents.settle_model(session)
         return {"session_id": session.id, "seat": session.seat}
+
+    async def change_duty(self, session_id: str, preset: str) -> dict[str, Any]:
+        """Change what kind of task agent a session is, as the user asks: its preset.
+
+        For a member of a project and a session of one commission, to
+        any preset of ``templates()`` that is valid but the leader's (a
+        project gets its leader with ``derive_leader``). What it may do
+        and what it is told of its role are the new preset's from its
+        next start; a run under way goes on as it was opened
+        (``at_work`` in the answer). To a preset that can change files
+        nobody is asked: it is the user who says so. The model it is
+        sent to is the new preset's from its next start. See
+        ``TaskAgentManager.change_duty`` for what is returned and raised.
+        """
+        self._first_use()
+        # With the lock a project's members are made under: where a member that changes
+        # files works is told from the others, and none is added between the look and the write.
+        async with self._project_lock:
+            return await self.task_agents.change_duty(session_id, preset, by="user")
 
     async def worktrees(self, project: str | None = None, lanlan_name: str | None = None) -> list[dict[str, Any]]:
         """Return the git worktrees task agents work in, or left for the user to decide on, the oldest first.

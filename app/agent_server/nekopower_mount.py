@@ -471,7 +471,24 @@ class _HostCapabilityEnabler:
             return False, str((availability.get("reasons") or ["unavailable"])[0])
         return False, f"unknown capability {capability}"
 
-    async def enable(self, capability: str, *, lanlan_name: Optional[str] = None) -> tuple[bool, str]:
+    def may_request(self, capability: str) -> bool:
+        """Whether a task agent may be told it can ask for this one here; nothing is looked at that takes time.
+
+        Not the keyboard and mouse where the user has to share the screen at the panel first: asking
+        would only end in a refusal.
+        """
+        if capability == "keyboard_mouse":
+            return not _screen_capture_needs_the_user()
+        return capability in ("browser", "plugins")
+
+    async def enable(
+        self,
+        capability: str,
+        *,
+        lanlan_name: Optional[str] = None,
+        still_valid: Optional[Callable[[], bool]] = None,
+        on_written: Optional[Callable[[], None]] = None,
+    ) -> tuple[bool, str]:
         if not _shared.Modules.analyzer_enabled:
             return False, "NekoPower is switched off"
         from .api_routes import set_agent_flags
@@ -480,28 +497,128 @@ class _HostCapabilityEnabler:
             from .nekopower_builtins import _state
 
             flag = "browser_use_enabled" if capability == "browser" else "computer_use_enabled"
-            await set_agent_flags({flag: True, "lanlan_name": lanlan_name, "_persist_intent": False})
+            # ``_still_valid`` is looked at by the route at the moment it writes the switch, after the check
+            # of this computer it awaits: the user's answer may have stopped standing by then.
+            request: Dict[str, Any] = {flag: True, "lanlan_name": lanlan_name, "_persist_intent": False}
+            if still_valid is not None:
+                request["_still_valid"] = still_valid
+                if on_written is not None:
+                    # Called by the route as it writes the switch itself (``CapabilityEnabler``).
+                    request["_on_written"] = on_written
+            await set_agent_flags(request)
             ready, reason = _state(capability)
             return (True, "") if ready else (False, reason or "not ready")
         if capability == "plugins":
-            await set_agent_flags({"user_plugin_enabled": True, "lanlan_name": lanlan_name, "_persist_intent": False})
-            starting = _shared.Modules.user_plugin_enable_task
-            if starting is not None and not starting.done():
-                await asyncio.wait({starting}, timeout=_PLUGIN_ENABLE_WAIT_SECONDS)
-                if not starting.done():
-                    return False, "the plugins are still starting; try again in a moment"
-            if starting is not None and starting.done() and not starting.cancelled() and starting.exception() is None:
-                outcome = starting.result()
-                if isinstance(outcome, tuple) and len(outcome) == 2 and not outcome[0]:
-                    return False, str(outcome[1] or "the plugin server did not come up")
-            if not (_shared.Modules.agent_flags or {}).get("user_plugin_enabled", False):
-                return False, "no plugin could be started (none installed, or the plugin server did not come up)"
-            from nekopower.host import mount
+            return await self._enable_plugins(lanlan_name, still_valid=still_valid, on_written=on_written)
+        return False, f"unknown capability {capability}"
 
-            # The host's plugin list is fetched again at once.
+    async def _enable_plugins(
+        self,
+        lanlan_name: Optional[str],
+        *,
+        still_valid: Optional[Callable[[], bool]] = None,
+        on_written: Optional[Callable[[], None]] = None,
+    ) -> tuple[bool, str]:
+        """Turn the plugins on, or wait for the start that is under way, and say whether they came up.
+
+        A start under way is shared, not started over: another ``set_agent_flags`` would end it
+        (``PLUGIN_ENABLE_SUPERSEDED``) and the first to ask would be told it failed. The task waited
+        for is the one the switch's own call made (``_on_plugin_task``), not whatever the global
+        holds after that call awaited; and one that was ended by a newer start, with the switch
+        still on, is followed to that one, within the same time. One that came up is followed to a
+        newer start only if the switch went off in between: a newer request to turn on what was on
+        already (the user's switch sent again) does not undo what came up.
+        """
+        from nekopower.host import mount
+
+        from .api_routes import PLUGIN_ENABLE_SUPERSEDED, set_agent_flags
+
+        modules = _shared.Modules
+
+        def switch_on() -> bool:
+            return bool(modules.analyzer_enabled and (modules.agent_flags or {}).get("user_plugin_enabled", False))
+
+        def finished(task: Any) -> Any:
+            if task is None or not task.done() or task.cancelled() or task.exception() is not None:
+                return None
+            return task.result()
+
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + _PLUGIN_ENABLE_WAIT_SECONDS
+        # Counted before the start waited for is taken: a put-off after it is seen (``user_plugin_switch_offs``).
+        offs = modules.user_plugin_switch_offs
+        existing = modules.user_plugin_enable_task
+        if switch_on() and existing is not None and not existing.done():
+            starting = existing
+        elif switch_on() and (existing is None or finished(existing) == (True, "")):
+            # On and up already (the user's own switch): nothing to start.
             mount.notify_plugins_changed()
             return True, ""
-        return False, f"unknown capability {capability}"
+        else:
+            if still_valid is not None and not still_valid():
+                return False, "switched off"
+            made: list[Any] = []
+            request: Dict[str, Any] = {
+                "user_plugin_enabled": True,
+                "lanlan_name": lanlan_name,
+                "_persist_intent": False,
+                "_on_plugin_task": made.append,
+            }
+            if still_valid is not None:
+                request["_still_valid"] = still_valid
+                if on_written is not None:
+                    request["_on_written"] = on_written
+            await set_agent_flags(request)
+            if not made and still_valid is not None and not still_valid():
+                # The route did not start the plugins: the answer stopped standing.
+                return False, "switched off"
+            starting = made[-1] if made else modules.user_plugin_enable_task
+        # The tasks themselves, not their ``id``: a task let go of gives its address to a new one.
+        seen: list[Any] = []
+        came_up = False
+        while True:
+            if starting is not None:
+                seen.append(starting)
+            if starting is not None and not starting.done():
+                remaining = deadline - loop.time()
+                if remaining > 0:
+                    await asyncio.wait({starting}, timeout=remaining)
+                if not starting.done():
+                    return False, "the plugins are still starting; try again in a moment"
+            replacement = modules.user_plugin_enable_task
+            can_follow = (
+                switch_on() and replacement is not None and not any(replacement is task for task in seen)
+            )
+            if starting is not None and starting.cancelled():
+                # Ended by a newer toggle's own cleanup, or by shutdown: followed if a newer start is there.
+                if can_follow:
+                    starting, offs = replacement, modules.user_plugin_switch_offs
+                    continue
+                return False, "starting the plugin server was cancelled"
+            if starting is not None and starting.exception() is not None:
+                return False, "starting the plugin server failed"
+            outcome = finished(starting)
+            came_up = outcome == (True, "")
+            if came_up and can_follow and modules.user_plugin_switch_offs != offs:
+                # Switched off and on while this one finished (its status update was awaited): the newer
+                # start decides, within the same time.
+                starting, offs = replacement, modules.user_plugin_switch_offs
+                continue
+            if isinstance(outcome, tuple) and len(outcome) == 2 and not outcome[0]:
+                reason = str(outcome[1] or "the plugin server did not come up")
+                if reason == PLUGIN_ENABLE_SUPERSEDED and can_follow:
+                    starting, offs = replacement, modules.user_plugin_switch_offs
+                    continue
+                return False, reason
+            break
+        if not switch_on():
+            if came_up:
+                # Up, and then switched off (the user at the panel, or NekoPower as a whole).
+                return False, "the plugins were switched off meanwhile"
+            return False, "no plugin could be started (none installed, or the plugin server did not come up)"
+        # The host's plugin list is fetched again at once.
+        mount.notify_plugins_changed()
+        return True, ""
 
 
 def mount_nekopower_host(change_token: Optional[Callable[[], Any]] = None) -> None:
