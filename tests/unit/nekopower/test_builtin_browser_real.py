@@ -226,7 +226,9 @@ UPLOAD_DRAG = """<!doctype html><html><head><title>Upload and drag</title></head
 
 WS_REACHING = """<!doctype html><html><head><title>WS Reaching</title></head><body>
 <p id="page-ws">pending</p>
+<p id="proto-ws">pending</p>
 <p id="worker-ws">pending</p>
+<p id="tamper-ws">pending</p>
 <iframe src="__OTHER_SITE__/ws-frame" title="WS Frame"></iframe>
 <script>
 try {
@@ -234,6 +236,22 @@ try {
   ws.onerror = function () { document.getElementById('page-ws').textContent = 'page-ws-error'; };
 } catch (e) {
   document.getElementById('page-ws').textContent = 'page-ws-blocked';
+}
+try {
+  var ProtoWS = WebSocket.prototype.constructor;
+  var ws2 = new ProtoWS('ws://127.0.0.1:__OWN_PORT__/ws-proto');
+  ws2.onerror = function () { document.getElementById('proto-ws').textContent = 'proto-ws-error'; };
+} catch (e) {
+  document.getElementById('proto-ws').textContent = 'proto-ws-blocked';
+}
+try {
+  // Attempt prototype tampering after guard installation; captured intrinsics must still block it.
+  Object.defineProperty(URL.prototype, 'port', { get: function () { return '80'; }, configurable: true });
+  Set.prototype.has = function () { return false; };
+  var ws3 = new WebSocket('ws://127.0.0.1:__OWN_PORT__/ws-tamper');
+  ws3.onerror = function () { document.getElementById('tamper-ws').textContent = 'tamper-ws-error'; };
+} catch (e) {
+  document.getElementById('tamper-ws').textContent = 'tamper-ws-blocked';
 }
 var w = new Worker('/ws-worker.js');
 w.onmessage = function (ev) { document.getElementById('worker-ws').textContent = ev.data; };
@@ -1043,6 +1061,10 @@ async def test_websocket_to_own_port_is_blocked_from_page_oopif_and_worker(tmp_p
         assert opened.success, opened.text
         waited = await call(made, "wait_for", text=["page-ws-blocked"], timeout=10000)
         assert waited.success and "page-ws-blocked" in waited.text, waited.text
+        waited_proto = await call(made, "wait_for", text=["proto-ws-blocked"], timeout=10000)
+        assert waited_proto.success and "proto-ws-blocked" in waited_proto.text, waited_proto.text
+        waited_tamper = await call(made, "wait_for", text=["tamper-ws-blocked"], timeout=10000)
+        assert waited_tamper.success and "tamper-ws-blocked" in waited_tamper.text, waited_tamper.text
         waited_w = await call(made, "wait_for", text=["worker-ws-blocked"], timeout=10000)
         assert waited_w.success and "worker-ws-blocked" in waited_w.text, waited_w.text
         waited_f = await call(made, "wait_for", text=["frame-ws-blocked"], timeout=10000)
@@ -1077,7 +1099,9 @@ async def test_two_owners_work_concurrently_on_separate_tabs_in_real_browser(
 
     pages_a = await tools.call("browser_list_pages", {}, owner="team-a")
     pages_b = await tools.call("browser_list_pages", {}, owner="team-b")
+    assert pages_a.success and pages_b.success
     assert "/terms" in pages_a.text and "/terms" not in pages_b.text
+    assert f"{site}/" in pages_b.text and f"{site}/ [selected]" not in pages_a.text
 
     await tools.released(owner="team-a")
     still_b = await tools.call("browser_take_snapshot", {}, owner="team-b")

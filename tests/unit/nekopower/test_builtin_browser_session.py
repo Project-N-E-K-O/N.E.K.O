@@ -4922,3 +4922,121 @@ async def test_attach_mode_arms_websocket_guard_and_auto_attaches_oopifs_and_wor
     assert any(tid == "oopif-child-1" for tid, _ in world.browser.port_guards)
     assert any(tid == "shared-w-1" for tid, _ in world.browser.fetch_enabled)
     assert any(tid == "shared-w-1" for tid, _ in world.browser.port_guards)
+
+
+async def test_attach_retries_remaining_candidates_when_cdp_connect_fails(
+    session: BrowserSession, world: BrowserWorld
+) -> None:
+    edge = launcher.BrowserInstall("edge", "Microsoft Edge", "/fake/msedge", "/fake/edge-profile")
+    world.settings(mode="attach")
+    world.attach_browsers = [CHROME, edge]
+    world.attach_endpoints_map[CHROME.executable] = [
+        launcher.RunningBrowser(CHROME, "ws://127.0.0.1:9331/devtools/browser/stale", owned=False, user_data_dir="/p1"),
+        launcher.RunningBrowser(CHROME, "ws://127.0.0.1:9332/devtools/browser/stale2", owned=False, user_data_dir="/p2"),
+    ]
+    world.attach_endpoints_map[edge.executable] = [
+        launcher.RunningBrowser(edge, "ws://127.0.0.1:9333/devtools/browser/live", owned=False, user_data_dir="/edge-p"),
+    ]
+    world.connect_errors["ws://127.0.0.1:9331/devtools/browser/stale"] = OSError("handshake rejected")
+    world.connect_errors["ws://127.0.0.1:9332/devtools/browser/stale2"] = TimeoutError("timed out")
+
+    await session.start()
+    assert session.connected
+    assert session.browser_name == "Microsoft Edge"
+    assert [url for url, _ in world.connected] == [
+        "ws://127.0.0.1:9331/devtools/browser/stale",
+        "ws://127.0.0.1:9332/devtools/browser/stale2",
+        "ws://127.0.0.1:9333/devtools/browser/live",
+    ]
+
+
+async def test_tab_owner_persists_across_temporary_unlisted_navigation(
+    session: BrowserSession, world: BrowserWorld
+) -> None:
+    await session.start()
+    page_a = await session.ensure_owner_page("team-a")
+    assert page_a is not None
+    tid = page_a.target_id
+    await session.navigate(page_a, "url", ORDER)
+
+    # Temporarily navigate the tab to an unlisted internal URL (chrome://), dropping it from _pages.
+    world.browser._emit(
+        "Target.targetInfoChanged",
+        {"targetInfo": {"targetId": tid, "type": "page", "url": "chrome://settings", "title": "Settings"}},
+    )
+    assert tid not in session._pages
+
+    # When the tab navigates back to a web page, ownership by team-a is restored so team-b cannot steal it.
+    world.browser._emit(
+        "Target.targetInfoChanged",
+        {"targetInfo": {"targetId": tid, "type": "page", "url": ORDER, "title": "Order"}},
+    )
+    assert session._pages[tid].owner == "team-a"
+    page_b = await session.ensure_owner_page("team-b")
+    assert page_b is not None and page_b.target_id != tid
+
+
+async def test_attach_frames_discards_frame_when_loader_changes_mid_snapshot(
+    session: BrowserSession, world: BrowserWorld
+) -> None:
+    await session.start()
+    page = session.selected()
+    await session.navigate(page, "url", CHECKOUT)
+    fake = world.page_of(page)
+
+    # Hold the iframe's Accessibility.getFullAXTree so we can fire a frame navigation mid-flight.
+    iframe_el = next(el for el in fake.elements.values() if el.role == "Iframe")
+    assert iframe_el.content_frame is not None
+    iframe_id = iframe_el.content_frame.frame_id
+    gate = world.browser.hold("Accessibility.getFullAXTree", frameId=iframe_id)
+
+    task = asyncio.ensure_future(session.take_snapshot(page))
+    await _until(lambda: gate.reached.is_set())
+    world.browser.reload_frame(fake, iframe_el, Document("Replaced", el("button", "New Button")))
+    gate.release()
+    snap = await task
+    assert snap.unlisted_frames >= 1
+    assert all(node.name != "Confirm card" for node in snap.by_uid.values())
+
+
+async def test_upload_file_refuses_without_clicking_when_chooser_interception_unsupported(
+    session: BrowserSession, world: BrowserWorld, tmp_path: Path
+) -> None:
+    world.browser.serve(
+        "https://shop.example/upload-only-btn",
+        lambda: Document("Up", el("button", "Pick file")),
+    )
+    await session.start()
+    page = session.selected()
+    await session.navigate(page, "url", "https://shop.example/upload-only-btn")
+    snap = await session.take_snapshot(page)
+    sample = tmp_path / "doc.txt"
+    sample.write_text("hi", encoding="utf-8")
+
+    world.browser.refuse("Page.setInterceptFileChooserDialog", "unsupported")
+    mark = world.browser.mark()
+    with pytest.raises(BrowserError, match="does not support intercepting file chooser dialogs"):
+        await session.upload_file(page, uid_of(snap, "Pick file"), str(sample))
+    assert world.browser.input_events(mark) == []
+
+
+async def test_install_port_guard_reports_false_on_runtime_exception_details(
+    make_session: Any, world: BrowserWorld, monkeypatch: Any
+) -> None:
+    from nekopower.builtin.browser.session import _PORT_GUARD_MARKER
+
+    session = make_session(own_ports=lambda: {48911})
+    await session.start()
+    page = session.selected()
+    await session.navigate(page, "url", ORDER)
+    orig_eval = world.browser._do_Runtime_evaluate
+
+    def failing_eval(command: Any, target: Any) -> dict[str, Any]:
+        if _PORT_GUARD_MARKER in str(command.params.get("expression") or ""):
+            return {"exceptionDetails": {"text": "CSP blocked eval"}}
+        return orig_eval(command, target)
+
+    monkeypatch.setattr(world.browser, "_do_Runtime_evaluate", failing_eval)
+    assert session._connection is not None and page.session_id is not None
+    ok = await session._install_port_guard(session._connection, page.session_id, on_new_document=False)
+    assert ok is False

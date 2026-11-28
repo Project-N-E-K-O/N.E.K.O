@@ -605,7 +605,7 @@ class _Win32Process:
         if handle is not None:
             try:
                 import ctypes
-                from ctypes import wintypes
+                import ctypes.wintypes as wintypes
 
                 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
                 kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
@@ -621,7 +621,7 @@ class _Win32Process:
         if handle is None:
             return self.returncode
         import ctypes
-        from ctypes import wintypes
+        import ctypes.wintypes as wintypes
 
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
         kernel32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
@@ -642,7 +642,7 @@ class _Win32Process:
         if handle is None:
             return self.returncode or 0
         import ctypes
-        from ctypes import wintypes
+        import ctypes.wintypes as wintypes
 
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
         kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
@@ -662,7 +662,7 @@ def _spawn_pipe_windows(arguments: list[str]) -> tuple[Any, Any]:
     """Start a Chromium process on Windows with inheritable pipe handles mapped to CRT FDs 3 and 4."""
     import ctypes
     import struct
-    from ctypes import wintypes
+    import ctypes.wintypes as wintypes
 
     from nekopower.builtin.browser.cdp import PipeTransport
 
@@ -793,9 +793,14 @@ def _spawn_pipe_windows(arguments: list[str]) -> tuple[Any, Any]:
         if not ok:
             raise ctypes.WinError(ctypes.get_last_error())
         kernel32.CloseHandle(pi.hThread)
-        return _Win32Process(pi.hProcess, pi.dwProcessId), PipeTransport(
-            p_read.value, p_write.value, is_win32_handle=True
-        )
+        proc = _Win32Process(pi.hProcess, pi.dwProcessId)
+        try:
+            transport = PipeTransport(p_read.value, p_write.value, is_win32_handle=True)
+        except BaseException:
+            kill_tree(proc.pid)
+            close_h(pi.hProcess)
+            raise
+        return proc, transport
     except BaseException:
         close_h(p_read)
         close_h(p_write)
@@ -806,60 +811,164 @@ def _spawn_pipe_windows(arguments: list[str]) -> tuple[Any, Any]:
         close_h(nul_handle)
 
 
-def _spawn_pipe_posix(arguments: list[str]) -> tuple[Any, Any]:
-    """Start a Chromium process on POSIX with pipes mapped to FDs 3 (read) and 4 (write)."""
-    from nekopower.builtin.browser.cdp import PipeTransport
+class _PosixSpawnProcess:
+    """Minimal ``Popen``-like handle for a POSIX process launched with ``os.posix_spawnp``."""
 
-    c_read, p_write = os.pipe()
-    p_read, c_write = os.pipe()
-    os.set_inheritable(c_read, True)
-    os.set_inheritable(c_write, True)
-    os.set_inheritable(p_write, False)
-    os.set_inheritable(p_read, False)
+    def __init__(self, pid: int, args: list[str]) -> None:
+        self.pid = int(pid)
+        self._args = list(args)
+        self.returncode: int | None = None
+        self._lock = threading.Lock()
 
-    def _wire_fds() -> None:
-        src_r, src_w = c_read, c_write
-        if src_r == 4:
-            src_r = os.dup(src_r)
-        if src_w == 3:
-            src_w = os.dup(src_w)
-        if src_r != 3:
-            os.dup2(src_r, 3)
-        if src_w != 4:
-            os.dup2(src_w, 4)
-        for fd in {c_read, c_write, src_r, src_w}:
-            if fd not in (3, 4):
+    def poll(self) -> int | None:
+        with self._lock:
+            if self.returncode is not None:
+                return self.returncode
+            try:
+                waited_pid, status = os.waitpid(self.pid, os.WNOHANG)
+            except ChildProcessError:
+                self.returncode = 0
+                return self.returncode
+            if waited_pid == 0:
+                return None
+            self.returncode = os.waitstatus_to_exitcode(status)
+            return self.returncode
+
+    def wait(self, timeout: float | None = None) -> int:
+        if timeout is None:
+            with self._lock:
+                if self.returncode is not None:
+                    return self.returncode
                 try:
-                    os.close(fd)
+                    _, status = os.waitpid(self.pid, 0)
+                except ChildProcessError:
+                    self.returncode = 0
+                    return self.returncode
+                self.returncode = os.waitstatus_to_exitcode(status)
+                return self.returncode
+        deadline = time.monotonic() + max(0.0, float(timeout))
+        while True:
+            code = self.poll()
+            if code is not None:
+                return code
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(self._args, timeout)
+            time.sleep(min(0.02, remaining))
+
+
+def _dup_fd_above(fd: int, minimum: int = 5) -> int:
+    """Duplicate ``fd`` onto a fresh CLOEXEC descriptor ``>= minimum``."""
+    if fd >= minimum:
+        return fd
+    try:
+        import fcntl
+
+        dup_cmd = getattr(fcntl, "F_DUPFD_CLOEXEC", fcntl.F_DUPFD)
+        new_fd = int(fcntl.fcntl(fd, dup_cmd, minimum))
+        os.set_inheritable(new_fd, False)
+        return new_fd
+    except ImportError:
+        temps: list[int] = []
+        try:
+            cand = os.dup(fd)
+            while cand < minimum:
+                temps.append(cand)
+                cand = os.dup(fd)
+            os.set_inheritable(cand, False)
+            return cand
+        finally:
+            for temp in temps:
+                try:
+                    os.close(temp)
                 except OSError:
                     pass
-        os.set_inheritable(3, True)
-        os.set_inheritable(4, True)
 
-    try:
-        process = subprocess.Popen(  # noqa: S603 - the executable is a browser found on this computer
-            arguments,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            close_fds=True,
-            pass_fds=(c_read, c_write),
-            start_new_session=True,
-            preexec_fn=_wire_fds,
-        )
-    except BaseException:
-        for fd in (c_read, c_write, p_read, p_write):
+
+def _build_posix_pipe_file_actions(
+    devnull_fd: int, src_r: int, src_w: int, parent_fds: tuple[int, ...] = ()
+) -> list[tuple[Any, ...]]:
+    """Build ``posix_spawn`` file actions mapping FDs 0..2 to ``devnull_fd`` and FDs 3/4 to pipe ends."""
+    dup2_op = getattr(os, "POSIX_SPAWN_DUP2", "POSIX_SPAWN_DUP2")
+    close_op = getattr(os, "POSIX_SPAWN_CLOSE", "POSIX_SPAWN_CLOSE")
+    actions: list[tuple[Any, ...]] = [
+        (dup2_op, devnull_fd, 0),
+        (dup2_op, devnull_fd, 1),
+        (dup2_op, devnull_fd, 2),
+        (dup2_op, src_r, 3),
+        (dup2_op, src_w, 4),
+    ]
+    seen_close: set[int] = set()
+    for fd in (devnull_fd, src_r, src_w, *parent_fds):
+        if fd >= 5 and fd not in seen_close:
+            seen_close.add(fd)
+            actions.append((close_op, fd))
+    return actions
+
+
+def _spawn_pipe_posix(arguments: list[str]) -> tuple[Any, Any]:
+    """Start a Chromium process on POSIX with pipes mapped to FDs 3 (read) and 4 (write).
+
+    Uses ``os.posix_spawnp`` with explicit ``file_actions`` rather than
+    ``subprocess.Popen(..., preexec_fn=...)`` so no Python code ever executes
+    between ``fork`` and ``exec`` inside multithreaded worker threads.
+    """
+    from nekopower.builtin.browser.cdp import PipeTransport
+
+    spawnp = getattr(os, "posix_spawnp", None)
+    if spawnp is None:
+        raise OSError("os.posix_spawnp is unavailable on this platform")
+
+    c_read: int | None = None
+    p_write: int | None = None
+    p_read: int | None = None
+    c_write: int | None = None
+    devnull_fd: int | None = None
+    extra_parent_close: list[int] = []
+    process: _PosixSpawnProcess | None = None
+
+    def close_fd(fd: int | None) -> None:
+        if fd is not None:
             try:
                 os.close(fd)
             except OSError:
                 pass
-        raise
-    for fd in (c_read, c_write):
+
+    try:
+        c_read, p_write = os.pipe()
+        p_read, c_write = os.pipe()
+        devnull_fd = os.open(os.devnull, os.O_RDWR)
+        for fd in (c_read, p_write, p_read, c_write, devnull_fd):
+            os.set_inheritable(fd, False)
+        src_r = _dup_fd_above(c_read, 5)
+        if src_r != c_read:
+            extra_parent_close.append(src_r)
+        src_w = _dup_fd_above(c_write, 5)
+        if src_w != c_write:
+            extra_parent_close.append(src_w)
+        src_null = _dup_fd_above(devnull_fd, 5)
+        if src_null != devnull_fd:
+            extra_parent_close.append(src_null)
+        actions = _build_posix_pipe_file_actions(src_null, src_r, src_w, (p_read, p_write))
         try:
-            os.close(fd)
-        except OSError:
-            pass
-    return process, PipeTransport(p_read, p_write, is_win32_handle=False)
+            pid = spawnp(arguments[0], arguments, os.environ, file_actions=actions, setsid=True)
+        except (TypeError, NotImplementedError):
+            pid = spawnp(arguments[0], arguments, os.environ, file_actions=actions)
+        process = _PosixSpawnProcess(pid, arguments)
+        transport = PipeTransport(p_read, p_write, is_win32_handle=False)
+        return process, transport
+    except BaseException:
+        if process is not None:
+            kill_tree(process.pid)
+        close_fd(p_read)
+        close_fd(p_write)
+        raise
+    finally:
+        close_fd(c_read)
+        close_fd(c_write)
+        close_fd(devnull_fd)
+        for fd in extra_parent_close:
+            close_fd(fd)
 
 
 def _spawn_pipe_process(arguments: list[str]) -> tuple[Any, Any]:
@@ -875,7 +984,7 @@ def _pipe_read_available(transport: Any, timeout: float) -> bytes | None:
         return None
     if transport._is_win32:
         import ctypes
-        from ctypes import wintypes
+        import ctypes.wintypes as wintypes
 
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
         kernel32.PeekNamedPipe.argtypes = [
@@ -907,13 +1016,15 @@ def _pipe_read_available(transport: Any, timeout: float) -> bytes | None:
         if not kernel32.ReadFile(handle, buf, to_read, ctypes.byref(nread), None) or nread.value == 0:
             return None
         return buf.raw[: nread.value]
-    import select
+    import selectors
 
     try:
-        ready, _, _ = select.select([handle], [], [], timeout)
+        with selectors.DefaultSelector() as sel:
+            sel.register(handle, selectors.EVENT_READ)
+            events = sel.select(timeout)
     except (OSError, ValueError):
         return None
-    if not ready:
+    if not events:
         return b""
     try:
         data = os.read(handle, 64 * 1024)
@@ -980,8 +1091,9 @@ def _start_pipe(
         process, transport = _spawn_pipe_process(
             launch_arguments(install.executable, user_data_dir, headless=headless, extra=extra, pipe=True)
         )
-    except OSError as exc:
-        raise BrowserStartError(f"{install.name} could not be started: {exc}") from exc
+    except OSError:
+        logger.info("%s debugging pipe spawn failed; falling back to a local debugging port", install.name, exc_info=True)
+        return None
     started = _created(process.pid)
     ready = False
     try:
@@ -1149,22 +1261,33 @@ def _attach_profile_dirs(install: BrowserInstall, exclude_user_data_dir: str | N
     return candidates
 
 
+async def attach_endpoints(install: BrowserInstall, *, exclude_user_data_dir: str | None = None) -> list[RunningBrowser]:
+    """Return every running debugging endpoint found for ``install`` across its candidate profiles.
+
+    Raises ``BrowserStartError`` when none of its profiles has remote debugging open.
+    """
+    profiles = await asyncio.to_thread(_attach_profile_dirs, install, exclude_user_data_dir)
+    if not profiles:
+        raise BrowserStartError(f"where {install.name} keeps its profile is not known, so it cannot be attached to")
+    found: list[RunningBrowser] = []
+    for profile in profiles:
+        endpoint = await asyncio.to_thread(running_endpoint, profile)
+        if endpoint is not None:
+            found.append(RunningBrowser(install=install, endpoint=endpoint, process=None, owned=False, user_data_dir=profile))
+    if found:
+        return found
+    raise BrowserStartError(
+        f"{install.name} is not running with remote debugging on. Open chrome://inspect/#remote-debugging "
+        "in it and allow remote debugging (Chrome 144 or later), then try again."
+    )
+
+
 async def attach(install: BrowserInstall, *, exclude_user_data_dir: str | None = None) -> RunningBrowser:
     """Find the browser the user is using, with remote debugging switched on by them.
 
     Raises ``BrowserStartError`` when it is not running that way.
     """
-    profiles = await asyncio.to_thread(_attach_profile_dirs, install, exclude_user_data_dir)
-    if not profiles:
-        raise BrowserStartError(f"where {install.name} keeps its profile is not known, so it cannot be attached to")
-    for profile in profiles:
-        endpoint = await asyncio.to_thread(running_endpoint, profile)
-        if endpoint is not None:
-            return RunningBrowser(install=install, endpoint=endpoint, process=None, owned=False, user_data_dir=profile)
-    raise BrowserStartError(
-        f"{install.name} is not running with remote debugging on. Open chrome://inspect/#remote-debugging "
-        "in it and allow remote debugging (Chrome 144 or later), then try again."
-    )
+    return (await attach_endpoints(install, exclude_user_data_dir=exclude_user_data_dir))[0]
 
 
 def kill_tree(pid: int | None) -> None:
@@ -1280,7 +1403,7 @@ def browser_process_on(user_data_dir: str | os.PathLike[str]) -> int | None:
 
 
 def _profile_key(user_data_dir: str | os.PathLike[str]) -> str:
-    return os.path.normcase(os.path.abspath(os.fspath(user_data_dir)))
+    return os.path.normcase(os.path.realpath(os.fspath(user_data_dir)))
 
 
 def _is_browser_of(arguments: list[str], wanted: str) -> bool:

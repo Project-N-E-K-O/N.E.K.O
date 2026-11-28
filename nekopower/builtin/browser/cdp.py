@@ -53,7 +53,7 @@ EventListener = Callable[[str, dict[str, Any], "str | None"], None]
 
 def _win32_pipe_api() -> Any:
     import ctypes
-    from ctypes import wintypes
+    import ctypes.wintypes as wintypes
 
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel32.ReadFile.argtypes = [
@@ -108,6 +108,11 @@ class PipeTransport:
         self._wakeup_w: int | None = None
         if not self._is_win32:
             self._wakeup_r, self._wakeup_w = os.pipe()
+            if hasattr(os, "set_blocking"):
+                try:
+                    os.set_blocking(self._write_handle, False)
+                except OSError:
+                    pass
 
     def start(self, loop: asyncio.AbstractEventLoop) -> None:
         if self._reader_thread is not None:
@@ -158,7 +163,7 @@ class PipeTransport:
 
     def _read_loop_win32(self, buf: bytearray) -> None:
         import ctypes
-        from ctypes import wintypes
+        import ctypes.wintypes as wintypes
 
         kernel32 = _win32_pipe_api()
         chunk = ctypes.create_string_buffer(_PIPE_READ_CHUNK_BYTES)
@@ -174,45 +179,54 @@ class PipeTransport:
             self._emit_from_buffer(buf)
 
     def _read_loop_posix(self, buf: bytearray) -> None:
-        import select
+        import selectors
 
-        while not self._closed:
-            rfd = self._read_handle
-            wfd = self._wakeup_r
-            if rfd is None:
-                break
-            watch = [rfd] if wfd is None else [rfd, wfd]
-            try:
-                ready, _, _ = select.select(watch, [], [])
-            except (OSError, ValueError):
-                break
-            if wfd is not None and wfd in ready:
-                break
-            if rfd not in ready:
-                continue
-            try:
-                data = os.read(rfd, _PIPE_READ_CHUNK_BYTES)
-            except OSError:
-                break
-            if not data:
-                break
-            buf.extend(data)
-            self._emit_from_buffer(buf)
+        rfd = self._read_handle
+        wfd = self._wakeup_r
+        if rfd is None:
+            return
+        try:
+            with selectors.DefaultSelector() as sel:
+                sel.register(rfd, selectors.EVENT_READ, "read")
+                if wfd is not None:
+                    sel.register(wfd, selectors.EVENT_READ, "wake")
+                while not self._closed:
+                    try:
+                        events = sel.select()
+                    except (OSError, ValueError):
+                        break
+                    tags = {key.data for key, _ in events}
+                    if "wake" in tags:
+                        break
+                    if "read" not in tags:
+                        continue
+                    try:
+                        data = os.read(rfd, _PIPE_READ_CHUNK_BYTES)
+                    except OSError:
+                        break
+                    if not data:
+                        break
+                    buf.extend(data)
+                    self._emit_from_buffer(buf)
+        except (OSError, ValueError):
+            return
 
     def write_sync(self, payload: bytes) -> None:
-        """Write raw bytes to the browser pipe. Blocking; thread-safe."""
+        """Write raw bytes to the browser pipe. Blocking; interruptible on close; thread-safe."""
         with self._write_lock:
             if self._closed or self._write_handle is None:
                 raise BrokenPipeError("the browser pipe is closed")
             if self._is_win32:
                 import ctypes
-                from ctypes import wintypes
+                import ctypes.wintypes as wintypes
 
                 kernel32 = _win32_pipe_api()
                 view = memoryview(payload)
                 offset = 0
                 written = wintypes.DWORD()
                 while offset < len(view):
+                    if self._closed or self._write_handle is None:
+                        raise BrokenPipeError("the browser pipe is closed")
                     part = bytes(view[offset:])
                     ok = kernel32.WriteFile(
                         self._write_handle, part, len(part), ctypes.byref(written), None
@@ -221,13 +235,40 @@ class PipeTransport:
                         raise BrokenPipeError(f"pipe write failed (error {ctypes.get_last_error()})")
                     offset += written.value
             else:
+                import selectors
+
                 view = memoryview(payload)
                 offset = 0
-                while offset < len(view):
-                    n = os.write(self._write_handle, view[offset:])
-                    if n <= 0:
-                        raise BrokenPipeError("pipe write returned 0")
-                    offset += n
+                handle = self._write_handle
+                wfd = self._wakeup_r
+                try:
+                    with selectors.DefaultSelector() as sel:
+                        sel.register(handle, selectors.EVENT_WRITE, "write")
+                        if wfd is not None:
+                            sel.register(wfd, selectors.EVENT_READ, "wake")
+                        while offset < len(view):
+                            if self._closed or self._write_handle is None:
+                                raise BrokenPipeError("the browser pipe is closed")
+                            try:
+                                events = sel.select(0.2)
+                            except (OSError, ValueError) as exc:
+                                raise BrokenPipeError("the browser pipe is closed") from exc
+                            tags = {key.data for key, _ in events}
+                            if self._closed or "wake" in tags:
+                                raise BrokenPipeError("the browser pipe is closed")
+                            if "write" not in tags:
+                                continue
+                            try:
+                                n = os.write(handle, view[offset:])
+                            except BlockingIOError:
+                                continue
+                            if n <= 0:
+                                raise BrokenPipeError("pipe write returned 0")
+                            offset += n
+                except (OSError, ValueError) as exc:
+                    if isinstance(exc, BrokenPipeError):
+                        raise
+                    raise BrokenPipeError("the browser pipe is closed") from exc
 
     async def send(self, text: str) -> None:
         payload = text.encode("utf-8") + b"\x00"
@@ -245,8 +286,29 @@ class PipeTransport:
             raise StopAsyncIteration
         return item
 
-    def _close_write_handle(self) -> None:
-        with self._write_lock:
+    def _cancel_pending_io(self) -> None:
+        """Interrupt any blocked pipe read or write without waiting for locks."""
+        if self._is_win32:
+            api = _win32_pipe_api()
+            for handle in (self._write_handle, self._read_handle):
+                if handle is not None:
+                    try:
+                        api.CancelIoEx(handle, None)
+                    except Exception:  # noqa: BLE001 - best effort cancellation
+                        pass
+        elif self._wakeup_w is not None:
+            try:
+                os.write(self._wakeup_w, b"\x00")
+            except OSError:
+                pass
+
+    def _close_write_handle(self, *, timeout: float = 1.5) -> None:
+        acquired = self._write_lock.acquire(timeout=timeout)
+        if not acquired:
+            # A stalled write did not yield in time; re-issue cancellation and avoid deadlocking cleanup.
+            self._cancel_pending_io()
+            return
+        try:
             handle, self._write_handle = self._write_handle, None
             if handle is None:
                 return
@@ -257,6 +319,8 @@ class PipeTransport:
                     os.close(handle)
             except OSError:
                 pass
+        finally:
+            self._write_lock.release()
 
     def _close_read_handle(self) -> None:
         with self._close_lock:
@@ -281,21 +345,11 @@ class PipeTransport:
     def close_sync(self) -> None:
         """Close both ends of the pipe and stop the reader thread. Blocking; idempotent."""
         self._closed = True
-        self._close_write_handle()
+        self._cancel_pending_io()
+        self._close_write_handle(timeout=1.5)
         thread = self._reader_thread
         if thread is not None and thread.is_alive():
-            if self._is_win32:
-                handle = self._read_handle
-                if handle is not None:
-                    try:
-                        _win32_pipe_api().CancelIoEx(handle, None)
-                    except Exception:  # noqa: BLE001 - best effort cancellation
-                        pass
-            elif self._wakeup_w is not None:
-                try:
-                    os.write(self._wakeup_w, b"\x00")
-                except OSError:
-                    pass
+            self._cancel_pending_io()
             thread.join(timeout=1.5)
         if thread is None or not thread.is_alive():
             self._close_read_handle()

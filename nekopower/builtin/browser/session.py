@@ -366,27 +366,43 @@ def _port_guard_script(ports: Collection[int], *, block_http: bool = False) -> s
         "  try { Object.defineProperty(g, k, { value: state, writable: false, configurable: false }); }"
         "  catch (_) { try { g[k] = state; } catch (_) {} }"
         "}"
-        f"const blocked = new Set([{port_list}]);"
+        # Capture all built-in intrinsics up front so later page scripts cannot bypass via prototype tampering.
+        "const fnCall = Function.prototype.call;"
+        "const getDesc = Object.getOwnPropertyDescriptor;"
+        "const defineProp = Object.defineProperty;"
         "const URLCtor = g.URL;"
         "const ProxyCtor = g.Proxy;"
         "const ReflectObj = g.Reflect;"
-        "const defineProp = Object.defineProperty;"
         "const Str = String;"
+        "const Num = Number;"
         "const TypeErr = TypeError;"
+        "const SetCtor = Set;"
+        "const setHas = SetCtor.prototype.has;"
+        "const urlPortGet = (URLCtor && URLCtor.prototype) ? (getDesc(URLCtor.prototype, 'port') || {}).get : null;"
+        "const urlProtoGet = (URLCtor && URLCtor.prototype) ? (getDesc(URLCtor.prototype, 'protocol') || {}).get : null;"
         "const ReqCtor = typeof g.Request === 'function' ? g.Request : null;"
+        "const reqUrlGet = (ReqCtor && ReqCtor.prototype) ? (getDesc(ReqCtor.prototype, 'url') || {}).get : null;"
+        "const locProto = (g.Location && g.Location.prototype) || (g.WorkerLocation && g.WorkerLocation.prototype) || null;"
+        "const locHrefGet = locProto ? (getDesc(locProto, 'href') || {}).get : null;"
+        f"const blocked = new SetCtor([{port_list}]);"
         "const portOf = (raw) => {"
         "  try {"
-        "    const base = (g.location && typeof g.location.href === 'string') ? g.location.href : undefined;"
+        "    let base = undefined;"
+        "    if (g.location) {"
+        "      base = locHrefGet ? fnCall.call(locHrefGet, g.location) : (typeof g.location.href === 'string' ? g.location.href : undefined);"
+        "    }"
         "    const u = base ? new URLCtor(raw, base) : new URLCtor(raw);"
-        "    if (u.port) return Number(u.port);"
-        "    if (u.protocol === 'http:' || u.protocol === 'ws:') return 80;"
-        "    if (u.protocol === 'https:' || u.protocol === 'wss:') return 443;"
+        "    const portStr = urlPortGet ? fnCall.call(urlPortGet, u) : u.port;"
+        "    if (portStr) return Num(portStr);"
+        "    const proto = urlProtoGet ? fnCall.call(urlProtoGet, u) : u.protocol;"
+        "    if (proto === 'http:' || proto === 'ws:') return 80;"
+        "    if (proto === 'https:' || proto === 'wss:') return 443;"
         "  } catch (_) {}"
         "  return null;"
         "};"
         "const check = (raw) => {"
         "  const p = portOf(raw);"
-        "  if (p !== null && blocked.has(p)) throw new TypeErr('Blocked by client');"
+        "  if (p !== null && fnCall.call(setHas, blocked, p)) throw new TypeErr('Blocked by client');"
         "};"
         "const copyTail = (args, start, head) => {"
         "  const out = head;"
@@ -403,7 +419,7 @@ def _port_guard_script(ports: Collection[int], *, block_http: bool = False) -> s
         "        check(raw);"
         "        args = copyTail(args, 1, [raw]);"
         "      }"
-        "      return ReflectObj.construct(target, args, newTarget);"
+        "      return ReflectObj.construct(target, args, newTarget === Wrapped ? target : newTarget);"
         "    },"
         "    apply(target, thisArg, args) {"
         "      if (args.length > 0) {"
@@ -416,6 +432,10 @@ def _port_guard_script(ports: Collection[int], *, block_http: bool = False) -> s
         "  });"
         "  try { defineProp(g, name, { value: Wrapped, writable: false, configurable: false, enumerable: false }); }"
         "  catch (_) { try { g[name] = Wrapped; } catch (_) {} }"
+        "  if (Orig.prototype) {"
+        "    try { defineProp(Orig.prototype, 'constructor', { value: Wrapped, writable: false, configurable: false, enumerable: false }); }"
+        "    catch (_) { try { Orig.prototype.constructor = Wrapped; } catch (_) {} }"
+        "  }"
         "};"
         "if (!state.ws) {"
         "  wrapCtor('WebSocket');"
@@ -430,7 +450,8 @@ def _port_guard_script(ports: Collection[int], *, block_http: bool = False) -> s
         "        if (args.length > 0) {"
         "          const first = args[0];"
         "          if (ReqCtor && first instanceof ReqCtor) {"
-        "            check(first.url);"
+        "            const reqUrl = reqUrlGet ? fnCall.call(reqUrlGet, first) : first.url;"
+        "            check(reqUrl);"
         "          } else {"
         "            const raw = Str(first);"
         "            check(raw);"
@@ -498,6 +519,11 @@ class BrowserSession:
         # list of pages while it is there; back on a page of the web it is
         # the same page to the model, and still one that may be closed.
         self._own_pages: dict[str, int] = {}
+        # Persistent owner assignment keyed by target_id so temporary navigation to
+        # an unlisted/internal URL does not clear ownership when the tab returns.
+        self._tab_owners: dict[str, str] = {}
+        # Targets currently being closed via ``Target.closeTarget``; skipped by ``ensure_owner_page``.
+        self._closing_targets: set[str] = set()
         # Every tab that is open, by target id, those that are not listed
         # as pages included (the browser's own pages, a file): a browser
         # with none left has no window to leave open (``shows_a_window``).
@@ -604,6 +630,7 @@ class BrowserSession:
         await self._drop_connection()
         settings = await asyncio.to_thread(self._settings.load)
         attach = settings.mode == MODE_ATTACH
+        attach_browsers: list[launcher.RunningBrowser] = []
         try:
             install = await asyncio.to_thread(launcher.pick_browser, settings.executable)
         except launcher.NoBrowserError as exc:
@@ -620,23 +647,24 @@ class BrowserSession:
                     candidates = await asyncio.to_thread(
                         launcher.attach_candidates, install, executable=settings.executable
                     )
-                    browser = None
-                    last_error: launcher.BrowserStartError | None = None
+                    last_attach_error: launcher.BrowserStartError | None = None
                     for candidate in candidates:
                         try:
-                            browser = await launcher.attach(candidate, exclude_user_data_dir=own_profile)
-                            break
+                            attach_browsers.extend(
+                                await launcher.attach_endpoints(candidate, exclude_user_data_dir=own_profile)
+                            )
                         except launcher.BrowserStartError as exc:
-                            last_error = exc
-                    if browser is None:
-                        if len(candidates) == 1 and last_error is not None:
-                            raise last_error
+                            last_attach_error = exc
+                    if not attach_browsers:
+                        if len(candidates) == 1 and last_attach_error is not None:
+                            raise last_attach_error
                         names = ", ".join(candidate.name for candidate in candidates)
                         raise launcher.BrowserStartError(
                             f"None of the detected browsers ({names}) is running with remote debugging on. "
                             "Open chrome://inspect/#remote-debugging in the browser you want to attach to "
                             "and allow remote debugging (Chrome 144 or later), then try again."
-                        ) from last_error
+                        ) from last_attach_error
+                    browser = attach_browsers[0]
                 else:
                     profile = await asyncio.to_thread(self._settings.profile_dir)
                     # Without a display a window cannot be shown; the browser
@@ -701,32 +729,43 @@ class BrowserSession:
                 # Not let go of for good: ``close`` tries again.
                 self._unclosed.append(held)
             self._browser = None
-        try:
-            if browser.pipe is not None:
-                connection = await CdpConnection.connect_pipe(browser.pipe)
-            else:
-                connection = await CdpConnection.connect(
-                    browser.endpoint,
-                    open_timeout=ATTACH_CONNECT_TIMEOUT_SECONDS if attach else 10.0,
-                )
-        except asyncio.CancelledError:
-            # Nothing holds the browser yet.
-            self._abandon(browser)
-            raise
-        except Exception as exc:  # noqa: BLE001 - whatever went wrong, there is no browser to drive
+        connect_candidates = attach_browsers if attach_browsers else [browser]
+        connection: CdpConnection | None = None
+        last_connect_error: Exception | None = None
+        for candidate_browser in connect_candidates:
             try:
-                await launcher.close(browser)
+                if candidate_browser.pipe is not None:
+                    connection = await CdpConnection.connect_pipe(candidate_browser.pipe)
+                else:
+                    connection = await CdpConnection.connect(
+                        candidate_browser.endpoint,
+                        open_timeout=ATTACH_CONNECT_TIMEOUT_SECONDS if attach else 10.0,
+                    )
+                browser = candidate_browser
+                break
             except asyncio.CancelledError:
-                # Stopped while it was being closed: left to a task, as above.
-                self._abandon(browser)
+                # Nothing holds the browser yet.
+                self._abandon(candidate_browser)
                 raise
-            except Exception:  # noqa: BLE001 - what is told is that it could not be reached
-                logger.warning("closing a browser that could not be reached failed", exc_info=True)
-                self._keep_unclosed(browser)
-            finally:
-                self._reached = None
+            except Exception as exc:  # noqa: BLE001 - try remaining attach candidates or fail below
+                try:
+                    await launcher.close(candidate_browser)
+                except asyncio.CancelledError:
+                    # Stopped while it was being closed: left to a task, as above.
+                    self._abandon(candidate_browser)
+                    raise
+                except Exception:  # noqa: BLE001 - what is told is that it could not be reached
+                    logger.warning("closing a browser that could not be reached failed", exc_info=True)
+                    self._keep_unclosed(candidate_browser)
+                finally:
+                    self._reached = None
+                last_connect_error = exc
+        if connection is None:
+            assert last_connect_error is not None
             hint = " Allow the connection in the browser's prompt and try again." if attach else ""
-            raise BrowserError(f"The browser could not be reached ({type(exc).__name__}).{hint}") from exc
+            raise BrowserError(
+                f"The browser could not be reached ({type(last_connect_error).__name__}).{hint}"
+            ) from last_connect_error
         self._connection = connection
         self._browser = browser
         self._reached = None
@@ -841,11 +880,15 @@ class BrowserSession:
         on_new_document: bool = True,
         block_http: bool = False,
         timeout: float = 5.0,
-    ) -> None:
-        """Install the JS WebSocket/WebTransport (and optional HTTP) port guard on a target session. Best effort."""
+    ) -> bool:
+        """Install the JS WebSocket/WebTransport (and optional HTTP) port guard on a target session.
+
+        Returns True when all requested installations succeeded without JS exception details.
+        """
         if not self._blocked_ports:
-            return
+            return True
         script = _port_guard_script(self._blocked_ports, block_http=block_http)
+        ok = True
         if on_new_document:
             try:
                 await connection.send(
@@ -855,16 +898,24 @@ class BrowserSession:
                     timeout=timeout,
                 )
             except (CdpError, CdpTimeout):
-                logger.debug("addScriptToEvaluateOnNewDocument failed for port guard", exc_info=True)
+                logger.warning("addScriptToEvaluateOnNewDocument failed for port guard", exc_info=True)
+                ok = False
         try:
-            await connection.send(
+            result = await connection.send(
                 "Runtime.evaluate",
                 {"expression": script, "silent": True, "returnByValue": True},
                 session_id=session_id,
                 timeout=timeout,
             )
+            if isinstance(result, dict) and result.get("exceptionDetails"):
+                detail = result["exceptionDetails"]
+                text = (detail.get("exception") or {}).get("description") or detail.get("text") or "script error"
+                logger.warning("Runtime.evaluate port guard raised exception: %s", str(text)[:200])
+                ok = False
         except (CdpError, CdpTimeout):
-            logger.debug("Runtime.evaluate failed for port guard", exc_info=True)
+            logger.warning("Runtime.evaluate failed for port guard", exc_info=True)
+            ok = False
+        return ok
 
     async def _enable_auto_attach(self, connection: CdpConnection, session_id: str, *, timeout: float = 5.0) -> None:
         """Enable recursive auto-attach on a page or OOPIF session so child OOPIFs and workers pause for port guards."""
@@ -1176,15 +1227,25 @@ class BrowserSession:
         if owner is None:
             return self.current(None)
         current_tid = self._selected_by_owner.get(owner)
-        if current_tid and current_tid in self._pages and self._pages[current_tid].owner == owner:
+        if (
+            current_tid
+            and current_tid not in self._closing_targets
+            and current_tid in self._pages
+            and self._pages[current_tid].owner == owner
+        ):
             return self._pages[current_tid]
         for page in self._pages.values():
+            if page.target_id in self._closing_targets:
+                continue
             if page.owner == owner:
                 self._selected_by_owner[owner] = page.target_id
                 return page
         for page in self._pages.values():
+            if page.target_id in self._closing_targets:
+                continue
             if page.owner is None and (page.own or not (self._user_browser and self._can_create_tabs)):
                 page.owner = owner
+                self._tab_owners[page.target_id] = owner
                 self._selected_by_owner[owner] = page.target_id
                 return page
         created = await self._open_blank_page(owner=owner)
@@ -1201,6 +1262,8 @@ class BrowserSession:
         connection, self._connection = self._connection, None
         self._pages.clear()
         self._own_pages.clear()
+        self._tab_owners.clear()
+        self._closing_targets.clear()
         self._tabs.clear()
         self._tabs_known = False
         self._not_kept.clear()
@@ -1464,9 +1527,14 @@ class BrowserSession:
             elif page.owner is None:
                 page.snapshot = None
                 page.known_uids.clear()
+        for tid, recorded_owner in list(self._tab_owners.items()):
+            if recorded_owner == owner:
+                del self._tab_owners[tid]
         self._selected_by_owner.pop(owner, None)
         for tid in self._handles_by_owner.pop(owner, set()):
-            self._handles.discard(tid)
+            page = self._pages.get(tid)
+            if page is None or page.dialog is None:
+                self._handles.discard(tid)
 
     # -- events -----------------------------------------------------------
 
@@ -1496,7 +1564,11 @@ class BrowserSession:
             opener = self._pages.get(str(info.get("openerId") or ""))
             number = self._own_pages.get(target_id)
             own = own or number is not None or (opener is not None and opener.own)
-            resolved_owner = owner if owner is not None else (opener.owner if opener is not None else None)
+            resolved_owner = (
+                owner
+                if owner is not None
+                else self._tab_owners.get(target_id) or (opener.owner if opener is not None else None)
+            )
             if number is None:
                 number = self._next_page_id
                 self._next_page_id += 1
@@ -1510,6 +1582,8 @@ class BrowserSession:
                 page.owner = owner
         if page.own:
             self._own_pages[target_id] = page.id
+        if page.owner is not None:
+            self._tab_owners[target_id] = page.owner
         page.url = url
         page.title = str(info.get("title") or "")
 
@@ -1596,6 +1670,8 @@ class BrowserSession:
             self._tabs.discard(destroyed)
             self._not_kept.discard(destroyed)
             self._own_pages.pop(destroyed, None)
+            self._tab_owners.pop(destroyed, None)
+            self._closing_targets.discard(destroyed)
             self._forget_page(destroyed)
             return
         if method == "Target.detachedFromTarget":
@@ -1923,8 +1999,9 @@ class BrowserSession:
 
     async def select_page(self, page_id: Any, *, bring_to_front: bool = False, owner: str | None = None) -> Page:
         page = self.page_by_id(page_id, owner=owner)
-        if owner is not None and page.owner is None and page.own:
+        if owner is not None and page.owner is None:
             page.owner = owner
+            self._tab_owners[page.target_id] = owner
         self._selected_by_owner[owner] = page.target_id
         if bring_to_front:
             await self._send(page, "Page.bringToFront")
@@ -1957,9 +2034,14 @@ class BrowserSession:
             raise BrowserError("The last open page cannot be closed.")
         if self._user_browser and not page.own:
             raise BrowserError(f"Page {page.id} is a tab of the user's own, not one opened for this work: it is not closed.")
-        await self._require_connection().send("Target.closeTarget", {"targetId": page.target_id})
-        self._own_pages.pop(page.target_id, None)
-        self._forget_page(page.target_id)
+        self._closing_targets.add(page.target_id)
+        try:
+            await self._require_connection().send("Target.closeTarget", {"targetId": page.target_id})
+            self._own_pages.pop(page.target_id, None)
+            self._tab_owners.pop(page.target_id, None)
+            self._forget_page(page.target_id)
+        finally:
+            self._closing_targets.discard(page.target_id)
 
     # -- navigation ---------------------------------------------------------
 
@@ -2174,6 +2256,7 @@ class BrowserSession:
                     continue
                 same_session = frame_id in page.frame_loaders and page.oopif_frame_sessions.get(frame_id) == session_id
                 if same_session:
+                    pre_loader = page.frame_loaders.get(frame_id)
                     answer = await self._send_session(
                         page,
                         session_id,
@@ -2186,6 +2269,7 @@ class BrowserSession:
                     assert node.backend_node_id is not None
                     child_ancestors = (*ancestors, (session_id, node.backend_node_id))
                     child_session, frame_id = await self._attach_oopif(page, frame_id, child_ancestors)
+                    pre_loader = page.frame_loaders.get(frame_id)
                     answer = await self._send_session(
                         page,
                         child_session,
@@ -2211,13 +2295,20 @@ class BrowserSession:
                 ancestors=child_ancestors,
             )
             loader_id = page.frame_loaders.get(frame_id)
-            if loader_id is None:
-                continue  # Taken out of the page while it was read.
+            if (
+                loader_id is None
+                or pre_loader is None
+                or loader_id != pre_loader
+                or (child_session is not None and child_session not in page.child_sessions.values())
+            ):
+                # Frame navigated or detached while its AX tree was being fetched: do not stamp stale nodes.
+                unlisted[0] += 1
+                continue
             node.frame = await asyncio.to_thread(
                 serialize_tree,
                 inner,
                 verbose=verbose,
-                loader_id=loader_id,
+                loader_id=pre_loader,
                 frame_id=frame_id,
                 session_id=child_session,
             )
@@ -2589,6 +2680,10 @@ class BrowserSession:
                     enabled_sessions.append(sid)
                 except CdpError:
                     logger.debug("Page.setInterceptFileChooserDialog not supported", exc_info=True)
+            if not enabled_sessions:
+                raise BrowserError(
+                    'This browser does not support intercepting file chooser dialogs; pass the uid of the <input type="file"> element directly.'
+                )
             x, y = await self._point(page, uid, node, object_id)
             await self._click_at(page, x, y, session_id=node.session_id)
             chooser_wait = asyncio.ensure_future(page.file_chooser_event.wait())
@@ -2630,7 +2725,6 @@ class BrowserSession:
         sid = from_node.session_id
         before = page.navigations
         sx, sy = await self._point(page, from_uid, from_node, from_obj)
-        ex, ey = await self._point(page, to_uid, to_node, to_obj)
         intercepted_on = False
         page.drag_event.clear()
         page.drag_data = None
@@ -2642,43 +2736,48 @@ class BrowserSession:
         pressed = False
         last_x, last_y = sx, sy
         try:
-            if not await self._mouse(page, "mouseMoved", sx, sy, session_id=sid):
-                return
-            pressed = True
-            if not await self._mouse(
-                page, "mousePressed", sx, sy, session_id=sid, button="left", buttons=1, clickCount=1
-            ):
-                return
-            steps = 5
-            for step in range(1, steps + 1):
-                mx = sx + (ex - sx) * (step / steps)
-                my = sy + (ey - sy) * (step / steps)
-                last_x, last_y = mx, my
+            try:
+                if not await self._mouse(page, "mouseMoved", sx, sy, session_id=sid):
+                    return
+                pressed = True
                 if not await self._mouse(
-                    page, "mouseMoved", mx, my, session_id=sid, button="left", buttons=1
+                    page, "mousePressed", sx, sy, session_id=sid, button="left", buttons=1, clickCount=1
                 ):
                     return
-                if page.drag_event.is_set() and page.drag_data is not None:
-                    data = page.drag_data
-                    await self._send_unless_dialog(
-                        page, "Input.dispatchDragEvent", {"type": "dragEnter", "x": ex, "y": ey, "data": data}, session_id=sid
-                    )
-                    await self._send_unless_dialog(
-                        page, "Input.dispatchDragEvent", {"type": "dragOver", "x": ex, "y": ey, "data": data}, session_id=sid
-                    )
-                    await self._send_unless_dialog(
-                        page, "Input.dispatchDragEvent", {"type": "drop", "x": ex, "y": ey, "data": data}, session_id=sid
-                    )
-                    last_x, last_y = ex, ey
-                    break
-        finally:
-            if pressed:
-                async def release_drag() -> None:
-                    await self._mouse(
-                        page, "mouseReleased", last_x, last_y, session_id=sid, button="left", buttons=0, clickCount=1
-                    )
+                # Resolve the drop target after pressing on the source so scrolling the target
+                # into view cannot invalidate the initial press coordinates.
+                ex, ey = await self._point(page, to_uid, to_node, to_obj)
+                steps = 5
+                for step in range(1, steps + 1):
+                    mx = sx + (ex - sx) * (step / steps)
+                    my = sy + (ey - sy) * (step / steps)
+                    last_x, last_y = mx, my
+                    if not await self._mouse(
+                        page, "mouseMoved", mx, my, session_id=sid, button="left", buttons=1
+                    ):
+                        return
+                    if page.drag_event.is_set() and page.drag_data is not None:
+                        data = page.drag_data
+                        await self._send_unless_dialog(
+                            page, "Input.dispatchDragEvent", {"type": "dragEnter", "x": ex, "y": ey, "data": data}, session_id=sid
+                        )
+                        await self._send_unless_dialog(
+                            page, "Input.dispatchDragEvent", {"type": "dragOver", "x": ex, "y": ey, "data": data}, session_id=sid
+                        )
+                        await self._send_unless_dialog(
+                            page, "Input.dispatchDragEvent", {"type": "drop", "x": ex, "y": ey, "data": data}, session_id=sid
+                        )
+                        last_x, last_y = ex, ey
+                        break
+            finally:
+                if pressed:
+                    async def release_drag() -> None:
+                        await self._mouse(
+                            page, "mouseReleased", last_x, last_y, session_id=sid, button="left", buttons=0, clickCount=1
+                        )
 
-                await asyncio.shield(release_drag())
+                    await asyncio.shield(release_drag())
+        finally:
             if intercepted_on:
                 try:
                     await self._send_session(page, sid, "Input.setInterceptDrags", {"enabled": False}, timeout=5.0)
@@ -2928,8 +3027,14 @@ class BrowserSession:
         expression = f"{_FIND_TEXT}({json.dumps(texts, ensure_ascii=False)})"
         while True:
             self.require_no_dialog(page)
+            remaining = deadline - loop.time()
             try:
-                answer = await self._send(page, "Runtime.evaluate", {"expression": expression, "returnByValue": True}, timeout=5.0)
+                answer = await self._send(
+                    page,
+                    "Runtime.evaluate",
+                    {"expression": expression, "returnByValue": True},
+                    timeout=min(5.0, max(0.1, remaining)),
+                )
                 found = (answer.get("result") or {}).get("value")
             except PageClosed:
                 raise
@@ -2938,21 +3043,29 @@ class BrowserSession:
             if isinstance(found, str):
                 return found
             for child_sid in list(page.child_sessions.values()):
+                child_remaining = deadline - loop.time()
+                if child_remaining <= 0:
+                    break
                 try:
                     child_answer = await self._send_session(
-                        page, child_sid, "Runtime.evaluate", {"expression": expression, "returnByValue": True}, timeout=3.0
+                        page,
+                        child_sid,
+                        "Runtime.evaluate",
+                        {"expression": expression, "returnByValue": True},
+                        timeout=min(3.0, max(0.1, child_remaining)),
                     )
                     child_found = (child_answer.get("result") or {}).get("value")
                 except (CdpError, CdpTimeout, BrowserError):
                     child_found = None
                 if isinstance(child_found, str):
                     return child_found
-            if loop.time() >= deadline:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
                 raise BrowserError(
                     f"None of {json.dumps(texts, ensure_ascii=False)} appeared within {limit:.0f}s. Matching is "
                     "case-sensitive; try a shorter distinctive part of the text."
                 )
-            await asyncio.sleep(0.25)
+            await asyncio.sleep(min(0.25, remaining))
 
     async def handle_dialog(self, page: Page, accept: bool, prompt_text: str | None = None) -> str:
         dialog = page.dialog

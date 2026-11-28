@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
+import os
 import re
 import socket
 import urllib.request
@@ -72,6 +73,11 @@ _CHARSET_RE = re.compile(r';\s*charset\s*=\s*"?([^";]+)"?', re.IGNORECASE)
 # a non-local domain name may connect through a Fake-IPv4 address.
 _FAKE_IP_V4 = ipaddress.IPv4Network("198.18.0.0/15")
 _FAKE_IP_V6 = ipaddress.IPv6Network("fc00::/18")
+# Independent IANA-reserved domains probed only when a target hostname resolves
+# into 198.18.0.0/15: a transparent proxy's Fake-IP DNS synthesizes 198.18.x.x
+# for these too, whereas an attacker's DNS record on a non-Fake-IP network cannot.
+_FAKE_IP_PROBE_HOSTS = ("example.com", "example.org")
+_FAKE_IP_PROBE_TIMEOUT_SECONDS = 2.0
 
 
 # ---------------------------------------------------------------------------
@@ -154,8 +160,49 @@ def _is_fake_ip_v6(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bo
     return isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is None and address in _FAKE_IP_V6
 
 
+async def _is_fake_ip_dns_active(target_host: str) -> bool:
+    """Confirm that the host's DNS resolver is actively synthesizing proxy Fake-IPs.
+
+    Without this check, an attacker-controlled domain on a network that routes
+    198.18.0.0/15 directly (RFC 2544 benchmarking/internal services) could point
+    ``web_fetch`` at internal services. When a transparent TUN Fake-IP resolver
+    is active, independent public reference domains also resolve into 198.18.0.0/15.
+    """
+    override = os.environ.get("NEKO_WEB_FETCH_ALLOW_FAKE_IP", "").strip().lower()
+    if override in ("1", "true", "yes"):
+        return True
+    if override in ("0", "false", "no"):
+        return False
+    lowered = target_host.lower().rstrip(".")
+    loop = asyncio.get_running_loop()
+    for probe in _FAKE_IP_PROBE_HOSTS:
+        if probe == lowered:
+            continue
+        try:
+            infos = await asyncio.wait_for(
+                loop.getaddrinfo(probe, 443, type=socket.SOCK_STREAM),
+                timeout=_FAKE_IP_PROBE_TIMEOUT_SECONDS,
+            )
+        except (OSError, asyncio.TimeoutError):
+            continue
+        saw_fake_v4 = False
+        saw_private = False
+        for info in infos:
+            try:
+                parsed = ipaddress.ip_address(str(info[4][0]).split("%", 1)[0])
+            except ValueError:
+                continue
+            if is_fake_ip_v4(parsed):
+                saw_fake_v4 = True
+            elif not is_public_address(parsed) and not _is_fake_ip_v6(parsed):
+                saw_private = True
+        if saw_fake_v4 and not saw_private:
+            return True
+    return False
+
+
 async def resolve_public(host: str, port: int) -> str:
-    """Resolve ``host`` and return one address, after checking that all are public (or proxy Fake-IP)."""
+    """Resolve ``host`` and return one address, after checking that all are public (or verified proxy Fake-IP)."""
     literal = _literal_address(host)
     if literal is not None:
         if not is_public_address(literal):
@@ -194,6 +241,8 @@ async def resolve_public(host: str, port: int) -> str:
         if fake_v4 and _is_fake_ip_v6(parsed):
             continue
         raise ToolError(f"blocked URL: {host} resolves to {text}, which is not a public address")
+    if fake_v4 and not await _is_fake_ip_dns_active(host):
+        raise ToolError(f"blocked URL: {host} resolves to {fake_v4[0]}, which is not a public address")
     if public_addresses:
         for candidate in public_addresses:
             if ":" not in candidate:

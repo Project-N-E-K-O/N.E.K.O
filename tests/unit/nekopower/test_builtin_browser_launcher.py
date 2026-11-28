@@ -1818,3 +1818,84 @@ def test_attach_candidates_tries_all_detected_browsers_only_when_executable_unse
     assert [item.executable for item in all_candidates] == [chrome_exe, edge_exe]
     pinned = launcher.attach_candidates(primary, executable=chrome_exe, platform="win32")
     assert [item.executable for item in pinned] == [chrome_exe]
+
+
+def test_posix_pipe_spawn_uses_posix_spawnp_file_actions_and_cleans_up_on_error(monkeypatch: Any) -> None:
+    spawn_calls: list[dict[str, Any]] = []
+    closed_fds: list[int] = []
+    killed_pids: list[int] = []
+
+    monkeypatch.setattr(os, "set_inheritable", lambda fd, flag: None)
+    monkeypatch.setattr(os, "close", lambda fd: closed_fds.append(fd))
+    monkeypatch.setattr(os, "open", lambda path, flags: 15)
+    monkeypatch.setattr(launcher, "kill_tree", lambda pid: killed_pids.append(pid))
+
+    # Case 1: c_read=4 collides with target FD 4; _dup_fd_above moves it >=5 before building file_actions.
+    dup_counter = iter([20, 21])
+    monkeypatch.setattr(os, "dup", lambda fd: next(dup_counter))
+    pipes = iter([(4, 12), (13, 3)])
+    monkeypatch.setattr(os, "pipe", lambda: next(pipes))
+    monkeypatch.setattr(
+        "nekopower.builtin.browser.cdp.PipeTransport",
+        lambda r, w, is_win32_handle=False: SimpleNamespace(r=r, w=w, is_win32=is_win32_handle),
+    )
+
+    def fake_spawnp(path: str, args: list[str], env: Any, **kwargs: Any) -> int:
+        spawn_calls.append({"path": path, "args": args, **kwargs})
+        return 7777
+
+    monkeypatch.setattr(os, "posix_spawnp", fake_spawnp, raising=False)
+    proc, transport = launcher._spawn_pipe_posix(["/usr/bin/chrome", "--remote-debugging-pipe"])
+    assert proc.pid == 7777 and (transport.r, transport.w) == (13, 12)
+    actions = spawn_calls[0]["file_actions"]
+    dup2_op = getattr(os, "POSIX_SPAWN_DUP2", "POSIX_SPAWN_DUP2")
+    close_op = getattr(os, "POSIX_SPAWN_CLOSE", "POSIX_SPAWN_CLOSE")
+    assert (dup2_op, 15, 0) in actions
+    assert (dup2_op, 15, 1) in actions
+    assert (dup2_op, 15, 2) in actions
+    assert (dup2_op, 20, 3) in actions
+    assert (dup2_op, 21, 4) in actions
+    assert (close_op, 12) in actions and (close_op, 13) in actions
+    assert spawn_calls[0]["setsid"] is True
+    # Child-side FDs + devnull + temporary dups were closed in parent; parent pipe ends stay open.
+    assert {3, 4, 15, 20, 21}.issubset(set(closed_fds))
+    assert 12 not in closed_fds and 13 not in closed_fds
+
+    # Case 2: PipeTransport failure after spawn kills the child and closes parent pipe FDs too.
+    closed_fds.clear()
+    pipes_err = iter([(31, 32), (33, 34)])
+    monkeypatch.setattr(os, "pipe", lambda: next(pipes_err))
+    monkeypatch.setattr(
+        "nekopower.builtin.browser.cdp.PipeTransport",
+        lambda r, w, is_win32_handle=False: (_ for _ in ()).throw(OSError("wakeup pipe failed")),
+    )
+    with pytest.raises(OSError, match="wakeup pipe failed"):
+        launcher._spawn_pipe_posix(["/usr/bin/chrome", "--remote-debugging-pipe"])
+    assert killed_pids == [7777]
+    assert {15, 31, 32, 33, 34}.issubset(set(closed_fds))
+
+
+def test_start_pipe_oserror_falls_back_to_tcp_port(starter: Starter, monkeypatch: Any) -> None:
+    monkeypatch.setattr(launcher, "_can_use_pipe", lambda: True)
+    monkeypatch.setattr(launcher, "_spawn_pipe_process", lambda args: (_ for _ in ()).throw(OSError("pipe failed")))
+    starter.on_start.append(lambda: starter.browser_listens(9445))
+
+    browser = launcher._start(CHROME, str(starter.profile), False, ())
+    assert browser.pipe is None
+    assert browser.endpoint == "ws://127.0.0.1:9445/devtools/browser/new"
+
+
+async def test_attach_endpoints_returns_all_open_profiles(monkeypatch: Any, tmp_path: Path) -> None:
+    p1 = str(tmp_path / "profile-1")
+    p2 = str(tmp_path / "profile-2")
+    monkeypatch.setattr(launcher, "_attach_profile_dirs", lambda install, exclude=None: [p1, p2])
+    monkeypatch.setattr(
+        launcher,
+        "running_endpoint",
+        lambda profile: f"ws://127.0.0.1:{9401 if profile == p1 else 9402}/devtools/browser/x",
+    )
+    found = await launcher.attach_endpoints(CHROME)
+    assert [item.endpoint for item in found] == [
+        "ws://127.0.0.1:9401/devtools/browser/x",
+        "ws://127.0.0.1:9402/devtools/browser/x",
+    ]

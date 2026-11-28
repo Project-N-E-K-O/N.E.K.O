@@ -524,7 +524,7 @@ async def test_pipe_transport_round_trips_nul_framed_commands_events_and_initial
 
     if sys.platform == "win32":
         import ctypes
-        from ctypes import wintypes
+        import ctypes.wintypes as wintypes
 
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
         kernel32.CreatePipe.argtypes = [
@@ -601,7 +601,9 @@ async def test_pipe_transport_round_trips_nul_framed_commands_events_and_initial
                     raw = bytes(buf[:nul])
                     del buf[: nul + 1]
                     msg = json.loads(raw.decode("utf-8"))
-                    reply = json.dumps({"id": msg["id"], "result": {"echo": msg["method"]}}).encode("utf-8") + b"\x00"
+                    reply = json.dumps(
+                        {"id": msg["id"], "result": {"echo": msg["method"], "params": msg.get("params", {})}}
+                    ).encode("utf-8") + b"\x00"
                     child_write(reply)
         finally:
             child_close()
@@ -613,11 +615,64 @@ async def test_pipe_transport_round_trips_nul_framed_commands_events_and_initial
     conn = await CdpConnection.connect_pipe(transport)
     conn.on_event(lambda method, _params, _sid: seen_events.append(method))
     try:
-        assert await conn.send("Browser.getVersion") == {"echo": "Browser.getVersion"}
-        assert await conn.send("Input.insertText", {"text": "猫 café"}) == {"echo": "Input.insertText"}
+        assert await conn.send("Browser.getVersion") == {"echo": "Browser.getVersion", "params": {}}
+        assert await conn.send("Input.insertText", {"text": "猫 café"}) == {
+            "echo": "Input.insertText",
+            "params": {"text": "猫 café"},
+        }
         await _until(lambda: seen_events == ["Target.targetCreated"], "initial buffered event")
     finally:
         await conn.close()
         worker.join(timeout=3.0)
     assert conn.closed
     assert not worker.is_alive()
+
+
+def test_pipe_transport_close_interrupts_blocked_write_without_deadlock(monkeypatch: Any) -> None:
+    import threading
+    import time
+    from nekopower.builtin.browser import cdp as cdp_module
+    from nekopower.builtin.browser.cdp import PipeTransport
+
+    entered_write = threading.Event()
+    cancelled = threading.Event()
+    write_errors: list[BaseException] = []
+
+    class _FakeKernel32:
+        def WriteFile(self, handle: Any, buf: Any, length: Any, written: Any, overlapped: Any) -> int:
+            del handle, buf, length, written, overlapped
+            entered_write.set()
+            cancelled.wait(timeout=5.0)
+            return 0  # Aborted by CancelIoEx
+
+        def CancelIoEx(self, handle: Any, overlapped: Any) -> int:
+            del handle, overlapped
+            cancelled.set()
+            return 1
+
+        def CloseHandle(self, handle: Any) -> int:
+            del handle
+            return 1
+
+    monkeypatch.setattr(cdp_module, "_win32_pipe_api", lambda: _FakeKernel32())
+    transport = PipeTransport(101, 102, is_win32_handle=True)
+
+    def blocked_writer() -> None:
+        try:
+            transport.write_sync(b"large-payload\x00")
+        except BaseException as exc:
+            write_errors.append(exc)
+
+    writer = threading.Thread(target=blocked_writer, daemon=True)
+    writer.start()
+    assert entered_write.wait(timeout=2.0)
+
+    started = time.monotonic()
+    transport.close_sync()
+    elapsed = time.monotonic() - started
+    writer.join(timeout=2.0)
+
+    assert elapsed < 1.0
+    assert cancelled.is_set()
+    assert not writer.is_alive()
+    assert write_errors and isinstance(write_errors[0], BrokenPipeError)

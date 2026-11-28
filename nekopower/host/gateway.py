@@ -204,6 +204,9 @@ class _Cleared:
     grant_id: str | None = None
     # Secondary permission grant (for example ``outside_read`` on ``browser_upload_file``).
     extra_grant_id: str | None = None
+    # Approved real path and outside-workdir flag for ``browser_upload_file`` (TOCTOU guard).
+    resolved_upload_path: str | None = None
+    upload_outside: bool = False
     # Drops it when it has waited for its call long enough.
     expiry: asyncio.TimerHandle | None = None
     device_group: str | None = None
@@ -1208,10 +1211,14 @@ class CapabilityGateway:
             reason = {DENIED_BY_SETTINGS: "settings", DENIED_BY_USER: "user"}.get(decision.reason, "no_approval")
             return _Cleared(refusal=_text(decision.reason or "permission denied", error=True), reason=reason)
         extra_grant_id: str | None = None
+        resolved_upload_path: str | None = None
+        upload_outside = False
         if capability.kind == KIND_BUILTIN and capability.tool_name == "browser_upload_file" and arguments:
             raw_path = arguments.get("filePath")
             if isinstance(raw_path, str) and raw_path.strip():
                 resolved, outside = await asyncio.to_thread(_resolve_upload_path, raw_path, commission.workdir)
+                resolved_upload_path = resolved
+                upload_outside = outside
                 if outside:
                     try:
                         upload_decision = await self._permissions.check(
@@ -1256,8 +1263,15 @@ class CapabilityGateway:
                 reason="browser_reopen" if refusal else None,
                 grant_id=decision.grant_id,
                 extra_grant_id=extra_grant_id,
+                resolved_upload_path=resolved_upload_path,
+                upload_outside=upload_outside,
             )
-        return _Cleared(grant_id=decision.grant_id, extra_grant_id=extra_grant_id)
+        return _Cleared(
+            grant_id=decision.grant_id,
+            extra_grant_id=extra_grant_id,
+            resolved_upload_path=resolved_upload_path,
+            upload_outside=upload_outside,
+        )
 
     async def _call_capability(
         self, commission: Commission, capability: Capability, arguments: dict[str, Any]
@@ -1315,8 +1329,28 @@ class CapabilityGateway:
             if capability.tool_name == "browser_upload_file":
                 raw_path = arguments.get("filePath")
                 if isinstance(raw_path, str) and raw_path.strip():
-                    resolved, _outside = await asyncio.to_thread(_resolve_upload_path, raw_path, commission.workdir)
-                    call_args = {**arguments, "filePath": resolved}
+                    current_resolved, current_outside = await asyncio.to_thread(
+                        _resolve_upload_path, raw_path, commission.workdir
+                    )
+                    target_changed = (
+                        permitted.resolved_upload_path is not None
+                        and current_resolved != permitted.resolved_upload_path
+                    )
+                    missing_outside_grant = current_outside and permitted.extra_grant_id is None
+                    if target_changed or missing_outside_grant:
+                        if permitted.agreement is not None:
+                            self._registry.browser_reopen_agreement_over(permitted.agreement)
+                        await self._ledger.append_event(
+                            commission.id,
+                            "capability_denied",
+                            {"capability": capability.id, "reason": "upload_target_changed"},
+                        )
+                        record.status, record.reason = "denied", "upload_target_changed"
+                        return _text(
+                            "The upload file target changed after approval; nothing was uploaded.",
+                            error=True,
+                        )
+                    call_args = {**arguments, "filePath": permitted.resolved_upload_path or current_resolved}
             if permitted.agreement is not None:
                 try:
                     # What the user agreed to is this call opening the

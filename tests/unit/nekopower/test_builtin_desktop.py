@@ -705,6 +705,8 @@ class FakeUiaBackend:
         self.capture_error: Exception | None = None
         # uid or name -> (rect, enabled) | None
         self.locate_overrides: dict[str, tuple[tuple[int, int, int, int], bool] | None] = {}
+        self.occluded: set[str] = set()
+        self.unfocused: set[str] = set()
 
     def is_supported(self) -> bool:
         return self.supported
@@ -735,6 +737,13 @@ class FakeUiaBackend:
         if control.name in self.locate_overrides:
             return self.locate_overrides[control.name]
         return control.rect, control.enabled
+
+    def is_point_visible(self, control: Any, px: int, py: int) -> bool:
+        del px, py
+        return control.uid not in self.occluded and control.name not in self.occluded
+
+    def is_focused(self, control: Any) -> bool:
+        return control.uid not in self.unfocused and control.name not in self.unfocused
 
 
 def test_there_is_a_case_for_every_action() -> None:
@@ -922,12 +931,154 @@ def test_screenshot_attaches_best_effort_ui_tree_and_ignores_uia_errors(monkeypa
     assert "## Desktop UI Controls" not in resilient.text
 
 
+def test_uid_rejects_occluded_edge_clamped_and_unfocused_controls(monkeypatch: Any) -> None:
+    from nekopower.builtin.uia import RawControl
+
+    fake = FakeUiaBackend()
+    fake.controls.append(RawControl("button", "TinyCorner", 1, (0, 0, 3, 3)))
+    rig, _ = _uia_rig(monkeypatch, fake)
+    rig.act("ui_tree", {})
+
+    # Occluded control refuses without sending input.
+    fake.occluded.add("Save")
+    with pytest.raises(DesktopActionError, match="covered by another window"):
+        rig.act("click", {"uid": "1_2"})
+    assert rig.inputs() == []
+    fake.occluded.clear()
+
+    # Tiny control at screen corner where failsafe clamping moves outside its rect refuses.
+    with pytest.raises(DesktopActionError, match="too close to the screen edge"):
+        rig.act("click", {"uid": "1_6"})
+    assert rig.inputs() == []
+
+    # Typing by uid refuses without writing text if clicking did not focus the target control.
+    fake.unfocused.add("Editor")
+    with pytest.raises(DesktopActionError, match="did not receive keyboard focus"):
+        rig.act("type", {"uid": "1_1", "text": "secret"})
+    assert all(name != "write" for name, _, _ in rig.inputs())
+
+
+def test_uia_read_patterns_uses_get_current_pattern_and_query_interface() -> None:
+    from types import SimpleNamespace
+
+    from nekopower.builtin.uia import _read_patterns
+
+    class _FakePattern:
+        def __init__(self, **attrs: Any) -> None:
+            for k, v in attrs.items():
+                setattr(self, k, v)
+
+        def QueryInterface(self, iface: Any) -> Any:  # noqa: N802
+            return self
+
+    class _FakeElement:
+        def __init__(self, patterns: dict[int, Any]) -> None:
+            self._patterns = patterns
+
+        def GetCurrentPattern(self, pattern_id: int) -> Any:  # noqa: N802
+            return self._patterns.get(pattern_id)
+
+        def GetCurrentPatternAs(self, *args: Any) -> Any:  # noqa: N802
+            raise AssertionError("GetCurrentPatternAs must not be called with interface classes")
+
+    uia_mod = SimpleNamespace(
+        UIA_ValuePatternId=10002,
+        IUIAutomationValuePattern=object(),
+        UIA_TogglePatternId=10015,
+        IUIAutomationTogglePattern=object(),
+        UIA_SelectionItemPatternId=10010,
+        IUIAutomationSelectionItemPattern=object(),
+        UIA_ExpandCollapsePatternId=10005,
+        IUIAutomationExpandCollapsePattern=object(),
+    )
+    edit = _FakeElement({10002: _FakePattern(CurrentValue="hello")})
+    assert _read_patterns(edit, uia_mod, "edit", False) == ("hello", None, None, None)
+    assert _read_patterns(edit, uia_mod, "edit", True) == ("", None, None, None)
+
+    chk = _FakeElement({10015: _FakePattern(CurrentToggleState=1)})
+    assert _read_patterns(chk, uia_mod, "checkbox", False) == ("", True, None, None)
+
+    combo = _FakeElement({10002: _FakePattern(CurrentValue="Item A"), 10005: _FakePattern(CurrentExpandCollapseState=1)})
+    assert _read_patterns(combo, uia_mod, "combobox", False) == ("Item A", None, None, True)
+
+
+def test_uia_pagination_respects_cancel_event_full_title_and_token_budget(monkeypatch: Any) -> None:
+    from nekopower.builtin.uia import DesktopUiTree, RawControl
+    from utils.tokenize import count_tokens
+
+    long_title = "Very Long Application Title " + ("A" * 130) + " UniqueTailMarker"
+    fake = FakeUiaBackend(title=long_title)
+    fake.controls = [RawControl("window", long_title, 0, (0, 0, 1920, 1080))] + [
+        RawControl("button", f"Control item {i}", 1, (50, 40 + i * 20, 300, 58 + i * 20)) for i in range(30)
+    ]
+    tree = DesktopUiTree(fake)
+    _snap, first = tree.snapshot(1920, 1080, window="UniqueTailMarker", max_tokens=160)
+    assert count_tokens(first) <= 160
+    assert "offset=" in first
+
+    # Pagination reuses snapshot using full_window_title even though display title was truncated.
+    next_offset = int(first.split("offset=", 1)[1].split(" ", 1)[0])
+    _snap2, second = tree.snapshot(1920, 1080, window="UniqueTailMarker", offset=next_offset, max_tokens=160)
+    assert len(fake.capture_calls) == 1
+    assert count_tokens(second) <= 160
+
+    # A set cancel_event stops even cached pagination calls.
+    stop = threading.Event()
+    stop.set()
+    with pytest.raises(InterruptedError, match="stopped"):
+        tree.snapshot(1920, 1080, window="UniqueTailMarker", offset=next_offset, cancel_event=stop)
+
+
 def test_ui_tree_respects_cancellation(monkeypatch: Any) -> None:
     rig, _ = _uia_rig(monkeypatch)
     cancel = threading.Event()
     cancel.set()
     with pytest.raises(DesktopStopped):
         rig.act("ui_tree", {}, cancel_event=cancel)
+
+
+def test_windows_uia_backend_locate_never_falls_back_to_stale_coordinates_on_error(monkeypatch: Any) -> None:
+    from nekopower.builtin import uia as uia_module
+    from nekopower.builtin.uia import UiControl, WindowsUiaBackend
+
+    monkeypatch.setattr(uia_module, "_ensure_com_for_thread", lambda: (None, None))
+    backend = WindowsUiaBackend()
+
+    class _BrokenElement:
+        @property
+        def CurrentIsOffscreen(self) -> bool:
+            err = OSError("wrong thread")
+            err.hresult = -2147417842  # type: ignore[attr-defined]
+            raise err
+
+    ctrl_broken = UiControl(
+        uid="1_1",
+        role="button",
+        name="Save",
+        depth=1,
+        rect=(100, 100, 200, 140),
+        center_px=(150, 120),
+        center_scaled=(78, 111),
+        element=_BrokenElement(),
+        owner_thread=999999,
+    )
+    ctrl_missing_el = UiControl(
+        uid="1_2",
+        role="button",
+        name="Cancel",
+        depth=1,
+        rect=(220, 100, 320, 140),
+        center_px=(270, 120),
+        center_scaled=(140, 111),
+        element=None,
+    )
+
+    try:
+        assert backend.locate(ctrl_broken) is None
+        assert backend.locate(ctrl_missing_el) is None
+    finally:
+        if backend._executor is not None:
+            backend._executor.shutdown(wait=True)
 
 
 def test_the_screen_settles_for_the_default_time_unless_told_otherwise() -> None:

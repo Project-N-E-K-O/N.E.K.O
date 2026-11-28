@@ -1676,3 +1676,34 @@ async def test_second_owner_fails_cleanly_when_new_tab_cannot_be_created(
     world.browser.refuse("Target.createTarget", "cannot open another tab")
     outcome = await tools.call(TOOL_PREFIX + "navigate_page", {"url": TERMS}, owner="team-b")
     assert not outcome.success and "cannot open additional tabs" in outcome.text
+
+
+async def test_attach_mode_select_page_keeps_user_tab_selected_across_actions_and_protects_from_close(
+    tools: BrowserTools, world: BrowserWorld
+) -> None:
+    world.settings(mode="attach")
+    world.browser.page("target-1").url = ORDER
+    world.browser._load(world.browser.page("target-1"), ORDER)
+
+    # In attach mode, team-a starts with its own new tab; user's existing tab is page 1 (own=False).
+    started = await tools.call(TOOL_PREFIX + "navigate_page", {"url": TERMS}, owner="team-a")
+    assert started.success, started.text
+    assert len(world.browser.pages) == 2
+
+    # Explicitly selecting the user's tab (page 1) claims it for team-a without changing page.own.
+    selected = await tools.call(TOOL_PREFIX + "select_page", {"pageId": 1}, owner="team-a")
+    assert selected.success and 'checkbox "Gift wrap"' in selected.text
+    gift_uid = re.search(r'uid=(\S+) checkbox "Gift wrap"', selected.text).group(1)
+
+    # Subsequent actions stay on the user's tab instead of jumping back to team-a's dedicated tab.
+    clicked = await tools.call(TOOL_PREFIX + "click", {"uid": gift_uid}, owner="team-a")
+    assert clicked.success, clicked.text
+    assert world.browser.page("target-1").find("Gift wrap").checked is True
+
+    # Another team cannot steal the claimed user tab while team-a holds it.
+    stolen = await tools.call(TOOL_PREFIX + "select_page", {"pageId": 1}, owner="team-b")
+    assert not stolen.success and "another task" in stolen.text
+
+    # User's tab still cannot be closed because page.own remains False.
+    closing = await tools.call(TOOL_PREFIX + "close_page", {"pageId": 1}, owner="team-a")
+    assert not closing.success and "not one opened for this work" in closing.text

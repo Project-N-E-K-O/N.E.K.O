@@ -3027,6 +3027,47 @@ async def test_browser_upload_file_checks_outside_read_only_for_files_outside_wo
     assert builtin_host.provider.calls[-1][2]["filePath"] == str(outside.resolve())
 
 
+async def test_browser_upload_file_rejects_target_changed_between_approval_and_execution(
+    builtin_host, tmp_path, monkeypatch
+):
+    from nekopower.host import gateway as gateway_module
+
+    upload_def = {
+        "name": "browser_upload_file",
+        "description": "Upload a file.",
+        "parameters": {
+            "type": "object",
+            "properties": {"uid": {"type": "string"}, "filePath": {"type": "string"}},
+            "required": ["uid", "filePath"],
+        },
+    }
+    builtin_host.provider.definitions["browser_upload_file"] = (BUILTIN_GROUP_BROWSER, upload_def, False)
+    builtin_host.registry.invalidate()
+    await builtin_host.permission_store.set_mode("browser", "allow")
+
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    inside = workdir / "report.txt"
+    inside.write_text("safe", encoding="utf-8")
+    outside = tmp_path / "secret.txt"
+    outside.write_text("top-secret", encoding="utf-8")
+
+    commission = await _commission(builtin_host, workdir=str(workdir))
+    grant = _grant(builtin_host, commission)
+
+    # Pre-approve via clear_call while report.txt resolves inside workdir (no outside_read needed).
+    arguments = {"uid": "1_1", "filePath": "report.txt"}
+    await builtin_host.gateway.clear_call(commission.id, "browser_upload_file", arguments)
+
+    # Simulate symlink swap after approval so the same filePath now resolves outside workdir.
+    monkeypatch.setattr(gateway_module, "_resolve_upload_path", lambda raw, wd: (str(outside.resolve()), True))
+
+    blocked = await _call(builtin_host, grant, "browser_upload_file", arguments)
+    assert blocked["isError"] is True
+    assert "changed after approval" in _text(blocked)
+    assert builtin_host.provider.calls == []
+
+
 async def test_a_task_agent_uses_the_group_the_commission_that_started_it_occupies(builtin_host, short_wait):
     builtin_host.permissions.set_asker(Asker("once"))
     lead = await _commission(builtin_host)

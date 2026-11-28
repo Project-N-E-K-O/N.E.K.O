@@ -487,10 +487,24 @@ class FakeBrowser:
         self._emit("Target.targetCreated", {"targetInfo": self.info(page)})
         return page
 
+    def _drop_oopifs(self, page: FakePage) -> None:
+        """Detach and forget every OOPIF target owned by ``page``."""
+        for element in list(page.elements.values()):
+            oopif = getattr(element, "oopif_page", None)
+            if oopif is None:
+                continue
+            self._drop_oopifs(oopif)
+            self.oopif_pages.pop(oopif.target_id, None)
+            for sid in list(oopif.sessions):
+                self._session_pages.pop(sid, None)
+            oopif.sessions.clear()
+            element.oopif_page = None
+
     def remove_page(self, page: FakePage) -> None:
         """Close a tab, as the user would."""
         if self.pages.pop(page.target_id, None) is None:
             return
+        self._drop_oopifs(page)
         for session_id in list(page.sessions):
             self._session_pages.pop(session_id, None)
             self._emit("Target.detachedFromTarget", {"sessionId": session_id, "targetId": page.target_id})
@@ -557,6 +571,7 @@ class FakeBrowser:
     # -- documents -----------------------------------------------------------
 
     def _load(self, page: FakePage, url: str) -> Frame:
+        self._drop_oopifs(page)
         build = self.sites.get(url.split("#", 1)[0])
         document = build() if build is not None else Document("")
         page.elements.clear()
@@ -1389,6 +1404,8 @@ class BrowserWorld:
     # Additional installs to try in attach mode when executable is unset.
     attach_browsers: list[BrowserInstall] | None = None
     attach_errors: dict[str, Exception] = field(default_factory=dict)
+    attach_endpoints_map: dict[str, list[RunningBrowser]] = field(default_factory=dict)
+    connect_errors: dict[str, Exception] = field(default_factory=dict)
     display: bool = True
     # Set to keep the start of the browser, or the connection to it, from
     # finishing until the test sets the event.
@@ -1421,6 +1438,7 @@ class BrowserWorld:
         patch.setattr(launcher, "attach_candidates", self._attach_candidates)
         patch.setattr(launcher, "launch", self._launch)
         patch.setattr(launcher, "attach", self._attach)
+        patch.setattr(launcher, "attach_endpoints", self._attach_endpoints)
         patch.setattr(launcher, "close", self._close)
         patch.setattr(launcher, "display_available", lambda platform=None: self.display)
         for name in (
@@ -1508,6 +1526,15 @@ class BrowserWorld:
             raise self.attach_error
         return RunningBrowser(install=install, endpoint=THEIR_ENDPOINT, process=None, owned=False, user_data_dir=install.user_data_dir)
 
+    async def _attach_endpoints(
+        self, install: BrowserInstall, *, exclude_user_data_dir: str | None = None
+    ) -> list[RunningBrowser]:
+        mapped = self.attach_endpoints_map.get(install.executable) or self.attach_endpoints_map.get(install.name)
+        if mapped is not None:
+            self.attached.append(install)
+            return list(mapped)
+        return [await self._attach(install, exclude_user_data_dir=exclude_user_data_dir)]
+
     async def _close(self, browser: RunningBrowser, connection: Any = None) -> None:
         self.closed.append((browser, connection))
         if self.close_gate is not None:
@@ -1519,6 +1546,9 @@ class BrowserWorld:
         self.connected.append((url, open_timeout))
         if self.connect_gate is not None:
             await self.connect_gate.wait()
+        specific = self.connect_errors.get(url)
+        if specific is not None:
+            raise specific
         if self.connect_error is not None:
             raise self.connect_error
         connection = FakeConnection(self.browser, url, open_timeout)

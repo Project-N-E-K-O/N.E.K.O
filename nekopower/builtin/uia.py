@@ -205,6 +205,7 @@ class UiTreeSnapshot:
     controls: tuple[UiControl, ...]
     by_uid: dict[str, UiControl]
     truncated_nodes: int = 0
+    full_window_title: str = ""
 
 
 class UiaBackend(Protocol):
@@ -226,6 +227,12 @@ class UiaBackend(Protocol):
 
     def locate(self, control: UiControl) -> tuple[tuple[int, int, int, int], bool] | None:
         """Return fresh ``(rect, enabled)`` for ``control``, or ``None`` if it is gone or offscreen."""
+
+    def is_point_visible(self, control: UiControl, px: int, py: int) -> bool:
+        """Return whether screen pixel ``(px, py)`` hits ``control`` without occlusion by another window."""
+
+    def is_focused(self, control: UiControl) -> bool:
+        """Return whether ``control`` (or one of its descendants) currently holds keyboard focus."""
 
 
 def _clean_text(raw: Any, limit: int) -> str:
@@ -361,6 +368,8 @@ class DesktopUiTree:
         """Capture the UI control tree, store it as the latest snapshot, and render it."""
         from config.nekopower_settings import DESKTOP_UI_TREE_MAX_TOKENS
 
+        if cancel_event is not None and cancel_event.is_set():
+            raise InterruptedError("stopped")
         if not self.is_supported():
             raise UiaUnavailableError(
                 "UI Automation control trees are only available on Windows; use action screenshot with 0 to 999 coordinates."
@@ -370,8 +379,11 @@ class DesktopUiTree:
         cap = DESKTOP_UI_TREE_MAX_TOKENS if max_tokens is None else max(100, int(max_tokens))
 
         # Reuse the current snapshot when paginating with offset > 0 and matching window filter.
+        latest_match_title = (
+            (self._latest.full_window_title or self._latest.window_title) if self._latest is not None else ""
+        )
         if offset > 0 and self._latest is not None and (
-            window is None or window.casefold() in self._latest.window_title.casefold()
+            window is None or window.casefold() in latest_match_title.casefold()
         ):
             snap = self._latest
         else:
@@ -414,13 +426,15 @@ class DesktopUiTree:
                 )
                 controls.append(control)
                 by_uid[uid] = control
+            full_title = " ".join(title.split()) if isinstance(title, str) else ""
             snap = UiTreeSnapshot(
                 generation=generation,
-                window_title=_clean_text(title, MAX_NAME_CHARS) or "(untitled window)",
+                window_title=_clean_text(full_title, MAX_NAME_CHARS) or "(untitled window)",
                 window_rect=win_rect,
                 controls=tuple(controls),
                 by_uid=by_uid,
                 truncated_nodes=truncated,
+                full_window_title=full_title,
             )
             self._latest = snap
         rendered = self.render(snap, screen_w=screen_w, screen_h=screen_h, offset=offset, max_tokens=cap)
@@ -436,6 +450,8 @@ class DesktopUiTree:
         max_tokens: int,
     ) -> str:
         """Render ``snap`` into bounded text with pagination notes when cut."""
+        from utils.tokenize import count_tokens
+
         scaled_box = _scale_rect(snap.window_rect, screen_w, screen_h)
         header = (
             f"## Desktop UI Controls — Window: {_quote(snap.window_title)} "
@@ -450,8 +466,17 @@ class DesktopUiTree:
                 "Call ui_tree without offset to read from the beginning.]"
             )
         page_lines = all_lines[offset:]
-        # Reserve room for header + optional pagination footer.
-        body_budget = max(80, max_tokens - 60)
+        # Reserve actual token overhead for header and worst-case pagination/truncation footers.
+        worst_footer = (
+            f"[Showing controls {offset + 1}-{len(all_lines)} of {len(all_lines)}. "
+            f"Call ui_tree with offset={len(all_lines)} to see the rest.]"
+        )
+        if snap.truncated_nodes > 0:
+            worst_footer += (
+                f"\n[{snap.truncated_nodes} deeper or extra controls were not walked to keep the tree compact.]"
+            )
+        overhead = count_tokens(header) + count_tokens(worst_footer) + 4
+        body_budget = max(20, max_tokens - overhead)
         body, shown = _cap_lines(page_lines, body_budget)
         notes: list[str] = []
         end_index = offset + shown
@@ -504,6 +529,20 @@ class DesktopUiTree:
         center_px, center_scaled = centers
         return replace(control, rect=rect, center_px=center_px, center_scaled=center_scaled, enabled=enabled)
 
+    def verify_point(self, control: UiControl, px: int, py: int) -> bool:
+        """Verify ``(px, py)`` hits ``control`` without being covered by another window."""
+        fn = getattr(self._backend, "is_point_visible", None)
+        if callable(fn):
+            return bool(fn(control, px, py))
+        return True
+
+    def is_focused(self, control: UiControl) -> bool:
+        """Return whether ``control`` (or a descendant) currently has keyboard focus."""
+        fn = getattr(self._backend, "is_focused", None)
+        if callable(fn):
+            return bool(fn(control))
+        return True
+
 
 # ---------------------------------------------------------------------------
 # Real Windows UI Automation backend (comtypes + UIAutomationCore.dll)
@@ -522,14 +561,40 @@ def _ensure_com_for_thread() -> tuple[Any, Any]:
 
     ole32 = ctypes.windll.ole32
     hr = ole32.CoInitializeEx(None, _COINIT_MULTITHREADED)
+    com_inited = hr >= 0
     if hr < 0 and hr != _RPC_E_CHANGED_MODE:
         logger.debug("CoInitializeEx returned HRESULT 0x%x", hr & 0xFFFFFFFF)
-
-    uia_mod = comtypes.client.GetModule("UIAutomationCore.dll")
-    automation = comtypes.client.CreateObject(_UIA_CLSID, interface=uia_mod.IUIAutomation)
+    try:
+        uia_mod = comtypes.client.GetModule("UIAutomationCore.dll")
+        automation = comtypes.client.CreateObject(_UIA_CLSID, interface=uia_mod.IUIAutomation)
+    except BaseException:
+        if com_inited:
+            try:
+                ole32.CoUninitialize()
+            except Exception:  # noqa: BLE001
+                pass
+        raise
     pair = (uia_mod, automation)
     _thread_state.uia = pair
     return pair
+
+
+def _win32_user32() -> Any:
+    """Return a ``user32`` WinDLL with explicit 64-bit-safe signatures for window hit-testing."""
+    import ctypes.wintypes as wintypes
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.GetForegroundWindow.argtypes = []
+    user32.GetForegroundWindow.restype = wintypes.HWND
+    user32.IsWindow.argtypes = [wintypes.HWND]
+    user32.IsWindow.restype = wintypes.BOOL
+    user32.IsWindowVisible.argtypes = [wintypes.HWND]
+    user32.IsWindowVisible.restype = wintypes.BOOL
+    user32.WindowFromPoint.argtypes = [wintypes.POINT]
+    user32.WindowFromPoint.restype = wintypes.HWND
+    user32.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
+    user32.GetAncestor.restype = wintypes.HWND
+    return user32
 
 
 def _read_rect(element: Any) -> tuple[int, int, int, int] | None:
@@ -543,6 +608,14 @@ def _read_rect(element: Any) -> tuple[int, int, int, int] | None:
     return left, top, right, bottom
 
 
+def _query_pattern(element: Any, pattern_id: int, iface_cls: Any) -> Any:
+    """Acquire a typed UIA pattern interface via ``GetCurrentPattern`` + ``QueryInterface``."""
+    raw = element.GetCurrentPattern(pattern_id)
+    if not raw:
+        return None
+    return raw.QueryInterface(iface_cls)
+
+
 def _read_patterns(element: Any, uia_mod: Any, role: str, is_password: bool) -> tuple[str, bool | None, bool | None, bool | None]:
     value = ""
     checked: bool | None = None
@@ -550,7 +623,7 @@ def _read_patterns(element: Any, uia_mod: Any, role: str, is_password: bool) -> 
     expanded: bool | None = None
     if not is_password and role in ("edit", "combobox", "document", "spinner", "slider"):
         try:
-            pat = element.GetCurrentPatternAs(uia_mod.UIA_ValuePatternId, uia_mod.IUIAutomationValuePattern)
+            pat = _query_pattern(element, uia_mod.UIA_ValuePatternId, uia_mod.IUIAutomationValuePattern)
             if pat:
                 raw_val = pat.CurrentValue
                 if isinstance(raw_val, str):
@@ -559,7 +632,7 @@ def _read_patterns(element: Any, uia_mod: Any, role: str, is_password: bool) -> 
             pass
     if role in ("checkbox", "button", "menuitem", "splitbutton"):
         try:
-            pat = element.GetCurrentPatternAs(uia_mod.UIA_TogglePatternId, uia_mod.IUIAutomationTogglePattern)
+            pat = _query_pattern(element, uia_mod.UIA_TogglePatternId, uia_mod.IUIAutomationTogglePattern)
             if pat:
                 state = int(pat.CurrentToggleState)
                 if state in (0, 1):
@@ -568,8 +641,8 @@ def _read_patterns(element: Any, uia_mod: Any, role: str, is_password: bool) -> 
             pass
     if role in ("radio", "tabitem", "listitem", "treeitem", "dataitem"):
         try:
-            pat = element.GetCurrentPatternAs(
-                uia_mod.UIA_SelectionItemPatternId, uia_mod.IUIAutomationSelectionItemPattern
+            pat = _query_pattern(
+                element, uia_mod.UIA_SelectionItemPatternId, uia_mod.IUIAutomationSelectionItemPattern
             )
             if pat:
                 selected = bool(pat.CurrentIsSelected)
@@ -577,8 +650,8 @@ def _read_patterns(element: Any, uia_mod: Any, role: str, is_password: bool) -> 
             pass
     if role in ("combobox", "menuitem", "treeitem", "splitbutton"):
         try:
-            pat = element.GetCurrentPatternAs(
-                uia_mod.UIA_ExpandCollapsePatternId, uia_mod.IUIAutomationExpandCollapsePattern
+            pat = _query_pattern(
+                element, uia_mod.UIA_ExpandCollapsePatternId, uia_mod.IUIAutomationExpandCollapsePattern
             )
             if pat:
                 state = int(pat.CurrentExpandCollapseState)
@@ -590,7 +663,34 @@ def _read_patterns(element: Any, uia_mod: Any, role: str, is_password: bool) -> 
 
 
 class WindowsUiaBackend:
-    """Real Windows UI Automation backend backed by ``UIAutomationCore.dll`` via ``comtypes``."""
+    """Real Windows UI Automation backend backed by ``UIAutomationCore.dll`` via ``comtypes``.
+
+    All COM calls execute on a dedicated single worker thread so COM interface
+    pointers captured during ``capture_tree`` are always re-verified on the
+    exact same apartment thread during ``locate`` without cross-thread errors
+    or falling back to stale cached coordinates.
+    """
+
+    def __init__(self) -> None:
+        self._exec_lock = threading.Lock()
+        self._executor: Any = None
+        self._worker_thread_id: int | None = None
+
+    def _run_on_uia_thread(self, fn: Any, *args: Any, **kwargs: Any) -> Any:
+        if self._worker_thread_id is not None and threading.get_ident() == self._worker_thread_id:
+            return fn(*args, **kwargs)
+        with self._exec_lock:
+            if self._executor is None:
+                from concurrent.futures import ThreadPoolExecutor
+
+                self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="nekopower-uia")
+            executor = self._executor
+
+        def _wrapped() -> Any:
+            self._worker_thread_id = threading.get_ident()
+            return fn(*args, **kwargs)
+
+        return executor.submit(_wrapped).result()
 
     def is_supported(self) -> bool:
         if platform.system().lower() != "windows":
@@ -602,25 +702,39 @@ class WindowsUiaBackend:
         except Exception:  # noqa: BLE001
             return False
 
-    def _find_target_window(self, automation: Any, walker: Any, window: str | None) -> tuple[Any, str, tuple[int, int, int, int], int]:
+    def _find_target_window(
+        self,
+        automation: Any,
+        walker: Any,
+        window: str | None,
+        *,
+        deadline: float | None = None,
+        cancel_event: threading.Event | None = None,
+    ) -> tuple[Any, str, tuple[int, int, int, int], int]:
         if window:
             needle = window.strip().casefold()
             root = automation.GetRootElement()
             child = walker.GetFirstChildElement(root)
             candidates: list[str] = []
-            while child is not None:
+            while child:
+                if cancel_event is not None and cancel_event.is_set():
+                    raise InterruptedError("stopped")
+                if deadline is not None and time.monotonic() >= deadline:
+                    break
                 try:
-                    name = _clean_text(child.CurrentName, MAX_NAME_CHARS)
+                    raw_name = child.CurrentName
+                    full_name = " ".join(raw_name.split()) if isinstance(raw_name, str) else ""
+                    display_name = _clean_text(full_name, MAX_NAME_CHARS)
                     rect = _read_rect(child)
                     offscreen = bool(child.CurrentIsOffscreen)
                     hwnd = int(child.CurrentNativeWindowHandle or 0)
                 except Exception:  # noqa: BLE001
-                    name, rect, offscreen, hwnd = "", None, True, 0
-                if name and rect is not None and not offscreen:
-                    if needle in name.casefold():
-                        return child, name, rect, hwnd
+                    full_name, display_name, rect, offscreen, hwnd = "", "", None, True, 0
+                if full_name and rect is not None and not offscreen:
+                    if needle in full_name.casefold():
+                        return child, full_name, rect, hwnd
                     if len(candidates) < MAX_LISTED_WINDOWS:
-                        candidates.append(name)
+                        candidates.append(display_name)
                 try:
                     child = walker.GetNextSiblingElement(child)
                 except Exception:  # noqa: BLE001
@@ -629,16 +743,17 @@ class WindowsUiaBackend:
             raise UiaUnavailableError(
                 f"No visible window matching {window!r} was found. Open windows: {available}."
             )
-        hwnd = int(ctypes.windll.user32.GetForegroundWindow() or 0)
+        hwnd = int(_win32_user32().GetForegroundWindow() or 0)
         element = automation.ElementFromHandle(hwnd) if hwnd else automation.GetRootElement()
-        if element is None:
+        if not element:
             raise UiaUnavailableError("Could not read the foreground window via UI Automation.")
         try:
-            name = _clean_text(element.CurrentName, MAX_NAME_CHARS)
+            raw_name = element.CurrentName
+            full_name = " ".join(raw_name.split()) if isinstance(raw_name, str) else ""
         except Exception:  # noqa: BLE001
-            name = ""
+            full_name = ""
         rect = _read_rect(element) or (0, 0, 1, 1)
-        return element, name, rect, hwnd
+        return element, full_name, rect, hwnd
 
     def capture_tree(
         self,
@@ -649,12 +764,32 @@ class WindowsUiaBackend:
         timeout_seconds: float = DEFAULT_WALK_TIMEOUT_SECONDS,
         cancel_event: threading.Event | None = None,
     ) -> tuple[str, tuple[int, int, int, int], list[RawControl], int]:
+        return self._run_on_uia_thread(
+            self._capture_tree_on_thread,
+            window=window,
+            max_depth=max_depth,
+            max_nodes=max_nodes,
+            timeout_seconds=timeout_seconds,
+            cancel_event=cancel_event,
+        )
+
+    def _capture_tree_on_thread(
+        self,
+        *,
+        window: str | None = None,
+        max_depth: int = DEFAULT_MAX_DEPTH,
+        max_nodes: int = DEFAULT_MAX_NODES,
+        timeout_seconds: float = DEFAULT_WALK_TIMEOUT_SECONDS,
+        cancel_event: threading.Event | None = None,
+    ) -> tuple[str, tuple[int, int, int, int], list[RawControl], int]:
         if cancel_event is not None and cancel_event.is_set():
             raise InterruptedError("stopped")
+        deadline = time.monotonic() + max(0.2, float(timeout_seconds))
         uia_mod, automation = _ensure_com_for_thread()
         walker = automation.ControlViewWalker
-        root_el, title, win_rect, root_hwnd = self._find_target_window(automation, walker, window)
-        deadline = time.monotonic() + max(0.2, float(timeout_seconds))
+        root_el, title, win_rect, root_hwnd = self._find_target_window(
+            automation, walker, window, deadline=deadline, cancel_event=cancel_event
+        )
         thread_id = threading.get_ident()
         collected: list[RawControl] = []
         truncated = 0
@@ -720,12 +855,19 @@ class WindowsUiaBackend:
             children: list[Any] = []
             try:
                 child = walker.GetFirstChildElement(el)
-                while child is not None:
+                while child:
+                    if cancel_event is not None and cancel_event.is_set():
+                        raise InterruptedError("stopped")
+                    if time.monotonic() >= deadline:
+                        truncated += 1
+                        break
                     children.append(child)
                     if len(children) >= max_nodes:
                         truncated += 1
                         break
                     child = walker.GetNextSiblingElement(child)
+            except InterruptedError:
+                raise
             except Exception:  # noqa: BLE001
                 pass
             for child in reversed(children):
@@ -734,16 +876,19 @@ class WindowsUiaBackend:
         return title, win_rect, collected, truncated
 
     def locate(self, control: UiControl) -> tuple[tuple[int, int, int, int], bool] | None:
+        return self._run_on_uia_thread(self._locate_on_thread, control)
+
+    def _locate_on_thread(self, control: UiControl) -> tuple[tuple[int, int, int, int], bool] | None:
         if control.hwnd:
             try:
-                user32 = ctypes.windll.user32
+                user32 = _win32_user32()
                 if not user32.IsWindow(control.hwnd) or not user32.IsWindowVisible(control.hwnd):
                     return None
             except Exception:  # noqa: BLE001
                 pass
         el = control.element
-        if el is None:
-            return control.rect, control.enabled
+        if not el:
+            return None
         try:
             _ensure_com_for_thread()
             if bool(el.CurrentIsOffscreen):
@@ -753,15 +898,83 @@ class WindowsUiaBackend:
                 return None
             enabled = bool(el.CurrentIsEnabled)
             return rect, enabled
-        except OSError as exc:
-            hresult = getattr(exc, "hresult", None) or (exc.args[0] if exc.args and isinstance(exc.args[0], int) else None)
-            if hresult == _UIA_E_ELEMENTNOTAVAILABLE:
-                return None
-            if hresult == _RPC_E_WRONG_THREAD:
-                return control.rect, control.enabled
+        except Exception:  # noqa: BLE001 - never trust stale cached coordinates when live re-check fails
             return None
-        except Exception:  # noqa: BLE001
-            # If the element came from a different COM apartment, fall back to its captured rect.
-            if control.owner_thread and control.owner_thread != threading.get_ident():
-                return control.rect, control.enabled
-            return None
+
+    def is_point_visible(self, control: UiControl, px: int, py: int) -> bool:
+        return bool(self._run_on_uia_thread(self._is_point_visible_on_thread, control, int(px), int(py)))
+
+    def _is_point_visible_on_thread(self, control: UiControl, px: int, py: int) -> bool:
+        import ctypes.wintypes as wintypes
+
+        el = control.element
+        if not el:
+            return False
+        pt = wintypes.POINT(px, py)
+        if control.hwnd:
+            try:
+                user32 = _win32_user32()
+                hit_hwnd = int(user32.WindowFromPoint(pt) or 0)
+                if not hit_hwnd:
+                    return False
+                ga_root = 2
+                hit_root = int(user32.GetAncestor(hit_hwnd, ga_root) or hit_hwnd)
+                target_root = int(user32.GetAncestor(control.hwnd, ga_root) or control.hwnd)
+                if hit_root != target_root:
+                    return False
+            except Exception:  # noqa: BLE001
+                return False
+        try:
+            _, automation = _ensure_com_for_thread()
+            hit = automation.ElementFromPoint(pt)
+            if not hit:
+                return False
+            if automation.CompareElements(hit, el):
+                return True
+            walker = automation.ControlViewWalker
+            curr = hit
+            for _ in range(16):
+                parent = walker.GetParentElement(curr)
+                if not parent:
+                    break
+                if automation.CompareElements(parent, el):
+                    return True
+                curr = parent
+            # Handle a text/image leaf inside an interactive parent control when ElementFromPoint hits the parent.
+            direct_parent = walker.GetParentElement(el)
+            if direct_parent and automation.CompareElements(hit, direct_parent):
+                hit_role = CONTROL_TYPE_ROLES.get(int(hit.CurrentControlType), "custom")
+                if hit_role in INTERACTIVE_ROLES:
+                    return True
+            return False
+        except Exception:  # noqa: BLE001 - fail closed when hit-test cannot confirm target visibility
+            return False
+
+    def is_focused(self, control: UiControl) -> bool:
+        return bool(self._run_on_uia_thread(self._is_focused_on_thread, control))
+
+    def _is_focused_on_thread(self, control: UiControl) -> bool:
+        el = control.element
+        if not el:
+            return False
+        try:
+            _, automation = _ensure_com_for_thread()
+            if bool(el.CurrentHasKeyboardFocus):
+                return True
+            focused = automation.GetFocusedElement()
+            if not focused:
+                return False
+            if automation.CompareElements(focused, el):
+                return True
+            walker = automation.ControlViewWalker
+            curr = focused
+            for _ in range(16):
+                parent = walker.GetParentElement(curr)
+                if not parent:
+                    break
+                if automation.CompareElements(parent, el):
+                    return True
+                curr = parent
+            return False
+        except Exception:  # noqa: BLE001 - fail closed when focus cannot be confirmed
+            return False

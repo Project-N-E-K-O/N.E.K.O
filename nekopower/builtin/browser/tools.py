@@ -133,6 +133,7 @@ class BrowserTools:
         self._closing = False
         self._start_lock = asyncio.Lock()
         self._owner_locks: dict[str | None, asyncio.Lock] = {}
+        self._owner_refs: dict[str | None, int] = {}
         self._handlers: dict[str, Callable[[dict[str, Any], str | None], Awaitable[BuiltinOutcome]]] = {
             "navigate_page": self._navigate_page,
             "take_snapshot": self._take_snapshot,
@@ -158,6 +159,22 @@ class BrowserTools:
         if lock is None:
             lock = self._owner_locks[owner] = asyncio.Lock()
         return lock
+
+    @contextlib.asynccontextmanager
+    async def _hold_owner_lock(self, owner: str | None) -> AsyncIterator[None]:
+        lock = self._owner_lock(owner)
+        self._owner_refs[owner] = self._owner_refs.get(owner, 0) + 1
+        try:
+            async with lock:
+                yield
+        finally:
+            remaining = self._owner_refs.get(owner, 1) - 1
+            if remaining <= 0:
+                self._owner_refs.pop(owner, None)
+                if owner is not None and self._owner_locks.get(owner) is lock:
+                    self._owner_locks.pop(owner, None)
+            else:
+                self._owner_refs[owner] = remaining
 
     @contextlib.asynccontextmanager
     async def _enter_call(self) -> AsyncIterator[None]:
@@ -211,7 +228,7 @@ class BrowserTools:
         handler = self._handlers.get(tool_name[len(TOOL_PREFIX) :] if tool_name.startswith(TOOL_PREFIX) else "")
         if handler is None:
             return BuiltinOutcome(False, f"unknown tool {tool_name}")
-        async with self._owner_lock(owner):
+        async with self._hold_owner_lock(owner):
             async with self._enter_call():
                 try:
                     async with self._start_lock:
@@ -256,11 +273,8 @@ class BrowserTools:
             async with self._enter_close():
                 self._session.release_owner(None)
             return
-        lock = self._owner_lock(owner)
-        async with lock:
+        async with self._hold_owner_lock(owner):
             self._session.release_owner(owner)
-        if not lock.locked() and self._owner_locks.get(owner) is lock:
-            del self._owner_locks[owner]
 
     def window(self) -> dict[str, Any] | None:
         return self._session.window()

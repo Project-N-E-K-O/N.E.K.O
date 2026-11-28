@@ -735,6 +735,24 @@ class Desktop:
         except UiaUnavailableError as exc:
             raise DesktopActionError(str(exc)) from exc
 
+    def _resolve_uid_px(self, uid: str, gui: ScaledInput) -> tuple[Any, int, int]:
+        """Resolve ``uid``, compute the safe clamped pixel, and verify it stays inside the unoccluded control."""
+        ctrl = self._resolve_uid(uid, gui)
+        cx, cy = gui._clamp_px(ctrl.center_px[0], ctrl.center_px[1])
+        left, top, right, bottom = ctrl.rect
+        if not (left <= cx < right and top <= cy < bottom):
+            raise DesktopActionError(
+                f"Control {_describe_control(ctrl)} is too close to the screen edge for safe pointer targeting. "
+                "Move the window or use screenshot coordinates."
+            )
+        tree = self._ui_tree()
+        if tree is not None and hasattr(tree, "verify_point") and not tree.verify_point(ctrl, cx, cy):
+            raise DesktopActionError(
+                f"Control {_describe_control(ctrl)} is covered by another window or overlay at ({cx}, {cy}). "
+                "Bring the target window to the front and refresh ui_tree."
+            )
+        return ctrl, cx, cy
+
     def _best_effort_ui_snippet(self, gui: ScaledInput, cancel_event: threading.Event | None) -> str:
         """Capture a compact UI tree snippet when UIA is available; never raises except on stop."""
         tree = self._ui_tree()
@@ -939,8 +957,8 @@ class Desktop:
                 raise DesktopActionError("clicks must be 1, 2 or 3")
             kind = {1: "Clicked", 2: "Double-clicked", 3: "Triple-clicked"}[int(clicks)]
             if uid is not None:
-                ctrl = self._resolve_uid(uid, gui)
-                gui.click_px(ctrl.center_px[0], ctrl.center_px[1], button=button, clicks=int(clicks))
+                ctrl, cx, cy = self._resolve_uid_px(uid, gui)
+                gui.click_px(cx, cy, button=button, clicks=int(clicks))
                 return f"{kind} the {button} button on {_describe_control(ctrl)}.", True
             x, y = _coordinate(arguments, "x"), _coordinate(arguments, "y")
             gui.click(x, y, button=button, clicks=int(clicks))
@@ -948,8 +966,8 @@ class Desktop:
         if action == "move":
             uid = _uid_arg(arguments, "uid")
             if uid is not None:
-                ctrl = self._resolve_uid(uid, gui)
-                gui.move_px(ctrl.center_px[0], ctrl.center_px[1])
+                ctrl, cx, cy = self._resolve_uid_px(uid, gui)
+                gui.move_px(cx, cy)
                 return f"Moved the pointer to {_describe_control(ctrl)}.", True
             x, y = _coordinate(arguments, "x"), _coordinate(arguments, "y")
             gui.move(x, y)
@@ -958,16 +976,14 @@ class Desktop:
             uid = _uid_arg(arguments, "uid")
             to_uid = _uid_arg(arguments, "to_uid")
             if uid is not None:
-                start_ctrl = self._resolve_uid(uid, gui)
-                sx, sy = start_ctrl.center_px
+                start_ctrl, sx, sy = self._resolve_uid_px(uid, gui)
                 start_desc = _describe_control(start_ctrl)
             else:
                 x, y = _coordinate(arguments, "x"), _coordinate(arguments, "y")
                 sx, sy = gui.to_pixels(x, y)
                 start_desc = f"({x}, {y})"
             if to_uid is not None:
-                end_ctrl = self._resolve_uid(to_uid, gui)
-                ex, ey = end_ctrl.center_px
+                end_ctrl, ex, ey = self._resolve_uid_px(to_uid, gui)
                 end_desc = _describe_control(end_ctrl)
             else:
                 to_x, to_y = _coordinate(arguments, "to_x"), _coordinate(arguments, "to_y")
@@ -982,8 +998,8 @@ class Desktop:
             notches = int(_number(arguments, "amount", SCROLL_DEFAULT_NOTCHES, 1, SCROLL_MAX_NOTCHES))
             uid = _uid_arg(arguments, "uid")
             if uid is not None:
-                ctrl = self._resolve_uid(uid, gui)
-                gui.scroll_px(direction, notches, ctrl.center_px[0], ctrl.center_px[1])
+                ctrl, cx, cy = self._resolve_uid_px(uid, gui)
+                gui.scroll_px(direction, notches, cx, cy)
                 return f"Scrolled {direction} {notches} notch(es) on {_describe_control(ctrl)}.", True
             x, y = _coordinate(arguments, "x", required=False), _coordinate(arguments, "y", required=False)
             if (x is None) != (y is None):
@@ -999,9 +1015,14 @@ class Desktop:
                 raise DesktopActionError(f"text is longer than {TYPE_MAX_CHARACTERS} characters; type it in parts")
             uid = _uid_arg(arguments, "uid")
             if uid is not None:
-                ctrl = self._resolve_uid(uid, gui)
-                gui.click_px(ctrl.center_px[0], ctrl.center_px[1])
+                ctrl, cx, cy = self._resolve_uid_px(uid, gui)
+                gui.click_px(cx, cy)
                 gui.settle_for(0.05)
+                tree = self._ui_tree()
+                if tree is not None and hasattr(tree, "is_focused") and not tree.is_focused(ctrl):
+                    raise DesktopActionError(
+                        f"Control {_describe_control(ctrl)} did not receive keyboard focus after clicking; nothing was typed."
+                    )
                 gui.write(text)
                 return f"Typed {len(text)} character(s) into {_describe_control(ctrl)}.", True
             gui.write(text)
