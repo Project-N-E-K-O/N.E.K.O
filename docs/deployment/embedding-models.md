@@ -69,4 +69,4 @@ TIKTOKEN_CACHE_DIR="$(pwd)/data/tiktoken_cache" \
   uv run python -c "import tiktoken; tiktoken.get_encoding('o200k_base')"
 ```
 
-`scripts/check_nuitka_dist.py` verifies the embedding files and the tiktoken cache in the finished distribution: shipping weights without the runtime that loads them would silently sticky-disable vectors at first use.
+`scripts/check_nuitka_dist.py` verifies the embedding model files in the finished distribution, but not the tiktoken cache or the inference modules compiled into the executable. After a local build, check that `data/tiktoken_cache/` in the runtime directory holds at least one blob (the workflow makes the same check) and start the app once to confirm vector memory loads: shipping weights without the runtime that loads them would silently sticky-disable vectors at first use.
