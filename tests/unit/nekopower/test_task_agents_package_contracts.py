@@ -75,7 +75,7 @@ def _harvest_facade_patch_targets(tests_root: Path) -> tuple[dict[str, set[str]]
     targets: dict[str, set[str]] = {}
     scanned = 0
     for path in sorted(tests_root.rglob("*.py")):
-        rel_parts = path.relative_to(REPO_ROOT).parts
+        rel_parts = path.relative_to(tests_root).parts
         if "__pycache__" in rel_parts:
             continue
         scanned += 1
@@ -89,6 +89,7 @@ def _harvest_facade_patch_targets(tests_root: Path) -> tuple[dict[str, set[str]]
 
         ta_aliases: set[str] = set()
         host_aliases: set[str] = set()
+        patch_aliases: set[str] = set()
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 for alias in node.names:
@@ -105,6 +106,10 @@ def _harvest_facade_patch_targets(tests_root: Path) -> tuple[dict[str, set[str]]
                     for alias in node.names:
                         if alias.name == "host":
                             host_aliases.add(alias.asname or "host")
+                elif node.module in ("unittest.mock", "mock"):
+                    for alias in node.names:
+                        if alias.name == "patch":
+                            patch_aliases.add(alias.asname or "patch")
             elif isinstance(node, ast.Assign) and isinstance(node.value, ast.Call):
                 for arg in node.value.args:
                     if isinstance(arg, ast.Constant) and arg.value == FACADE_MODULE_PATH:
@@ -122,14 +127,22 @@ def _harvest_facade_patch_targets(tests_root: Path) -> tuple[dict[str, set[str]]
                     return True
             return False
 
-        rel = path.relative_to(REPO_ROOT).as_posix()
+        def _is_patch_call(call: ast.Call) -> bool:
+            if isinstance(call.func, ast.Attribute):
+                if call.func.attr in _PATCH_CALL_NAMES:
+                    return True
+                if isinstance(call.func.value, ast.Name) and call.func.value.id in patch_aliases:
+                    return call.func.attr == "object"
+                return False
+            if isinstance(call.func, ast.Name):
+                return call.func.id in _PATCH_CALL_NAMES or call.func.id in patch_aliases
+            return False
+
+        rel = path.relative_to(tests_root).as_posix()
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
-            func_tail = node.func.attr if isinstance(node.func, ast.Attribute) else (
-                node.func.id if isinstance(node.func, ast.Name) else ""
-            )
-            if func_tail not in _PATCH_CALL_NAMES:
+            if not _is_patch_call(node):
                 continue
             if _call_has_absent_opt_out(node):
                 continue
@@ -236,6 +249,10 @@ def _check_patch_routing_in_tree(
             stack.extend(ast.iter_child_nodes(n))
         return bound
 
+    def _is_owner_import_from(node: ast.ImportFrom) -> bool:
+        mod = node.module or ""
+        return (node.level == 1 and mod == "types") or mod == f"{FACADE_MODULE_PATH}.types"
+
     def _check_def_time_expr(expr: ast.AST | None, context: str) -> None:
         if expr is None:
             return
@@ -250,12 +267,22 @@ def _check_patch_routing_in_tree(
                     f"{filename}:{sub.lineno}: def-time facade read {sub.value.id}.{sub.attr} "
                     f"in {context} freezes the value at import time"
                 )
+            elif (
+                isinstance(sub, ast.Attribute)
+                and isinstance(sub.value, ast.Name)
+                and sub.value.id in owner_aliases
+                and sub.attr in patched_symbols
+            ):
+                violations.append(
+                    f"{filename}:{sub.lineno}: def-time owner read {sub.value.id}.{sub.attr} "
+                    f"in {context} bypasses the facade"
+                )
             elif isinstance(sub, ast.Name) and isinstance(sub.ctx, ast.Load) and sub.id in patched_symbols:
                 violations.append(
                     f"{filename}:{sub.lineno}: bare read of patched symbol {sub.id!r} in {context}"
                 )
 
-    def _visit_body(node: ast.AST, scopes: list[set[str]]) -> None:
+    def _visit_body(node: ast.AST, scopes: list[set[str]], local_owner_aliases: set[str]) -> None:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             for dec in node.decorator_list:
                 _check_def_time_expr(dec, f"decorator of {node.name}")
@@ -264,22 +291,43 @@ def _check_patch_routing_in_tree(
             for kw_default in node.args.kw_defaults:
                 _check_def_time_expr(kw_default, f"kw-default arg of {node.name}")
             inner = _collect_fn_bound(node)
+            fn_owner_aliases = set(local_owner_aliases)
             for stmt in node.body:
-                _visit_body(stmt, [*scopes, inner])
+                _visit_body(stmt, [*scopes, inner], fn_owner_aliases)
             return
         if isinstance(node, ast.ClassDef):
             for member in node.body:
                 if isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    _visit_body(member, scopes)
+                    _visit_body(member, scopes, local_owner_aliases)
                 elif isinstance(member, ast.Assign):
                     _check_def_time_expr(member.value, f"class attribute in {node.name}")
                 elif isinstance(member, ast.AnnAssign):
                     _check_def_time_expr(member.value, f"class attribute in {node.name}")
             return
+        if scopes and isinstance(node, ast.ImportFrom):
+            mod = node.module or ""
+            if _is_owner_import_from(node):
+                for alias in node.names:
+                    if alias.name in patched_symbols:
+                        violations.append(
+                            f"{filename}:{node.lineno}: in-function from-import of patched symbol "
+                            f"{alias.name!r} from owner module bypasses the facade; "
+                            f"read via {FACADE_ALIAS}.{alias.name}"
+                        )
+            elif (node.level == 1 and mod == "") or mod == FACADE_MODULE_PATH:
+                for alias in node.names:
+                    if alias.name == "types":
+                        local_owner_aliases.add(alias.asname or alias.name)
+            return
+        if scopes and isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == f"{FACADE_MODULE_PATH}.types":
+                    local_owner_aliases.add(alias.asname or alias.name)
+            return
         if (
             isinstance(node, ast.Attribute)
             and isinstance(node.value, ast.Name)
-            and node.value.id in owner_aliases
+            and node.value.id in local_owner_aliases
             and node.attr in patched_symbols
         ):
             violations.append(
@@ -295,10 +343,10 @@ def _check_patch_routing_in_tree(
                 )
             return
         for child in ast.iter_child_nodes(node):
-            _visit_body(child, scopes)
+            _visit_body(child, scopes, local_owner_aliases)
 
     for stmt in tree.body:
-        _visit_body(stmt, [])
+        _visit_body(stmt, [], set(owner_aliases))
 
     return violations
 
@@ -375,6 +423,16 @@ def test_patch_routing_contract_across_task_agents_package() -> None:
             "class M:\n    def f(self): return _SERVICE_HANDOVER_SECONDS\n",
             "bare global read",
         ),
+        (
+            "class M:\n    def f(self):\n        from .types import _lies_in\n        return _lies_in\n",
+            "in-function from-import",
+        ),
+        (
+            "from . import types as shared\n"
+            "class M:\n"
+            "    def f(self, probe=shared._begun_in): return probe\n",
+            "def-time owner read",
+        ),
     ],
 )
 def test_patch_routing_guard_catches_violation_forms(bad_source: str, expected_fragment: str) -> None:
@@ -392,20 +450,41 @@ def test_patch_routing_guard_catches_violation_forms(bad_source: str, expected_f
 
 
 def test_patch_routing_guard_accepts_late_facade_read() -> None:
-    """Self-test: valid late-binding facade reads pass cleanly."""
+    """Self-test: valid late-binding facade reads (and call-time facade imports) pass cleanly."""
     good_source = (
         "from nekopower.host import task_agents as _task_agents_facade\n"
         "class M:\n"
         "    def f(self):\n"
         "        return _task_agents_facade._SERVICE_CLOSE_SECONDS\n"
+        "    def g(self):\n"
+        "        from nekopower.host.task_agents import _lies_in\n"
+        "        return _lies_in\n"
     )
     tree = ast.parse(good_source, filename="<synthetic>")
     found = _check_patch_routing_in_tree(
         tree,
         filename="<synthetic>",
-        patched_symbols={"_SERVICE_CLOSE_SECONDS"},
+        patched_symbols={"_SERVICE_CLOSE_SECONDS", "_lies_in"},
     )
     assert found == []
+
+
+def test_harvester_recognizes_aliased_mock_patch_without_matching_plain_calls(tmp_path: Path) -> None:
+    """Self-test: harvester tracks ``from unittest.mock import patch as ...`` without false positives."""
+    (tmp_path / "test_aliased.py").write_text(
+        "from unittest.mock import patch as mock_patch\n"
+        'mock_patch("nekopower.host.task_agents._CAUGHT_UP_SECONDS", 0.01)\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "test_plain.py").write_text(
+        "def helper(name, val): return name, val\n"
+        'helper("nekopower.host.task_agents._NOT_PATCHED", 1)\n',
+        encoding="utf-8",
+    )
+    targets, scanned = _harvest_facade_patch_targets(tmp_path)
+    assert scanned == 2
+    assert "_CAUGHT_UP_SECONDS" in targets
+    assert "_NOT_PATCHED" not in targets
 
 
 def test_package_layout_mixins_disjoint_and_facade_shape() -> None:
@@ -655,9 +734,9 @@ async def test_facade_monkeypatch_reaches_split_consumers_at_runtime(
         return set(), set(fs)
 
     monkeypatch.setattr(asyncio, "wait", spy_wait_settle)
-    monkeypatch.setattr(facade, "_SHUTDOWN_START_WAIT_SECONDS", 0.0321)
+    monkeypatch.setattr(facade, "_SHUTDOWN_START_WAIT_SECONDS", 123.4)
     await usage_stub._settle_usage()
     assert len(settle_timeouts) == 1
-    assert settle_timeouts[0] is not None and 0.0 < settle_timeouts[0] <= 0.04
+    assert settle_timeouts[0] is not None and 100.0 < settle_timeouts[0] <= 123.5
     blocker.cancel()
     pending_write.cancel()
