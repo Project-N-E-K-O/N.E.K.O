@@ -773,14 +773,18 @@ class ChatAnthropic:
         extra_body: dict | None = None,
         max_completion_tokens: int | None = None,
         max_tokens: int | None = None,
-        timeout: float | None = None,
-        request_timeout: float | None = None,
+        timeout: float | Any | None = None,
+        request_timeout: float | Any | None = None,
         default_headers: dict | None = None,
         enable_cache_control: bool = False,
         tools: list[dict] | None = None,
         tool_choice: str | dict | None = None,
+        keepalive_expiry: float | None = None,
         **_kwargs: Any,
     ):
+        """``keepalive_expiry`` keeps idle connections open that many seconds
+        (httpx closes them after 5 s by default), for a client kept and reused
+        across calls that come further apart than that."""
         anthropic_cls, async_anthropic_cls = Anthropic, AsyncAnthropic
         if anthropic_cls is None or async_anthropic_cls is None:
             try:
@@ -797,21 +801,61 @@ class ChatAnthropic:
         self.tools = list(tools) if tools else None
         self.tool_choice = tool_choice
 
+        from utils.http.pool_utils import (
+            build_split_http_timeout,
+            install_stale_connection_retry,
+        )
+
         _api_key = api_key or "sk-placeholder"
-        _timeout = timeout or request_timeout
+        _raw_timeout = timeout if timeout is not None else request_timeout
         client_kw: dict[str, Any] = dict(api_key=_api_key, max_retries=max_retries)
         if self.base_url:
             client_kw["base_url"] = self.base_url
-        if _timeout is not None:
-            client_kw["timeout"] = _timeout
+        if _raw_timeout is not None:
+            client_kw["timeout"] = build_split_http_timeout(_raw_timeout)
         # Set the neko/<version> User-Agent to override the SDK's built-in UA (AsyncAnthropic/Python x.y.z),
         # preventing Cloudflare "Manage AI bots" rules from blocking custom API endpoints. Do not override a UA already
         # explicitly set in default_headers by the caller (for example, Kimi Code's claude-code/0.1.0).
         from utils.http_client import ensure_user_agent
         client_kw["default_headers"] = ensure_user_agent(default_headers)
 
-        self._client = anthropic_cls(**client_kw)
-        self._aclient = async_anthropic_cls(**client_kw)
+        sync_kw = dict(client_kw)
+        async_kw = dict(client_kw)
+        try:
+            from anthropic import (
+                DEFAULT_CONNECTION_LIMITS,
+                DefaultAsyncHttpxClient,
+                DefaultHttpxClient,
+            )
+        except ImportError:
+            DEFAULT_CONNECTION_LIMITS = None
+            DefaultAsyncHttpxClient = None
+            DefaultHttpxClient = None
+
+        if DefaultAsyncHttpxClient is not None and DefaultHttpxClient is not None:
+            from .lifecycle import _get_default_ssl_context
+
+            ssl_context = _get_default_ssl_context()
+            http_kw: dict[str, Any] = {"verify": ssl_context}
+            if keepalive_expiry is not None and DEFAULT_CONNECTION_LIMITS is not None:
+                import httpx
+
+                http_kw["limits"] = httpx.Limits(
+                    max_connections=DEFAULT_CONNECTION_LIMITS.max_connections,
+                    max_keepalive_connections=DEFAULT_CONNECTION_LIMITS.max_keepalive_connections,
+                    keepalive_expiry=keepalive_expiry,
+                )
+            sync_kw["http_client"] = install_stale_connection_retry(
+                DefaultHttpxClient(**http_kw),
+                label="Anthropic HTTP",
+            )
+            async_kw["http_client"] = install_stale_connection_retry(
+                DefaultAsyncHttpxClient(**http_kw),
+                label="Anthropic HTTP",
+            )
+
+        self._client = anthropic_cls(**sync_kw)
+        self._aclient = async_anthropic_cls(**async_kw)
         self._client_finalizer = weakref.finalize(
             self,
             _close_chat_clients_best_effort,
@@ -907,6 +951,10 @@ class ChatAnthropic:
             if value is None:
                 continue
             if key in _ANTHROPIC_REQUEST_OPTION_KEYS:
+                if key == "timeout" and isinstance(value, (int, float)) and not isinstance(value, bool):
+                    from utils.http.pool_utils import build_split_http_timeout
+
+                    value = build_split_http_timeout(value)
                 payload[key] = value
             elif key in _ANTHROPIC_BODY_OVERRIDE_KEYS:
                 _apply_anthropic_body_fields(payload, {key: value})
@@ -1094,6 +1142,14 @@ class ChatAnthropic:
             if len(models) >= limit:
                 break
         return models
+
+    @property
+    def is_closed(self) -> bool:
+        """Whether the underlying async SDK client has been closed."""
+        checker = getattr(self._aclient, "is_closed", None)
+        if callable(checker):
+            return bool(checker())
+        return bool(checker) if isinstance(checker, bool) else False
 
     async def aclose(self) -> None:
         await self._aclient.close()

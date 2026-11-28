@@ -225,11 +225,14 @@ class OmniOfflineClient(_ToolingMixin, _GenaiMixin, _StreamingMixin, _MediaMixin
         # so a 3000-token client limit would also let unguarded proactive turns emit 3000
         # tokens. Instead temporarily raise the budget inside stream_text and restore it in finally
         # (see stream_text's start), restricting 3000 strictly to long-response streaming.
+        from utils.http.pool_utils import DEFAULT_HTTP_KEEPALIVE_EXPIRY_SECONDS
+
         self.llm = create_chat_llm(
             self.model, self.base_url, self.api_key,
             streaming=True, max_retries=0,
             max_completion_tokens=_budget_to_max_tokens(self.max_response_length),
             timeout=DIALOG_LLM_STREAM_TIMEOUT_SECONDS,  # hang-guard; generous so normal/long replies aren't truncated
+            keepalive_expiry=DEFAULT_HTTP_KEEPALIVE_EXPIRY_SECONDS,
             provider_type=self.provider_type,
         )
 

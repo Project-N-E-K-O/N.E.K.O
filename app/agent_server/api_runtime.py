@@ -874,6 +874,19 @@ async def shutdown():
         await step(retry_held_keys, "Agent held keys release retry")
 
     try:
+        from utils.llm_client.warm_pool import close_warm_chat_llms
+
+        await step(close_warm_chat_llms, "Agent LLM warm pool cleanup")
+    except Exception as exc:
+        logger.debug("[Agent] llm_warm_pool cleanup failed: %s", exc)
+    try:
+        from utils.decision_client.adapters import aclose_decision_http_clients
+
+        await step(aclose_decision_http_clients, "Agent decision HTTP client cleanup")
+    except Exception as exc:
+        logger.debug("[Agent] decision_http_client cleanup failed: %s", exc)
+
+    try:
         from utils.token_tracker import TokenTracker
 
         # Submitting must survive an already exhausted cancellation budget.

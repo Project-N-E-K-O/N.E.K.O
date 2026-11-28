@@ -333,6 +333,10 @@ class ModelForwarder:
             if self._client is None:
                 import httpx
 
+                from utils.http.pool_utils import (
+                    DEFAULT_HTTP_KEEPALIVE_EXPIRY_SECONDS,
+                    install_stale_connection_retry,
+                )
                 from utils.llm_client.lifecycle import _get_default_ssl_context
 
                 options: dict[str, Any] = {"follow_redirects": False}
@@ -340,7 +344,15 @@ class ModelForwarder:
                     options["transport"] = self._transport
                 else:
                     options["verify"] = await asyncio.to_thread(_get_default_ssl_context)
-                self._client = httpx.AsyncClient(**options)
+                    options["limits"] = httpx.Limits(
+                        max_connections=100,
+                        max_keepalive_connections=20,
+                        keepalive_expiry=DEFAULT_HTTP_KEEPALIVE_EXPIRY_SECONDS,
+                    )
+                self._client = install_stale_connection_retry(
+                    httpx.AsyncClient(**options),
+                    label="DSH Forward HTTP",
+                )
             return self._client
 
     async def aclose(self) -> None:

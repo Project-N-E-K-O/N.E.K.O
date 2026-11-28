@@ -127,8 +127,8 @@ class ChatOpenAI:
         max_completion_tokens: int | None = None,
         max_tokens: int | None = None,
         model_kwargs: dict | None = None,
-        timeout: float | None = None,
-        request_timeout: float | None = None,
+        timeout: float | Any | None = None,
+        request_timeout: float | Any | None = None,
         default_headers: dict | None = None,
         enable_cache_control: bool = False,
         tools: list[dict] | None = None,
@@ -161,11 +161,16 @@ class ChatOpenAI:
         if model_kwargs and "extra_body" in model_kwargs:
             self.extra_body = {**self.extra_body, **model_kwargs["extra_body"]}
 
+        from utils.http.pool_utils import (
+            build_split_http_timeout,
+            install_stale_connection_retry,
+        )
+
         _api_key = "sk-placeholder" if api_key is None else api_key
-        _timeout = timeout or request_timeout
+        _raw_timeout = timeout if timeout is not None else request_timeout
         client_kw: dict[str, Any] = dict(base_url=base_url, api_key=_api_key, max_retries=max_retries)
-        if _timeout is not None:
-            client_kw["timeout"] = _timeout
+        if _raw_timeout is not None:
+            client_kw["timeout"] = build_split_http_timeout(_raw_timeout)
         # Inject neko/<version> User-Agent, overriding SDK UA (AsyncOpenAI/Python x.y.z),
         # avoiding custom endpoints' Cloudflare "Manage AI bots" blocking.
         from utils.http_client import ensure_user_agent
@@ -183,9 +188,15 @@ class ChatOpenAI:
                 max_keepalive_connections=DEFAULT_CONNECTION_LIMITS.max_keepalive_connections,
                 keepalive_expiry=keepalive_expiry,
             )
-        client_kw["http_client"] = DefaultAsyncHttpxClient(**http_kw)
+        client_kw["http_client"] = install_stale_connection_retry(
+            DefaultAsyncHttpxClient(**http_kw),
+            label="LLM HTTP",
+        )
         self._aclient = AsyncOpenAI(**client_kw)
-        client_kw["http_client"] = DefaultHttpxClient(**http_kw)
+        client_kw["http_client"] = install_stale_connection_retry(
+            DefaultHttpxClient(**http_kw),
+            label="LLM HTTP",
+        )
         self._client = OpenAI(**client_kw)
         self._client_finalizer = weakref.finalize(
             self,
@@ -320,6 +331,11 @@ class ChatOpenAI:
         except Exception:
             # Detector bugs must never break the LLM call itself.
             pass
+
+        if "timeout" in p and isinstance(p["timeout"], (int, float)) and not isinstance(p["timeout"], bool):
+            from utils.http.pool_utils import build_split_http_timeout
+
+            p["timeout"] = build_split_http_timeout(p["timeout"])
 
         # TEMPORARY: prompt audit log (env NEKO_LLM_PROMPT_AUDIT=1). Remove with
         # utils/llm_prompt_audit.py once budget tuning is done.
@@ -563,6 +579,14 @@ class ChatOpenAI:
         return models
 
     # --- resource management ---
+
+    @property
+    def is_closed(self) -> bool:
+        """Whether the underlying async SDK client has been closed."""
+        checker = getattr(self._aclient, "is_closed", None)
+        if callable(checker):
+            return bool(checker())
+        return bool(checker) if isinstance(checker, bool) else False
 
     async def aclose(self) -> None:
         """Close underlying httpx clients (async path)."""

@@ -1626,6 +1626,20 @@ async def shutdown_event_handler():
         await release_embedding_service()
     except Exception as e:
         logger.warning("[Memory] embedding service release 失败: %s", e)
+    try:
+        from utils.llm_client.warm_pool import close_warm_chat_llms
+
+        async with asyncio.timeout(2.0):
+            await close_warm_chat_llms()
+    except Exception as e:
+        logger.debug("[Memory] llm_warm_pool 清理失败: %s", e)
+    try:
+        from utils.decision_client.adapters import aclose_decision_http_clients
+
+        async with asyncio.timeout(2.0):
+            await aclose_decision_http_clients()
+    except Exception as e:
+        logger.debug("[Memory] decision_http_client 清理失败: %s", e)
     # Waited for only now, so persistence cannot delay worker stop or
     # embedding/SQLite cleanup; it was queued before them (see above). The wait
     # is bounded (a stuck fsync, or a periodic report queued ahead of it) and

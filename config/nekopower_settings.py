@@ -1990,11 +1990,11 @@ DSH_CLOSE_SECONDS = 15.0
 """How long a dsh process gets to exit after it was told to before it is
 killed; closing a session waits this long too."""
 
-DSH_MODEL_RETRIES = 2
+DSH_MODEL_RETRIES = 1
 """How often dsh repeats a model request that failed in a way worth
 repeating; the built-in runtime's ``ModelConfig.max_retries``."""
 
-DSH_FORWARD_CONNECT_SECONDS = 30.0
+DSH_FORWARD_CONNECT_SECONDS = 15.0
 """How long the model endpoint gets to accept a forwarded request. How long
 it may take to send the next piece of its answer is the session's
 ``ModelConfig.request_timeout_seconds``."""

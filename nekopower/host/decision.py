@@ -328,6 +328,8 @@ class ConfiguredDecisionLLM:
         key = (slot, config.get("api_key"), config.get("base_url"), config.get("model"), config.get("provider_type"), budget)
         client = self._clients.get(key)
         if client is None:
+            from utils.http.pool_utils import DEFAULT_HTTP_KEEPALIVE_EXPIRY_SECONDS
+
             # Built off the event loop: the first client of a provider loads its SDK.
             client = await create_chat_llm_async(
                 model=config["model"],
@@ -336,6 +338,7 @@ class ConfiguredDecisionLLM:
                 max_completion_tokens=budget,
                 max_retries=0,
                 timeout=120.0,
+                keepalive_expiry=DEFAULT_HTTP_KEEPALIVE_EXPIRY_SECONDS,
                 provider_type=config.get("provider_type"),
             )
             self._clients[key] = client
