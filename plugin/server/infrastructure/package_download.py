@@ -77,9 +77,11 @@ async def aclose_package_http_client() -> None:
     if _shared_client is None:
         return
     owner, _, client = _shared_client
+    # Only the owning loop may close it; another loop's client stays shared.
+    if owner is not asyncio.get_running_loop():
+        return
     _shared_client = None
-    if owner is asyncio.get_running_loop():
-        await client.aclose()
+    await client.aclose()
 
 
 async def warm_package_connections(urls: Iterable[str]) -> None:

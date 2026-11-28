@@ -130,19 +130,41 @@ def _supervise(
     check_stopped: Callable[[], None],
     on_poll: Callable[[], None],
     cleanup_seconds: float,
+    discard: Callable[[T], None] | None = None,
 ) -> T:
     """Run ``factory()`` on ``loop`` and wait for it on this thread.
 
     When ``check_stopped`` or ``on_poll`` raises, the task is cancelled and
-    awaited for up to ``cleanup_seconds`` before the error propagates.
+    awaited for up to ``cleanup_seconds`` before the error propagates. A
+    result the caller will not receive because of that (the task completed
+    meanwhile, or completes later) is handed to ``discard`` exactly once.
     """
     finished = threading.Event()
     holder: dict[str, asyncio.Task[T]] = {}
+    abandon = threading.Lock()
+    state = {"abandoned": False, "discarded": False}
+
+    def discard_result(task: asyncio.Task[T]) -> None:
+        with abandon:
+            if not state["abandoned"] or state["discarded"]:
+                return
+            if task.cancelled() or task.exception() is not None:
+                return
+            state["discarded"] = True
+        if discard is not None:
+            try:
+                discard(task.result())
+            except Exception as exc:
+                # Must not hide the error being propagated, nor block finished.
+                logger.warning("could not discard an abandoned package download: {}", exc)
 
     def done(task: asyncio.Task[T]) -> None:
-        if not task.cancelled():
-            task.exception()  # Retrieved here, so the loop does not log it as unhandled.
-        finished.set()
+        try:
+            if not task.cancelled():
+                task.exception()  # Retrieved here, so the loop does not log it as unhandled.
+            discard_result(task)
+        finally:
+            finished.set()
 
     def start() -> None:
         task = loop.create_task(factory())
@@ -162,6 +184,8 @@ def _supervise(
             if loop.is_closed() or not loop.is_running():
                 raise PackageLoopUnavailable("the server loop stopped during a package download")
         except BaseException:
+            with abandon:
+                state["abandoned"] = True
             # Callbacks run in order, so this cancel follows the start.
             try:
                 loop.call_soon_threadsafe(cancel)
@@ -169,6 +193,10 @@ def _supervise(
                 pass  # The loop is closed; nothing of the transfer runs any more.
             else:
                 finished.wait(cleanup_seconds)
+            task = holder.get("task")
+            if task is not None and task.done():
+                # It may have completed while on_poll ran, before the cancel.
+                discard_result(task)
             raise
     task = holder["task"]
     if task.cancelled():
@@ -182,6 +210,7 @@ def _run(
     check_stopped: Callable[[], None],
     on_poll: Callable[[], None] = lambda: None,
     cleanup_seconds: float = CLEANUP_SECONDS,
+    discard: Callable[[T], None] | None = None,
 ) -> T:
     loop = package_loop()
     try:
@@ -191,10 +220,10 @@ def _run(
     else:
         raise RuntimeError("package_fetch blocks; call it from a worker thread, not an event loop")
     if loop is not None:
-        return _supervise(loop, factory, check_stopped, on_poll, cleanup_seconds)
+        return _supervise(loop, factory, check_stopped, on_poll, cleanup_seconds, discard)
     private, thread = _start_private_loop()
     try:
-        return _supervise(private, factory, check_stopped, on_poll, cleanup_seconds)
+        return _supervise(private, factory, check_stopped, on_poll, cleanup_seconds, discard)
     finally:
         _stop_private_loop(private, thread, cleanup_seconds)
 
@@ -264,20 +293,29 @@ def fetch_release_asset(
                     sources.append(source_id)
             latest[0] = (received, total)
 
+        stops: list[BaseException] = []
+
+        def check_cancelled() -> None:
+            try:
+                check_stopped()
+            except BaseException as stop:
+                stops.append(stop)
+                raise
+
         try:
             path = await download_package(
                 routes, directory, maximum_bytes=maximum_bytes, total_timeout=remaining,
-                report_progress=report_progress, report_route=report_route, check_cancelled=check_stopped,
+                report_progress=report_progress, report_route=report_route, check_cancelled=check_cancelled,
             )
         except (OSError, ValueError, httpx.HTTPError) as exc:
-            # What the route did; not the deadline, and not a stop or a local
-            # write failure (those are not OSError or ValueError).
-            if single_route and not isinstance(exc, PackageDownloadDeadline):
+            # What the route did: not the deadline, not a stop (whatever its
+            # type), and not a local write failure (not OSError or ValueError).
+            if single_route and not isinstance(exc, PackageDownloadDeadline) and exc not in stops:
                 raise RouteFailed(routes[0][0], exc) from exc
             raise
         return FetchedAsset(path, tuple(sources) or (routes[0][0],), generation)
 
-    asset = _run(fetch, check_stopped, relay)
+    asset = _run(fetch, check_stopped, relay, discard=lambda unused: unused.path.unlink(missing_ok=True))
     try:
         relay()
     except BaseException:
@@ -295,11 +333,24 @@ def record_route_failure(source_id: str, generation: int, *, check_stopped: Call
     Best effort: a failure to save only loses the observation after a restart.
     """
 
+    stops: list[BaseException] = []
+
+    def checked() -> None:
+        try:
+            check_stopped()
+        except BaseException as stop:
+            stops.append(stop)
+            raise
+
     async def commit() -> None:
+        # A caller stopped before the loop got here leaves the history alone.
+        checked()
         await commit_route_observations([RouteObservation(source_id, failed=True)], generation)
 
     try:
         # Saving needs no cleanup, so a stopped caller does not wait for it.
-        _run(commit, check_stopped, cleanup_seconds=0)
+        _run(commit, checked, cleanup_seconds=0)
     except (OSError, PackageLoopUnavailable) as exc:
+        if exc in stops:
+            raise  # A stop, whatever its type, reaches the caller.
         logger.warning("could not record a failure of download route {}: {}", source_id, exc)

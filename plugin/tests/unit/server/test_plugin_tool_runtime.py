@@ -216,7 +216,9 @@ class FakeUv:
             return subprocess.CompletedProcess(cmd, 0, self.listing, "")
         if cmd[1:3] == ["python", "install"] and "--mirror" in cmd:
             # uv reads the build from the mirror and checks the SHA-256 it carries.
-            mirror = Path(url2pathname(urlparse(cmd[cmd.index("--mirror") + 1]).path))
+            uri = urlparse(cmd[cmd.index("--mirror") + 1])
+            # A UNC temporary directory keeps its host in the URI's netloc.
+            mirror = Path(url2pathname(f"//{uri.netloc}{uri.path}" if uri.netloc else uri.path))
             data = (mirror / PYTHON_TAG / PYTHON_FILE).read_bytes()
             self.mirrored.append(data)
             if data == b"<html>":
@@ -1402,3 +1404,20 @@ def test_python_file_uv_cannot_extract_is_blamed_on_its_route(root, monkeypatch)
 def test_uv_rejecting_the_file_is_told_apart_from_a_local_failure(stderr, rejected):
     result = subprocess.CompletedProcess([], 1, "", stderr)
     assert module._rejected_python_archive(result) is rejected
+
+
+def test_local_write_failure_after_a_rejection_is_reported_as_such(root, monkeypatch):
+    from plugin.server.infrastructure.package_download import PackageDownloadWriteError
+
+    release = FakeRelease(digest="0" * 64).install(monkeypatch)
+    fake = module._fetch_release_asset
+
+    def fetch(url, directory, **kwargs):
+        if kwargs["exclude"]:
+            raise PackageDownloadWriteError(OSError(28, "No space left on device"))
+        return fake(url, directory, **kwargs)
+
+    monkeypatch.setattr(module, "_fetch_release_asset", fetch)
+    error = _expect_failure(FakeUv(root), "download_failed")
+    assert "No space left" in error.detail
+    assert release.penalized == ["route-0"]

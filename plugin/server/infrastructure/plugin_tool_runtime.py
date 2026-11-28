@@ -625,7 +625,10 @@ def _fetch_accepted(
             excluded.append(exc.source_id)
             continue
         except _download_failures() as exc:
-            if not rejected:
+            from plugin.server.infrastructure.package_download import PackageDownloadWriteError
+
+            # A local write failure is reported as such, rejections or not.
+            if not rejected or isinstance(exc, PackageDownloadWriteError):
                 raise
             _check(cancel, deadline)
             last = exc if isinstance(exc, NoRoutesLeft) else f"{type(exc).__name__}: {exc}"

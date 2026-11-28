@@ -180,7 +180,7 @@ def test_failing_mirror_falls_back_and_is_penalized(tmp_path, network):
         sources._record(sources.RouteObservation("gh-proxy-com", latency=0.01), time.time())
     before = sources._routes["gh-proxy-com"].failures
     asset = get(tmp_path)
-    assert asset.single_source != "gh-proxy-com"
+    assert asset.sources == ("github-direct",)
     assert asset.path.read_bytes() == BODY
     assert sources._routes["gh-proxy-com"].failures > before
     assert json.loads((tmp_path / "market-download-routes.json").read_text())["routes"]["gh-proxy-com"]["failures"]
@@ -397,14 +397,19 @@ def test_single_route_failure_names_the_route(tmp_path, network):
     assert hosts(network) == ["github.com"]
 
 
-def test_single_route_does_not_wrap_a_stop(tmp_path, network):
+class ValueStop(ValueError):
+    """A stop whose type is one a route failure can also have."""
+
+
+@pytest.mark.parametrize("error", [Stop, ValueStop])
+def test_single_route_does_not_wrap_a_stop(tmp_path, network, error):
     preferences(tmp_path, "direct")
     network.handlers["github.com"] = ok()
 
     def stop():
-        raise Stop
+        raise error
 
-    with pytest.raises(Stop):
+    with pytest.raises(error):
         get(tmp_path, single_route=True, check_stopped=stop)
 
 
@@ -430,11 +435,15 @@ def test_a_raising_progress_callback_stops_the_transfer_and_leaves_no_file(tmp_p
 
 def test_recording_a_failure_honours_the_stop_check(tmp_path, monkeypatch):
     gate = threading.Event()
+    written = threading.Event()
     original = sources._write_snapshot
 
     def stuck(snapshot):
-        gate.wait(10)  # A file system that does not answer.
-        original(snapshot)
+        try:
+            gate.wait(10)  # A file system that does not answer.
+            original(snapshot)
+        finally:
+            written.set()
 
     monkeypatch.setattr(sources, "_write_snapshot", stuck)
     began = time.monotonic()
@@ -449,3 +458,54 @@ def test_recording_a_failure_honours_the_stop_check(tmp_path, monkeypatch):
         assert time.monotonic() - began < 3
     finally:
         gate.set()
+        # The write finishes before the fixtures restore the real paths.
+        assert written.wait(10)
+
+
+def test_progress_raising_after_the_transfer_completed_still_removes_the_file(tmp_path, network, monkeypatch):
+    """The transfer finishes while a progress callback runs, then the callback raises."""
+    preferences(tmp_path, "direct")
+    network.handlers["github.com"] = (
+        lambda _request: httpx.Response(200, headers={"content-length": str(len(BODY))}, stream=Slow(BODY))
+    )
+    monkeypatch.setattr(fetch, "POLL_SECONDS", 0.05)
+    calls: list[int] = []
+
+    def progress(received, _total):
+        calls.append(received)
+        if len(calls) == 1:
+            # Long enough for the whole body to arrive meanwhile.
+            time.sleep(1.5)
+            raise Stop
+
+    with pytest.raises(Stop):
+        get(tmp_path, progress=progress)
+    directory = tmp_path / "downloads"
+    assert not directory.exists() or list(directory.iterdir()) == []
+
+
+class OSStop(OSError):
+    """A stop whose type is one a failed save can also have."""
+
+
+@pytest.mark.parametrize("error", [Stop, OSStop])
+def test_recording_after_the_caller_stopped_leaves_the_history_alone(tmp_path, error):
+    def stop():
+        raise error
+
+    with pytest.raises(error):
+        fetch.record_route_failure("gh-proxy-com", sources.route_generation(), check_stopped=stop)
+    assert "gh-proxy-com" not in sources._routes
+
+
+async def test_closing_the_shared_client_from_another_loop_keeps_it(network):
+    client = await download_io.package_http_client()
+
+    def elsewhere():
+        asyncio.run(download_io.aclose_package_http_client())
+
+    await asyncio.to_thread(elsewhere)
+    assert download_io._shared_client is not None and download_io._shared_client[2] is client
+    assert not client.is_closed
+    await download_io.aclose_package_http_client()
+    assert download_io._shared_client is None and client.is_closed
