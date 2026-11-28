@@ -17,6 +17,8 @@ const api = vi.hoisted(() => ({
   getRuntime: vi.fn(), setRuntimePreference: vi.fn(), installDsh: vi.fn(), uninstallDsh: vi.fn(),
   getPermissions: vi.fn(), setPermission: vi.fn(), getWindow: vi.fn(), setWindow: vi.fn(),
   getPlaces: vi.fn(), openPlace: vi.fn(),
+  getStorage: vi.fn(), setStorageSettings: vi.fn(), cleanWorkDirs: vi.fn(), cleanWorktrees: vi.fn(),
+  cleanTranscripts: vi.fn(), openStorageItem: vi.fn(), landWorktree: vi.fn(),
   getSwitches: vi.fn(), setDeviceSwitch: vi.fn(), setPower: vi.fn(), getBrowser: vi.fn(), setBrowser: vi.fn(),
   consoleErrorCode: (error: unknown) => (error as { code?: string })?.code ?? null,
 }))
@@ -321,6 +323,7 @@ describe('the context tab', () => {
 
 describe('the folders tab', () => {
   it('tells a size that was not added up to the end from one that was, and opens a folder by its key', async () => {
+    api.getStorage.mockRejectedValueOnce(Object.assign(new Error('not found'), { response: { status: 404 } }))
     api.getPlaces.mockResolvedValue({ places: [
       { key: 'task_agents', path: 'D:/data/task_agents', exists: true, bytes: 1395864371, bytes_whole: false },
       { key: 'space', path: 'D:/data/space', exists: true, bytes: 2097152, bytes_whole: true },
@@ -335,6 +338,228 @@ describe('the folders tab', () => {
     expect(missing?.querySelector('button')).toBeNull()
     await click(page.querySelector('[data-place="space"] button'))
     expect(api.openPlace).toHaveBeenCalledWith('space')
+  })
+
+  function storageSample(over: Record<string, unknown> = {}) {
+    return {
+      disk: { total: 500 * 1024 * 1024 * 1024, used: 200 * 1024 * 1024 * 1024, free: 300 * 1024 * 1024 * 1024 },
+      total_bytes: 520 * 1024 * 1024,
+      total_whole: true,
+      reclaimable_bytes: 420 * 1024 * 1024,
+      categories: [
+        { key: 'worktrees', bytes: 300 * 1024 * 1024, bytes_whole: true, count: 2, reclaimable_bytes: 250 * 1024 * 1024, cleanable: true },
+        { key: 'work_dirs', bytes: 150 * 1024 * 1024, bytes_whole: true, count: 2, reclaimable_bytes: 120 * 1024 * 1024, cleanable: true },
+        { key: 'transcripts', bytes: 50 * 1024 * 1024, bytes_whole: true, count: 3, reclaimable_bytes: 50 * 1024 * 1024, cleanable: true },
+        { key: 'space', bytes: 20 * 1024 * 1024, bytes_whole: true, count: 0, reclaimable_bytes: 0, cleanable: false },
+      ],
+      places: [
+        { key: 'task_agents', path: 'D:/data/task_agents', exists: true, bytes: 200 * 1024 * 1024, bytes_whole: true },
+        { key: 'worktrees', path: 'D:/data/wt', exists: true, bytes: 300 * 1024 * 1024, bytes_whole: true },
+        { key: 'space', path: 'D:/data/space', exists: true, bytes: 20 * 1024 * 1024, bytes_whole: true },
+      ],
+      worktrees: [
+        {
+          id: 'wt-stale', kind: 'tracked', project: 'alpha', title: 'Old refactor', session_name: 'worker',
+          session_id: 's1', commission_id: 'c1', state: 'kept', reason: 'conflict', conflicts: ['a.ts'],
+          path: 'D:/data/wt/wt-stale', workdir: 'D:/data/wt/wt-stale', exists: true,
+          bytes: 250 * 1024 * 1024, bytes_whole: true, created_at: 1700000000, updated_at: 1700000000,
+          can_clean: true, can_land: true, stale: true,
+        },
+        {
+          id: 'wt-live', kind: 'tracked', project: 'alpha', title: 'Live task', session_name: 'worker-2',
+          session_id: 's2', commission_id: 'c2', state: 'active', reason: '', conflicts: [],
+          path: 'D:/data/wt/wt-live', workdir: 'D:/data/wt/wt-live', exists: true,
+          bytes: 50 * 1024 * 1024, bytes_whole: true, created_at: 1790000000, updated_at: 1790000000,
+          can_clean: false, can_land: false, stale: false,
+        },
+      ],
+      worktrees_more: 0,
+      work_dirs: [
+        {
+          id: 'session:_daily/s-old', scope: 'session', project: '_daily', session_id: 's-old',
+          session_name: 'one-off', title: 'Old script', session_status: 'idle',
+          path: 'D:/data/task_agents/projects/_daily/sessions/s-old/work',
+          bytes: 120 * 1024 * 1024, bytes_whole: true, file_count: 14, empty: false,
+          last_active_at: 1700000000, in_use: false, can_clean: true, stale: true, referenced_by_project: false,
+        },
+        {
+          id: 'session:_daily/s-live', scope: 'session', project: '_daily', session_id: 's-live',
+          session_name: 'busy', title: 'Running job', session_status: 'running',
+          path: 'D:/data/task_agents/projects/_daily/sessions/s-live/work',
+          bytes: 30 * 1024 * 1024, bytes_whole: true, file_count: 3, empty: false,
+          last_active_at: 1790000000, in_use: true, can_clean: false, stale: false, referenced_by_project: false,
+        },
+      ],
+      work_dirs_more: 0,
+      transcripts: {
+        bytes: 50 * 1024 * 1024, bytes_whole: true, sessions: 3,
+        expired_count: 2, expired_bytes: 40 * 1024 * 1024,
+        outputs_count: 1, outputs_bytes: 10 * 1024 * 1024,
+      },
+      settings: {
+        auto_clean_work_dirs: true, work_dir_kept_days: 30,
+        auto_clean_worktrees: true, worktree_kept_days: 14,
+        transcript_kept_days: 90, min_days: 1, max_days: 365,
+        defaults: {
+          auto_clean_work_dirs: true, work_dir_kept_days: 30,
+          auto_clean_worktrees: true, worktree_kept_days: 14,
+        },
+      },
+      ...over,
+    }
+  }
+
+  it('renders the disk space breakdown, cleans a worktree with confirmation, and opens items by id', async () => {
+    api.getStorage.mockResolvedValue(storageSample())
+    api.openStorageItem.mockResolvedValue({ success: true })
+    api.cleanWorktrees.mockResolvedValue({ cleaned: ['wt-stale'], deferred: [], freed_bytes: 250 * 1024 * 1024, failed: [] })
+
+    await mount(PlacesTab)
+    expect(byTest('kpi-total')?.textContent).toContain('520 MB')
+    expect(byTest('kpi-reclaimable')?.textContent).toContain('420 MB')
+    expect(byTest('kpi-disk')?.textContent).toContain('300 GB')
+
+    // Active worktree cannot be cleaned; stale kept worktree can be opened and cleaned.
+    expect(byTest('worktree-clean-wt-live')).toBeNull()
+    await click(byTest('worktree-open-wt-stale'))
+    expect(api.openStorageItem).toHaveBeenCalledWith('worktree', 'wt-stale')
+
+    await click(byTest('worktree-clean-wt-stale'))
+    expect(byTest('storage-confirm-warn')?.textContent).toContain(words.runtime.storage.confirm.worktreesUnmergedWarn)
+    await click(byTest('storage-confirm-submit'))
+    expect(api.cleanWorktrees).toHaveBeenCalledWith(['wt-stale'])
+    expect(byTest('storage-banner')?.textContent).toContain('250 MB')
+    expect(api.getStorage).toHaveBeenCalledTimes(2)
+  })
+
+  it('switches to working folders via breakdown legend, disables in-use folders, and cleans idle ones', async () => {
+    api.getStorage.mockResolvedValue(storageSample())
+    api.cleanWorkDirs.mockResolvedValue({ cleaned: ['session:_daily/s-old'], freed_bytes: 120 * 1024 * 1024, failed: [] })
+
+    const page = await mount(PlacesTab)
+    await click(page.querySelector('[data-category="work_dirs"]'))
+    expect(byTest('section-workdirs')).toBeTruthy()
+    expect((byTest('workdir-clean-session:_daily/s-live') as HTMLButtonElement).disabled).toBe(true)
+
+    await click(byTest('workdir-clean-session:_daily/s-old'))
+    await click(byTest('storage-confirm-submit'))
+    expect(api.cleanWorkDirs).toHaveBeenCalledWith(['session:_daily/s-old'])
+    expect(byTest('storage-banner')?.textContent).toContain('120 MB')
+  })
+
+  it('cleans transcripts and saves updated automatic cleanup policy', async () => {
+    const sample = storageSample()
+    const updatedSettings = { ...sample.settings, auto_clean_work_dirs: false }
+    api.getStorage.mockResolvedValue(sample)
+    api.cleanTranscripts.mockResolvedValue({ cleaned: 1, freed_bytes: 10 * 1024 * 1024, skipped: 0 })
+    api.setStorageSettings.mockImplementation(async () => {
+      api.getStorage.mockResolvedValue(storageSample({ settings: updatedSettings }))
+      return { settings: updatedSettings }
+    })
+
+    await mount(PlacesTab)
+    await click(byTest('storage-tab-transcripts'))
+    await click(byTest('clean-output-caches'))
+    await click(byTest('storage-confirm-submit'))
+    expect(api.cleanTranscripts).toHaveBeenCalledWith('outputs')
+
+    // Toggle auto_clean_work_dirs off and save policy.
+    expect((byTest('policy-save') as HTMLButtonElement).disabled).toBe(true)
+    const toggle = byTest('policy-workdirs-enabled')?.querySelector('input') as HTMLInputElement
+    await click(toggle)
+    expect((byTest('policy-save') as HTMLButtonElement).disabled).toBe(false)
+    await click(byTest('policy-save'))
+    expect(api.setStorageSettings).toHaveBeenCalledWith({ auto_clean_work_dirs: false })
+    expect(byTest('policy-note')?.textContent).toContain(words.runtime.storage.policy.saved)
+    // After refresh with persisted settings, switch stays off and save button returns to disabled.
+    expect(toggle.checked).toBe(false)
+    expect((byTest('policy-save') as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('supports one-click cleaning of all stale items across worktrees, work dirs, and expired transcripts', async () => {
+    api.getStorage.mockResolvedValue(storageSample())
+    api.cleanWorktrees.mockResolvedValue({ cleaned: ['wt-stale'], deferred: [], freed_bytes: 250 * 1024 * 1024, failed: [] })
+    api.cleanWorkDirs.mockResolvedValue({ cleaned: ['session:_daily/s-old'], freed_bytes: 120 * 1024 * 1024, failed: [] })
+    api.cleanTranscripts.mockResolvedValue({ cleaned: 2, freed_bytes: 40 * 1024 * 1024, skipped: 0 })
+
+    await mount(PlacesTab)
+    await click(byTest('clean-all-stale'))
+    await click(byTest('storage-confirm-submit'))
+    expect(api.cleanWorktrees).toHaveBeenCalledWith(['wt-stale'])
+    expect(api.cleanWorkDirs).toHaveBeenCalledWith(['session:_daily/s-old'])
+    expect(api.cleanTranscripts).toHaveBeenCalledWith('expired')
+    expect(byTest('storage-banner')?.textContent).toContain('410 MB')
+  })
+
+  it('preserves completed steps on partial multi-step failure, refreshes overview, and retries only remaining steps', async () => {
+    api.getStorage.mockResolvedValue(storageSample())
+    api.cleanWorktrees.mockResolvedValueOnce({ cleaned: ['wt-stale'], deferred: [], freed_bytes: 250 * 1024 * 1024, failed: [] })
+    api.cleanWorkDirs
+      .mockRejectedValueOnce(refusal('agent_unreachable'))
+      .mockResolvedValueOnce({ cleaned: ['session:_daily/s-old'], freed_bytes: 120 * 1024 * 1024, failed: [] })
+    api.cleanTranscripts.mockResolvedValueOnce({ cleaned: 2, freed_bytes: 40 * 1024 * 1024, skipped: 0 })
+
+    await mount(PlacesTab)
+    await click(byTest('clean-all-stale'))
+    await click(byTest('storage-confirm-submit'))
+
+    // First attempt cleaned worktrees, failed on work dirs: error + partial progress shown and overview refreshed.
+    expect(api.cleanWorktrees).toHaveBeenCalledTimes(1)
+    expect(api.cleanWorkDirs).toHaveBeenCalledTimes(1)
+    expect(api.cleanTranscripts).toHaveBeenCalledTimes(0)
+    expect(byTest('storage-error')?.textContent).toContain(words.errors.agent_unreachable)
+    expect(byTest('storage-banner')?.textContent).toContain('250 MB')
+    expect(api.getStorage).toHaveBeenCalledTimes(2)
+    // Confirm dialog description and warnings shrink to only the remaining uncompleted steps (160 MB, no unmerged-worktree warn).
+    expect(document.querySelector('.confirm-desc')?.textContent).toContain('160 MB')
+    expect(document.querySelector('.confirm-desc')?.textContent).not.toContain('410 MB')
+    expect(byTest('storage-confirm-warn')).toBeNull()
+
+    // Retrying from the open confirmation dialog only submits the remaining work dirs and transcripts.
+    await click(byTest('storage-confirm-submit'))
+    expect(api.cleanWorktrees).toHaveBeenCalledTimes(1)
+    expect(api.cleanWorkDirs).toHaveBeenCalledTimes(2)
+    expect(api.cleanTranscripts).toHaveBeenCalledTimes(1)
+    expect(byTest('storage-banner')?.textContent).toContain('160 MB')
+  })
+
+  it('keeps unsaved policy edits across refresh, syncs unedited server fields, and renders string kept_copies on failed merge', async () => {
+    const initial = storageSample()
+    const updatedServer = storageSample()
+    updatedServer.settings.worktree_kept_days = 30
+    api.getStorage
+      .mockResolvedValueOnce(initial)
+      .mockResolvedValue(updatedServer)
+    api.cleanTranscripts.mockResolvedValue({ cleaned: 1, freed_bytes: 10 * 1024 * 1024, skipped: 0 })
+    api.setStorageSettings.mockResolvedValue({
+      settings: { ...updatedServer.settings, auto_clean_work_dirs: false },
+    })
+    api.landWorktree.mockResolvedValueOnce({
+      status: 'failed', files: [], more: 0, conflicts: [], resolving: false,
+      detail: 'write failed', kept_copies: 'C:/kept/backup',
+    })
+
+    await mount(PlacesTab)
+    const toggle = byTest('policy-workdirs-enabled')?.querySelector('input') as HTMLInputElement
+    await click(toggle)
+    expect(toggle.checked).toBe(false)
+    expect((byTest('policy-save') as HTMLButtonElement).disabled).toBe(false)
+
+    // Refresh picks up another client's worktree_kept_days (30) while keeping local auto_clean_work_dirs=false.
+    await click(byTest('storage-tab-transcripts'))
+    await click(byTest('clean-output-caches'))
+    await click(byTest('storage-confirm-submit'))
+    expect(toggle.checked).toBe(false)
+    expect((byTest('policy-save') as HTMLButtonElement).disabled).toBe(false)
+
+    // Saving must only send the locally edited field, not overwrite the server's 30-day retention with stale 14.
+    await click(byTest('policy-save'))
+    expect(api.setStorageSettings).toHaveBeenCalledWith({ auto_clean_work_dirs: false })
+
+    // Merging a worktree whose backend returns kept_copies as a string renders backup path without throwing.
+    await click(byTest('storage-tab-worktrees'))
+    await click(byTest('worktree-land-wt-stale'))
+    expect(byTest('storage-banner')?.textContent).toContain('C:/kept/backup')
   })
 })
 

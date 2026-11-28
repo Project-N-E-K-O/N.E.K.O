@@ -473,6 +473,104 @@ async def test_a_public_name_resolves_to_the_checked_address(monkeypatch) -> Non
     assert await web.resolve_public("one.example.com", 443) == "1.1.1.1"
 
 
+async def test_a_public_name_resolving_to_proxy_fake_ip_is_allowed_while_literals_stay_blocked(monkeypatch) -> None:
+    import socket
+
+    # Literal Fake-IP URLs remain blocked (is_public_address stays False).
+    assert web.is_public_address(ipaddress.ip_address("198.18.0.1")) is False
+    assert web.is_public_address(ipaddress.ip_address("198.19.255.254")) is False
+    with pytest.raises(ToolError, match="blocked URL"):
+        web.check_host_name("198.18.0.1")
+    with pytest.raises(ToolError, match="blocked URL"):
+        await web.resolve_public("198.18.0.1", 80)
+
+    # A public domain resolved through a transparent TUN proxy's Fake-IP DNS succeeds.
+    async def fake_v4_only(host, port, **kwargs):  # noqa: ANN001, ANN003, ANN202
+        del host, kwargs
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("198.18.0.42", port))]
+
+    monkeypatch.setattr(asyncio.get_running_loop(), "getaddrinfo", fake_v4_only)
+    assert await web.resolve_public("example.com", 443) == "198.18.0.42"
+
+    # Dual-stack Fake-IP (198.18.0.0/15 + fc00::/18) resolves to the Fake-IPv4, never the ULA IPv6.
+    async def fake_dual_stack(host, port, **kwargs):  # noqa: ANN001, ANN003, ANN202
+        del host, kwargs
+        return [
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("fc00::42", port, 0, 0)),
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("198.19.1.5", port)),
+        ]
+
+    monkeypatch.setattr(asyncio.get_running_loop(), "getaddrinfo", fake_dual_stack)
+    assert await web.resolve_public("example.com", 443) == "198.19.1.5"
+
+    # Mihomo's documented Fake-IPv6 prefix (fdfe:dcba:9876::/64) paired with 198.18.0.0/15
+    # also succeeds, while arbitrary private ULAs (e.g. fd12::1) remain blocked.
+    async def fake_dual_stack_mihomo(host, port, **kwargs):  # noqa: ANN001, ANN003, ANN202
+        del host, kwargs
+        return [
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("fdfe:dcba:9876::1", port, 0, 0)),
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("198.18.0.42", port)),
+        ]
+
+    monkeypatch.setattr(asyncio.get_running_loop(), "getaddrinfo", fake_dual_stack_mihomo)
+    assert await web.resolve_public("example.com", 443) == "198.18.0.42"
+
+    async def fake_v4_with_unrelated_ula(host, port, **kwargs):  # noqa: ANN001, ANN003, ANN202
+        del host, kwargs
+        return [
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("fd12:3456::1", port, 0, 0)),
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("198.18.0.42", port)),
+        ]
+
+    monkeypatch.setattr(asyncio.get_running_loop(), "getaddrinfo", fake_v4_with_unrelated_ula)
+    with pytest.raises(ToolError, match="resolves to fd12:3456::1, which is not a public address"):
+        await web.resolve_public("example.com", 443)
+
+    # ULA fc00::/18 alone (without a Fake-IPv4) is still refused as private.
+    async def ula_only(host, port, **kwargs):  # noqa: ANN001, ANN003, ANN202
+        del host, kwargs
+        return [(socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("fc00::42", port, 0, 0))]
+
+    monkeypatch.setattr(asyncio.get_running_loop(), "getaddrinfo", ula_only)
+    with pytest.raises(ToolError, match="resolves to fc00::42, which is not a public address"):
+        await web.resolve_public("example.com", 443)
+
+    # A Fake-IP mixed with a real loopback/private address is still refused.
+    async def mixed_private(host, port, **kwargs):  # noqa: ANN001, ANN003, ANN202
+        del host, kwargs
+        return [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("198.18.0.42", port)),
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", port)),
+        ]
+
+    monkeypatch.setattr(asyncio.get_running_loop(), "getaddrinfo", mixed_private)
+    with pytest.raises(ToolError, match="resolves to 127.0.0.1, which is not a public address"):
+        await web.resolve_public("example.com", 443)
+
+    # Without an active Fake-IP resolver (reference domains resolve to real public IPs),
+    # an attacker-controlled domain returning 198.18.x.x is blocked, and probes use absolute FQDNs.
+    probed_hosts: list[str] = []
+
+    async def attacker_only_fake_ip(host, port, **kwargs):  # noqa: ANN001, ANN003, ANN202
+        del kwargs
+        probed_hosts.append(host)
+        if host == "evil.attacker.test":
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("198.18.1.50", port))]
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port))]
+
+    monkeypatch.delenv("NEKO_WEB_FETCH_ALLOW_FAKE_IP", raising=False)
+    monkeypatch.setattr(asyncio.get_running_loop(), "getaddrinfo", attacker_only_fake_ip)
+    with pytest.raises(ToolError, match="resolves to 198.18.1.50, which is not a public address"):
+        await web.resolve_public("evil.attacker.test", 8080)
+    assert any(h.endswith(".") for h in probed_hosts if h != "evil.attacker.test")
+
+    # Explicit opt-out env var forces refusal even when Fake-IP DNS is active.
+    monkeypatch.setenv("NEKO_WEB_FETCH_ALLOW_FAKE_IP", "0")
+    monkeypatch.setattr(asyncio.get_running_loop(), "getaddrinfo", fake_v4_only)
+    with pytest.raises(ToolError, match="resolves to 198.18.0.42, which is not a public address"):
+        await web.resolve_public("example.com", 443)
+
+
 def _proxy_env(monkeypatch: pytest.MonkeyPatch, **values: str) -> None:
     for name in ("http_proxy", "https_proxy", "all_proxy", "no_proxy"):
         monkeypatch.delenv(name, raising=False)

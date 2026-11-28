@@ -162,6 +162,10 @@ class WorktreeError(Exception):
     """A worktree operation could not be done; nothing it was about to change was changed."""
 
 
+class WorktreeRemovalIncomplete(WorktreeError):
+    """A worktree directory removal began but left files behind (e.g. held open by another process)."""
+
+
 class GitError(WorktreeError):
     """A git command failed or did not finish in time."""
 
@@ -1132,6 +1136,82 @@ class WorktreeManager:
                 worktree.repo_root, worktree.path, worktree.id, remove_directory=False, token=worktree.token
             )
             self._forget_created_prs(worktree.path)
+
+    async def remove_if_untouched(self, worktree: Worktree, is_untouched: Any = None) -> str:
+        """Remove ``worktree`` under its repository or copy lock if ``is_untouched(path)`` still holds.
+
+        When ``is_untouched`` is provided, checks it before metadata queries
+        and re-checks it immediately before recursive directory deletion (in the
+        same worker thread as removal) while holding the lock. Returns
+        ``"removed"`` when the worktree was deleted (or already absent),
+        ``"record_only"`` when only stale registration/refs/metadata were
+        dropped leaving another's directory intact, or ``"aborted"`` when
+        ``is_untouched`` refused deletion.
+        """
+        if worktree.kind == "copy":
+            async with self._copy_lock(worktree.repo_root):
+                if is_untouched is not None and not await asyncio.to_thread(is_untouched, worktree.path):
+                    return "aborted"
+                return await self._remove_copy(
+                    worktree.path,
+                    token=worktree.token,
+                    before_delete=is_untouched,
+                    preserve_dir_times=is_untouched is not None,
+                )
+        async with await self._lock(worktree.repo_root):
+            if is_untouched is not None and not await asyncio.to_thread(is_untouched, worktree.path):
+                return "aborted"
+            outcome = await self._forget(
+                worktree.repo_root,
+                worktree.path,
+                worktree.id,
+                remove_directory=False,
+                token=worktree.token,
+                before_delete=is_untouched,
+                preserve_dir_times=is_untouched is not None,
+            )
+            if outcome in ("removed", "record_only"):
+                self._forget_created_prs(worktree.path)
+            return outcome
+
+    async def forget_gone(self, repo_root: Path | str, path: Path | str, worktree_id: str, *, token: str = "") -> None:
+        """Drop lingering registration, refs, or copy metadata for a worktree whose directory is already gone."""
+        root = await asyncio.to_thread(_absolute, Path(repo_root))
+        target = await asyncio.to_thread(_absolute, Path(path))
+        meta_dir = _copy_trees.copy_meta_dir(target)
+        if await asyncio.to_thread(meta_dir.exists):
+            async with self._copy_lock(root):
+                if await asyncio.to_thread(os.path.lexists, _fs(target)):
+                    raise WorktreeError(f"{target} still exists; use remove() instead of forget_gone()")
+                try:
+                    meta = await asyncio.to_thread(_copy_trees.read_copy_meta, target, strict=True)
+                except (OSError, ValueError) as exc:
+                    raise WorktreeError(
+                        f"reading working-copy metadata for {target} failed ({exc}); leaving metadata intact"
+                    ) from exc
+                if meta is None:
+                    return
+                if token and meta.get("token") and meta["token"] != token:
+                    raise WorktreeError(
+                        f"{target} metadata belongs to a newer working copy; leaving metadata intact"
+                    )
+                if meta.get("id") == worktree_id and _copy_trees.same_path(str(meta.get("project_dir") or ""), root):
+                    await _to_the_end(asyncio.to_thread(_remove_tree, meta_dir))
+            return
+        async with await self._lock(root):
+            if await asyncio.to_thread(os.path.lexists, _fs(target)):
+                raise WorktreeError(f"{target} still exists; use remove() instead of forget_gone()")
+            outcome = await self._forget(
+                root,
+                target,
+                worktree_id,
+                remove_directory=False,
+                before_delete=lambda _p: not os.path.lexists(_fs(target)),
+                require_absent=True,
+            )
+            if outcome == "aborted":
+                raise WorktreeError(f"{target} reappeared during forget_gone(); it is left: use remove() instead")
+            self._forget_created_prs(target)
 
     async def reconcile(
         self, project_dir: Path | str, base_dir: Path | str, known: Iterable[str]
@@ -3447,7 +3527,14 @@ class WorktreeManager:
             raise WorktreeError(str(exc)) from exc
         return replace(worktree, start=new_start)
 
-    async def _remove_copy(self, path: Path, *, token: str = "") -> None:
+    async def _remove_copy(
+        self,
+        path: Path,
+        *,
+        token: str = "",
+        before_delete: Any = None,
+        preserve_dir_times: bool = False,
+    ) -> str:
         meta_dir = _copy_trees.copy_meta_dir(path)
         try:
             meta = await asyncio.to_thread(_copy_trees.read_copy_meta, path, strict=True)
@@ -3472,7 +3559,7 @@ class WorktreeManager:
                     raise WorktreeError(
                         f"{path} is missing meta.json while {meta_dir} is not empty; leaving working copy and metadata intact"
                     )
-            return
+            return "record_only" if await asyncio.to_thread(os.path.lexists, _fs(path)) else "removed"
         if token and meta.get("token") and meta["token"] != token:
             raise WorktreeError(
                 f"{path} holds a worktree made after this handle's; it is left: open() it for a handle of its own"
@@ -3483,19 +3570,34 @@ class WorktreeManager:
             whose = _copy_trees.copy_matches_identity(path, meta, now_id)
             if whose == "theirs":
                 await _to_the_end(asyncio.to_thread(_remove_tree, meta_dir))
-                return
+                return "record_only"
             if whose == "unknown":
                 raise WorktreeError(
                     f"{path} is no longer known to be this working copy (directory identity unavailable); "
                     f"move it somewhere safe before removing"
                 )
             recorded_links = tuple(str(item) for item in (meta.get("links") or ()))
-            if recorded_links:
-                await _to_the_end(asyncio.to_thread(_copy_trees.unlink_dependencies, path, recorded_links))
-            await _to_the_end(asyncio.to_thread(_remove_tree, path))
+
+            def _check_and_remove_copy() -> bool:
+                saved_times = _snapshot_dir_times(path, skip_names=frozenset()) if preserve_dir_times else []
+                if before_delete is not None and not before_delete(path):
+                    return False
+                try:
+                    if recorded_links:
+                        _copy_trees.unlink_dependencies(path, recorded_links)
+                    _remove_tree(path)
+                finally:
+                    if saved_times and os.path.lexists(_fs(path)):
+                        _restore_surviving_dir_times(saved_times)
+                return True
+
+            proceeded = await _to_the_end(asyncio.to_thread(_check_and_remove_copy))
+            if not proceeded:
+                return "aborted"
             if await asyncio.to_thread(os.path.lexists, _fs(path)):
-                raise WorktreeError(f"{path} could not be removed entirely; its metadata is kept")
+                raise WorktreeRemovalIncomplete(f"{path} could not be removed entirely; its metadata is kept")
         await _to_the_end(asyncio.to_thread(_remove_tree, meta_dir))
+        return "removed"
 
     async def _reconcile_copies(
         self, project_dir: Path, base: Path, known_ids: set[str], report: ReconcileReport
@@ -3757,9 +3859,25 @@ class WorktreeManager:
         return paths[1:]
 
     async def _forget(
-        self, repo_root: Path, path: Path, worktree_id: str, *, remove_directory: bool, token: str = ""
-    ) -> None:
-        """Drop a worktree's registration, its directory when registered (or ``remove_directory``), and its refs."""
+        self,
+        repo_root: Path,
+        path: Path,
+        worktree_id: str,
+        *,
+        remove_directory: bool,
+        token: str = "",
+        before_delete: Any = None,
+        require_absent: bool = False,
+        preserve_dir_times: bool = False,
+    ) -> str:
+        """Drop a worktree's registration, its directory when registered (or ``remove_directory``), and its refs.
+
+        Returns ``"removed"`` when the worktree was deleted (or already gone),
+        ``"record_only"`` when another directory stands at ``path`` and was left
+        untouched while stale registration and/or refs were dropped, or
+        ``"aborted"`` when ``before_delete`` rejected deletion or
+        ``require_absent`` observed ``path`` reappearing.
+        """
         listed = await self._registered(repo_root)
         registered = any(_same_path(known, path) for known in listed)
         # Another registered worktree of the same name owns the refs.
@@ -3773,6 +3891,8 @@ class WorktreeManager:
                 )
         whose = await asyncio.to_thread(_whose, path, common) if registered and not remove_directory else "ours"
         if whose == "theirs":
+            if require_absent and await asyncio.to_thread(os.path.lexists, _fs(path)):
+                return "aborted"
             # Still listed, but what is there now is not that worktree (its
             # .git does not point back here, and it is not the directory
             # the worktree was made in): only the stale registration and
@@ -3780,7 +3900,7 @@ class WorktreeManager:
             await _to_the_end(asyncio.to_thread(_drop_registration, common, path))
             if not theirs:
                 await self._delete_refs(repo_root, worktree_id)
-            return
+            return "record_only"
         if whose == "unknown":
             raise WorktreeError(
                 f"{path} is no longer known to be this worktree (its .git is gone, and which directory it was "
@@ -3793,19 +3913,55 @@ class WorktreeManager:
         # The directory goes first; the registration only once it is gone.
         # Ours: registered (and known to be ours above), made by this call,
         # or its .git file still points here.
+        entered_delete = False
+        deleted_directory = False
         if registered or remove_directory or await asyncio.to_thread(_points_into, path, common):
-            # Explicitly unlink dependency junctions/symlinks first so targets are never touched.
+            entered_delete = True
             noted_links = await asyncio.to_thread(_noted_links, common, path)
-            if noted_links:
-                await _to_the_end(asyncio.to_thread(_copy_trees.unlink_dependencies, path, noted_links))
-            # Waited for to the end: the lock is not let go while it runs.
-            await _to_the_end(asyncio.to_thread(_remove_tree, path))
+
+            def _check_and_remove() -> tuple[bool, bool]:
+                existed = False
+
+                def _guard_and_note(target_path: Path) -> bool:
+                    nonlocal existed
+                    if before_delete is not None and not before_delete(target_path):
+                        return False
+                    existed = os.path.lexists(_fs(target_path))
+                    # Explicitly unlink dependency junctions/symlinks once deletion is approved so targets are never touched.
+                    if noted_links:
+                        _copy_trees.unlink_dependencies(target_path, noted_links)
+                    return True
+
+                proceeded_rm = _remove_worktree_dir(
+                    path, before_delete=_guard_and_note, preserve_dir_times=preserve_dir_times
+                )
+                return proceeded_rm, existed
+
+            # Waited for to the end: the lock is not let go while it runs, and
+            # before_delete + _remove_worktree_dir run back-to-back in one worker thread.
+            proceeded, deleted_directory = await _to_the_end(asyncio.to_thread(_check_and_remove))
+            if not proceeded:
+                return "aborted"
             if await asyncio.to_thread(os.path.lexists, _fs(path)):
-                raise WorktreeError(f"{path} could not be removed entirely; its registration and refs are kept")
-        if registered:
-            await _to_the_end(asyncio.to_thread(_drop_registration, common, path))
-        if not theirs:
-            await self._delete_refs(repo_root, worktree_id)
+                raise WorktreeRemovalIncomplete(
+                    f"{path} could not be removed entirely; its registration and refs are kept"
+                )
+        if require_absent and not entered_delete and await asyncio.to_thread(os.path.lexists, _fs(path)):
+            return "aborted"
+        try:
+            if registered:
+                await _to_the_end(asyncio.to_thread(_drop_registration, common, path))
+            if not theirs:
+                await self._delete_refs(repo_root, worktree_id)
+        except (WorktreeError, OSError) as exc:
+            if deleted_directory:
+                raise WorktreeRemovalIncomplete(
+                    f"{path} was removed, but dropping its registration or refs failed: {exc}"
+                ) from exc
+            raise
+        if not entered_delete and await asyncio.to_thread(os.path.lexists, _fs(path)):
+            return "record_only"
+        return "removed"
 
     async def _delete_refs(self, repo_root: Path, worktree_id: str) -> None:
         listed = await self._git(repo_root, "for-each-ref", "--format=%(refname)", f"{REF_PREFIX}{worktree_id}/")
@@ -4368,6 +4524,164 @@ def _free_space(path: Path) -> int:
 
 def _remove_tree(path: Path) -> None:
     _copy_trees.remove_tree_safe(path)
+
+
+def _is_reparse_or_link(st: os.stat_result) -> bool:
+    if stat.S_ISLNK(st.st_mode):
+        return True
+    attrs = getattr(st, "st_file_attributes", 0)
+    return bool(attrs & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0))
+
+
+def _snapshot_dir_times(
+    root: Path, *, skip_names: frozenset[str] = frozenset({".git"})
+) -> list[tuple[str, tuple[int, int], frozenset[str]]]:
+    """Capture ``(fs_path, (atime_ns, mtime_ns), entry_names)`` for ``root`` and non-link subdirectories bottom-up."""
+    saved: list[tuple[str, tuple[int, int], frozenset[str]]] = []
+    stack: list[Path] = [root]
+    while stack:
+        current = stack.pop()
+        fs_cur = _fs(current)
+        try:
+            st = os.lstat(fs_cur)
+        except OSError:
+            continue
+        if not stat.S_ISDIR(st.st_mode) or _is_reparse_or_link(st):
+            continue
+        names: list[str] = []
+        try:
+            with os.scandir(fs_cur) as it:
+                for entry in it:
+                    names.append(entry.name)
+                    if entry.name in skip_names:
+                        continue
+                    try:
+                        est = entry.stat(follow_symlinks=False)
+                    except OSError:
+                        continue
+                    if stat.S_ISDIR(est.st_mode) and not _is_reparse_or_link(est):
+                        stack.append(current / entry.name)
+        except OSError:
+            continue
+        saved.append((fs_cur, (st.st_atime_ns, st.st_mtime_ns), frozenset(names)))
+    saved.reverse()
+    return saved
+
+
+def _restore_surviving_dir_times(saved: list[tuple[str, tuple[int, int], frozenset[str]]]) -> None:
+    """Restore original ``(atime_ns, mtime_ns)`` on surviving directories unless new entries appeared."""
+    for fs_dir, times, orig_names in saved:
+        try:
+            st = os.lstat(fs_dir)
+            if not stat.S_ISDIR(st.st_mode) or _is_reparse_or_link(st):
+                continue
+            with os.scandir(fs_dir) as it:
+                current_names = {entry.name for entry in it}
+            if current_names <= orig_names:
+                os.utime(fs_dir, ns=times)
+        except OSError:
+            continue
+
+
+def _remove_worktree_dir(path: Path, *, before_delete: Any = None, preserve_dir_times: bool = False) -> bool:
+    """Remove non-``.git`` entries before ``.git`` so partial removal keeps worktree identity for retries.
+
+    Returns ``False`` when ``before_delete(path)`` rejected deletion (evaluated
+    after optional directory timestamp snapshotting and immediately before any
+    removal), or ``True`` when deletion proceeded.
+    """
+    fs_path = _fs(path)
+    try:
+        st = os.lstat(fs_path)
+    except FileNotFoundError:
+        if before_delete is not None and not before_delete(path):
+            return False
+        return True
+    except OSError:
+        if before_delete is not None and not before_delete(path):
+            return False
+        _remove_tree(path)
+        return True
+    if not stat.S_ISDIR(st.st_mode) or not os.path.lexists(_fs(path / ".git")):
+        if before_delete is not None and not before_delete(path):
+            return False
+        _remove_tree(path)
+        return True
+    saved_times = _snapshot_dir_times(path) if preserve_dir_times else []
+    if before_delete is not None and not before_delete(path):
+        return False
+    try:
+        try:
+            with os.scandir(fs_path) as it:
+                entries = list(it)
+        except OSError:
+            _remove_tree(path)
+            return True
+        for entry in entries:
+            if entry.name == ".git":
+                continue
+            child = path / entry.name
+            try:
+                is_dir = entry.is_dir(follow_symlinks=False)
+            except OSError:
+                continue
+            if is_dir:
+                with contextlib.suppress(OSError):
+                    _remove_tree(child)
+            else:
+                child_fs = _fs(child)
+                try:
+                    os.unlink(child_fs)
+                except OSError:
+                    if not entry.is_symlink():
+                        with contextlib.suppress(OSError):
+                            os.chmod(child_fs, stat.S_IWRITE | stat.S_IREAD)
+                            os.unlink(child_fs)
+        # Only drop .git and the root directory once all other entries are gone.
+        try:
+            with os.scandir(fs_path) as it:
+                if any(entry.name != ".git" for entry in it):
+                    return True
+        except OSError:
+            return True
+        git_marker = path / ".git"
+        git_fs = _fs(git_marker)
+        git_bytes: bytes | None = None
+        try:
+            git_st = os.lstat(git_fs)
+            if stat.S_ISREG(git_st.st_mode):
+                with open(git_fs, "rb") as handle:
+                    git_bytes = handle.read()
+        except OSError:
+            git_bytes = None
+        if git_bytes is not None:
+            try:
+                os.unlink(git_fs)
+            except OSError:
+                with contextlib.suppress(OSError):
+                    os.chmod(git_fs, stat.S_IWRITE | stat.S_IREAD)
+                    os.unlink(git_fs)
+            if os.path.lexists(git_fs):
+                return True
+            try:
+                os.rmdir(fs_path)
+                return True
+            except OSError:
+                with contextlib.suppress(OSError):
+                    os.chmod(fs_path, stat.S_IWRITE | stat.S_IREAD | stat.S_IEXEC)
+                    os.rmdir(fs_path)
+                    return True
+                # Root removal failed (e.g. read-only parent or open cwd): restore .git so
+                # _whose() can still prove worktree identity on the next retry.
+                with contextlib.suppress(OSError):
+                    with open(git_fs, "wb") as handle:
+                        handle.write(git_bytes)
+                return True
+        _remove_tree(path)
+        return True
+    finally:
+        if saved_times and os.path.lexists(fs_path):
+            _restore_surviving_dir_times(saved_times)
 
 
 def _points_into(path: Path, common_dir: Path) -> bool:

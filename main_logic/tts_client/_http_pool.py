@@ -34,20 +34,14 @@ from __future__ import annotations
 
 import httpx
 
-from utils.logger_config import get_module_logger
-
-logger = get_module_logger(__name__, "Main")
+from utils.http.pool_utils import (
+    DEFAULT_HTTP_KEEPALIVE_EXPIRY_SECONDS,
+    install_stale_connection_retry as _install_shared_stale_connection_retry,
+)
 
 # Below the 60s+ idle timeouts common at TTS endpoints and their load
 # balancers, so the client usually drops a connection before the server does.
-TTS_HTTP_KEEPALIVE_EXPIRY_SECONDS = 55.0
-
-# Errors that mean the connection died before any response arrived.
-_STALE_CONNECTION_ERRORS = (
-    httpx.RemoteProtocolError,
-    httpx.ReadError,
-    httpx.WriteError,
-)
+TTS_HTTP_KEEPALIVE_EXPIRY_SECONDS = DEFAULT_HTTP_KEEPALIVE_EXPIRY_SECONDS
 
 
 def tts_http_limits(
@@ -63,33 +57,6 @@ def tts_http_limits(
     )
 
 
-def _wrap_transport(transport) -> None:
-    original = getattr(transport, "handle_async_request", None)
-    if original is None or getattr(original, "_neko_stale_retry", False):
-        return
-
-    async def handle_async_request(request: httpx.Request) -> httpx.Response:
-        # Decided before sending: reading a streamed body may swap it for a
-        # buffered copy, but what went out once cannot be generated again.
-        replayable = isinstance(request.stream, httpx.ByteStream)
-        # Returns once the response headers are in; the body streams later,
-        # so nothing below retries after any response data arrived.
-        try:
-            return await original(request)
-        except _STALE_CONNECTION_ERRORS as exc:
-            if not replayable:
-                raise
-            logger.info(
-                "TTS HTTP 请求所用连接已被对端断开（%s），重试一次: host=%s",
-                type(exc).__name__,
-                request.url.host,
-            )
-            return await original(request)
-
-    handle_async_request._neko_stale_retry = True
-    transport.handle_async_request = handle_async_request
-
-
 def install_stale_connection_retry(client):
     """Retry a request once when its connection turns out to be dead.
 
@@ -97,12 +64,7 @@ def install_stale_connection_retry(client):
     below event hooks, auth and redirects, so a retry resends exactly the
     request that failed. Returns the client.
     """
-    transports = [getattr(client, "_transport", None)]
-    transports.extend((getattr(client, "_mounts", None) or {}).values())
-    for transport in transports:
-        if transport is not None:
-            _wrap_transport(transport)
-    return client
+    return _install_shared_stale_connection_retry(client, label="TTS HTTP")
 
 
 def make_tts_http_client(**kwargs):

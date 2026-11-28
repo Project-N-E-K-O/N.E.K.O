@@ -41,6 +41,7 @@ class IdleCompactMixin:
     # -- summing up idle sessions -------------------------------------------
 
     def _drop_idle_timer(self, session_id: str) -> None:
+        self._idle_schedule_gen[session_id] = self._idle_schedule_gen.get(session_id, 0) + 1
         timer = self._idle_timers.pop(session_id, None)
         if timer is not None:
             timer.cancel()
@@ -166,6 +167,8 @@ class IdleCompactMixin:
             # nothing new has been asked for in it since: the host makes
             # no request for it by itself (``drop_idle_work``).
             return
+        gen = self._idle_schedule_gen.get(session_id, 0) + 1
+        self._idle_schedule_gen[session_id] = gen
         stops = self._idle_stops
         if idle_for is None:
             if not await self._idle_compact_wanted(session_id):
@@ -181,15 +184,27 @@ class IdleCompactMixin:
             # Looked at again after the wait: the session may have been taken
             # by a commission meanwhile (that drops its timer, and sets
             # another when it is over), everything stopped, or the host
-            # shut down. And another look at the same session may have set
-            # a timer in the meantime: it is replaced.
-            if (
-                self._closed
-                or stops != self._idle_stops
-                or session_id in self._idle_stopped
-                or not self._idle_now(session_id)
-            ):
-                return
+            # shut down. If a transcript-preserving cleanup hold (outputs or
+            # work_dir) claimed the session in the meantime, wait for it to
+            # finish and re-verify before setting the timer.
+            while True:
+                if (
+                    self._closed
+                    or stops != self._idle_stops
+                    or session_id in self._idle_stopped
+                    or self._idle_schedule_gen.get(session_id) != gen
+                ):
+                    return
+                if self._idle_now(session_id):
+                    break
+                clearing = self._clearing.get(session_id)
+                if (
+                    clearing is None
+                    or session_id in self._clearing_drops_transcript
+                    or self._in_use_excluding_clearing(session_id)
+                ):
+                    return
+                await clearing.wait()
             self._drop_idle_timer(session_id)
         if after is None:
             after = idle_for
@@ -353,19 +368,34 @@ class IdleCompactMixin:
         from config.nekopower_settings import TASK_AGENT_IDLE_COMPACT_ENABLED, TASK_AGENT_IDLE_COMPACT_SECONDS
         from nekopower.runtime.protocol import GatewaySpec
 
-        if not TASK_AGENT_IDLE_COMPACT_ENABLED or not self._idle_now(session_id):
-            return False
-        if stops is not None and stops != self._idle_stops:
-            # Everything was stopped between the timer and this.
-            return False
-        if not self._is_switched_on():
-            return False
-        if not await self._idle_compact_wanted(session_id):
-            # Switched off since the timer was set: it comes due and does nothing.
-            return False
-        if not self._idle_now(session_id) or (stops is not None and stops != self._idle_stops):
-            # Taken by a commission, or everything stopped, while that was looked up.
-            return False
+        while True:
+            if self._closed or not TASK_AGENT_IDLE_COMPACT_ENABLED:
+                return False
+            if stops is not None and stops != self._idle_stops:
+                # Everything was stopped between the timer and this.
+                return False
+            clearing = self._clearing.get(session_id)
+            if clearing is not None:
+                if session_id in self._clearing_drops_transcript:
+                    return False
+                # Wait for a concurrent non-transcript file hold (e.g. outputs or work_dir cleanup)
+                # before deciding whether the session can still be idle-compacted.
+                await clearing.wait()
+                continue
+            if not self._idle_now(session_id) or not self._is_switched_on():
+                return False
+            if not await self._idle_compact_wanted(session_id):
+                # Switched off since the timer was set: it comes due and does nothing.
+                return False
+            if self._closed or (stops is not None and stops != self._idle_stops):
+                return False
+            if session_id in self._clearing:
+                # A file hold started while settings were queried; wait for it and re-verify.
+                continue
+            if not self._idle_now(session_id) or not self._is_switched_on():
+                # Taken by a commission, or switched off, while that was looked up.
+                return False
+            break
         task = asyncio.current_task()
         assert task is not None
         # Claimed before anything is awaited: a commission that takes the

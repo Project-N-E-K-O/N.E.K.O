@@ -27,7 +27,7 @@
 5. **`*.test.cjs`** 里相对 `static/` 根传的参数（`readStatic('域/文件.js')` 之类）。传给 `vm` 的 `filename` 只是诊断标签，不用改。
 6. **`.github/workflows/`**：`paths` 触发过滤器和 `node --test` 的显式文件列表。漏改不会报错，表现为对应的 CI 不再触发或不再跑那个文件。
 7. **文档**：`docs/frontend/*.md` 等活文档里的目录表述（多语言版本一起改）。
-8. **打包**：Nuitka 流程（`--include-data-dir=static=static`）和 `specs/launcher.spec`（`add_data('static', 'static')`）都是整目录收录，`scripts/check_nuitka_dist.py` 只按目录校验，子目录调整不用额外登记。前提是这两处保持整目录收录，不要改回白名单。
+8. **打包**：Nuitka 流程（`--include-data-dir=static=static`）整目录收录 `static/`，`scripts/check_nuitka_dist.py` 只按目录校验，子目录调整不用额外登记。前提是这处保持整目录收录，不要改回白名单。
 
 ## 批量替换时的坑
 

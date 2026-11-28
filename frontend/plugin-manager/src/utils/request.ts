@@ -179,14 +179,18 @@ function requestPath(url: unknown): string {
 /**
  * Mirrors the plugin server routes that always require the token
  * (PluginMutationGuardedRoute / require_plugin_mutation_access): lifecycle
- * actions and plugin-cli package build/import, including legacy aliases.
+ * actions, plugin-cli package build/import (including legacy aliases) and
+ * one plugin permission decision (allow / refuse / back to undecided).
  * Without a token the server rejects these, so a failed bootstrap stops them
  * before the request (and any package body) is sent.
  */
+const PERMISSION_DECISION_PATH = /^\/plugin-permissions\/plugins\/[^/]+\/permissions\/[^/]+$/
+
 function requiresCsrfToken(config: Pick<AxiosRequestConfig, 'method' | 'url'>): boolean {
   if (!isMutationMethod(config.method)) return false
   const path = requestPath(config.url)
   const method = config.method?.toLowerCase()
+  if (PERMISSION_DECISION_PATH.test(path)) return method === 'put' || method === 'delete'
   if (method === 'delete') return /^\/plugin\/[^/]+$/.test(path) || path === '/plugin-cli/upload'
   return /^\/plugin\/[^/]+\/(?:start|stop|refresh|reload)$/.test(path)
     || (method === 'put' && /^\/plugin\/[^/]+\/auto-start$/.test(path))

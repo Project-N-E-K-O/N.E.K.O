@@ -1,0 +1,37 @@
+/*
+ * Risk tier colours of the plugin permission views (permission tab, privacy
+ * page): a thin bar on the left, a small tag, an almost white background.
+ * Put `perm-palette` on the view's root; `data-tier` picks the tier.
+ */
+.perm-palette {
+  --perm-high: #d9534f;
+  --perm-high-bg: #fdf8f7;
+  --perm-high-tag: #fbe9e7;
+  --perm-medium: #e0a84a;
+  --perm-medium-bg: #fffdf6;
+  --perm-medium-tag: #fbf1dc;
+  --perm-low: #7aa7d6;
+  --perm-low-bg: #f8fbfe;
+  --perm-low-tag: #e6effa;
+  --perm-line: var(--el-border-color-lighter);
+  --perm-summary-bg: #fff8ef;
+  --perm-summary-border: #f3c58f;
+}
+.perm-palette [data-tier='high'],
+.perm-palette[data-tier='high'] {
+  --perm-tier-color: var(--perm-high);
+  --perm-tier-bg: var(--perm-high-bg);
+  --perm-tier-tag: var(--perm-high-tag);
+}
+.perm-palette [data-tier='medium'],
+.perm-palette[data-tier='medium'] {
+  --perm-tier-color: var(--perm-medium);
+  --perm-tier-bg: var(--perm-medium-bg);
+  --perm-tier-tag: var(--perm-medium-tag);
+}
+.perm-palette [data-tier='low'],
+.perm-palette[data-tier='low'] {
+  --perm-tier-color: var(--perm-low);
+  --perm-tier-bg: var(--perm-low-bg);
+  --perm-tier-tag: var(--perm-low-tag);
+}

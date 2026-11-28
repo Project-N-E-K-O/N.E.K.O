@@ -161,9 +161,10 @@ function scopeParams(scope: SpaceScope = {}): Record<string, string> {
 
 const get = <T>(url: string, params?: Record<string, string | number>) =>
   request.get<T, T>(url, { ...quiet, params }) as Promise<T>
-// The folder dialog stays open for two minutes, a draft is given 45 seconds: longer than a request usually waits.
+// The folder dialog stays open for two minutes, a draft is given 45 seconds, and cleaning large directories may take a while.
 const PICK_TIMEOUT_MS = 140_000
 const DRAFT_TIMEOUT_MS = 65_000
+const CLEAN_TIMEOUT_MS = 125_000
 const send = <T>(
   method: 'post' | 'put' | 'patch' | 'delete', url: string, data?: unknown, params?: Record<string, string>, timeout?: number,
 ) => request.request<T, T>({ ...quiet, method, url, data, params, ...(timeout ? { timeout } : {}) }) as Promise<T>
@@ -321,7 +322,7 @@ export interface Landing {
   /** Whether what clashed went back to its familiar to merge. */
   resolving: boolean
   detail: string
-  kept_copies?: string[]
+  kept_copies?: string | string[]
   /** Changed outside the project's directory, elsewhere in its repository: landed with the rest. */
   outside?: string[]
   /** Not carried over (too large, a repository of their own): still in the worktree, which stays. */
@@ -777,10 +778,149 @@ export const setPermission = (category: string, mode: PermissionMode, expectedVe
 export const getWindow = () => get<{ window: ModelWindow | null }>('/console/window')
 export const setWindow = (changes: WindowChanges) => send<{ window: ModelWindow }>('post', '/console/window', changes)
 
-// -- where things are -----------------------------------------------------------
+// -- where things are & disk space management -----------------------------------
+
+export interface DiskUsage {
+  total: number
+  used: number
+  free: number
+}
+
+export type StorageCategoryKey =
+  | 'worktrees'
+  | 'work_dirs'
+  | 'transcripts'
+  | 'space'
+  | 'dsh'
+  | 'browser_profile'
+  | 'other'
+  | (string & {})
+
+export interface StorageCategory {
+  key: StorageCategoryKey
+  bytes: number
+  bytes_whole: boolean
+  count: number
+  reclaimable_bytes: number
+  cleanable: boolean
+}
+
+export interface StorageWorktree {
+  id: string
+  kind: 'tracked' | 'orphan' | (string & {})
+  project: string | null
+  title: string
+  session_name: string
+  session_id: string | null
+  commission_id: string | null
+  state: TreeState | 'discarding' | 'orphan'
+  reason: string
+  conflicts: string[]
+  path: string
+  workdir: string
+  exists: boolean
+  bytes: number
+  bytes_whole: boolean
+  created_at: number | null
+  updated_at: number | null
+  can_clean: boolean
+  can_land: boolean
+  stale: boolean
+}
+
+export interface StorageWorkDir {
+  id: string
+  scope: 'session' | 'project' | (string & {})
+  project: string
+  session_id: string | null
+  session_name: string
+  title: string
+  session_status: string
+  path: string
+  bytes: number
+  bytes_whole: boolean
+  file_count: number
+  empty: boolean
+  last_active_at: number | null
+  in_use: boolean
+  can_clean: boolean
+  stale: boolean
+  referenced_by_project: boolean
+}
+
+export interface StorageTranscripts {
+  bytes: number
+  bytes_whole: boolean
+  sessions: number
+  expired_count: number
+  expired_bytes: number
+  outputs_count: number
+  outputs_bytes: number
+}
+
+export interface StorageSettingsValues {
+  auto_clean_work_dirs: boolean
+  work_dir_kept_days: number
+  auto_clean_worktrees: boolean
+  worktree_kept_days: number
+}
+
+export interface StorageSettings extends StorageSettingsValues {
+  transcript_kept_days: number
+  min_days: number
+  max_days: number
+  defaults: StorageSettingsValues
+}
+
+export interface StorageOverview {
+  disk: DiskUsage | null
+  total_bytes: number
+  total_whole: boolean
+  reclaimable_bytes: number
+  categories: StorageCategory[]
+  places: Place[]
+  worktrees: StorageWorktree[]
+  worktrees_more: number
+  work_dirs: StorageWorkDir[]
+  work_dirs_more: number
+  transcripts: StorageTranscripts
+  settings: StorageSettings
+}
+
+export interface WorkDirCleanResult {
+  cleaned: string[]
+  freed_bytes: number
+  failed: Array<{ id: string; code: string }>
+}
+
+export interface WorktreeCleanResult {
+  cleaned: string[]
+  deferred: string[]
+  freed_bytes: number
+  failed: Array<{ id: string; code: string }>
+}
+
+export interface TranscriptCleanResult {
+  cleaned: number
+  freed_bytes: number
+  skipped: number
+}
+
+export type StorageOpenKind = 'place' | 'work_dir' | 'worktree'
 
 export const getPlaces = () => get<{ places: Place[] }>('/console/places')
 export const openPlace = (key: string) => send<{ success: boolean }>('post', '/console/places/open', { key })
+export const getStorage = () => get<StorageOverview>('/console/storage')
+export const setStorageSettings = (changes: Partial<StorageSettingsValues>) =>
+  send<{ settings: StorageSettings }>('post', '/console/storage/settings', changes)
+export const cleanWorkDirs = (ids: string[]) =>
+  send<WorkDirCleanResult>('post', '/console/storage/work-dirs/clean', { ids }, undefined, CLEAN_TIMEOUT_MS)
+export const cleanWorktrees = (ids: string[]) =>
+  send<WorktreeCleanResult>('post', '/console/storage/worktrees/clean', { ids }, undefined, CLEAN_TIMEOUT_MS)
+export const cleanTranscripts = (mode: 'expired' | 'outputs' = 'expired') =>
+  send<TranscriptCleanResult>('post', '/console/storage/transcripts/clean', { mode }, undefined, CLEAN_TIMEOUT_MS)
+export const openStorageItem = (kind: StorageOpenKind, id: string) =>
+  send<{ success: boolean }>('post', '/console/storage/open', { kind, id })
 
 // -- the task agent space -------------------------------------------------------
 

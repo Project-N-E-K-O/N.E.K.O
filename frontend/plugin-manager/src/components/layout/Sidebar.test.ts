@@ -151,9 +151,9 @@ describe('Sidebar navigation', () => {
   it('保留主入口顺序与路径，折叠后详情页仍标记插件管理为当前页', async () => {
     routeState.path = '/plugins/demo'
     const mounted = await mountSidebar()
-    expect(Array.from(mounted.container.querySelectorAll('[data-to]')).slice(0, 12).map((element) => element.getAttribute('data-to'))).toEqual([
+    expect(Array.from(mounted.container.querySelectorAll('[data-to]')).slice(0, 13).map((element) => element.getAttribute('data-to'))).toEqual([
       '/', '/familiars/space', '/familiars/commissions', '/familiars/runtime', '/familiars/mcp',
-      '/plugins', '/plugins/_overview', '/plugins/_forge', '/knowledge', '/model-api', '/runs', '/logs/_server',
+      '/plugins', '/plugins/_overview', '/plugins/_privacy', '/plugins/_forge', '/knowledge', '/model-api', '/runs', '/logs/_server',
     ])
     expect(getByRole(mounted.container, 'button', { name: 'nav.plugins' }).getAttribute('aria-current')).toBe('page')
     getByRole(mounted.container, 'button', { name: 'nav.collapseSidebar' }).click()
@@ -163,7 +163,7 @@ describe('Sidebar navigation', () => {
     mounted.unmount()
   })
 
-  it('插件下面的两个子项是当前页时，「插件管理」本身不标成当前页', async () => {
+  it('插件下面的子项是当前页时，「插件管理」本身不标成当前页', async () => {
     routeState.path = '/plugins/_overview'
     const mounted = await mountSidebar()
     expect(getByRole(mounted.container, 'button', { name: 'power.nav.overview' }).getAttribute('aria-current')).toBe('page')
@@ -171,6 +171,12 @@ describe('Sidebar navigation', () => {
     expect(getByRole(mounted.container, 'button', { name: 'authoring.title' }).getAttribute('aria-current')).toBeNull()
     expect(getByRole(mounted.container, 'button', { name: 'power.nav.overview' }).getAttribute('data-yui-guide-id')).toBe('sidebar-dashboard')
     mounted.unmount()
+
+    routeState.path = '/plugins/_privacy'
+    const privacy = await mountSidebar()
+    expect(getByRole(privacy.container, 'button', { name: 'pluginConsent.privacy.title' }).getAttribute('aria-current')).toBe('page')
+    expect(getByRole(privacy.container, 'button', { name: 'nav.plugins' }).getAttribute('aria-current')).toBeNull()
+    privacy.unmount()
 
     // 插件自己的 id 可以以下划线开头：它的详情页仍算在「插件管理」下面。
     routeState.path = '/plugins/_demo'

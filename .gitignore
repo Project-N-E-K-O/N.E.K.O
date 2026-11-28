@@ -59,10 +59,6 @@ debug_audio/*
 *.lo
 *.loT
 *.stackdump
-pkgbuild/src/
-pkgbuild/pkg/
-pkgbuild/*.tar.gz
-pkgbuild/*.zst
 
 # 忽略 memory/store 下所有内容（含子目录和文件）
 memory/store/*
@@ -106,7 +102,6 @@ __pycache__/
 .venv
 .venv_monitor/
 .matplotlib/
-.pyinstaller-config/
 .hypothesis/
 .agent-logs/
 .kiro/
@@ -133,6 +128,7 @@ data/embedding_models/
 .kilo/
 plans/
 CLAUDE.md
+/CONTEXT.md
 /.workbuddy/
 
 # Rust: ignore target and cargo artifacts

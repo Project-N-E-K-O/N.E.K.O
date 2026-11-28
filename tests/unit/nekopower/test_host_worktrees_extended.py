@@ -3058,3 +3058,37 @@ async def test_recovered_ownership_persists_across_cancel_and_clears_old_branch_
     assert reused_origin.status == "landed", reused_origin.detail
     assert reused_origin.pr_number == 802 and len(created_prs) == 2
     await mgr.remove(wt)
+
+
+async def test_copy_remove_if_untouched_and_forget_gone(tmp_path: Path) -> None:
+    """Verify remove_if_untouched and forget_gone support non-git working copies and preserve dependency links on abort."""
+    mgr = WorktreeManager()
+    proj = tmp_path / "copy_storage_proj"
+    _write(proj / "app.txt", "hello\n")
+    _write(proj / "node_modules" / "pkg" / "index.js", "module.exports = 1;\n")
+
+    wt1 = await mgr.create(proj, tmp_path / "wt" / "copy-u1")
+    assert wt1.kind == "copy"
+    # Aborting remove_if_untouched must leave copy files, dependency link, and metadata untouched.
+    aborted = await mgr.remove_if_untouched(wt1, lambda _p: False)
+    assert aborted == "aborted"
+    assert (wt1.path / "app.txt").read_text(encoding="utf-8") == "hello\n"
+    if "node_modules" in wt1.linked_dependencies:
+        assert (wt1.path / "node_modules").exists()
+    assert _copy_trees.copy_meta_dir(wt1.path).is_dir()
+
+    # Approving remove_if_untouched removes copy + metadata without harming project node_modules.
+    removed = await mgr.remove_if_untouched(wt1, lambda _p: True)
+    assert removed == "removed"
+    assert not wt1.path.exists()
+    assert not _copy_trees.copy_meta_dir(wt1.path).exists()
+    assert (proj / "node_modules" / "pkg" / "index.js").read_text(encoding="utf-8") == "module.exports = 1;\n"
+
+    # forget_gone drops metadata for a copy whose directory was already deleted externally.
+    wt2 = await mgr.create(proj, tmp_path / "wt" / "copy-u2")
+    _copy_trees.unlink_dependencies(wt2.path, wt2.linked_dependencies)
+    _copy_trees.remove_tree_safe(wt2.path)
+    assert not wt2.path.exists()
+    assert _copy_trees.copy_meta_dir(wt2.path).is_dir()
+    await mgr.forget_gone(proj, wt2.path, wt2.id, token=wt2.token)
+    assert not _copy_trees.copy_meta_dir(wt2.path).exists()

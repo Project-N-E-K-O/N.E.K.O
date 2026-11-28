@@ -261,11 +261,14 @@ class _StreamingMixin:
                 and _live_max_tokens > _derived_max_tokens
             ):
                 _derived_max_tokens = _live_max_tokens
+            from utils.http.pool_utils import DEFAULT_HTTP_KEEPALIVE_EXPIRY_SECONDS
+
             new_llm = await create_chat_llm_async(
                 new_model, base_url, api_key,
                 streaming=True, max_retries=0,
                 max_completion_tokens=_derived_max_tokens,
                 timeout=DIALOG_LLM_STREAM_TIMEOUT_SECONDS,  # hang-guard; generous so normal/long replies aren't truncated
+                keepalive_expiry=DEFAULT_HTTP_KEEPALIVE_EXPIRY_SECONDS,
                 provider_type=provider_type,
             )
             # Nothing below awaits until the swap, so this answer still holds

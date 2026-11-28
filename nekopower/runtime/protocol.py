@@ -129,8 +129,8 @@ class ModelConfig(_Strict):
     # the session comes to be managed for later keeps the same part.
     compact_at: int | None = Field(default=None, ge=1_000)
     max_output_tokens: int = Field(default=8_192, ge=256)
-    request_timeout_seconds: float = Field(default=300.0, gt=0)
-    max_retries: int = Field(default=2, ge=0)
+    request_timeout_seconds: float = Field(default=180.0, gt=0)
+    max_retries: int = Field(default=1, ge=0)
     supports_images: bool = False
     # ``extra_body`` given: sent as is. Otherwise ``auto_extra_body`` decides
     # between the provider default registered in config.providers and none.

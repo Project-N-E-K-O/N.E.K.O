@@ -4740,3 +4740,765 @@ async def test_the_process_of_the_users_own_browser_is_named_too(session: Browse
     await session.start()
     # Nothing was started for it; what draws over its window finds it by this all the same.
     assert (await session.refresh_window())["pid"] == BROWSER_PID
+
+
+# ---------------------------------------------------------------------------
+# Multi-browser attach, OOPIF snapshots & actions, upload/drag, WS/attach guards
+# ---------------------------------------------------------------------------
+
+
+async def test_attach_tries_other_detected_browsers_when_first_is_not_debugging(
+    session: BrowserSession, world: BrowserWorld
+) -> None:
+    edge = launcher.BrowserInstall("edge", "Microsoft Edge", "/fake/msedge", "/fake/edge-profile")
+    world.settings(mode="attach")
+    world.attach_browsers = [CHROME, edge]
+    world.attach_errors[CHROME.executable] = BrowserStartError("Google Chrome is not running with remote debugging on.")
+    await session.start()
+    assert world.attached == [CHROME, edge]
+    assert session.browser_name == "Microsoft Edge"
+    assert session.connected
+
+
+async def test_attach_reports_all_detected_browsers_when_none_is_debugging(
+    session: BrowserSession, world: BrowserWorld
+) -> None:
+    edge = launcher.BrowserInstall("edge", "Microsoft Edge", "/fake/msedge", "/fake/edge-profile")
+    world.settings(mode="attach")
+    world.attach_browsers = [CHROME, edge]
+    world.attach_error = BrowserStartError("not running")
+    with pytest.raises(BrowserError, match="Google Chrome, Microsoft Edge"):
+        await session.start()
+    assert world.attached == [CHROME, edge]
+
+
+async def test_cross_process_iframe_appears_in_snapshot_and_routes_actions_and_screenshot(
+    session: BrowserSession, world: BrowserWorld
+) -> None:
+    world.browser.serve(
+        "http://shop.test/oopif",
+        lambda: Document(
+            "Outer",
+            el("button", "Pay"),
+            el(
+                "Iframe",
+                "Card frame",
+                frame=Document("Card", el("textbox", "Card number"), el("button", "Confirm card")),
+                oopif=True,
+                quad=[200.0, 100.0, 600.0, 100.0, 600.0, 300.0, 200.0, 300.0],
+            ),
+        ),
+    )
+    page, fake, snapshot = await open_page(session, world, "http://shop.test/oopif")
+    assert snapshot.unlisted_frames == 0
+    card_uid = uid_of(snapshot, "Card number")
+    confirm_uid = uid_of(snapshot, "Confirm card")
+    assert snapshot.by_uid[card_uid].session_id is not None
+    assert snapshot.by_uid[card_uid].session_id != page.session_id
+
+    await session.fill(page, card_uid, "4111-2222")
+    await session.click(page, confirm_uid)
+    oopif_page = next(iter(world.browser.oopif_pages.values()))
+    assert oopif_page.find("Card number").value == "4111-2222"
+    assert oopif_page.find("Confirm card").clicks == 1
+    assert fake.mouse == []
+
+    # Element screenshot translates OOPIF local coordinates by ancestor iframe offset (200, 100).
+    await session.screenshot(page, uid=confirm_uid)
+    clip = fake.screenshots[-1]["clip"]
+    btn_left, btn_top, _, _ = oopif_page.find("Confirm card").box()
+    assert clip["x"] == pytest.approx(btn_left + 200.0)
+    assert clip["y"] == pytest.approx(btn_top + 100.0)
+
+    # Releasing handles releases OBJECT_GROUP on the OOPIF session too.
+    assert oopif_page.objects != {}
+    await session.release_handles()
+    assert oopif_page.objects == {} and OBJECT_GROUP in oopif_page.released_groups
+
+
+async def test_upload_file_handles_direct_file_input_and_file_chooser_button(
+    session: BrowserSession, world: BrowserWorld, tmp_path: Any
+) -> None:
+    sample = tmp_path / "resume.txt"
+    sample.write_text("hello", encoding="utf-8")
+
+    def upload_page() -> Document:
+        hidden_input = el("button", "Hidden file input", kind="file")
+        return Document(
+            "Upload",
+            el("button", "Direct file", kind="file"),
+            hidden_input,
+            el("button", "Choose file", opens_file_chooser=hidden_input),
+            el("button", "Plain button"),
+        )
+
+    world.browser.serve("http://shop.test/upload", upload_page)
+    page, fake, snapshot = await open_page(session, world, "http://shop.test/upload")
+
+    await session.upload_file(page, uid_of(snapshot, "Direct file"), str(sample))
+    assert fake.find("Direct file").files == [str(sample.resolve())]
+
+    await session.upload_file(page, uid_of(snapshot, "Choose file"), str(sample))
+    assert fake.find("Hidden file input").files == [str(sample.resolve())]
+    assert fake.intercept_file_chooser is False
+
+    with pytest.raises(BrowserError, match="did not open a file chooser"):
+        await session.upload_file(page, uid_of(snapshot, "Plain button"), str(sample))
+
+    with pytest.raises(BrowserError, match="does not exist"):
+        await session.upload_file(page, uid_of(snapshot, "Direct file"), str(tmp_path / "missing.txt"))
+
+
+async def test_drag_dispatches_html5_drag_events_and_pointer_drag(
+    session: BrowserSession, world: BrowserWorld
+) -> None:
+    world.browser.serve(
+        "http://shop.test/board",
+        lambda: Document(
+            "Board",
+            el("button", "Card A", draggable=True),
+            el("button", "Handle B", draggable=False),
+            el("region", "Done column"),
+        ),
+    )
+    page, fake, snapshot = await open_page(session, world, "http://shop.test/board")
+
+    await session.drag(page, uid_of(snapshot, "Card A"), uid_of(snapshot, "Done column"))
+    assert [ev["type"] for ev in fake.drag_events] == ["dragEnter", "dragOver", "drop"]
+    assert fake.intercept_drags is False
+
+    fake.mouse.clear()
+    fake.drag_events.clear()
+    await session.drag(page, uid_of(snapshot, "Handle B"), uid_of(snapshot, "Done column"))
+    assert fake.drag_events == []
+    assert fake.inputs()[0] == "mouseMoved"
+    assert fake.inputs()[1] == "mousePressed"
+    assert fake.inputs()[-1] == "mouseReleased"
+
+    # When the drop target is unreachable, drag must fail before pressing on the source
+    # so it never synthesizes an accidental click on the source element.
+    fake.mouse.clear()
+    world.browser.serve(
+        "http://shop.test/board-hidden-target",
+        lambda: Document(
+            "Board",
+            el("button", "Card A", draggable=True),
+            el("region", "Hidden drop", visible=False),
+        ),
+    )
+    page2, fake2, snap2 = await open_page(session, world, "http://shop.test/board-hidden-target")
+    fake2.mouse.clear()
+    with pytest.raises(BrowserError, match="not visible"):
+        await session.drag(page2, uid_of(snap2, "Card A"), uid_of(snap2, "Hidden drop"))
+    assert fake2.mouse == []
+
+
+async def test_attach_mode_arms_websocket_guard_and_auto_attaches_oopifs_and_workers(
+    make_session: Any, world: BrowserWorld
+) -> None:
+    world.settings(mode="attach")
+    session = make_session(own_ports=lambda: {48911, 48913})
+    await session.start()
+    page = session.selected()
+    await session.navigate(page, "url", ORDER)
+    fake = world.page_of(page)
+
+    # Main page got JS WebSocket/WebTransport port guard and Target.setAutoAttach.
+    assert fake.auto_attach_enabled is True
+    assert any("48911" in src and "WebSocket" in src for src in fake.port_guard_scripts)
+
+    # Simulate an auto-attached cross-site iframe and a shared worker paused on start.
+    world.browser.other_targets.append(
+        {"targetId": "oopif-child-1", "type": "iframe", "url": "https://evil.example/frame", "title": "f"}
+    )
+    world.browser.other_targets.append(
+        {"targetId": "shared-w-1", "type": "shared_worker", "url": "https://evil.example/sw.js", "title": "sw"}
+    )
+    world.browser._other_sessions["child-iframe-sid"] = "oopif-child-1"
+    world.browser._other_sessions["child-sw-sid"] = "shared-w-1"
+    world.browser._emit(
+        "Target.attachedToTarget",
+        {
+            "sessionId": "child-iframe-sid",
+            "targetInfo": {"targetId": "oopif-child-1", "type": "iframe", "url": "https://evil.example/frame"},
+            "waitingForDebugger": True,
+        },
+        page.session_id,
+    )
+    world.browser._emit(
+        "Target.attachedToTarget",
+        {
+            "sessionId": "child-sw-sid",
+            "targetInfo": {"targetId": "shared-w-1", "type": "shared_worker", "url": "https://evil.example/sw.js"},
+            "waitingForDebugger": True,
+        },
+        page.session_id,
+    )
+    await _until(lambda: "oopif-child-1" in world.browser.resumed_targets and "shared-w-1" in world.browser.resumed_targets)
+    assert any(tid == "oopif-child-1" for tid, _ in world.browser.fetch_enabled)
+    assert any(tid == "oopif-child-1" for tid, _ in world.browser.port_guards)
+    assert any(tid == "shared-w-1" for tid, _ in world.browser.fetch_enabled)
+    assert any(tid == "shared-w-1" for tid, _ in world.browser.port_guards)
+
+
+async def test_nested_workers_created_by_workers_receive_port_guards(
+    make_session: Any, world: BrowserWorld
+) -> None:
+    world.settings(mode="attach")
+    session = make_session(own_ports=lambda: {48911})
+    await session.start()
+    page = session.selected()
+    await session.navigate(page, "url", ORDER)
+
+    world.browser.other_targets.append(
+        {"targetId": "outer-w-1", "type": "worker", "url": "https://evil.example/outer.js", "title": "outer"}
+    )
+    world.browser.other_targets.append(
+        {"targetId": "nested-w-1", "type": "worker", "url": "https://evil.example/nested.js", "title": "nested"}
+    )
+    world.browser._other_sessions["outer-w-sid"] = "outer-w-1"
+    world.browser._other_sessions["nested-w-sid"] = "nested-w-1"
+
+    mark = world.browser.mark()
+    world.browser._emit(
+        "Target.attachedToTarget",
+        {
+            "sessionId": "outer-w-sid",
+            "targetInfo": {"targetId": "outer-w-1", "type": "worker", "url": "https://evil.example/outer.js"},
+            "waitingForDebugger": True,
+        },
+        page.session_id,
+    )
+    await _until(lambda: "outer-w-1" in world.browser.resumed_targets)
+    outer_cmds = [cmd.method for cmd in world.browser.since(mark) if cmd.session_id == "outer-w-sid"]
+    assert "Target.setAutoAttach" in outer_cmds
+    assert outer_cmds.index("Target.setAutoAttach") < outer_cmds.index("Runtime.runIfWaitingForDebugger")
+    assert any(tid == "outer-w-1" for tid, _ in world.browser.port_guards)
+
+    nested_mark = world.browser.mark()
+    world.browser._emit(
+        "Target.attachedToTarget",
+        {
+            "sessionId": "nested-w-sid",
+            "targetInfo": {"targetId": "nested-w-1", "type": "worker", "url": "https://evil.example/nested.js"},
+            "waitingForDebugger": True,
+        },
+        "outer-w-sid",
+    )
+    await _until(lambda: "nested-w-1" in world.browser.resumed_targets)
+    nested_cmds = [cmd.method for cmd in world.browser.since(nested_mark) if cmd.session_id == "nested-w-sid"]
+    assert "Target.setAutoAttach" in nested_cmds
+    assert nested_cmds.index("Target.setAutoAttach") < nested_cmds.index("Runtime.runIfWaitingForDebugger")
+    assert any(tid == "nested-w-1" for tid, _ in world.browser.port_guards)
+    assert "nested-w-sid" in page.worker_sessions
+
+
+async def test_popup_pages_opened_by_page_receive_port_guards_before_running(
+    make_session: Any, world: BrowserWorld
+) -> None:
+    world.settings(mode="attach")
+    session = make_session(own_ports=lambda: {48911})
+    await session.start()
+    page = session.selected()
+    await session.navigate(page, "url", ORDER)
+
+    world.browser.other_targets.append(
+        {"targetId": "popup-1", "type": "page", "url": "https://evil.example/popup", "title": "popup"}
+    )
+    world.browser._other_sessions["popup-sid"] = "popup-1"
+
+    mark = world.browser.mark()
+    world.browser._emit(
+        "Target.attachedToTarget",
+        {
+            "sessionId": "popup-sid",
+            "targetInfo": {
+                "targetId": "popup-1",
+                "type": "page",
+                "url": "https://evil.example/popup",
+                "openerId": page.target_id,
+            },
+            "waitingForDebugger": True,
+        },
+        page.session_id,
+    )
+    await _until(lambda: "popup-1" in world.browser.resumed_targets)
+    popup_cmds = [cmd.method for cmd in world.browser.since(mark) if cmd.session_id == "popup-sid"]
+    assert "Fetch.enable" in popup_cmds
+    assert "Page.addScriptToEvaluateOnNewDocument" in popup_cmds
+    assert "Runtime.evaluate" in popup_cmds
+    assert "Target.setAutoAttach" in popup_cmds
+    resume_idx = popup_cmds.index("Runtime.runIfWaitingForDebugger")
+    assert popup_cmds.index("Fetch.enable") < resume_idx
+    assert popup_cmds.index("Page.addScriptToEvaluateOnNewDocument") < resume_idx
+    assert popup_cmds.index("Runtime.evaluate") < resume_idx
+    assert popup_cmds.index("Target.setAutoAttach") < resume_idx
+    assert any(tid == "popup-1" for tid, _ in world.browser.port_guards)
+    popup_page = session._pages.get("popup-1")
+    assert popup_page is not None and popup_page.session_id == "popup-sid" and popup_page.own is True
+
+
+async def test_attach_retries_remaining_candidates_when_cdp_connect_fails(
+    session: BrowserSession, world: BrowserWorld
+) -> None:
+    edge = launcher.BrowserInstall("edge", "Microsoft Edge", "/fake/msedge", "/fake/edge-profile")
+    world.settings(mode="attach")
+    world.attach_browsers = [CHROME, edge]
+    world.attach_endpoints_map[CHROME.executable] = [
+        launcher.RunningBrowser(CHROME, "ws://127.0.0.1:9331/devtools/browser/stale", owned=False, user_data_dir="/p1"),
+        launcher.RunningBrowser(CHROME, "ws://127.0.0.1:9332/devtools/browser/stale2", owned=False, user_data_dir="/p2"),
+    ]
+    world.attach_endpoints_map[edge.executable] = [
+        launcher.RunningBrowser(edge, "ws://127.0.0.1:9333/devtools/browser/live", owned=False, user_data_dir="/edge-p"),
+    ]
+    world.connect_errors["ws://127.0.0.1:9331/devtools/browser/stale"] = OSError("handshake rejected")
+    world.connect_errors["ws://127.0.0.1:9332/devtools/browser/stale2"] = TimeoutError("timed out")
+
+    await session.start()
+    assert session.connected
+    assert session.browser_name == "Microsoft Edge"
+    assert [url for url, _ in world.connected] == [
+        "ws://127.0.0.1:9331/devtools/browser/stale",
+        "ws://127.0.0.1:9332/devtools/browser/stale2",
+        "ws://127.0.0.1:9333/devtools/browser/live",
+    ]
+
+
+async def test_tab_owner_persists_across_temporary_unlisted_navigation(
+    session: BrowserSession, world: BrowserWorld
+) -> None:
+    await session.start()
+    page_a = await session.ensure_owner_page("team-a")
+    assert page_a is not None
+    tid = page_a.target_id
+    await session.navigate(page_a, "url", ORDER)
+
+    # Temporarily navigate the tab to an unlisted internal URL (chrome://), dropping it from _pages.
+    world.browser._emit(
+        "Target.targetInfoChanged",
+        {"targetInfo": {"targetId": tid, "type": "page", "url": "chrome://settings", "title": "Settings"}},
+    )
+    assert tid not in session._pages
+
+    # When the tab navigates back to a web page, ownership by team-a is restored so team-b cannot steal it.
+    world.browser._emit(
+        "Target.targetInfoChanged",
+        {"targetInfo": {"targetId": tid, "type": "page", "url": ORDER, "title": "Order"}},
+    )
+    assert session._pages[tid].owner == "team-a"
+    page_b = await session.ensure_owner_page("team-b")
+    assert page_b is not None and page_b.target_id != tid
+
+
+async def test_attach_frames_discards_frame_when_loader_changes_mid_snapshot(
+    session: BrowserSession, world: BrowserWorld
+) -> None:
+    await session.start()
+    page = session.selected()
+    await session.navigate(page, "url", CHECKOUT)
+    fake = world.page_of(page)
+
+    # Hold the iframe's Accessibility.getFullAXTree so we can fire a frame navigation mid-flight.
+    iframe_el = next(el for el in fake.elements.values() if el.role == "Iframe")
+    assert iframe_el.content_frame is not None
+    iframe_id = iframe_el.content_frame.frame_id
+    gate = world.browser.hold("Accessibility.getFullAXTree", frameId=iframe_id)
+
+    task = asyncio.ensure_future(session.take_snapshot(page))
+    await _until(lambda: gate.reached.is_set())
+    world.browser.reload_frame(fake, iframe_el, Document("Replaced", el("button", "New Button")))
+    gate.release()
+    snap = await task
+    assert snap.unlisted_frames >= 1
+    assert all(node.name != "Confirm card" for node in snap.by_uid.values())
+
+
+async def test_upload_file_refuses_without_clicking_when_chooser_interception_unsupported(
+    session: BrowserSession, world: BrowserWorld, tmp_path: Path
+) -> None:
+    world.browser.serve(
+        "https://shop.example/upload-only-btn",
+        lambda: Document("Up", el("button", "Pick file")),
+    )
+    await session.start()
+    page = session.selected()
+    await session.navigate(page, "url", "https://shop.example/upload-only-btn")
+    snap = await session.take_snapshot(page)
+    sample = tmp_path / "doc.txt"
+    sample.write_text("hi", encoding="utf-8")
+
+    world.browser.refuse("Page.setInterceptFileChooserDialog", "unsupported")
+    mark = world.browser.mark()
+    with pytest.raises(BrowserError, match="does not support intercepting file chooser dialogs"):
+        await session.upload_file(page, uid_of(snap, "Pick file"), str(sample))
+    assert world.browser.input_events(mark) == []
+
+
+async def test_install_port_guard_reports_false_on_runtime_exception_details(
+    make_session: Any, world: BrowserWorld, monkeypatch: Any
+) -> None:
+    from nekopower.builtin.browser.session import _PORT_GUARD_MARKER
+
+    session = make_session(own_ports=lambda: {48911})
+    await session.start()
+    page = session.selected()
+    await session.navigate(page, "url", ORDER)
+    orig_eval = world.browser._do_Runtime_evaluate
+
+    def failing_eval(command: Any, target: Any) -> dict[str, Any]:
+        if _PORT_GUARD_MARKER in str(command.params.get("expression") or ""):
+            return {"exceptionDetails": {"text": "CSP blocked eval"}}
+        return orig_eval(command, target)
+
+    monkeypatch.setattr(world.browser, "_do_Runtime_evaluate", failing_eval)
+    assert session._connection is not None and page.session_id is not None
+    ok = await session._install_port_guard(session._connection, page.session_id, on_new_document=False)
+    assert ok is False
+
+
+async def test_new_page_reserves_tab_against_concurrent_ensure_owner_page(
+    session: BrowserSession, world: BrowserWorld
+) -> None:
+    await session.start()
+    page_a0 = await session.ensure_owner_page("team-a")
+    assert page_a0 is not None
+    await session.navigate(page_a0, "url", ORDER)
+
+    # Hold Target.createTarget while emitting Target.targetCreated early; concurrent ensure_owner_page
+    # for team-b must wait and cannot steal team-a's newly created tab.
+    gate = world.browser.hold("Target.createTarget")
+    new_tab_task = asyncio.ensure_future(session.new_page(TERMS, owner="team-a"))
+    await _until(lambda: gate.reached.is_set())
+
+    # Simulate another owner trying to allocate its tab while team-a's createTarget is in flight.
+    ensure_b_task = asyncio.ensure_future(session.ensure_owner_page("team-b"))
+    await asyncio.sleep(0)
+    assert not ensure_b_task.done()
+
+    gate.release()
+    page_a1 = await new_tab_task
+    page_b = await ensure_b_task
+    assert page_a1.target_id != page_a0.target_id
+    assert page_a1.owner == "team-a" and page_a1.url == TERMS
+    assert page_a0.url == ORDER
+    assert page_b is not None and page_b.owner == "team-b"
+    assert page_b.target_id not in (page_a0.target_id, page_a1.target_id)
+
+
+async def test_select_page_waits_for_tab_allocation_lock_during_ensure_owner_page(
+    session: BrowserSession, world: BrowserWorld
+) -> None:
+    await session.start()
+    page_a0 = await session.ensure_owner_page("team-a")
+    assert page_a0 is not None
+
+    gate = world.browser.hold("Target.createTarget")
+    ensure_b = asyncio.ensure_future(session.ensure_owner_page("team-b"))
+    await _until(lambda: gate.reached.is_set())
+
+    # Simulate Target.targetCreated arriving before Target.createTarget returns.
+    early = world.browser.add_page("about:blank")
+    early_page = session._pages[early.target_id]
+    assert early_page.owner is None
+
+    # Another owner trying to explicitly select that newly created tab must wait until
+    # ensure_owner_page releases _tab_alloc_lock.
+    select_a = asyncio.ensure_future(session.select_page(early_page.id, owner="team-a"))
+    await asyncio.sleep(0)
+    assert not select_a.done()
+
+    gate.release()
+    page_b = await ensure_b
+    assert page_b is not None and page_b.owner == "team-b"
+    selected_by_a = await select_a
+    assert selected_by_a.target_id == early.target_id and selected_by_a.owner == "team-a"
+    assert page_b.target_id != selected_by_a.target_id
+
+
+async def test_drag_disables_interception_when_cancelled_during_enable(
+    session: BrowserSession, world: BrowserWorld
+) -> None:
+    world.browser.serve(
+        "http://shop.test/drag-cancel",
+        lambda: Document(
+            "Board",
+            el("button", "Card A", draggable=True),
+            el("region", "Done column"),
+        ),
+    )
+    page, _fake, snapshot = await open_page(session, world, "http://shop.test/drag-cancel")
+    gate = world.browser.hold("Input.setInterceptDrags", enabled=True)
+    mark = world.browser.mark()
+    drag_task = asyncio.ensure_future(
+        session.drag(page, uid_of(snapshot, "Card A"), uid_of(snapshot, "Done column"))
+    )
+    await _until(lambda: gate.reached.is_set())
+    drag_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await drag_task
+    gate.release()
+    sent_drags = [cmd.params for cmd in world.browser.of("Input.setInterceptDrags", mark)]
+    assert {"enabled": False} in sent_drags
+
+
+async def test_reconnect_to_same_browser_preserves_tab_ownership_and_prunes_closed_tabs(
+    session: BrowserSession, world: BrowserWorld
+) -> None:
+    await session.start()
+    page_a = await session.ensure_owner_page("team-a")
+    assert page_a is not None
+    await session.navigate(page_a, "url", ORDER)
+    page_b = await session.ensure_owner_page("team-b")
+    assert page_b is not None
+    await session.navigate(page_b, "url", TERMS)
+    page_c = await session.ensure_owner_page("team-c")
+    assert page_c is not None
+    await session.navigate(page_c, "url", SHOP)
+
+    # Simulate CDP drop while browser keeps running, C's tab closes, and Target.getTargets
+    # returns B's tab before A's tab upon reconnection.
+    world.browser.disconnect()
+    world.browser.pages.pop(page_c.target_id, None)
+    reordered = {
+        page_b.target_id: world.browser.pages[page_b.target_id],
+        page_a.target_id: world.browser.pages[page_a.target_id],
+    }
+    world.browser.pages = reordered
+
+    await session.start()
+    assert page_c.target_id not in session._tab_owners
+    assert "team-c" not in session._selected_by_owner
+
+    reconnected_a = await session.ensure_owner_page("team-a")
+    reconnected_b = await session.ensure_owner_page("team-b")
+    assert reconnected_a is not None and reconnected_a.target_id == page_a.target_id
+    assert reconnected_a.url == ORDER and reconnected_a.owner == "team-a"
+    assert reconnected_b is not None and reconnected_b.target_id == page_b.target_id
+    assert reconnected_b.url == TERMS and reconnected_b.owner == "team-b"
+
+
+async def test_switching_to_a_different_browser_resets_tab_ownership(
+    session: BrowserSession, world: BrowserWorld
+) -> None:
+    await session.start()
+    page_a = await session.ensure_owner_page("team-a")
+    assert page_a is not None
+    await session.navigate(page_a, "url", ORDER)
+
+    world.browser.disconnect()
+    world.settings(mode="attach")
+    await session.start()
+
+    assert "team-a" not in session._selected_by_owner
+    assert all(page.owner != "team-a" for page in session.pages())
+
+
+async def test_orphan_blob_worker_and_popup_receive_port_guards_before_resuming(
+    make_session: Any, world: BrowserWorld
+) -> None:
+    world.settings(mode="attach")
+    session = make_session(own_ports=lambda: {48911})
+    await session.start()
+    page = session.selected()
+    await session.navigate(page, "url", ORDER)
+    parent_sid = page.session_id
+    assert parent_sid is not None
+
+    # A hostile page navigates to a blob: URL and is removed from session._pages while
+    # its browser-side CDP session still has auto-attach active.
+    world.browser._emit(
+        "Target.targetInfoChanged",
+        {
+            "targetInfo": {
+                "targetId": page.target_id,
+                "type": "page",
+                "url": "blob:https://evil.example/0000-1111",
+                "title": "blob",
+            }
+        },
+    )
+    assert page.target_id not in session._pages
+
+    world.browser.other_targets.append(
+        {"targetId": "blob-worker-1", "type": "worker", "url": "blob:https://evil.example/w1", "title": ""}
+    )
+    world.browser._other_sessions["blob-worker-sid"] = "blob-worker-1"
+    world.browser.other_targets.append(
+        {"targetId": "blob-popup-1", "type": "page", "url": "about:blank", "title": ""}
+    )
+    world.browser._other_sessions["blob-popup-sid"] = "blob-popup-1"
+
+    mark = world.browser.mark()
+    world.browser._emit(
+        "Target.attachedToTarget",
+        {
+            "sessionId": "blob-worker-sid",
+            "targetInfo": {"targetId": "blob-worker-1", "type": "worker", "url": "blob:https://evil.example/w1"},
+            "waitingForDebugger": True,
+        },
+        parent_sid,
+    )
+    world.browser._emit(
+        "Target.attachedToTarget",
+        {
+            "sessionId": "blob-popup-sid",
+            "targetInfo": {
+                "targetId": "blob-popup-1",
+                "type": "page",
+                "url": "about:blank",
+                "openerId": page.target_id,
+            },
+            "waitingForDebugger": True,
+        },
+        parent_sid,
+    )
+    await _until(lambda: "blob-worker-1" in world.browser.resumed_targets and "blob-popup-1" in world.browser.resumed_targets)
+    await _until(lambda: not session._answers)
+    worker_cmds = [cmd.method for cmd in world.browser.since(mark) if cmd.session_id == "blob-worker-sid"]
+    assert worker_cmds.index("Runtime.evaluate") < worker_cmds.index("Runtime.runIfWaitingForDebugger")
+    assert worker_cmds.index("Target.setAutoAttach") < worker_cmds.index("Runtime.runIfWaitingForDebugger")
+    popup_cmds = [cmd.method for cmd in world.browser.since(mark) if cmd.session_id == "blob-popup-sid"]
+    assert popup_cmds.index("Fetch.enable") < popup_cmds.index("Runtime.runIfWaitingForDebugger")
+    assert popup_cmds.index("Page.addScriptToEvaluateOnNewDocument") < popup_cmds.index("Runtime.runIfWaitingForDebugger")
+    assert popup_cmds.index("Runtime.evaluate") < popup_cmds.index("Runtime.runIfWaitingForDebugger")
+    assert "blob-worker-1" not in world.browser.detached_from
+    assert "blob-popup-1" not in world.browser.detached_from
+
+
+async def test_popup_from_forgotten_opener_inherits_owner_from_tab_owners(
+    session: BrowserSession, world: BrowserWorld
+) -> None:
+    world.settings(mode="attach")
+    await session.start()
+    page_a = await session.ensure_owner_page("team-a")
+    assert page_a is not None and page_a.own is True
+    await session.navigate(page_a, "url", ORDER)
+
+    # Opener navigates to blob: and is temporarily dropped from session._pages while
+    # _tab_owners and _own_pages still record team-a's ownership.
+    world.browser._emit(
+        "Target.targetInfoChanged",
+        {
+            "targetInfo": {
+                "targetId": page_a.target_id,
+                "type": "page",
+                "url": "blob:https://shop.test/temp",
+                "title": "temp",
+            }
+        },
+    )
+    assert page_a.target_id not in session._pages
+
+    world.browser._emit(
+        "Target.targetCreated",
+        {
+            "targetInfo": {
+                "targetId": "popup-from-blob",
+                "type": "page",
+                "url": TERMS,
+                "title": "Terms",
+                "openerId": page_a.target_id,
+            }
+        },
+    )
+    popup = session._pages.get("popup-from-blob")
+    assert popup is not None and popup.owner == "team-a" and popup.own is True
+
+
+async def test_concurrent_close_page_on_last_two_tabs_keeps_one_open(
+    session: BrowserSession, world: BrowserWorld
+) -> None:
+    await session.start()
+    page_a = await session.ensure_owner_page("team-a")
+    page_b = await session.ensure_owner_page("team-b")
+    assert page_a is not None and page_b is not None
+    assert len(session.pages()) == 2
+
+    gate = world.browser.hold("Target.closeTarget")
+    close_a = asyncio.ensure_future(session.close_page(page_a.id, owner="team-a"))
+    try:
+        await asyncio.wait_for(gate.reached.wait(), 5.0)
+        with pytest.raises(BrowserError, match="last open page"):
+            await session.close_page(page_b.id, owner="team-b")
+    finally:
+        gate.release()
+        world.browser.gates.remove(gate)
+    await asyncio.wait_for(close_a, 5.0)
+    assert [p.target_id for p in session.pages()] == [page_b.target_id]
+
+
+async def test_install_port_guard_uses_run_immediately_and_guards_existing_same_origin_frames(
+    make_session: Any, world: BrowserWorld
+) -> None:
+    world.settings(mode="attach")
+    session = make_session(own_ports=lambda: {48911})
+    await session.start()
+    page = session.selected()
+    mark = world.browser.mark()
+    await session.navigate(page, "url", ORDER)
+    add_cmds = [cmd for cmd in world.browser.since(mark) if cmd.method == "Page.addScriptToEvaluateOnNewDocument"]
+    assert add_cmds and add_cmds[0].params.get("runImmediately") is True
+    assert "guardRealm(frames[i])" in str(add_cmds[0].params.get("source"))
+
+    # Also verify fallback to {"source": script} when an older CDP host rejects runImmediately.
+    seen_params: list[dict[str, Any]] = []
+    orig_send = session._connection.send
+
+    async def _reject_run_immediately(method: str, params: dict[str, Any] | None = None, **kwargs: Any) -> Any:
+        if method == "Page.addScriptToEvaluateOnNewDocument":
+            seen_params.append(dict(params or {}))
+            if (params or {}).get("runImmediately"):
+                raise CdpError(method, -32602, "Unknown parameter runImmediately")
+        return await orig_send(method, params, **kwargs)
+
+    session._connection.send = _reject_run_immediately  # type: ignore[method-assign]
+    ok = await session._install_port_guard(session._connection, page.session_id, on_new_document=True)
+    assert ok is True
+    assert len(seen_params) == 2
+    assert seen_params[0].get("runImmediately") is True
+    assert "runImmediately" not in seen_params[1]
+
+
+async def test_orphan_auto_attached_child_is_resumed_and_detached_when_no_ports_blocked(
+    make_session: Any, world: BrowserWorld
+) -> None:
+    world.settings(mode="attach")
+    session = make_session(own_ports=lambda: set())
+    await session.start()
+    page = session.selected()
+    await session.navigate(page, "url", ORDER)
+    parent_sid = page.session_id
+    assert parent_sid is not None
+
+    world.browser._emit(
+        "Target.targetInfoChanged",
+        {"targetInfo": {"targetId": page.target_id, "type": "page", "url": "file:///tmp/local.html", "title": "local"}},
+    )
+    assert page.target_id not in session._pages
+
+    world.browser.other_targets.append(
+        {"targetId": "orphan-popup-1", "type": "page", "url": "about:blank", "title": ""}
+    )
+    world.browser._other_sessions["orphan-popup-sid"] = "orphan-popup-1"
+
+    mark = world.browser.mark()
+    world.browser._emit(
+        "Target.attachedToTarget",
+        {
+            "sessionId": "orphan-popup-sid",
+            "targetInfo": {
+                "targetId": "orphan-popup-1",
+                "type": "page",
+                "url": "about:blank",
+                "openerId": page.target_id,
+            },
+            "waitingForDebugger": True,
+        },
+        parent_sid,
+    )
+    await _until(lambda: "orphan-popup-1" in world.browser.resumed_targets)
+    await _until(lambda: "orphan-popup-1" in world.browser.detached_from)
+    resumed_cmds = [cmd for cmd in world.browser.since(mark) if cmd.method == "Runtime.runIfWaitingForDebugger"]
+    assert any(cmd.session_id == "orphan-popup-sid" for cmd in resumed_cmds)
+    detach_cmds = [cmd for cmd in world.browser.since(mark) if cmd.method == "Target.detachFromTarget"]
+    assert any(cmd.params.get("sessionId") == "orphan-popup-sid" for cmd in detach_cmds)
