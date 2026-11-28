@@ -1687,3 +1687,44 @@ async def test_saving_the_browser_settings_reads_the_configuration_off_the_event
 
     # It reads files: on the event loop, a slow disk would hold up every other request meanwhile.
     assert len(asked_in) == 1 and asked_in[0] is not threading.current_thread()
+
+
+def test_agent_uvicorn_config_bounds_connection_drain_so_browser_kill_timer_fires_in_time() -> None:
+    import ast
+    from pathlib import Path
+
+    from config.nekopower_settings import (
+        AGENT_CONNECTION_DRAIN_SECONDS,
+        BROWSER_KILL_AT_SHUTDOWN_SECONDS,
+    )
+    from launcher_core.runtime import MERGED_SERVER_SHUTDOWN_TIMEOUTS
+
+    # Drain + last-resort browser kill timer must fit inside the launcher's Agent budget (8s).
+    assert 0 < AGENT_CONNECTION_DRAIN_SECONDS <= 2.0
+    assert AGENT_CONNECTION_DRAIN_SECONDS + BROWSER_KILL_AT_SHUTDOWN_SECONDS < MERGED_SERVER_SHUTDOWN_TIMEOUTS["Agent"]
+
+    root = Path(__file__).resolve().parents[2]
+    # Verify both multiprocess launcher and direct __main__ entry set timeout_graceful_shutdown.
+    for rel_path, func_name in (
+        ("launcher_core/runtime.py", "run_agent_server"),
+        ("app/agent_server/__main__.py", None),
+    ):
+        tree = ast.parse((root / rel_path).read_text(encoding="utf-8"))
+        scope: ast.AST = tree
+        if func_name is not None:
+            scope = next(
+                node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name == func_name
+            )
+        uvicorn_calls = [
+            node
+            for node in ast.walk(scope)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr in ("Config", "run")
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "uvicorn"
+        ]
+        assert uvicorn_calls, f"expected uvicorn call in {rel_path}"
+        for call in uvicorn_calls:
+            kw_names = {kw.arg for kw in call.keywords}
+            assert "timeout_graceful_shutdown" in kw_names, f"missing timeout_graceful_shutdown in {rel_path}"

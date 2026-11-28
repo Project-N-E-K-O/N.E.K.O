@@ -239,7 +239,6 @@ def test_desktop_workflows_do_not_force_cv2_or_shapely_into_nuitka() -> None:
     workflow_paths = [
         ROOT / ".github" / "workflows" / "build-desktop.yml",
         ROOT / ".github" / "workflows" / "build-desktop-linux.yml",
-        ROOT / "specs" / "launcher.spec",
     ]
 
     for workflow_path in workflow_paths:

@@ -13,6 +13,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel
+from utils.file_utils import atomic_write_json
 
 from plugin._types.models import RunCreateRequest
 from plugin.logging_config import get_logger
@@ -97,19 +98,6 @@ class InstallStartPayload(BaseModel):
     force: bool = False
 
 
-@router.get("/plugin/{plugin_id}/ui-api/locale")
-async def get_plugin_ui_locale(plugin_id: str) -> JSONResponse:
-    await _get_plugin_registration(plugin_id)
-    try:
-        from utils.language_utils import get_global_language_full
-
-        locale = _normalize_ui_locale(str(get_global_language_full()))
-    except Exception:
-        logger.warning("plugin ui locale detection failed; falling back to en", exc_info=True)
-        locale = "en"
-    return JSONResponse({"locale": locale})
-
-
 @router.get("/plugin/{plugin_id}/ui-api/i18n/ui/{locale}.json")
 async def get_plugin_ui_i18n(plugin_id: str, locale: str) -> Response:
     registration = await _get_plugin_registration(plugin_id)
@@ -180,27 +168,6 @@ def _read_ui_locale_payload(
     finally:
         if file_descriptor >= 0:
             os.close(file_descriptor)
-
-
-def _normalize_ui_locale(locale: str) -> str:
-    normalized = str(locale or "").strip().replace("_", "-").lower()
-    if normalized in {"zh-tw", "zh-hant", "zh-hk", "zh-mo"}:
-        return "zh-TW"
-    if normalized == "zh" or normalized.startswith("zh-"):
-        return "zh-CN"
-    if normalized.startswith("en"):
-        return "en"
-    if normalized.startswith("ja"):
-        return "ja"
-    if normalized.startswith("ru"):
-        return "ru"
-    if normalized.startswith("ko"):
-        return "ko"
-    if normalized.startswith("es"):
-        return "es"
-    if normalized.startswith("pt"):
-        return "pt"
-    return "zh-CN"
 
 
 def _get_install_kind_spec(
@@ -426,7 +393,13 @@ def _resolve_install_task_payload(
     label: str,
 ) -> dict[str, object]:
     task_id = (task_id or "").strip()
-    if not task_id or ".." in task_id or "/" in task_id or "\\" in task_id:
+    if (
+        not task_id
+        or ".." in task_id
+        or "/" in task_id
+        or "\\" in task_id
+        or task_id.lower() == "latest"
+    ):
         raise HTTPException(status_code=400, detail=f"Invalid {label} install task_id")
     state_payload = load_install_task_state(task_id, kind=kind, plugin_id=plugin_id)
 
@@ -1042,17 +1015,18 @@ def _read_tutorial_progress(
     plugin_id: str = "",
     registration: InstallPluginRegistration | None = None,
 ) -> dict[str, Any] | None:
-    store_path = _tutorial_store(plugin_id, registration)
-    if not store_path.is_file():
-        return None
-    try:
-        raw = json.loads(store_path.read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError):
-        return None
-    except Exception:
-        logger.warning("tutorial progress read failed", exc_info=True)
-        raise
-    return raw if isinstance(raw, dict) else None
+    with _tutorial_store_lock:
+        store_path = _tutorial_store(plugin_id, registration)
+        if not store_path.is_file():
+            return None
+        try:
+            raw = json.loads(store_path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError):
+            return None
+        except Exception:
+            logger.warning("tutorial progress read failed", exc_info=True)
+            raise
+        return raw if isinstance(raw, dict) else None
 
 
 def _write_tutorial_progress(
@@ -1060,18 +1034,63 @@ def _write_tutorial_progress(
     plugin_id: str = "",
     registration: InstallPluginRegistration | None = None,
 ) -> None:
-    store_path = _tutorial_store(plugin_id, registration)
-    store_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = store_path.with_suffix(store_path.suffix + ".tmp")
-    try:
-        tmp_path.write_text(
-            json.dumps(dict(progress), ensure_ascii=False, sort_keys=True, indent=2),
-            encoding="utf-8",
+    with _tutorial_store_lock:
+        store_path = _tutorial_store(plugin_id, registration)
+        try:
+            atomic_write_json(
+                store_path,
+                dict(progress),
+                ensure_ascii=False,
+                sort_keys=True,
+                indent=2,
+            )
+        except Exception:
+            logger.warning("tutorial progress write failed", exc_info=True)
+            raise
+
+
+class _TutorialReadError(Exception):
+    pass
+
+
+class _TutorialWriteError(Exception):
+    def __init__(self, current: dict[str, Any]) -> None:
+        super().__init__("tutorial progress write failed")
+        self.current = current
+
+
+def _save_tutorial_progress_sync(
+    plugin_id: str,
+    registration: InstallPluginRegistration | None,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    with _tutorial_store_lock:
+        try:
+            current = _normalize_tutorial_progress(
+                _read_tutorial_progress(plugin_id, registration)
+            )
+        except Exception as exc:
+            raise _TutorialReadError() from exc
+        normalized_payload = _normalize_tutorial_progress(payload)
+        current.update(
+            {
+                key: normalized_payload[key]
+                for key in payload
+                if key in _TUTORIAL_DEFAULTS
+            }
         )
-        tmp_path.replace(store_path)
-    except Exception:
-        logger.warning("tutorial progress write failed", exc_info=True)
-        raise
+        # Server-side consistency: completed_at only makes sense when completed=True.
+        # The "Reopen Setup Guide" reset path only sends {completed:False, skipped:False,
+        # last_step_index:0, started_at} and would otherwise leave a stale
+        # completed_at>0 stuck on the persisted state, contradicting completed=False
+        # for any reader that only inspects the timestamp.
+        if not current["completed"] and not current["skipped"]:
+            current["completed_at"] = _TUTORIAL_DEFAULTS["completed_at"]
+        try:
+            _write_tutorial_progress(current, plugin_id, registration)
+        except Exception as exc:
+            raise _TutorialWriteError(current) from exc
+        return current
 
 
 def _normalize_tutorial_progress(raw: dict[str, Any] | None) -> dict[str, Any]:
@@ -1125,41 +1144,28 @@ async def save_tutorial_progress(
     _ensure_tutorial_enabled(registration)
     payload = body.model_dump(exclude_unset=True)
     try:
-        current = _normalize_tutorial_progress(
-            await _run_blocking(_read_tutorial_progress, plugin_id, registration)
+        current = await _run_blocking(
+            _save_tutorial_progress_sync,
+            plugin_id,
+            registration,
+            payload,
         )
-    except Exception:
+    except _TutorialReadError:
         logger.error("tutorial progress save aborted after read failure", exc_info=True)
         return JSONResponse(
             {"ok": False, "error": "Internal server error", "progress": _normalize_tutorial_progress(None)},
             status_code=500,
         )
-    normalized_payload = _normalize_tutorial_progress(payload)
-    current.update(
-        {
-            key: normalized_payload[key]
-            for key in payload
-            if key in _TUTORIAL_DEFAULTS
-        }
-    )
-    # Server-side consistency: completed_at only makes sense when completed=True.
-    # The "Reopen Setup Guide" reset path only sends {completed:False, skipped:False,
-    # last_step_index:0, started_at} and would otherwise leave a stale
-    # completed_at>0 stuck on the persisted state, contradicting completed=False
-    # for any reader that only inspects the timestamp.
-    if not current["completed"] and not current["skipped"]:
-        current["completed_at"] = _TUTORIAL_DEFAULTS["completed_at"]
-    try:
-        await _run_blocking(
-            _write_tutorial_progress,
-            current,
-            plugin_id,
-            registration,
+    except _TutorialWriteError as exc:
+        logger.warning("tutorial progress save failed", exc_info=True)
+        return JSONResponse(
+            {"ok": False, "error": "Internal server error", "progress": exc.current},
+            status_code=500,
         )
     except Exception:
         logger.warning("tutorial progress save failed", exc_info=True)
         return JSONResponse(
-            {"ok": False, "error": "Internal server error", "progress": current},
+            {"ok": False, "error": "Internal server error", "progress": _normalize_tutorial_progress(None)},
             status_code=500,
         )
     return JSONResponse({"ok": True, "progress": current})

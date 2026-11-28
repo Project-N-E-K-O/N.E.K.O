@@ -36,6 +36,10 @@ Whoever embeds the host supplies what it cannot know by itself, all optional:
   status (a ``Ledger.subscribe`` listener), for a display of the tasks;
 * ``on_builtin_activity`` - told when a commission begins and stops occupying
   the desktop or the browser (``leases.py``), for the banner that shows it;
+* ``capability_enabler`` - turns on the browser, the keyboard and mouse or the
+  plugins when a task agent that found one switched off asked the user to and
+  was allowed (``CapabilityEnabler`` of ``gateway.py``); without it a task agent
+  is not told it may ask;
 * ``send_report`` - delivers an outbox row to the main server. Without it
   reports are stored and wait. Reports an earlier run left unsent go out
   from the first call that does work.
@@ -80,6 +84,7 @@ from nekopower.host.reports import CHANNEL_PLUGIN, CHANNEL_TASK_AGENT, Reporter
 from nekopower.host.short_descriptions import ShortDescriptions
 from nekopower.host.space import TaskAgentSpace
 from nekopower.host.space_keeper import SpaceKeeper
+from nekopower.host.storage import StorageManager
 from nekopower.host.task_brain import ProgressListener, QueryAnswer, Receipt, TaskBrain, TurnCheck
 from nekopower.host.usage_limit import UsageLimitStore
 from nekopower.host.wakes import SessionWakes
@@ -161,6 +166,7 @@ class NekoPowerHost:
         dsh_runtime_factory: Any = None,
         conversation: Any = None,
         model_slots: Any = None,
+        capability_enabler: Any = None,
     ) -> None:
         self.paths = HostPaths(root)
         # What she and the user said lately, from which a commission that
@@ -221,6 +227,7 @@ class NekoPowerHost:
             permissions=self.permissions,
             ledger=self.ledger,
             leases=self.leases,
+            capability_enabler=capability_enabler,
         )
         self.task_agents = TaskAgentManager(
             ledger=self.ledger,
@@ -253,6 +260,12 @@ class NekoPowerHost:
         # asked, where the user set a number of their own (``usage_limit.py``).
         self.usage_limit_store = UsageLimitStore(self.paths.usage_limit_json)
         self.task_agents.usage_limit_of = self.usage_limit_store.get
+        self.space.set_workdir_guard(
+            self.task_agents.is_workdir_clearing,
+            self.task_agents.wait_workdir_clear,
+            any_clearing=self.task_agents.any_workdir_clearing,
+            veto_clear=self.task_agents.veto_workdir_clear,
+        )
         # Hands sessions what waits for them: a note another session wrote,
         # a time a task agent set for itself. Started by the first call that
         # does work, never at startup.
@@ -261,6 +274,19 @@ class NekoPowerHost:
         # A note that is on record is handed over whether or not whoever
         # wrote it is still there to say that it wrote one.
         self.ledger.subscribe_notes(self.wakes.kick)
+        # Held while a task agent is made for the user (the name is looked for and taken in one go)
+        # and while where a project works is changed (its sessions and its record are written as one).
+        self._project_lock = asyncio.Lock()
+        # Disk space inspection, retention settings, and cleanup for host-owned directories.
+        self.storage = StorageManager(
+            paths=self.paths,
+            ledger=self.ledger,
+            space=self.space,
+            task_agents=self.task_agents,
+            project_lock=self._project_lock,
+            project_busy=self._project_busy,
+            places=self.places,
+        )
         # Reviews of finished commissions and the tidying of the space, in
         # the background; started by a commission ending, never at startup.
         self.space_keeper = SpaceKeeper(
@@ -273,7 +299,10 @@ class NekoPowerHost:
             hold_files=self.task_agents.hold_files,
             release_files=self.task_agents.release_files,
             forget_dsh_session=self.dsh.forget_session,
+            reap_work_dirs=self.storage.reap_work_dirs,
+            reap_worktrees=self.storage.reap_worktrees,
         )
+        self.storage.attach_space_keeper(self.space_keeper)
         self.ledger.subscribe(self.space_keeper.watch)
         # The presets sessions are opened by, and the board of sessions a
         # page shows: both read when they are asked for.
@@ -303,7 +332,7 @@ class NekoPowerHost:
             self.task_agents.set_beside_judge(beside)
         # Where a new commission belongs, when its words neither name nor
         # clearly match what is there: one request of the small model.
-        belongs = getattr(decision, "belongs", None)
+        belongs = getattr(decision, "belongs_counted", None) or getattr(decision, "belongs", None)
         if belongs is not None:
             self.task_agents.set_orchestrator_judge(belongs)
         self.brain = TaskBrain(
@@ -321,9 +350,6 @@ class NekoPowerHost:
         )
         # Set when shutting down starts; the task finishes when it is done.
         self._shut_down = False
-        # Held while a task agent is made for the user (the name is looked for and taken in one go)
-        # and while where a project works is changed (its sessions and its record are written as one).
-        self._project_lock = asyncio.Lock()
         # Changes of where a project works that are under way: kept so that they are carried through.
         self._changes: set[asyncio.Future[Any]] = set()
         # Held while a page's settings of a model are written: one request's going back does not undo another's.
@@ -616,8 +642,9 @@ class NekoPowerHost:
         ``templates(None)`` lists them; never a copy's, which has no
         setting) is ``{"preset", "label", "source", "valid", "setting",
         "default", "can_inherit", "in_effect"}``: ``setting`` is a slot's
-        id, ``"inherit"`` or None (its default); ``default`` is ``"agent"``
-        or ``"inherit"``, as its template says; ``can_inherit`` whether it
+        id, ``"inherit"`` or None (its default); ``default`` is ``"agent"``,
+        ``"advanced"`` (the advanced task agent model of the main app) or
+        ``"inherit"``, as its template says; ``can_inherit`` whether it
         can be set to the model of the session that starts it;
         ``in_effect`` is what a new session of it is sent to now
         (``RoleModels.describe``), with why its setting could not be used.
@@ -1627,6 +1654,25 @@ class NekoPowerHost:
         await self.task_agents.settle_model(session)
         return {"session_id": session.id, "seat": session.seat}
 
+    async def change_duty(self, session_id: str, preset: str) -> dict[str, Any]:
+        """Change what kind of task agent a session is, as the user asks: its preset.
+
+        For a member of a project and a session of one commission, to
+        any preset of ``templates()`` that is valid but the leader's (a
+        project gets its leader with ``derive_leader``). What it may do
+        and what it is told of its role are the new preset's from its
+        next start; a run under way goes on as it was opened
+        (``at_work`` in the answer). To a preset that can change files
+        nobody is asked: it is the user who says so. The model it is
+        sent to is the new preset's from its next start. See
+        ``TaskAgentManager.change_duty`` for what is returned and raised.
+        """
+        self._first_use()
+        # With the lock a project's members are made under: where a member that changes
+        # files works is told from the others, and none is added between the look and the write.
+        async with self._project_lock:
+            return await self.task_agents.change_duty(session_id, preset, by="user")
+
     async def worktrees(self, project: str | None = None, lanlan_name: str | None = None) -> list[dict[str, Any]]:
         """Return the git worktrees task agents work in, or left for the user to decide on, the oldest first.
 
@@ -1862,7 +1908,50 @@ class NekoPowerHost:
             {"key": "space", "path": str(self.paths.space().root)},
             {"key": "dsh", "path": str(self.paths.dsh())},
             {"key": "browser_profile", "path": str(root / "browser_profile")},
+            {"key": "worktrees", "path": str(self.paths.worktrees_dir())},
         ]
+
+    # -- disk space management --------------------------------------------
+
+    async def storage_overview(self) -> dict[str, Any]:
+        """Return a disk space breakdown, cleanable worktrees and working dirs, and retention settings."""
+        return await self.storage.overview()
+
+    async def storage_settings(self) -> dict[str, Any]:
+        """Return automatic cleanup settings with defaults and bounds."""
+        return await self.storage.settings.describe()
+
+    async def set_storage_settings(
+        self,
+        *,
+        auto_clean_work_dirs: Any = None,
+        work_dir_kept_days: Any = None,
+        auto_clean_worktrees: Any = None,
+        worktree_kept_days: Any = None,
+    ) -> dict[str, Any]:
+        """Persist updated automatic cleanup settings and return them as they stand."""
+        return await self.storage.settings.put(
+            auto_clean_work_dirs=auto_clean_work_dirs,
+            work_dir_kept_days=work_dir_kept_days,
+            auto_clean_worktrees=auto_clean_worktrees,
+            worktree_kept_days=worktree_kept_days,
+        )
+
+    async def clean_work_dirs(self, ids: list[str]) -> dict[str, Any]:
+        """Clean the specified host-owned ``work/`` directories, refusing any that are in use."""
+        return await self.storage.clean_work_dirs(ids)
+
+    async def clean_worktrees(self, ids: list[str]) -> dict[str, Any]:
+        """Clean tracked left-over worktrees, retry ``discarding`` ones, or remove orphans."""
+        return await self.storage.clean_worktrees(ids)
+
+    async def clean_transcripts(self, mode: str = "expired") -> dict[str, Any]:
+        """Clean expired session transcripts (``expired``) or inactive tool output caches (``outputs``)."""
+        return await self.storage.clean_transcripts(mode)
+
+    async def resolve_storage_open_path(self, kind: str, item_id: str) -> Path:
+        """Resolve a storage item id to a directory path that may be opened in the file manager."""
+        return await self.storage.resolve_open_path(kind, item_id)
 
     # -- upkeep -----------------------------------------------------------
 

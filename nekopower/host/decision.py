@@ -207,6 +207,10 @@ class Triage:
     # tell which (it is asked whatever is said), and she is told the buttons
     # on each question can.
     by_buttons: bool = False
+    # For "stop" of the items it names ("these") while more of their
+    # project's, familiar's or plugin's work was left out of the list: those
+    # commission ids, which are not stopped. The receipt says they go on.
+    left_running: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -296,10 +300,8 @@ class ConfiguredDecisionLLM:
     def __init__(self) -> None:
         self._clients: dict[tuple[Any, ...], Any] = {}
 
-    async def _client(self, tier: str, budget: int) -> Any:
-        from utils.config_manager import get_config_manager
-        from utils.llm_client import create_chat_llm_async
-
+    @staticmethod
+    def _slot(tier: str) -> str:
         from config.nekopower_settings import (
             UNDER_WAY_READ_MODEL_SLOT,
             ORCHESTRATOR_MODEL_SLOT,
@@ -311,7 +313,7 @@ class ConfiguredDecisionLLM:
 
         # The tiers of the task agent space say in the settings which model
         # they use, so that it is changed there and nowhere else.
-        slot = {
+        return {
             TIER_REVIEW: TASK_AGENT_REVIEW_MODEL_SLOT,
             TIER_ARCHIVE: SPACE_ARCHIVE_MODEL_SLOT,
             TIER_CONSOLIDATE: SPACE_CONSOLIDATE_MODEL_SLOT,
@@ -320,10 +322,53 @@ class ConfiguredDecisionLLM:
             TIER_UNDER_WAY: UNDER_WAY_READ_MODEL_SLOT,
             TIER_ANSWER_CHOICE: UNDER_WAY_READ_MODEL_SLOT,
         }.get(tier, "summary" if tier in _SUMMARY_TIERS else "emotion")
+
+    async def decide(
+        self, tier: str, site: str, *, state: str, questions: dict[str, Any], rehost: bool = True,
+    ) -> dict[str, Any] | None:
+        """Ask a site's decision questions on the route the user's vendor allows; None to use the chat prompt.
+
+        The vendor is the decision slot's (native decision) or the chat model
+        of *tier*'s slot (rehost); see :func:`utils.decision_client.ask_site_questions`.
+        """
+        from utils.config_manager import get_config_manager
+        from utils.decision_client import ask_site_questions, site_question_would_send
+
+        from config.nekopower_settings import DECISION_QUESTION_TIMEOUT_SECONDS
+
+        manager = get_config_manager(migrate=False)
+        chat_config = await asyncio.to_thread(manager.get_model_api_config, self._slot(tier))
+        decision_config = await asyncio.to_thread(manager.get_model_api_config, "decision")
+        if not site_question_would_send(site, decision_config=decision_config, chat_config=chat_config, rehost=rehost):
+            # Nothing is sent (the site's chat route, or the native endpoint
+            # in its cooldown after an error): the chat prompt is the only request.
+            return None
+        answers = await ask_site_questions(
+            site,
+            state=state,
+            questions=questions,
+            chat_config=chat_config,
+            decision_config=decision_config,
+            config_manager=manager,
+            rehost=rehost,
+            timeout=DECISION_QUESTION_TIMEOUT_SECONDS,
+            call_type=_CALL_TYPES.get(tier, "agent"),
+        )
+        # Sent but missed (an error, a timeout, no probabilities): empty, so a
+        # caller can count the request it made.
+        return answers if answers is not None else {}
+
+    async def _client(self, tier: str, budget: int) -> Any:
+        from utils.config_manager import get_config_manager
+        from utils.llm_client import create_chat_llm_async
+
+        slot = self._slot(tier)
         config = await asyncio.to_thread(get_config_manager(migrate=False).get_model_api_config, slot)
         key = (slot, config.get("api_key"), config.get("base_url"), config.get("model"), config.get("provider_type"), budget)
         client = self._clients.get(key)
         if client is None:
+            from utils.http.pool_utils import DEFAULT_HTTP_KEEPALIVE_EXPIRY_SECONDS
+
             # Built off the event loop: the first client of a provider loads its SDK.
             client = await create_chat_llm_async(
                 model=config["model"],
@@ -332,6 +377,7 @@ class ConfiguredDecisionLLM:
                 max_completion_tokens=budget,
                 max_retries=0,
                 timeout=120.0,
+                keepalive_expiry=DEFAULT_HTTP_KEEPALIVE_EXPIRY_SECONDS,
                 provider_type=config.get("provider_type"),
             )
             self._clients[key] = client
@@ -411,6 +457,7 @@ class _Cues:
             cls._loaded = {
                 "generic": _patterns(texts.GENERIC_WORD_PATTERNS),
                 "supplement": _patterns(texts.SUPPLEMENT_CUE_PATTERNS),
+                "stop_words": _patterns(texts.UNDER_WAY_STOP_WORD_PATTERNS),
                 "capability_question": _patterns(texts.CAPABILITY_QUESTION_PATTERNS),
             }
         return cls._loaded[name]
@@ -469,67 +516,147 @@ ANSWER_CHOICES = ("always", "session", "once", "deny")
 _UNDER_WAY, _ASKED, _ENDED = "under_way", "asked", "ended"
 
 
+def quote_data(text: str) -> str:
+    """Return words the host did not write as the reading shows them: a JSON string.
+
+    Titles, projects, commands, paths, questions and what work ended with
+    are written by task agents, the user or her. Quoted, with the quotes and
+    line breaks within escaped, nothing written in them can end the quote,
+    start an item of its own or pass for the host's words; the prompt says
+    what is quoted is what the request is sorted by, never instructions.
+    Every line break ``str.splitlines`` knows is escaped: JSON leaves NEL,
+    the line separator and the paragraph separator as they are.
+    """
+    quoted = json.dumps(text, ensure_ascii=False)
+    for char in _LINE_BREAKS_JSON_KEEPS:
+        quoted = quoted.replace(char, f"\\u{ord(char):04x}")
+    return quoted
+
+
+# Line breaks to ``str.splitlines`` (and to many a tokenizer and model) that
+# ``json.dumps(..., ensure_ascii=False)`` leaves unescaped: NEL, LINE
+# SEPARATOR, PARAGRAPH SEPARATOR.
+_LINE_BREAKS_JSON_KEEPS = ("\x85", "\u2028", "\u2029")
+
+
+def _cut(line: str, max_tokens: int) -> str:
+    """Return a line of the reading cut to ``max_tokens``, a quote it cuts into closed again (``…"``)."""
+    from utils.tokenize import count_tokens, truncate_to_tokens
+
+    if count_tokens(line) <= max_tokens:
+        return line
+    # Room for what closes the quote, as the counter in use counts it (the
+    # bytes of it where there is no tokenizer); and the whole counted again,
+    # as what is put together may count otherwise than its parts.
+    room = max(1, max_tokens - count_tokens('…"'))
+    for _ in range(4):
+        cut = _closed(truncate_to_tokens(line, room))
+        over = count_tokens(cut) - max_tokens
+        if over <= 0:
+            break
+        room = max(1, room - over)
+    return cut
+
+
+def _closed(cut: str) -> str:
+    """Return the start of a line of the reading with a quote it ends within closed again (``…"``)."""
+    within = False
+    index = 0
+    while index < len(cut):
+        if within and cut[index] == "\\":
+            # An escape is kept whole or not at all (``\"``, ``\n``, ``\u0007``).
+            length = 6 if cut[index + 1 : index + 2] == "u" else 2
+            if index + length > len(cut):
+                cut = cut[:index]
+                break
+            index += length
+            continue
+        if cut[index] == '"':
+            within = not within
+        index += 1
+    return f'{cut}…"' if within else cut
+
+
 def _asked(commission: Commission) -> tuple[str, str]:
     """Return what a waiting commission asks, as the reading is shown it: the kind, and the question.
 
     A request for approval says what is to be allowed with the answers on
     offer (``describe_permission``, in English; the command or the path the
-    user decides by stays as it was written).
+    user decides by stays as it was written). The question is quoted
+    (``quote_data``) and fits ``UNDER_WAY_READ_QUESTION_MAX_TOKENS`` quoted:
+    what its escapes add is taken from what is shown of it (the command or
+    the path gives way first, the answers on offer stay while they fit).
     """
     from config.nekopower_settings import UNDER_WAY_READ_QUESTION_MAX_TOKENS
     from config.prompts.prompts_nekopower_brain import QUESTION_TEXTS
     from config.prompts.prompts_sys import _loc
     from nekopower.host.reports import _question_lines, describe_permission
-    from utils.tokenize import truncate_to_tokens
+    from utils.tokenize import count_tokens, truncate_to_tokens
 
     question = commission.question() or {}
     kind = question.get("kind")
-    if kind == "permission":
-        asked = describe_permission(question, "en", max_tokens=UNDER_WAY_READ_QUESTION_MAX_TOKENS)
-    elif kind == "questions":
-        asked = _question_lines(question.get("questions"), _loc(QUESTION_TEXTS, "en"))
+    if kind == "questions":
+        whole = _question_lines(question.get("questions"), _loc(QUESTION_TEXTS, "en"))
     else:
         parts = (str(question.get("question") or "").strip(), str(question.get("details") or "").strip())
-        asked = " ".join(part for part in parts if part)
+        whole = " ".join(part for part in parts if part)
+
+    def quoted(room: int) -> str:
+        if kind == "permission":
+            return quote_data(truncate_to_tokens(describe_permission(question, "en", max_tokens=room), room))
+        return quote_data(truncate_to_tokens(whole, room))
+
+    limit = UNDER_WAY_READ_QUESTION_MAX_TOKENS
+    # The two quotes, then what the escapes add: what is shown gives way
+    # until it fits (it shrinks each time, so this ends).
+    room = limit - 2
+    asked = quoted(room)
+    while count_tokens(asked) > limit and room > 1:
+        room = max(1, room - (count_tokens(asked) - limit))
+        asked = quoted(room)
     shown = kind if kind in ("permission", "confirmation") else "question"
-    return shown, truncate_to_tokens(asked, UNDER_WAY_READ_QUESTION_MAX_TOKENS)
+    return shown, asked
 
 
 def _item_line(number: int, commission: Commission, request: DecisionRequest, *, within: Commission | None = None) -> str:
-    """Return one item of the reading: where it stands, what it is, its project, who is on it, and what it asks."""
+    """Return one item of the reading: where it stands, what it is, its project, who is on it, and what it asks.
+
+    What the host did not write is quoted (``quote_data``); what the user calls
+    a familiar quotes its card's title already (``TaskBrain._familiars``).
+    """
     from config.nekopower_settings import UNDER_WAY_READ_LINE_MAX_TOKENS
     from config.prompts.prompts_nekopower_brain import UNDER_WAY_QUESTION_KINDS, UNDER_WAY_STATUS_WORDS
-    from utils.tokenize import truncate_to_tokens
 
     def status(item: Commission) -> str:
         return UNDER_WAY_STATUS_WORDS.get(item.status, item.status)
 
     about: list[str] = []
     if commission.project:
-        about.append(f'project "{commission.project}"')
+        about.append(f"project {quote_data(commission.project)}")
     if commission.route == "plugin" and commission.plugin_id:
-        about.append(f"by the plugin {commission.plugin_id}")
+        about.append(f"by the plugin {quote_data(commission.plugin_id)}")
     elif request.familiars.get(commission.session_id or ""):
         about.append(f"by {request.familiars[commission.session_id or '']}")
     if request.familiars.get(commission.handed_by or ""):
         about.append(f"handed on by {request.familiars[commission.handed_by or '']}")
     if within is not None:
-        about.append(f'within "{within.title}"')
-    line = f'{number}. [{status(commission)}] "{commission.title}"'
+        about.append(f"within {quote_data(within.title)}")
+    line = f"{number}. [{status(commission)}] {quote_data(commission.title)}"
     if about:
         line += f" ({'; '.join(about)})"
     members = [item for item in request.children if item.parent_id == commission.id]
 
     def member(item: Commission) -> str:
         familiar = request.familiars.get(item.session_id or "")
-        return f'"{item.title}" ({status(item)}; by {familiar})' if familiar else f'"{item.title}" ({status(item)})'
+        said = f"{status(item)}; by {familiar}" if familiar else status(item)
+        return f"{quote_data(item.title)} ({said})"
 
     if members:
         line += "; its members: " + ", ".join(member(item) for item in members)
     ended = commission.result_summary or (commission.status_reason if commission.status == "failed" else "")
     if commission.status not in ACTIVE_STATUSES and ended:
-        line += f"; it ended with: {ended}"
-    line = truncate_to_tokens(line, UNDER_WAY_READ_LINE_MAX_TOKENS)
+        line += f"; it ended with: {quote_data(ended)}"
+    line = _cut(line, UNDER_WAY_READ_LINE_MAX_TOKENS)
     if commission.status == "waiting_user" and commission.question():
         kind, asked = _asked(commission)
         line += f"; it waits for the user, {UNDER_WAY_QUESTION_KINDS[kind]}: {asked}"
@@ -629,17 +756,36 @@ def _said(label: str, spoken: str) -> bool:
 
 
 def _joins(char: str) -> bool:
-    """Whether a character next to a word makes it part of a longer one: a letter or digit of writing with spaces between words."""
-    # (The start or the end of what was said, empty, is no letter.)
-    return char.isalnum() and not _unspaced(char)
+    """Whether a character next to a word makes it part of a longer one.
+
+    A letter or digit of writing with spaces between words, or a mark that
+    combines with the letter before it (an accent NFC has no single letter
+    for, a vowel sign of Devanagari). Not a mark that only says how a
+    character is drawn: a variation selector (the Mongolian ones too), or
+    an enclosing one like the keycap of "1" in an emoji (the option "1" is
+    said in it).
+    """
+    import unicodedata
+
+    if not char:
+        # The start or the end of what was said.
+        return False
+    mark = unicodedata.category(char) in ("Mn", "Mc") and "VARIATION SELECTOR" not in unicodedata.name(char, "")
+    return (char.isalnum() or mark) and not _unspaced(char)
 
 
 def _unspaced(char: str) -> bool:
-    """Whether a character is of writing with no spaces between its words (Chinese, Japanese, Korean)."""
+    """Whether a character is of writing with no spaces between its words.
+
+    Chinese, Japanese and Korean, and Thai, Lao, Khmer and Burmese.
+    """
     import unicodedata
 
     return unicodedata.name(char, "").startswith(
-        ("CJK", "HIRAGANA", "KATAKANA", "HALFWIDTH KATAKANA", "IDEOGRAPHIC", "HANGUL", "HALFWIDTH HANGUL")
+        (
+            "CJK", "HIRAGANA", "KATAKANA", "HALFWIDTH KATAKANA", "IDEOGRAPHIC", "HANGUL", "HALFWIDTH HANGUL",
+            "BOPOMOFO", "THAI", "LAO", "KHMER", "MYANMAR",
+        )
     )
 
 
@@ -650,6 +796,58 @@ def _kin(one: Commission, other: Commission) -> bool:
         or (one.session_id and one.session_id == other.session_id)
         or (one.plugin_id and one.plugin_id == other.plugin_id)
     )
+
+
+def _words_name(request: DecisionRequest, items: Sequence[Commission]) -> bool:
+    """Whether the sentence shares a word with what tells each of these items apart.
+
+    What each is (its title and the words it was asked with), its project,
+    the familiar on it or that handed it on, its plugin, what it asks as the
+    list shows it (``_asked``), and the same of its members. Of the sentence,
+    words every request has (``orchestrator.content_tokens``) and words a
+    stop says without naming anything (stop, all, the work in progress:
+    ``UNDER_WAY_STOP_WORD_PATTERNS``) are left out. Each item must share a
+    word: one the model picked beside one the sentence names is not named
+    (owner's automatic review). Read where the list was cut only: a stop the
+    model says is named, of items whose words the sentence does not share,
+    is asked about (``read_under_way``).
+    """
+    from nekopower.host.orchestrator import content_tokens
+
+    said = content_tokens(strip_cues("stop_words", request.match_text))
+    if not said:
+        return False
+    plugins = {str(plugin.get("id") or ""): plugin for plugin in request.plugins}
+
+    def words(item: Commission) -> list[str]:
+        # (A plugin's id as it is and in words: "weather_lookup" is said
+        # either way. Greptile, third round.)
+        plugin_id = item.plugin_id or ""
+        found = [commission_text(item), item.project or "", plugin_id, re.sub(r"[_.\-]+", " ", plugin_id)]
+        found += [request.familiars.get(session or "", "") for session in (item.session_id, item.handed_by)]
+        plugin = plugins.get(item.plugin_id or "") or {}
+        found.append(str(plugin.get("name") or ""))
+        keywords = plugin.get("keywords")
+        if isinstance(keywords, list):
+            found += [str(keyword) for keyword in keywords]
+        if item.question():
+            # As the list shows it (``_asked``): the command or path a request
+            # for approval asks about, each question one put together asks
+            # and the answers they offer, a report's details (Greptile, first
+            # round: "stop the npm install one"). Unquoted first: a line break
+            # quoted is "\n", which would join the word after it (CodeRabbit,
+            # second round).
+            found.append(json.loads(_asked(item)[1]))
+        return found
+
+    for item in items:
+        texts = words(item)
+        for member in request.children:
+            if member.parent_id == item.id:
+                texts += words(member)
+        if not said & content_tokens(" ".join(text for text in texts if text)):
+            return False
+    return True
 
 
 def _numbers(value: Any, count: int) -> list[int]:
@@ -793,11 +991,96 @@ def _count(name: str, **dims: Any) -> None:
 # ---------------------------------------------------------------------------
 
 
+# Readings of the decision questions (owner decisions D16, D19, D28).
+# A plugin of the coarse screen is kept when its choice probability reaches this.
+COARSE_SCREEN_DECISION_THRESHOLD = 0.05
+# P(look) at or above this makes a commission a side question.
+SIDE_QUESTION_LOOK_THRESHOLD = 0.5
+# Where a commission belongs: a candidate is chosen when its two options hold at
+# least this much and more than "none"; it is the next round of a recurring job
+# when that option holds at least this share of the candidate's.
+BELONGS_ATTACH_THRESHOLD = 0.3
+BELONGS_RECURRENCE_SHARE = 0.4
+# The turn check's second look scales the probability of "nothing to act on" by
+# this before the verdicts are compared.
+TURN_CHECK_NONE_WEIGHT = 0.75
+
+
+def _option_probabilities(answer: Any) -> dict[str, float]:
+    """An answer's option probabilities; empty without them (a bare choice is not read)."""
+    probs: dict[str, float] = {}
+    for key, value in (getattr(answer, "probabilities", None) or {}).items():
+        try:
+            probs[str(key)] = float(value)
+        except (TypeError, ValueError):
+            continue
+    return probs
+
+
+def _candidate_count(request_text: str) -> int:
+    """How many numbered candidates follow ``CANDIDATES:`` in an orchestrator request."""
+    lines = (request_text or "").splitlines()
+    try:
+        start = lines.index("CANDIDATES:")
+    except ValueError:
+        return 0
+    count = 0
+    for line in lines[start + 1:]:
+        if line.startswith(f"{count + 1}. "):
+            count += 1
+    return count
+
+
+def belongs_answer_from(answer: Any, candidates: int) -> str | None:
+    """The orchestrator's JSON answer (``goes_to``, ``relation``) read off a decision answer, or None."""
+    probs = _option_probabilities(answer)
+    if not probs or candidates < 1:
+        return None
+    mass = {k: probs.get(f"c{k}_follow_up", 0.0) + probs.get(f"c{k}_recurrence", 0.0) for k in range(1, candidates + 1)}
+    best = max(mass, key=lambda k: mass[k])
+    if mass[best] < BELONGS_ATTACH_THRESHOLD or mass[best] <= probs.get("none", 0.0):
+        return json.dumps({"goes_to": 0, "relation": "new"})
+    share = probs.get(f"c{best}_recurrence", 0.0) / mass[best] if mass[best] > 0 else 0.0
+    relation = "recurrence" if share >= BELONGS_RECURRENCE_SHARE else "follow_up"
+    return json.dumps({"goes_to": best, "relation": relation})
+
+
+def turn_verdict_from(answer: Any) -> str | None:
+    """The turn check verdict the second look gives, or None without probabilities."""
+    from config.prompts.prompts_nekopower_brain import TURN_CHECK_DECISION_VERDICT_OF, TURN_CHECK_VERDICTS
+
+    probs = _option_probabilities(answer)
+    if not probs:
+        return None
+    mass = {verdict: 0.0 for verdict in TURN_CHECK_VERDICTS}
+    for option, p in probs.items():
+        verdict = TURN_CHECK_DECISION_VERDICT_OF.get(option)
+        if verdict is not None:
+            mass[verdict] += p
+    mass["none"] *= TURN_CHECK_NONE_WEIGHT
+    return max(TURN_CHECK_VERDICTS, key=lambda verdict: mass[verdict])
+
+
 class LexicalDecisionModel:
     """Keyword patterns, BM25, the small-model coarse screen and one fine selection."""
 
     def __init__(self, llm: DecisionLLM) -> None:
         self._llm = llm
+
+    async def _decided(
+        self, tier: str, site: str, state: str, questions: dict[str, Any], *, rehost: bool,
+    ) -> dict[str, Any] | None:
+        """Answers to a site's decision questions (D26): None when none were sent, empty when sent and missed."""
+        decide = getattr(self._llm, "decide", None)
+        if decide is None:
+            return None
+        try:
+            return await decide(tier, site, state=state, questions=questions, rehost=rehost)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - the chat prompt is asked instead
+            logger.info("decision question for %s skipped: %s", site, type(exc).__name__)
+            return {}  # may have been sent: counted as a request that missed
 
     async def side_question(self, dispatch_text: str, user_text: str, waiting_for: str = "") -> bool | None:
         """Say whether a commission is a side question: answered by looking, with nothing changed. None when it cannot be told.
@@ -819,6 +1102,29 @@ class LexicalDecisionModel:
             # what was said since stands) may well be work: not told, and
             # it waits for the session, with no request made.
             return None
+        # On a decision model, or rehosted on a chat model that returns token
+        # probabilities: what kind of request it is, side question = P(look).
+        from config.prompts.prompts_nekopower_brain import (
+            SIDE_QUESTION_DECISION_INSTRUCTIONS,
+            SIDE_QUESTION_DECISION_OPTIONS,
+            SIDE_QUESTION_DECISION_PENDING,
+        )
+        from utils.decision_client import ChoiceQuestion
+        from utils.decision_client.routing import SITE_SIDE_QUESTION
+
+        options = dict(SIDE_QUESTION_DECISION_OPTIONS)
+        if waiting_for.strip():
+            options["pending"] = SIDE_QUESTION_DECISION_PENDING
+        answers = await self._decided(
+            TIER_SIDE_QUESTION,
+            SITE_SIDE_QUESTION,
+            build_side_question_request(task=dispatch_text, user_said=user_text, waiting_for=waiting_for),
+            {"kind": ChoiceQuestion(instructions=SIDE_QUESTION_DECISION_INSTRUCTIONS, criteria=options)},
+            rehost=True,
+        )
+        kinds = _option_probabilities((answers or {}).get("kind"))
+        if kinds:
+            return kinds.get("look", 0.0) >= SIDE_QUESTION_LOOK_THRESHOLD
         messages = [
             {"role": "system", "content": TASK_BRAIN_SIDE_QUESTION_PROMPT},
             {
@@ -885,15 +1191,76 @@ class LexicalDecisionModel:
         verdict = decision.get("goes_on") if decision is not None else None
         return verdict if isinstance(verdict, bool) else None
 
-    async def belongs(self, messages: list[dict[str, Any]]) -> str | None:
+    async def _belongs_decided(
+        self, messages: list[dict[str, Any]], candidates: int | None = None,
+    ) -> tuple[str | None, bool]:
+        """Where a commission belongs, as one single choice on a native decision model, and whether it was sent.
+
+        The answer is None to ask the chat prompt.
+
+        The options are none, and each candidate either followed up or done
+        again as the next round of a recurring job. Vendors without a native
+        decision model keep the chat prompt (D27).
+        """
+        from config.prompts.prompts_nekopower_brain import (
+            ORCHESTRATOR_DECISION_FOLLOW_UP,
+            ORCHESTRATOR_DECISION_NONE,
+            ORCHESTRATOR_DECISION_RECURRENCE,
+            ORCHESTRATOR_DECISION_TAIL,
+            ORCHESTRATOR_PROMPT,
+        )
+        from utils.decision_client import ChoiceQuestion
+        from utils.decision_client.routing import SITE_BELONGS
+
+        if len(messages) < 2:
+            return None, False
+        request = str(messages[1].get("content") or "")
+        if candidates is None:
+            candidates = _candidate_count(request)
+        if candidates < 1:
+            return None, False
+        criteria = {"none": ORCHESTRATOR_DECISION_NONE}
+        for k in range(1, candidates + 1):
+            criteria[f"c{k}_follow_up"] = ORCHESTRATOR_DECISION_FOLLOW_UP.format(k=k)
+            criteria[f"c{k}_recurrence"] = ORCHESTRATOR_DECISION_RECURRENCE.format(k=k)
+        # The orchestrator's guidance without its last line, the JSON reply format.
+        head, _sep, _tail = ORCHESTRATOR_PROMPT.rpartition("\nReply with JSON")
+        instructions = (head or ORCHESTRATOR_PROMPT) + ORCHESTRATOR_DECISION_TAIL
+        answers = await self._decided(
+            TIER_ORCHESTRATE,
+            SITE_BELONGS,
+            request,
+            {"goes": ChoiceQuestion(instructions=instructions, criteria=criteria)},
+            rehost=False,
+        )
+        return belongs_answer_from((answers or {}).get("goes"), candidates), answers is not None
+
+    async def belongs_counted(
+        self, messages: list[dict[str, Any]], candidates: int | None = None,
+    ) -> tuple[str | None, int]:
+        """``belongs``, with the requests it made: two when a decision question was sent and missed."""
+        decided, sent = await self._belongs_decided(messages, candidates)
+        if decided is not None:
+            return decided, 1
+        return await self._belongs_chat(messages), 2 if sent else 1
+
+    async def belongs(self, messages: list[dict[str, Any]], candidates: int | None = None) -> str | None:
         """Ask which of a few projects and task agents a new commission belongs with; returns the answer as it came, or None.
 
         One request (``TIER_ORCHESTRATE``), with the messages
-        ``orchestrator.question`` put together. Asked only where the words
+        ``orchestrator.question`` put together; ``candidates`` is how many
+        it shows (counted off the request when not given). Asked only where the words
         of the commission neither name nor clearly match or miss what is
         there (``families.Families.decide``). None when the request
         failed: the commission is then a new one of its own.
+
+        On a native decision model it is one single choice instead (D19),
+        whose reading is answered in the same JSON the chat prompt asks for.
         """
+        answer, _calls = await self.belongs_counted(messages, candidates)
+        return answer
+
+    async def _belongs_chat(self, messages: list[dict[str, Any]]) -> str | None:
         try:
             return await self._llm.complete(TIER_ORCHESTRATE, messages)
         except asyncio.CancelledError:
@@ -917,13 +1284,21 @@ class LexicalDecisionModel:
         stops nothing and the user is asked which),
         "add" (to one item: told to it if under way, gone on with in its
         session if ended), "unsure" (one of these, of several items) or
-        "new". The decision model could give the same. The words of the
-        sentence are handed on as they are.
+        "new". A stop says as well how much it means ("scope"): the items it
+        names, all of a project's, or all the work under way. The decision
+        model could give the same. The words of the sentence are handed on
+        as they are. What task agents wrote (titles, commands, paths,
+        questions, what work ended with) is shown quoted, and the prompt says
+        it is what the sentence is sorted by, not instructions.
 
         What does not come in time (``UNDER_WAY_READ_SECONDS``), cannot be
         read, or names nothing it could be is taken for new work, with the
         question still waiting, and said to be so (the third value): her
-        receipt tells her.
+        receipt tells her. A stop, or a sentence that is about one of several
+        items, that names none of them while several are under way asks
+        which instead. So does a stop of all that names less than all of
+        her work under way, and, where the list was cut, a stop whose words
+        share none with what it names (``_words_name``).
         """
         from config.nekopower_settings import UNDER_WAY_READ_SECONDS
         from config.prompts.prompts_nekopower_brain import TASK_BRAIN_UNDER_WAY_PROMPT, build_under_way_request
@@ -973,15 +1348,38 @@ class LexicalDecisionModel:
         for place, item in picked:
             if item.id not in by_id or (does == "add" and place == _ENDED):
                 by_id[item.id] = (place, item)
-        rows = len(picked)
         picked = list(by_id.values())
-        if does == "unsure" and rows > 1 and len(picked) == 1:
-            # Unsure between the two rows of one: that one, the user is asked of.
+        # Her work under way, as it was shown; and all of it, which the list
+        # may have cut (what the user is asked to choose among when nothing
+        # names which: one left out of the list may be the one meant).
+        under_way = [item.id for place, item in numbered if place == _UNDER_WAY]
+        everything = [item.id for item in request.active]
+        if does == "unsure" and len(picked) == 1:
+            # Unsure, of one (on one row or on the two of one that ended): that
+            # one, the user is asked of.
             return which([picked[0][1].id])
         if (does == "unsure" or does in ("answer", "add")) and len(picked) > 1:
             # It means one of these and cannot say which (an answer or an
             # addition is to one): which, the user is asked.
             return which([item.id for _place, item in picked])
+        if does in ("unsure", "stop") and reading.get("items") in (None, []):
+            # Some of the work is meant, and none is named ("stop it" read with
+            # no items). (Numbers it gave that are none of the items are no
+            # reading.) A stop is of her work under way, all of it, the list
+            # may have cut; one unsure of which may answer a question as well,
+            # so what waits within her work counts too.
+            if does == "stop":
+                if not everything:
+                    return Triage(kind="nothing_active", model_calls=1), 1, False
+                if len(everything) == 1:
+                    # One thing under way: stopped, as a stop that does not say
+                    # which is ("cancel the task").
+                    return Triage(kind="stop", targets=everything, model_calls=1), 1, False
+                return Triage(kind="ambiguous", targets=everything, model_calls=1), 1, False
+            candidates = [*everything, *(item_id for item_id in waiting if item_id not in everything)]
+            if candidates:
+                # Which, the user is asked (of the one there is, as of one it named).
+                return which(candidates)
         # Whether the sentence itself says which item it means (names its
         # work, project, familiar, command, file or an option it picks).
         said_which = reading.get("named") is True
@@ -1050,33 +1448,79 @@ class LexicalDecisionModel:
                 return answered(target, None)
         if does == "stop" and picked:
             stopped = [item.id for place, item in picked if place == _UNDER_WAY]
-            under_way = [item.id for place, item in numbered if place == _UNDER_WAY]
-            if not said_which and len(under_way) > 1:
+            hidden = [item for item in request.active if item.id not in under_way]
+            # How much it means: "these" (the items it names), "project" (all
+            # of a project's, a familiar's or a plugin's work, however much of
+            # it was shown) or "all" (all the work under way). "These" is
+            # taken at its word where the list left some out: what it names is
+            # stopped, and what of their project's work was not shown goes on
+            # and is said to (the model has read "stop all the shop site work"
+            # as "these", measured: that is not left running unsaid). A stop
+            # that does not say how much may be either of the first two, and
+            # is asked about as before. Which items are stopped is still what
+            # it names, and whether it says which: a bare "stop it" is read as
+            # all of it as often as "cancel all of it" is (measured), so "all"
+            # is no naming of its own.
+            scope = str(reading.get("scope") or "").strip().lower()
+            if not said_which and len(everything) > 1:
                 # "Stop it" with several under way: which, the user is asked,
                 # not everything stopped on a guess. ("Wait", "not now" said to
                 # what waits for the user is its answer, a refusal, as the
-                # prompt has it; a stop is a stop.)
-                return Triage(kind="ambiguous", targets=under_way, model_calls=1), 1, False
-            hidden = [item for item in request.active if item.id not in under_way]
-            if len(stopped) > 1 and hidden:
-                # A stop of several (a project, a familiar's) while some of her
-                # work was left out of the list: it may mean those as well,
-                # which were not shown. Which, the user is asked, among all.
-                return Triage(kind="ambiguous", targets=[item.id for item in request.active], model_calls=1), 1, False
+                # prompt has it; a stop is a stop.) Among all of her work, the
+                # list may have cut, and counted so: one shown of several is
+                # not taken for the one meant.
+                return Triage(kind="ambiguous", targets=everything, model_calls=1), 1, False
             shown_stopped = [item for place, item in picked if place == _UNDER_WAY]
+            if hidden and shown_stopped and not _words_name(request, shown_stopped):
+                # Named, the model says, while the list was cut, and the words
+                # say nothing of what it picked (of one of them, if several):
+                # no word of the sentence, beyond the stopping, the "all" and
+                # the work under way, is in what it is, its project, familiar
+                # or plugin. The
+                # model has read "cancel what is under way" as the items it
+                # saw at work, and those alone (measured: it leaves out what
+                # waits for the user), with the rest not shown: one was stopped
+                # ("these") or asked about with its project's ("project"), and
+                # the rest went on. Which, the user is asked, among all.
+                return Triage(kind="ambiguous", targets=everything, model_calls=1), 1, False
+            if (scope == "all" and set(stopped) != set(everything)) or (
+                hidden and len(stopped) > 1 and scope not in ("project", "these")
+            ):
+                # All of it, said of less than all her work under way (some of
+                # it left out of the list, or what waits for the user left out
+                # of a whole one: "cancel all the ongoing work" read as the
+                # items at work, measured), or a stop of several that does not
+                # say how much while some of her work was left out of the list:
+                # it may mean the rest as well. Which, the user is asked, among
+                # all (for "all", though one item was named).
+                return Triage(kind="ambiguous", targets=everything, model_calls=1), 1, False
             kin = [item.id for item in hidden if any(_kin(item, other) for other in shown_stopped)]
-            if kin:
-                # One of a project's or a familiar's work is stopped while more
-                # of it was left out ("stop the shop site work"): which, the
-                # user is asked, among those.
+            if kin and scope != "these":
+                # A project's or a familiar's work is stopped while more of it
+                # was left out ("stop the shop site work", one of it shown):
+                # which, the user is asked, among those.
                 return Triage(kind="ambiguous", targets=[*stopped, *kin], model_calls=1), 1, False
             if stopped:
-                return Triage(kind="stop", targets=stopped, model_calls=1), 1, False
+                # For "these", where some of their project's work was left out,
+                # all of it that goes on is said, shown or not ("the footer
+                # one" of the shop site's, or "all the shop site work" read as
+                # the one item shown: what was shown and not named goes on as
+                # well, owner's automatic review). Where none of it was left
+                # out, what it names is what was meant, as when the list is
+                # whole: nothing is said. So for each it names: a stop of the
+                # shop site's one and the blog's one says nothing of the blog,
+                # all of which was shown.
+                cut = [other for other in shown_stopped if any(_kin(item, other) for item in hidden)]
+                going_on = [
+                    item.id for item in request.active
+                    if item.id not in stopped and any(_kin(item, other) for other in cut)
+                ]
+                return Triage(kind="stop", targets=stopped, left_running=going_on, model_calls=1), 1, False
             # It means work that is over, or questions within others' work:
             # nothing of hers it names is under way.
             if not under_way:
                 return Triage(kind="nothing_active", model_calls=1), 1, False
-            return Triage(kind="ambiguous", targets=under_way, model_calls=1), 1, False
+            return Triage(kind="ambiguous", targets=everything, model_calls=1), 1, False
         if does == "add" and picked:
             place, target = picked[0]
             if place == _ENDED:
@@ -1183,27 +1627,79 @@ class LexicalDecisionModel:
             return Triage(kind="unsure")
         # Nothing matched by its words and there is no task agent to fall back
         # on. Before saying it cannot be done, let the small model look once.
-        coarse = await self._coarse_screen(match_text, plugins, request.lang)
+        coarse, coarse_calls = await self._coarse_screen(match_text, plugins, request.lang)
         known = {str(plugin.get("id")) for plugin in plugins}
         picked = [plugin_id for plugin_id in coarse if plugin_id in known]
         if picked:
-            return Triage(kind="new", candidate_ids=picked, coarse_ids=coarse, model_calls=1)
-        return Triage(kind="none", reason="no_match", coarse_ids=coarse, model_calls=1)
+            return Triage(kind="new", candidate_ids=picked, coarse_ids=coarse, model_calls=coarse_calls)
+        return Triage(kind="none", reason="no_match", coarse_ids=coarse, model_calls=coarse_calls)
 
-    async def _coarse_screen(self, user_text: str, plugins: Sequence[dict[str, Any]], lang: str) -> list[str]:
-        """Ask the small model which plugins might be relevant; ids only."""
+    async def _coarse_screen_decided(
+        self, user_text: str, shorts: list[tuple[str, str]],
+    ) -> tuple[list[str] | None, bool]:
+        """The coarse screen as one single choice on a native decision model (D16), and whether it was sent.
+
+        The ids are None to ask the chat prompt.
+
+        Each plugin whose choice probability reaches
+        ``COARSE_SCREEN_DECISION_THRESHOLD`` is kept, in catalog order.
+        Vendors without one keep the chat prompt: a single choice read by
+        its probabilities did not hold up for several plugins on chat models.
+        """
+        from config import DECISION_STATE_MAX_TOKENS
+        from config.prompts.prompts_nekopower_brain import (
+            COARSE_SCREEN_DECISION_INSTRUCTIONS,
+            COARSE_SCREEN_DECISION_NONE,
+            COARSE_SCREEN_DECISION_STATE,
+        )
+        from utils.decision_client import ChoiceQuestion
+        from utils.decision_client.routing import SITE_COARSE_SCREEN
+        from utils.tokenize import truncate_to_tokens
+
+        if not shorts:
+            return None, False
+        criteria = {f"p{i}": f"[{pid}] {truncate_to_tokens(short, 24)}" for i, (pid, short) in enumerate(shorts)}
+        criteria["none"] = COARSE_SCREEN_DECISION_NONE
+        state = COARSE_SCREEN_DECISION_STATE.format(user_text=truncate_to_tokens(user_text, DECISION_STATE_MAX_TOKENS // 4))
+        answers = await self._decided(
+            TIER_COARSE,
+            SITE_COARSE_SCREEN,
+            state,
+            {"pick": ChoiceQuestion(instructions=COARSE_SCREEN_DECISION_INSTRUCTIONS, criteria=criteria)},
+            rehost=False,
+        )
+        sent = answers is not None
+        probs = _option_probabilities((answers or {}).get("pick"))
+        if not probs:
+            return None, sent
+        return [
+            pid for i, (pid, _short) in enumerate(shorts)
+            if probs.get(f"p{i}", 0.0) > 0 and probs.get(f"p{i}", 0.0) >= COARSE_SCREEN_DECISION_THRESHOLD
+        ], sent
+
+    async def _coarse_screen(self, user_text: str, plugins: Sequence[dict[str, Any]], lang: str) -> tuple[list[str], int]:
+        """Ask the small model which plugins might be relevant: the ids, and the requests made for them.
+
+        Two requests when a decision question was sent and missed, then the chat prompt.
+        """
         from config import AGENT_PLUGIN_SHORTDESC_MAX_TOKENS
         from config.prompts.prompts_nekopower_brain import TASK_BRAIN_COARSE_SCREEN_PROMPT
         from config.prompts.prompts_sys import _loc
         from utils.tokenize import count_tokens, truncate_to_tokens
 
         summaries = []
+        shorts: list[tuple[str, str]] = []
         for plugin in plugins:
             plugin_id = plugin.get("id", "unknown")
             short = plugin.get("short_description") or plugin.get("description", "")
             if count_tokens(short) > AGENT_PLUGIN_SHORTDESC_MAX_TOKENS:
                 short = truncate_to_tokens(short, AGENT_PLUGIN_SHORTDESC_MAX_TOKENS - count_tokens("...")) + "..."
             summaries.append(f"- {plugin_id}: {short}")
+            shorts.append((str(plugin_id), short))
+        decided, sent = await self._coarse_screen_decided(user_text, shorts)
+        if decided is not None:
+            return decided, 1
+        calls = 2 if sent else 1
         system = _loc(TASK_BRAIN_COARSE_SCREEN_PROMPT, lang).format(
             plugin_summaries="\n".join(summaries),
             user_text=user_text,
@@ -1215,12 +1711,12 @@ class LexicalDecisionModel:
             raw = await self._llm.complete(TIER_COARSE, messages)
             ids = robust_json_loads(_strip_fences(raw))
             if isinstance(ids, list):
-                return [str(item) for item in ids if isinstance(item, (str, int))]
+                return [str(item) for item in ids if isinstance(item, (str, int))], calls
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - keyword and BM25 matches still stand
             logger.warning("coarse screen failed: %s", type(exc).__name__)
-        return []
+        return [], calls
 
     # -- turn check -------------------------------------------------------
 
@@ -1252,11 +1748,36 @@ class LexicalDecisionModel:
             kind = "none"
         task = answer.get("task")
         task = " ".join(task.split()) if isinstance(task, str) else ""
+        calls = 1
+        if kind != "none":
+            # A second look on a decision model (or rehosted on a chat model
+            # with token probabilities) before anything is acted on: its
+            # verdict stands, with the task the chat wrote (owner decision D28).
+            asked, checked = await self._turn_second_look(messages[1]["content"])
+            if asked:
+                calls = 2  # counted whether or not its answer could be read
+            if checked is not None:
+                kind = checked
         return TurnVerdict(
             kind=kind,
             task="" if kind == "none" else truncate_to_tokens(task, TURN_CHECK_TASK_MAX_TOKENS),
-            model_calls=1,
+            model_calls=calls,
         )
+
+    async def _turn_second_look(self, state: str) -> tuple[bool, str | None]:
+        """Whether the turn check's decision question was sent, and its verdict (None when not sent or not read)."""
+        from config.prompts.prompts_nekopower_brain import TURN_CHECK_DECISION_INSTRUCTIONS, TURN_CHECK_DECISION_OPTIONS
+        from utils.decision_client import ChoiceQuestion
+        from utils.decision_client.routing import SITE_TURN_CHECK
+
+        answers = await self._decided(
+            TIER_TURN_CHECK,
+            SITE_TURN_CHECK,
+            state,
+            {"verdict": ChoiceQuestion(instructions=TURN_CHECK_DECISION_INSTRUCTIONS, criteria=dict(TURN_CHECK_DECISION_OPTIONS))},
+            rehost=True,
+        )
+        return answers is not None, turn_verdict_from((answers or {}).get("verdict"))
 
     # -- second round -----------------------------------------------------
 
@@ -1316,11 +1837,11 @@ class LexicalDecisionModel:
                     coarse_ids = list(triage.coarse_ids)
                     kept, _ = await asyncio.to_thread(stage1_filter, match_text, all_plugins)
                 else:
-                    (kept, _), coarse_ids = await asyncio.gather(
+                    (kept, _), (coarse_ids, coarse_calls) = await asyncio.gather(
                         asyncio.to_thread(stage1_filter, match_text, all_plugins),
                         self._coarse_screen(match_text, all_plugins, request.lang),
                     )
-                    calls += 1
+                    calls += coarse_calls
                 selected = {plugin.get("id") for plugin in kept} | set(coarse_ids) | set(hits)
                 shown = [plugin for plugin in all_plugins if plugin.get("id") in selected]
                 lines = build_desc_lines(shown)

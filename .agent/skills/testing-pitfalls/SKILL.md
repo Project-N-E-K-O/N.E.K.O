@@ -47,7 +47,7 @@ CI **不跑**的：
 
 - `tests/frontend/*.py`（Playwright 页面测试；只有 `test_social_hub_presence_browser.py` 被 `unit-test-shards.yml` 单独点名）、`tests/e2e`、`tests/integration`（只点名跑了 `test_voice_enrollment_duration_real.py`）、`tests/` 根目录下的 `test_*.py`。
 - 没进手列清单、也没被 pytest 用例调起的 `tests/frontend/*.cjs` 和 `static/*.test.cjs`。写这份文档时这样的文件有几十个。⚠️ 新增这类文件要么加进清单，要么在 `tests/unit` 里包一条 pytest 用例，否则它从不在 CI 执行。
-- POSIX 专用分支：Python 单测几乎全在 Windows 上跑，`skipif` 掉 Windows 的用例在 CI 里就是跳过的。例外是 `runtime-process-model.yml`（三个平台跑三个进程模型文件）和 `plugin-tests.yml` 里 Linux job 点名的那批。
+- POSIX 专用分支：Python 单测几乎全在 Windows 上跑，`skipif` 掉 Windows 的用例在 CI 里就是跳过的。例外是 `runtime-process-model.yml`（三个平台跑三个进程模型文件）和 `plugin-tests.yml`（`plugin/tests` 整个目录在 Linux 和 Windows 上都跑）。
 
 改到 CI 不跑的范围，要本地跑并在汇报里写明跑了什么。只有 base 是 main 的 PR 才自动跑这些工作流，见 `pr-workflow` 的 `references/ci-and-gates.md`。
 

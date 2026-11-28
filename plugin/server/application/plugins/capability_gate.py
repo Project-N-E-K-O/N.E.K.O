@@ -231,8 +231,10 @@ def check(plugin_id: str, parent_request_id: object, capability: str, operation:
             if record is not None:
                 registry.note_use(record, capability)
             # An allowance based on the last record read (store unreadable)
-            # is also audited below, so it can be told apart.
-            if "consent_unavailable" not in flags:
+            # is also audited below, so it can be told apart. So is one
+            # outside any call (a timer, a background thread): no call
+            # summary carries it, and the panel's last use needs it.
+            if "consent_unavailable" not in flags and record is not None:
                 return decision
         verdict = "allow" if decision.allowed else "would_deny"
         key = (plugin_id, capability, verdict, decision.reason, decision.blocked_by, tuple(sorted(flags)))
@@ -279,7 +281,15 @@ SYSTEM_USE_PERMISSIONS = frozenset({
     PERMISSIONS["system.fs:read"].id,
     PERMISSIONS["system.fs:write"].id,
 })
-_SYSTEM_USE_FLAGS = frozenset({"unattributed", "loopback"})
+# Permissions whose uses reach the call audit: the judged RPC operations, the
+# message push and the system.* uses a plugin process reports. Uses of any
+# other permission are not recorded, so "never used" cannot be told for it.
+USAGE_AUDITED_PERMISSIONS = frozenset(CAPABILITY_BY_OPERATION.values()) | {MESSAGES_PUSH} | SYSTEM_USE_PERMISSIONS
+# ``plugin_thread``: made on a thread (or pool job) plugin code started, with
+# no plugin code on the stack; like ``unattributed`` it is a background use
+# and never refused, but it is the plugin's (``handler`` says in which handler
+# the thread was started, when one was running).
+_SYSTEM_USE_FLAGS = frozenset({"unattributed", "loopback", "plugin_thread"})
 _SYSTEM_USE_BATCH_LIMIT = 100
 _SYSTEM_USE_PER_MINUTE = 600
 _SYSTEM_USE_WINDOW = 60.0
@@ -306,7 +316,12 @@ def _system_use_entry(plugin_id: str, item: object, mode: str) -> dict | None:
     reason = item.get("reason")
     flags = item.get("flags")
     flags = {flag for flag in flags if isinstance(flag, str) and flag in _SYSTEM_USE_FLAGS} if isinstance(flags, list) else set()
-    return {
+    if "unattributed" in flags:
+        flags.discard("plugin_thread")  # contradictory: keep the weaker claim
+    handler = item.get("handler")
+    # Kept only when identifier-shaped: no "<invalid>" placeholder is stored.
+    handler = handler if "plugin_thread" in flags and isinstance(handler, str) and _IDENTIFIER.fullmatch(handler) and handler else None
+    entry = {
         "kind": "system_use", "mode": mode,
         # Whether the process refused it (system_audit.REFUSES_SYSTEM_USES).
         "enforcing": would_deny and item.get("enforcing") is True,
@@ -317,6 +332,9 @@ def _system_use_entry(plugin_id: str, item: object, mode: str) -> dict | None:
         "reason": reason if would_deny and isinstance(reason, str) and reason in _SYSTEM_USE_REASONS else None,
         "flags": sorted(flags) + ["plugin_reported"],
     }
+    if handler is not None:
+        entry["handler"] = handler
+    return entry
 
 
 def flush_system_use_loss(plugin_id: str) -> None:

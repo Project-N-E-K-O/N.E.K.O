@@ -39,6 +39,10 @@ _closed = False
 _generation = 0  # bumped by reopen(); a close() issued for an older run is ignored
 _abandoned: logging.handlers.QueueListener | None = None  # writer a timed-out close left behind
 dropped = 0  # records not written (queue full, unwritable file, after close); may race
+# Called with every recorded entry (see add_observer).
+_observers: list = []
+# Called before the file is rotated (see add_rollover_observer).
+_rollover_observers: list = []
 
 
 _drop_lock = threading.Lock()
@@ -71,6 +75,15 @@ class _AuditFileHandler(logging.handlers.RotatingFileHandler):
 
     def handleError(self, record: logging.LogRecord) -> None:
         _count_drop()  # unwritable file: count it, never echo the record
+
+    def doRollover(self) -> None:
+        # Readers of the files go first: rotating drops the oldest backup.
+        for observer in tuple(_rollover_observers):
+            try:
+                observer()
+            except Exception:
+                pass  # a reader of the audit, never part of it
+        super().doRollover()
 
 
 def audit_directory():
@@ -114,12 +127,46 @@ def _audit_logger_locked() -> logging.Logger | None:
     return log
 
 
+def add_observer(observer) -> None:
+    """Call ``observer(entry)`` for every entry recorded from now on.
+
+    It runs on the recording thread (often the event loop), so it must be
+    quick and must not record audit entries itself; its errors are ignored.
+    """
+    if observer not in _observers:
+        _observers.append(observer)
+
+
+def remove_observer(observer) -> None:
+    if observer in _observers:
+        _observers.remove(observer)
+
+
+def add_rollover_observer(observer) -> None:
+    """Call ``observer()`` on the writer thread just before the file rotates
+    (which deletes the oldest backup); the rotation waits for it."""
+    if observer not in _rollover_observers:
+        _rollover_observers.append(observer)
+
+
+def remove_rollover_observer(observer) -> None:
+    if observer in _rollover_observers:
+        _rollover_observers.remove(observer)
+
+
 def record(entry: dict) -> None:
     """Keep ``entry`` in the ring and queue it for the file; never raises."""
     item = {"ts": datetime.now(timezone.utc).isoformat(), **entry}
     kind = entry.get("kind")
     ring = _decision_ring if kind == "decision" else _system_use_ring if kind in _SYSTEM_USE_KINDS else _ring
     ring.append((next(_write_order), item))
+    for observer in tuple(_observers):
+        try:
+            observer(item)
+        except Exception:
+            # An observer must never stop an entry from being recorded; it
+            # is a reader of the audit, not part of it.
+            pass
     try:
         # Check and enqueue (non-blocking) under the lock close() takes, so
         # everything accepted before a close is queued ahead of its sentinel.

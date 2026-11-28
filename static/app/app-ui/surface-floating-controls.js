@@ -1772,7 +1772,7 @@
                     pngtuberContainer.style.setProperty('display', 'none', 'important');
                 }
                 I.completeGoodbyeResourceSuspend(goodbyeResourceToken);
-            }, I.NEKO_MODEL_CAT_TRANSITION_DURATION_MS);
+            }, I.shouldAnimateModelCatTransition() ? I.NEKO_MODEL_CAT_TRANSITION_DURATION_MS : 0);
 
             // 隐藏所有浮动按钮和锁按钮
             const live2dFloatingButtons = document.getElementById('live2d-floating-buttons');
@@ -1964,6 +1964,13 @@
                         activeReturnButtonContainer.getAttribute('data-neko-return-visible') === 'true'
                     ) {
                         if (I.getReturnButtonAppearance(activeReturnButtonContainer) === I.NEKO_GOODBYE_IDLE_APPEARANCE_BALL) {
+                            if (!I.shouldAnimateModelCatTransition()) {
+                                I.prepareModelCatForm('cat').then(() => {
+                                    I.releaseNekoModelCatTransition(goodbyeTransitionToken);
+                                    revealActiveReturnBall('return-ball-power-save');
+                                });
+                                return;
+                            }
                             I.releaseNekoModelCatTransition(goodbyeTransitionToken);
                             revealActiveReturnBall('return-ball-legacy-ball');
                             return;
@@ -2143,6 +2150,15 @@
                 if (isCurrentReturn()) {
                     I.nekoCatReturnOperation = null;
                     I.nekoCatReturnInProgress = false;
+                    try {
+                        const returnContainer = I.getVisibleIdleReturnBallContainer();
+                        if (returnContainer && (returnContainer.style.visibility === 'hidden'
+                            || returnContainer.style.opacity === '0')) {
+                            I.revealReturnBallContainer(returnContainer, 'return-aborted');
+                        }
+                    } catch (error) {
+                        console.warn('[App] 恢复中止返回按钮失败:', error);
+                    }
                 }
                 publishReturnAbort();
             };
@@ -2314,17 +2330,22 @@
                 : (window.innerWidth <= 768);
 
             // 使用 showCurrentModel() 做最终裁决
+            const returnEnterSequence = I.modelReturnEnterSequence;
             let modelDisplayReady = true;
             try {
-                modelDisplayReady = await I.showCurrentModel({ isCurrent: isCurrentReturn });
+                modelDisplayReady = await I.showCurrentModel({ isCurrent: isCurrentReturn, prepareModelForm: true });
             } catch (error) {
                 if (!isCurrentReturn()) return;
                 console.error('[App] showCurrentModel 失败:', error);
-                I.showLive2d();
+                I.showLive2d({ prepareModelForm: true });
             }
             if (!isCurrentReturn()) return;
             if (modelDisplayReady === false) {
                 return;
+            }
+            if (!I.shouldAnimateModelCatTransition()) {
+                await I.ensureModelReturnFormReady(returnEnterSequence);
+                if (!isCurrentReturn()) return;
             }
 
             await I.settleReturnedModelBounds(returnModelWasMoved, { isCurrentSettlement: isCurrentReturn });

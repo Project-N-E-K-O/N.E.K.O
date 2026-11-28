@@ -24,6 +24,8 @@ Usage:
 import argparse
 import datetime
 import json
+import os
+from pathlib import Path
 import re
 import sys
 
@@ -887,6 +889,28 @@ def build_report(paths, records, stats, segments, timeline_limit, show_timeline)
     return out
 
 
+def _paths_alias(first, second):
+    try:
+        if os.path.samefile(first, second):
+            return True
+    except OSError:
+        pass
+    first_resolved = os.path.normcase(str(Path(first).resolve(strict=False)))
+    second_resolved = os.path.normcase(str(Path(second).resolve(strict=False)))
+    return first_resolved == second_resolved
+
+
+def _ensure_output_not_input(log_paths, output_path, parser):
+    if not output_path:
+        return
+    for log_path in log_paths:
+        if _paths_alias(log_path, output_path):
+            parser.error(
+                f"--output path {output_path!r} aliases input log {log_path!r}; "
+                "refusing to overwrite input log"
+            )
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split(NL)[0])
     parser.add_argument("logs", nargs="+", help="N.E.K.O_Main_*.log files")
@@ -901,6 +925,7 @@ def main(argv=None):
         "--no-timeline", action="store_true", help="omit the per-connection timeline"
     )
     args = parser.parse_args(argv)
+    _ensure_output_not_input(args.logs, args.output, parser)
     records, stats = parse_files(args.logs)
     segments = segment_records(records)
     lines = build_report(

@@ -15,6 +15,7 @@ Modular architecture: entries register through Routers for easy expansion.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -82,6 +83,16 @@ _EDITABLE_CONFIG_SCHEMA: Dict[str, Dict[str, Any]] = {
 }
 _SECRET_CONFIG_KEYS = frozenset({"amap_key", "baidu_map_key"})
 _PUBLIC_CONFIG_KEYS = frozenset(_EDITABLE_CONFIG_SCHEMA) - _SECRET_CONFIG_KEYS
+_PUBLIC_CONFIG_SCHEMA: Dict[str, Dict[str, Any]] = {
+    key: schema
+    for key, schema in _EDITABLE_CONFIG_SCHEMA.items()
+    if key not in _SECRET_CONFIG_KEYS
+}
+
+
+def _is_ui_update_context(call_context: Any) -> bool:
+    """Allow secret updates only from host-tagged Hosted UI calls."""
+    return isinstance(call_context, Mapping) and call_context.get("channel") == "ui"
 
 
 def _parse_bool(value: Any, *, field_name: str) -> bool:
@@ -407,7 +418,15 @@ class LifeKitPlugin(NekoPluginBase):
             return []
         try:
             result = await self.store.get("saved_locations", [])
-            locations = result.value if hasattr(result, "value") else result
+            if hasattr(result, "is_ok") and callable(result.is_ok):
+                if not result.is_ok():
+                    self.logger.warning("store.get failed for UI locations: {}", result.error)
+                    return []
+                locations = result.value
+            elif hasattr(result, "value"):
+                locations = result.value
+            else:
+                locations = result
             return [dict(item) for item in locations if isinstance(item, dict)] if isinstance(locations, list) else []
         except Exception:
             self.logger.debug("Failed to read saved locations for UI", exc_info=True)
@@ -458,7 +477,7 @@ class LifeKitPlugin(NekoPluginBase):
         input_schema={
             "type": "object",
             "properties": {
-                **_EDITABLE_CONFIG_SCHEMA,
+                **_PUBLIC_CONFIG_SCHEMA,
                 "confirmed": {
                     "type": "boolean",
                     "description": "Explicit confirmation / 明确确认 / 明示的な確認",
@@ -481,7 +500,7 @@ class LifeKitPlugin(NekoPluginBase):
         if not updates:
             if not (confirmed and confirmation_token):
                 return Err(SdkError(self._i18n.t("config.no_valid")))
-        if call_context is not None and _SECRET_CONFIG_KEYS.intersection(updates):
+        if not _is_ui_update_context(call_context) and _SECRET_CONFIG_KEYS.intersection(updates):
             return Err(SdkError(self._i18n.t("config.secret_ui_only")))
         authorized, next_token, updates = (
             self._write_confirmations.authorize_or_issue_opaque(
@@ -494,7 +513,7 @@ class LifeKitPlugin(NekoPluginBase):
         )
         if not updates:
             return Err(SdkError(self._i18n.t("config.no_valid")))
-        if call_context is not None and _SECRET_CONFIG_KEYS.intersection(updates):
+        if not _is_ui_update_context(call_context) and _SECRET_CONFIG_KEYS.intersection(updates):
             return Err(SdkError(self._i18n.t("config.secret_ui_only")))
         if not authorized:
             return Ok({

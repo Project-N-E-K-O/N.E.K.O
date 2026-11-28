@@ -14,11 +14,13 @@ from plugin.logging_config import logger
 from plugin.core.state import state
 from plugin._types.models import RunCreateRequest, RunCreateResponse, RunStatus
 from plugin.core.call_registry import CallLink, Origin, delivery_link
-from plugin.runs.trigger_service import trigger_plugin
+from plugin.runs.trigger_service import resolve_entry_execution_timeout, trigger_plugin
 from plugin.server.messaging.plane_bridge import publish_record as _publish_record_impl
 from plugin.settings import RUN_EXECUTION_TIMEOUT, RUN_STORE_MAX_COMPLETED
 
 _TIMEOUT_UNSET = object()
+_TIMEOUT_ERROR_CODES = frozenset({"TIMEOUT", "DEADLINE_EXCEEDED", "OPERATION_TIMEOUT"})
+_RUN_GUARD_TIMEOUT_GRACE_SECONDS = 5.0
 
 
 ExportType = Literal["text", "json", "url", "binary_url", "binary"]
@@ -706,6 +708,7 @@ async def _execute_run(
                 ctx_obj = dict(ctx_obj)
             if "run_id" not in ctx_obj:
                 ctx_obj["run_id"] = run_id
+            ctx_obj["channel"] = "run"
             trigger_args["_ctx"] = ctx_obj
         except Exception:
             logger.debug("Failed to inject run_id into _ctx for run {}", run_id, exc_info=True)
@@ -776,6 +779,14 @@ async def _execute_run(
                     error=RunError(code="CANCELED", message=cancel_msg, details=run_err.details),
                     result_refs=[export_item_id],
                 )
+            elif run_err.code.upper() in _TIMEOUT_ERROR_CODES:
+                _propagate_cancel_to_plugin(plugin_id, run_id)
+                term = _run_store.commit_terminal(
+                    run_id,
+                    status="timeout",
+                    error=run_err,
+                    result_refs=[export_item_id],
+                )
             else:
                 term = _run_store.commit_terminal(
                     run_id,
@@ -815,21 +826,31 @@ async def _execute_run_guarded(
     client_host: Optional[str],
 ) -> None:
     """Wrap ``_execute_run`` with a timeout guard."""
-    timeout = _resolve_run_execution_timeout(args)
-    if timeout is None or timeout <= 0:
-        await _execute_run(
-            run_id, plugin_id=plugin_id, entry_id=entry_id,
-            args=args, task_id=task_id, client_host=client_host,
-        )
-        return
+    timeout = await asyncio.to_thread(
+        _resolve_run_execution_timeout,
+        args,
+        plugin_id=plugin_id,
+        entry_id=entry_id,
+    )
+    guard_timeout = (
+        timeout + _RUN_GUARD_TIMEOUT_GRACE_SECONDS
+        if timeout is not None and timeout > 0
+        else None
+    )
     try:
-        await asyncio.wait_for(
-            _execute_run(
+        if guard_timeout is None:
+            await _execute_run(
                 run_id, plugin_id=plugin_id, entry_id=entry_id,
                 args=args, task_id=task_id, client_host=client_host,
-            ),
-            timeout=timeout,
-        )
+            )
+        else:
+            await asyncio.wait_for(
+                _execute_run(
+                    run_id, plugin_id=plugin_id, entry_id=entry_id,
+                    args=args, task_id=task_id, client_host=client_host,
+                ),
+                timeout=guard_timeout,
+            )
     except asyncio.CancelledError:
         _propagate_cancel_to_plugin(plugin_id, run_id)
         term = _run_store.commit_terminal(
@@ -866,13 +887,20 @@ def _normalize_timeout_value(value: object) -> float | None | object:
     return timeout if timeout > 0 else _TIMEOUT_UNSET
 
 
-def _resolve_run_execution_timeout(args: Dict[str, Any]) -> float | None:
+def _resolve_run_execution_timeout(
+    args: Dict[str, Any],
+    *,
+    plugin_id: Optional[str] = None,
+    entry_id: Optional[str] = None,
+) -> float | None:
     default_timeout = float(RUN_EXECUTION_TIMEOUT)
     ctx_obj = args.get("_ctx") if isinstance(args, dict) else None
     if isinstance(ctx_obj, dict) and "entry_timeout" in ctx_obj:
         entry_timeout = _normalize_timeout_value(ctx_obj.get("entry_timeout"))
         if entry_timeout is not _TIMEOUT_UNSET:
             return entry_timeout
+    if plugin_id and entry_id:
+        return resolve_entry_execution_timeout(plugin_id, entry_id, default_timeout)
     return default_timeout
 
 

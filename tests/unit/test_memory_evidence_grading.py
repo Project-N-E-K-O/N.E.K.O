@@ -676,6 +676,17 @@ def test_introspection_merge_keeps_user_confirmation():
     assert "user_confirm_count" not in merged_evidence_state([{"reinforcement": 1.0}])
 
 
+def test_merged_evidence_state_preserves_negative_reinforcement():
+    from memory.evidence import merged_evidence_state
+
+    neg_state = merged_evidence_state([
+        {"reinforcement": -0.4, "disputation": 0.0},
+        {"reinforcement": -0.2, "disputation": 0.0},
+    ])
+    assert neg_state["reinforcement"] == pytest.approx(-0.2)
+    assert merged_evidence_state([])["reinforcement"] == 0.0
+
+
 # ── chat prompt render ──────────────────────────────────────────────
 
 

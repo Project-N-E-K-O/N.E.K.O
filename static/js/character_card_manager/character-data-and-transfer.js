@@ -416,6 +416,16 @@ function refreshCharacterCardSelectOptions() {
 }
 
 // 加载角色卡列表
+// Refresh snapshots and switch receipts describe the same backend commit order.
+// Legacy unversioned replies still work until this page learns a revision.
+function applyWorkshopCurrentCatgirlSnapshot(name, revision) {
+    const incoming = Number.isSafeInteger(revision) && revision > 0 ? revision : 0;
+    if (incoming < (window._workshopCurrentCatgirlRevision || 0)) return false;
+    window._workshopCurrentCatgirl = name || '';
+    window._workshopCurrentCatgirlRevision = incoming;
+    return true;
+}
+
 async function loadCharacterCards() {
     const loadSequence = ++characterCardLoadSequence;
 
@@ -491,10 +501,13 @@ async function loadCharacterCards() {
     // 获取当前猫娘
     try {
         const currentResp = await fetch('/api/characters/current_catgirl');
-        const currentData = await currentResp.json();
-        window._workshopCurrentCatgirl = currentData.current_catgirl || '';
+        if (currentResp.ok) {
+            const currentData = await currentResp.json();
+            applyWorkshopCurrentCatgirlSnapshot(currentData.current_catgirl, currentData.switch_revision);
+        }
     } catch (e) {
-        window._workshopCurrentCatgirl = '';
+        // A failed refresh is not a snapshot; keep the last confirmed name and revision.
+        console.warn('[CharaCardManager] Could not refresh current character:', e);
     }
 
     // 预取已设置卡面的猫娘名单（避免逐个发起 404 请求）

@@ -21,6 +21,7 @@ memory (``Manager``): nothing of the user's is read.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from pathlib import Path
@@ -48,6 +49,7 @@ SMALL_SLOT = "slot_" + "b" * 32
 OWN_SLOT = "slot_" + "c" * 32
 PLAIN_SLOT = "slot_" + "d" * 32
 OTHER_SLOT = "slot_" + "e" * 32
+ADVANCED_SLOT = "slot_" + "f" * 32
 # Keys that must never be seen anywhere but in what a session is opened with.
 OWN_KEY = "sk-own-secret-0001"
 AGENT_KEY = "sk-agent-secret-0002"
@@ -703,7 +705,7 @@ async def test_the_settings_are_read_whole_and_written_one_preset_at_a_time(host
         "worker": (None, "inherit", True),
         "scout": (None, "inherit", True),
         "inspector": (None, "inherit", True),
-        "planner": (None, "inherit", True),
+        "planner": (None, "advanced", True),
         "general": (None, "agent", False),
     }
     assert by["boss"]["in_effect"] == {
@@ -874,16 +876,16 @@ async def test_a_session_that_cannot_be_settled_as_it_is_made_is_settled_when_it
     specs: list[Any] = []
     host = _host(hosts, tmp_path, lambda spec: specs.append(spec) or ScriptedLLM([_report()]), manager)
     await host.set_role_model("boss", OWN_SLOT)
-    update = host.ledger.update_session
+    update = host.ledger.keep_model
     failed: list[str] = []
 
-    async def failing_once(session_id: str, **values: Any) -> Any:
+    async def failing_once(session_id: str, preset: str, **values: Any) -> Any:
         if "model_ident" in values and not failed:
             failed.append(session_id)
             raise RuntimeError("the ledger is busy")
-        return await update(session_id, **values)
+        return await update(session_id, preset, **values)
 
-    monkeypatch.setattr(host.ledger, "update_session", failing_once)
+    monkeypatch.setattr(host.ledger, "keep_model", failing_once)
     made = await host.open_session("Lan", "Garden", preset="boss")
     assert failed == [made["session_id"]]
     assert (await host.ledger.get_session(made["session_id"])).model_ident == ""
@@ -900,14 +902,14 @@ async def test_a_session_whose_model_cannot_be_written_down_is_not_opened(hosts,
     specs: list[Any] = []
     host = _host(hosts, tmp_path, lambda spec: specs.append(spec) or ScriptedLLM([_report()]), manager)
     await host.set_role_model("general", OWN_SLOT)
-    update = host.ledger.update_session
+    update = host.ledger.keep_model
 
-    async def failing(session_id: str, **values: Any) -> Any:
+    async def failing(session_id: str, preset: str, **values: Any) -> Any:
         if "model_ident" in values:
             raise RuntimeError("the ledger is busy")
-        return await update(session_id, **values)
+        return await update(session_id, preset, **values)
 
-    monkeypatch.setattr(host.ledger, "update_session", failing)
+    monkeypatch.setattr(host.ledger, "keep_model", failing)
     failed = await wait_status(host, (await _dispatch(host, "sort the photos")).commission_id, "failed")
 
     # Opened now and on no record, it could be opened by another model the next time, conversation and all.
@@ -1428,14 +1430,14 @@ async def test_a_session_settled_before_goes_on_when_its_model_cannot_be_written
     await host.derive_leader("Budget app", "Lan")
     await wait_status(host, (await _dispatch(host, "add a chart to the budget app")).commission_id, "done")
     manager.tiers["agent_small"] = {**small, "model": "small-model-2"}
-    update = host.ledger.update_session
+    update = host.ledger.keep_model
 
-    async def failing(session_id: str, **values: Any) -> Any:
+    async def failing(session_id: str, preset: str, **values: Any) -> Any:
         if "model_ident" in values:
             raise RuntimeError("the ledger is busy")
-        return await update(session_id, **values)
+        return await update(session_id, preset, **values)
 
-    monkeypatch.setattr(host.ledger, "update_session", failing)
+    monkeypatch.setattr(host.ledger, "keep_model", failing)
     await wait_status(host, (await _dispatch(host, "add a legend to the budget app")).commission_id, "done")
 
     assert [spec.model.model for spec in specs] == ["small-model", "small-model-2"]
@@ -2259,3 +2261,561 @@ async def test_a_commission_stopped_as_its_record_is_read_on_its_way_into_the_qu
     monkeypatch.setattr(host.ledger, "get", get)
     release_first.set()
     await wait_status(host, first, "done")
+
+
+# ---------------------------------------------------------------------------
+# The planner goes by the advanced task agent model of the main app
+# ---------------------------------------------------------------------------
+
+ADVANCED_TIER = {
+    "model": "advanced-model",
+    "base_url": "http://advanced.test/v1",
+    "api_key": "sk-advanced-secret-0003",
+    "provider_type": "openai_compatible",
+}
+
+
+def _with_advanced_slot(**more: Any) -> dict[str, ModelSlot]:
+    return {**_default_slots(), ADVANCED_SLOT: _follow("agent_advanced", **more)}
+
+
+async def _planner(host: Any, name: str = "plan") -> Any:
+    return await host.ledger.create_session(lanlan_name="Lan", name=name, kind="single", preset="planner")
+
+
+async def test_out_of_the_box_a_planner_is_sent_to_the_slot_that_follows_the_advanced_model(hosts, tmp_path):
+    manager = _manager(tmp_path, _with_advanced_slot(), agent_advanced=dict(ADVANCED_TIER))
+    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM(), manager)
+    session = await _planner(host)
+
+    choice = await host.task_agents.session_model(session)
+
+    assert (choice.slot, choice.name, choice.agent, choice.tier, choice.fallback) == (
+        ADVANCED_SLOT, "advanced-model", False, "agent_advanced", ""
+    )
+    assert choice.config["api_key"] == ADVANCED_TIER["api_key"]
+    row = await host.ledger.get_session(session.id)
+    assert (row.model_slot, row.model_name, row.model_tier, row.model_fallback) == (
+        ADVANCED_SLOT, "advanced-model", "agent_advanced", ""
+    )
+    by = {item["preset"]: item for item in (await host.role_models())["presets"]}
+    assert by["planner"]["in_effect"] == {
+        "follows": None, "slot": ADVANCED_SLOT, "model": "advanced-model", "agent": False, "free": False,
+        "fallback": None,
+    }
+
+
+async def test_the_other_presets_keep_their_defaults_beside_an_advanced_planner(hosts, tmp_path):
+    manager = _manager(tmp_path, _with_advanced_slot(), agent_advanced=dict(ADVANCED_TIER))
+    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM(), manager)
+
+    by = {item["preset"]: item for item in (await host.role_models())["presets"]}
+
+    assert {name: item["default"] for name, item in by.items()} == {
+        "boss": "agent", "worker": "inherit", "scout": "inherit", "inspector": "inherit", "planner": "advanced",
+        "general": "agent",
+    }
+    for name in ("boss", "general"):
+        assert (by[name]["in_effect"]["slot"], by[name]["in_effect"]["model"]) == (AGENT_SLOT, "agent-model")
+    for name in ("worker", "scout", "inspector"):
+        assert by[name]["in_effect"] == {"follows": "starter", "fallback": None}
+
+
+async def test_a_planner_started_by_a_lead_goes_by_the_advanced_model_and_not_the_leads(hosts, tmp_path):
+    manager = _manager(tmp_path, _default_slots(), agent_advanced=dict(ADVANCED_TIER))
+    team = _Team({"preset": "planner"})
+    host = _host(hosts, tmp_path, team.pick, manager)
+    # The lead goes by a slot of its own: its planner no longer follows it there.
+    await host.set_role_model("general", OWN_SLOT)
+
+    lead = await wait_status(host, (await _dispatch(host, "plan the tests")).commission_id, "done")
+    (sub,) = await host.ledger.select(parent_id=lead.id)
+
+    assert team.lead_spec.model.model == "own-model"
+    assert team.child_spec.model.model == "advanced-model"
+    row = await _session_of(host, sub.id)
+    assert (row.preset, row.model_slot, row.model_tier, row.model_fallback) == ("planner", "", "agent_advanced", "")
+
+
+@pytest.mark.parametrize("slots", ["none", "without tool calling"])
+async def test_without_a_slot_that_follows_it_a_planner_is_sent_to_the_advanced_model_itself(hosts, tmp_path, slots):
+    chosen = _default_slots() if slots == "none" else _with_advanced_slot(capabilities=["text", "streaming"])
+    manager = _manager(tmp_path, chosen, agent_advanced=dict(ADVANCED_TIER))
+    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM(), manager)
+    session = await _planner(host)
+
+    choice = await host.task_agents.session_model(session)
+
+    assert (choice.slot, choice.name, choice.agent, choice.tier, choice.fallback) == (
+        "", "advanced-model", False, "agent_advanced", ""
+    )
+    row = await host.ledger.get_session(session.id)
+    assert (row.model_slot, row.model_name, row.model_tier) == ("", "advanced-model", "agent_advanced")
+    # Shown as a model of its own: not the task agent model, and not the model of whoever starts it.
+    by = {item["preset"]: item for item in (await host.role_models())["presets"]}
+    assert by["planner"]["in_effect"] == {
+        "follows": None, "slot": None, "model": "advanced-model", "agent": False, "free": False, "fallback": None,
+    }
+
+
+async def test_a_planner_settled_on_the_advanced_model_itself_stays_on_it_and_follows_it(hosts, tmp_path):
+    manager = _manager(tmp_path, _default_slots(), agent_advanced=dict(ADVANCED_TIER))
+    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM(), manager)
+    tasks = host.task_agents
+    session = await _planner(host)
+    await tasks.settle_model(session)
+
+    # Opened again: the advanced model it was settled on, and not the task agent model.
+    choice = await tasks.session_model(await host.ledger.get_session(session.id))
+    assert (choice.slot, choice.name, choice.tier, choice.fallback) == ("", "advanced-model", "agent_advanced", "")
+
+    # The user sets the advanced model of the main app to another one: followed, as a tier always is.
+    manager.tiers["agent_advanced"] = {**ADVANCED_TIER, "model": "advanced-model-2"}
+    choice = await tasks.session_model(await host.ledger.get_session(session.id))
+    assert (choice.slot, choice.name, choice.tier, choice.fallback) == ("", "advanced-model-2", "agent_advanced", "")
+
+
+async def test_a_planner_on_the_slot_that_follows_the_advanced_model_follows_that_tier_and_no_other(hosts, tmp_path):
+    manager = _manager(tmp_path, _with_advanced_slot(), agent_advanced=dict(ADVANCED_TIER))
+    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM(), manager)
+    tasks = host.task_agents
+    session = await _planner(host)
+    await tasks.settle_model(session)
+
+    # The tier moves: followed, and not taken for a slot that was changed.
+    manager.tiers["agent_advanced"] = {**ADVANCED_TIER, "base_url": "http://elsewhere.test/v1"}
+    choice = await tasks.session_model(await host.ledger.get_session(session.id))
+    assert (choice.slot, choice.config["base_url"], choice.fallback) == (ADVANCED_SLOT, "http://elsewhere.test/v1", "")
+
+    # The slot is made to follow the task agent model instead: not followed there; the default again,
+    # which with no slot that follows the advanced model is that model itself, and why.
+    slots = _with_advanced_slot()
+    slots[ADVANCED_SLOT] = _follow("agent")
+    _write_slots(manager, slots)
+    choice = await tasks.session_model(await host.ledger.get_session(session.id))
+    assert (choice.slot, choice.tier, choice.fallback) == ("", "agent_advanced", "slot_changed")
+    row = await host.ledger.get_session(session.id)
+    assert (row.model_slot, row.model_tier, row.model_fallback) == ("", "agent_advanced", "slot_changed")
+
+
+@pytest.mark.parametrize(
+    ("how", "code"),
+    [
+        ("not configured", "host_api_not_configured"),
+        ("unreadable", "model_config_unreadable"),
+        ("slot of a tier not configured", "host_api_not_configured"),
+        ("not an HTTP address", "host_api_unsupported"),
+        ("slot of a tier that is not an HTTP address", "host_api_unsupported"),
+    ],
+)
+async def test_an_advanced_model_that_cannot_be_used_leaves_a_planner_with_the_task_agent_model_and_says_why(
+    hosts, tmp_path, how, code
+):
+    tiers: dict[str, Any] = {}
+    if how == "unreadable":
+        tiers["agent_advanced"] = OSError("cannot be read")
+    if how.endswith("not an HTTP address"):
+        tiers["agent_advanced"] = {**ADVANCED_TIER, "base_url": "ws://advanced.test/v1"}
+    slots = _with_advanced_slot() if how.startswith("slot") else _default_slots()
+    manager = _manager(tmp_path, slots, **tiers)
+    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM(), manager)
+    session = await _planner(host)
+
+    choice = await host.task_agents.session_model(session)
+
+    assert (choice.slot, choice.name, choice.agent, choice.tier, choice.fallback) == (
+        AGENT_SLOT, "agent-model", True, "agent", code
+    )
+    row = await host.ledger.get_session(session.id)
+    assert (row.model_slot, row.model_fallback) == (AGENT_SLOT, code)
+
+
+class _AdvancedTierMovesOffHttp(Manager):
+    """The advanced tier has an HTTP address as the slots are listed and one is resolved, and a WebSocket one when it is read again."""
+
+    def __init__(self, root: Path, tiers: dict[str, Any]) -> None:
+        super().__init__(root, tiers)
+        self.reads = 0
+
+    def get_model_api_config(self, model_type: str) -> dict[str, Any]:
+        if model_type == "agent_advanced":
+            self.reads += 1
+            # Read once as the slots are listed, once as the slot is resolved.
+            if self.reads > 2:
+                return {**ADVANCED_TIER, "base_url": "ws://advanced.test/v1"}
+        return super().get_model_api_config(model_type)
+
+
+async def test_an_advanced_model_whose_address_is_no_http_one_when_read_again_leaves_a_planner_with_the_task_agent_model(
+    hosts, tmp_path
+):
+    manager = _AdvancedTierMovesOffHttp(
+        tmp_path / "app", {"agent": dict(AGENT_TIER), "agent_advanced": dict(ADVANCED_TIER)}
+    )
+    _write_slots(manager, _with_advanced_slot())
+    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM(), manager)
+    session = await _planner(host)
+
+    choice = await host.task_agents.session_model(session)
+
+    # Resolved through the slot with its HTTP address, read again with the WebSocket one: refused
+    # there too, as the advanced model itself is.
+    assert manager.reads >= 3
+    assert (choice.slot, choice.agent, choice.tier, choice.fallback) == (AGENT_SLOT, True, "agent", "host_api_unsupported")
+    row = await host.ledger.get_session(session.id)
+    assert (row.model_slot, row.model_fallback) == (AGENT_SLOT, "host_api_unsupported")
+
+
+async def test_without_slots_a_planner_is_sent_to_the_task_agent_model_as_every_preset_is(hosts, tmp_path):
+    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM(), None)
+    session = await _planner(host)
+
+    choice = await host.task_agents.session_model(session)
+
+    assert (choice.slot, choice.name, choice.agent, choice.fallback) == ("", "agent-model", True, "")
+
+
+@pytest.mark.parametrize("setting", ["slot", "inherit"])
+async def test_a_planner_set_by_the_user_goes_by_the_setting_and_not_the_advanced_model(hosts, tmp_path, setting):
+    manager = _manager(tmp_path, _with_advanced_slot(), agent_advanced=dict(ADVANCED_TIER))
+    team = _Team({"preset": "planner"})
+    host = _host(hosts, tmp_path, team.pick, manager)
+    await host.set_role_model("planner", OWN_SLOT if setting == "slot" else "inherit")
+
+    by = {item["preset"]: item for item in (await host.role_models())["presets"]}
+    lead = await wait_status(host, (await _dispatch(host, "plan the tests")).commission_id, "done")
+    (sub,) = await host.ledger.select(parent_id=lead.id)
+    row = await _session_of(host, sub.id)
+
+    if setting == "slot":
+        assert by["planner"]["in_effect"]["slot"] == OWN_SLOT
+        assert team.child_spec.model.model == "own-model"
+        assert (row.model_slot, row.model_fallback) == (OWN_SLOT, "")
+    else:
+        assert by["planner"]["in_effect"] == {"follows": "starter", "fallback": None}
+        # The lead is a session of no project's: the task agent model, by the slot that follows it.
+        assert team.child_spec.model.model == "agent-model"
+        assert (row.model_slot, row.model_fallback) == (AGENT_SLOT, "")
+
+
+async def test_a_planner_counts_against_the_free_quota_only_where_the_advanced_model_goes_with_the_free_key(
+    hosts, tmp_path
+):
+    manager = _manager(tmp_path, _default_slots(), agent_advanced={**ADVANCED_TIER, "api_key": FREE_KEY})
+    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM(), manager)
+    free = await host.task_agents.session_model(await _planner(host, "free"))
+    manager.tiers["agent_advanced"] = dict(ADVANCED_TIER)
+    paid = await host.task_agents.session_model(await _planner(host, "paid"))
+
+    assert (free.free, paid.free) == (True, False)
+
+
+async def test_a_session_given_another_preset_is_sent_to_that_presets_model_from_its_next_start(hosts, tmp_path):
+    manager = _manager(tmp_path, _default_slots())
+    llm = ScriptedLLM([_report(), _report(), _report()])
+    specs: list[Any] = []
+
+    def pick(spec: Any) -> Any:
+        specs.append(spec)
+        return llm
+
+    host = _host(hosts, tmp_path, pick, manager)
+    await host.set_role_model("scout", OWN_SLOT)
+    member = (await host.open_session("Lan", "Shop site", preset="general"))["session_id"]
+
+    async def sent_to() -> tuple[str, str]:
+        kept = await host.ledger.get_session(member)
+        return kept.model_slot, kept.model_name
+
+    await wait_status(host, (await _dispatch(host, "fix the header of the shop site")).commission_id, "done")
+    await let_go(host)
+    assert await sent_to() == (AGENT_SLOT, "agent-model")
+
+    # Given another preset: settled anew by that one's setting, as one made of it would be.
+    await host.change_duty(member, "scout")
+    assert await sent_to() == (OWN_SLOT, "own-model")
+    (card,) = (await host.board())["projects"][0]["members"]
+    assert card["model"] == "own-model"
+    await wait_status(host, (await _dispatch(host, "look at the footer of the shop site")).commission_id, "done")
+    await let_go(host)
+
+    # And back: the preset it has says where it is sent, not the one it was made with.
+    await host.change_duty(member, "general")
+    assert await sent_to() == (AGENT_SLOT, "agent-model")
+    await wait_status(host, (await _dispatch(host, "fix the footer of the shop site")).commission_id, "done")
+
+    assert [spec.model.model for spec in specs] == ["agent-model", "own-model", "agent-model"]
+
+
+async def test_a_session_given_another_preset_while_it_is_started_is_sent_to_that_presets_model_by_that_start(
+    hosts, tmp_path, monkeypatch
+):
+    manager = _manager(tmp_path, _default_slots())
+    llm = ScriptedLLM([_report(), _report()])
+    specs: list[Any] = []
+
+    def pick(spec: Any) -> Any:
+        specs.append(spec)
+        return llm
+
+    host = _host(hosts, tmp_path, pick, manager)
+    await host.set_role_model("scout", OWN_SLOT)
+    member = (await host.open_session("Lan", "Shop site", preset="general"))["session_id"]
+    await wait_status(host, (await _dispatch(host, "fix the header of the shop site")).commission_id, "done")
+    await let_go(host)
+    agents = host.task_agents
+    use_project = agents._use_project
+    meanwhile: list[str] = []
+
+    async def using(commission: Any) -> None:
+        if not meanwhile:
+            # After the start read where the session is sent, and before it reads what it opens
+            # the session as.
+            meanwhile.append((await agents.change_duty(member, "scout", by="user"))["preset"])
+        await use_project(commission)
+
+    monkeypatch.setattr(agents, "_use_project", using)
+    await wait_status(host, (await _dispatch(host, "look at the footer of the shop site")).commission_id, "done")
+
+    # Opened as the preset it has, and sent where that one is sent: not as one and to the other's.
+    assert meanwhile == ["scout"]
+    assert [(spec.head_of, spec.model.model) for spec in specs] == [("general", "agent-model"), ("scout", "own-model")]
+    kept = await host.ledger.get_session(member)
+    assert (kept.preset, kept.preset_told, kept.model_name) == ("scout", "scout", "own-model")
+
+
+async def test_a_session_given_another_preset_has_that_presets_model_on_its_row_as_soon_as_it_has_the_preset(
+    hosts, tmp_path, monkeypatch
+):
+    manager = _manager(tmp_path, _default_slots())
+    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM([_report()]), manager)
+    await host.set_role_model("scout", OWN_SLOT)
+    member = (await host.open_session("Lan", "Shop site", preset="general"))["session_id"]
+    await wait_status(host, (await _dispatch(host, "fix the header of the shop site")).commission_id, "done")
+    await let_go(host)
+    assert (await host.ledger.get_session(member)).model_name == "agent-model"
+    change = host.ledger.change_preset
+    read: list[tuple[str, str, str]] = []
+
+    async def changing(*args: Any, **kwargs: Any) -> Any:
+        done = await change(*args, **kwargs)
+        # What a start that is under way reads, the moment the preset is on the row.
+        kept = await host.ledger.get_session(member)
+        read.append((kept.preset, kept.model_slot, kept.model_name))
+        return done
+
+    monkeypatch.setattr(host.ledger, "change_preset", changing)
+    await host.change_duty(member, "scout")
+
+    # The preset and the model of one and the same: never the new one with the model of the old.
+    assert read == [("scout", OWN_SLOT, "own-model")]
+    # By the ledger itself, and only what says which model it is sent to.
+    with pytest.raises(ValueError, match="not the columns"):
+        await change(member, "general", by="user", model={"seat": "tree"})
+    assert (await host.ledger.get_session(member)).preset == "scout"
+
+
+async def test_a_session_whose_preset_was_changed_and_changed_back_is_not_summed_up_on_a_model_it_never_ran_on(
+    hosts, tmp_path
+):
+    manager = _manager(tmp_path, _default_slots())
+    asks: list[Any] = []
+
+    def pick(spec: Any) -> Any:
+        llm = ScriptedLLM([_report()])
+        asks.append(llm)
+        return llm
+
+    host = _host(hosts, tmp_path, pick, manager)
+    agents = host.task_agents
+    member = (await host.open_session("Lan", "Shop site", preset="scout"))["session_id"]
+
+    async def row() -> tuple[str, str, str, bool]:
+        kept = await host.ledger.get_session(member)
+        return kept.preset, kept.preset_told, kept.model_name, bool(kept.model_was)
+
+    await wait_status(host, (await _dispatch(host, "look at the header of the shop site")).commission_id, "done")
+    await let_go(host)
+    ran_on = (await host.ledger.get_session(member)).model_ident
+    assert await row() == ("scout", "scout", "agent-model", False) and await agents._idle_model(member) is not None
+
+    # What its preset is sent to is set to another model; it is given another preset, and then
+    # the one it had: by its preset it is what its task agent knows itself as, and its row says
+    # the model that preset is sent to now, which never had its conversation.
+    await host.set_role_model("scout", OWN_SLOT)
+    await host.change_duty(member, "general")
+    await host.change_duty(member, "scout")
+    assert await row() == ("scout", "scout", "own-model", True)
+    assert (await host.ledger.get_session(member)).model_was == ran_on
+    # Nothing of it goes there before the user goes on with it.
+    assert await agents._idle_model(member) is None
+
+    # Given the other preset once more, where it ran stays what is kept.
+    await host.change_duty(member, "general")
+    assert (await host.ledger.get_session(member)).model_was == ran_on
+    await host.change_duty(member, "scout")
+
+    # A start whose first message the session never takes sent nothing of it there: the runtime
+    # having taken the command is not its task agent having run.
+    runtime = agents._runtimes.builtin()
+    sent: list[str] = []
+
+    async def never_arrives(_session_id: str, text: str, **_how: Any) -> None:
+        sent.append(text)
+
+    with pytest.MonkeyPatch.context() as patched:
+        patched.setattr(runtime, "prompt", never_arrives)
+        receipt = await _dispatch(host, "look at the fonts of the shop site")
+        await wait_until(lambda: bool(sent), what="the first message being sent")
+        await asyncio.sleep(0.2)
+        assert (await host.ledger.get_session(member)).model_was == ran_on
+        await host.abort(receipt.commission_id, reason="test")
+        await let_go(host)
+    assert (await host.ledger.get_session(member)).model_was == ran_on and await agents._idle_model(member) is None
+
+    # Nor did a run that took its first message and failed before it asked its model anything.
+    from nekopower.runtime.session import TaskAgentSession
+
+    def fails(self: Any) -> None:
+        raise RuntimeError("no context for this run")
+
+    with pytest.MonkeyPatch.context() as patched:
+        patched.setattr(TaskAgentSession, "_inject_runtime_context", fails)
+        await wait_status(host, (await _dispatch(host, "look at the links of the shop site")).commission_id, "failed")
+        await let_go(host)
+    # (Its model was asked nothing.)
+    assert asks[-1].requests == []
+    assert (await host.ledger.get_session(member)).model_was == ran_on and await agents._idle_model(member) is None
+
+    # Started there, it is where it last ran.
+    await wait_status(host, (await _dispatch(host, "look at the footer of the shop site")).commission_id, "done")
+    await let_go(host)
+    assert await row() == ("scout", "scout", "own-model", False) and await agents._idle_model(member) is not None
+
+    # By the ledger: a start on another model than the row says by then leaves where it ran.
+    await host.ledger.model_ran(member, "another-model")
+    assert (await host.ledger.get_session(member)).model_was == "another-model"
+    await host.ledger.model_ran(member, (await host.ledger.get_session(member)).model_ident)
+    assert (await host.ledger.get_session(member)).model_was == ""
+
+
+async def test_a_session_whose_new_presets_model_cannot_be_told_just_now_stays_where_it_was(hosts, tmp_path, monkeypatch):
+    manager = _manager(tmp_path, _default_slots())
+    host = _host(hosts, tmp_path, ScriptedLLM([_report()]), manager)
+    member = (await host.open_session("Lan", "Shop site", preset="general"))["session_id"]
+    before = await host.ledger.get_session(member)
+    assert (before.model_slot, before.model_name) == (AGENT_SLOT, "agent-model")
+
+    async def unreadable(*_args: Any, **_kwargs: Any) -> Any:
+        raise OSError("the settings cannot be read")
+
+    monkeypatch.setattr(host.task_agents.role_models, "choose", unreadable)
+    changed = await host.change_duty(member, "scout")
+
+    # Its preset is changed all the same; where it is sent is as it was.
+    kept = await host.ledger.get_session(member)
+    assert changed["changed"] and kept.preset == "scout"
+    assert (kept.model_slot, kept.model_name, kept.model_ident) == (before.model_slot, before.model_name, before.model_ident)
+
+
+async def test_a_session_begun_in_dsh_goes_on_there_also_as_a_preset_that_withholds_tools(hosts, tmp_path, monkeypatch):
+    from nekopower.host import task_agents as task_agents_module
+
+    manager = _manager(tmp_path, _default_slots())
+    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM([_report()]), manager)
+    await host.set_role_model("scout", OWN_SLOT)
+    # A session that was begun in dsh stays there whatever preset it has by now (given another
+    # since, say): with what was said in it, and with the model dsh was started by. It is held to
+    # its preset there by what it is told and by the host's own tools it is opened without.
+    await host.open_session("Lan", "Shop site", preset="scout")
+    seen: list[tuple[Any, bool]] = []
+
+    async def choosing(commission: Any, model: Any, begun_in: Any, *, builtin_only: bool = False) -> Any:
+        seen.append((model.model, builtin_only))
+        raise RuntimeError("stop here")
+
+    monkeypatch.setattr(task_agents_module, "_begun_in", lambda place, session_dir: task_agents_module.RUNTIME_DSH)
+    host.task_agents._choose_runtime = choosing
+    await wait_status(host, (await _dispatch(host, "look at the header of the shop site")).commission_id, "failed")
+
+    assert seen == [("agent-model", False)]
+
+
+async def test_a_session_whose_new_preset_has_no_model_configured_just_now_stays_where_it_was(hosts, tmp_path, monkeypatch):
+    manager = _manager(tmp_path, _default_slots())
+    host = _host(hosts, tmp_path, ScriptedLLM([_report()]), manager)
+    member = (await host.open_session("Lan", "Shop site", preset="general"))["session_id"]
+    before = await host.ledger.get_session(member)
+
+    async def nothing_there(*_args: Any, **_kwargs: Any) -> Any:
+        # Where it would go has no model configured this moment.
+        return role_models.Choice(slot=OWN_SLOT, agent=False, name="", ident="", free=False)
+
+    monkeypatch.setattr(host.task_agents.role_models, "choose", nothing_there)
+    await host.change_duty(member, "scout")
+
+    kept = await host.ledger.get_session(member)
+    assert (kept.model_slot, kept.model_name, kept.model_ident) == (before.model_slot, before.model_name, before.model_ident)
+
+
+async def test_a_model_chosen_for_a_preset_the_session_has_no_longer_is_not_written_over_the_new_ones(hosts, tmp_path, monkeypatch):
+    manager = _manager(tmp_path, _default_slots())
+    host = _host(hosts, tmp_path, ScriptedLLM([_report()]), manager)
+    await host.set_role_model("scout", OWN_SLOT)
+    agents = host.task_agents
+    session = await host.ledger.create_session(lanlan_name="Lan", name="it", kind="line", project="Shop site")
+    choose = agents.role_models.choose
+    meanwhile: list[str] = []
+
+    async def choosing(preset: str, *args: Any, **kwargs: Any) -> Any:
+        chosen = await choose(preset, *args, **kwargs)
+        if preset == "general" and not meanwhile:
+            # While its model is being settled for the preset it was made with, it is given another,
+            # and its model is settled anew for that one.
+            meanwhile.append(preset)
+            await host.change_duty(session.id, "scout")
+        return chosen
+
+    monkeypatch.setattr(agents.role_models, "choose", choosing)
+    await agents.settle_model(session)
+
+    kept = await host.ledger.get_session(session.id)
+    assert meanwhile == ["general"]
+    assert (kept.preset, kept.model_slot, kept.model_name) == ("scout", OWN_SLOT, "own-model")
+    # By the ledger itself: only for the preset the session has.
+    assert await host.ledger.keep_model(session.id, "general", model_name="agent-model") is False
+    assert (await host.ledger.get_session(session.id)).model_name == "own-model"
+    assert await host.ledger.keep_model(session.id, "scout", model_name="another") is True
+    with pytest.raises(ValueError, match="not the columns"):
+        await host.ledger.keep_model(session.id, "scout", seat="tree")
+
+
+CAPPED_TEMPLATE = '---\nname: capped\ndescription: When a few requests are enough.\nmax_requests: 5\n---\nYour role: quick.\n'
+
+
+@pytest.mark.parametrize(
+    ("preset", "only_built_in"), [("scout", False), ("general", False), ("boss", False), ("capped", True)]
+)
+async def test_which_new_sessions_are_opened_in_the_built_in_runtime_whatever_else_would_be_chosen(
+    hosts, tmp_path, preset, only_built_in
+):
+    manager = _manager(tmp_path, _default_slots())
+    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM([_report(), _report()]), manager)
+    templates = tmp_path / "nekopower" / "task_agent_space" / "templates"
+    templates.mkdir(parents=True, exist_ok=True)
+    (templates / "capped.md").write_text(CAPPED_TEMPLATE, encoding="utf-8")
+    await host.open_session("Lan", "Shop site", preset=preset)
+    chosen: list[bool] = []
+    choose = host.task_agents._choose_runtime
+
+    async def choosing(commission: Any, model: Any, begun_in: Any, *, builtin_only: bool = False) -> Any:
+        chosen.append(builtin_only)
+        return await choose(commission, model, begun_in, builtin_only=builtin_only)
+
+    host.task_agents._choose_runtime = choosing
+    await wait_status(host, (await _dispatch(host, "look at the header of the shop site")).commission_id, "done")
+
+    # A preset that withholds tools is held to in dsh by what its session is told, and is opened
+    # wherever another would be, the leader of a project too. Not one whose requests are capped:
+    # the host cannot count them in dsh.
+    assert chosen and chosen[0] is only_built_in

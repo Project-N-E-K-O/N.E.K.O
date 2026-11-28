@@ -33,7 +33,23 @@
         browser: getEls('live2d-agent-browser', 'vrm-agent-browser', 'mmd-agent-browser', 'pngtuber-agent-browser'),
         userPlugin: getEls('live2d-agent-user-plugin', 'vrm-agent-user-plugin', 'mmd-agent-user-plugin', 'pngtuber-agent-user-plugin'),
         status: getEls('live2d-agent-status', 'vrm-agent-status', 'mmd-agent-status', 'pngtuber-agent-status'),
+        taskHudCropNote: getEls(
+            'live2d-agent-taskhud-crop-note', 'vrm-agent-taskhud-crop-note',
+            'mmd-agent-taskhud-crop-note', 'pngtuber-agent-taskhud-crop-note'
+        ),
     });
+    // 桌面版的省算力模式正把桌宠窗口裁到模型附近时，任务悬浮窗不显示（common-ui-hud.js 的
+    // isPetPowerSaveCropActive），「显示悬浮窗」下面说一句。面板 render 时刷新，裁剪状态变了也刷新。
+    const isPetPowerSaveCropActive = () => !!(
+        window.AgentHUD
+        && typeof window.AgentHUD.isPetPowerSaveCropActive === 'function'
+        && window.AgentHUD.isPetPowerSaveCropActive()
+    );
+    const syncTaskHudCropNote = () => {
+        const hidden = !isPetPowerSaveCropActive();
+        el().taskHudCropNote.forEach(note => { if (note) note.hidden = hidden; });
+    };
+    window.addEventListener('neko:niri-pet-physical-crop-state-applied', syncTaskHudCropNote);
     const sync = (cbs) => {
         if (!cbs) return;
         (Array.isArray(cbs) ? cbs : [cbs]).forEach(cb => {
@@ -283,6 +299,7 @@
     function render(source = 'render') {
         const { master, keyboard, browser, userPlugin } = el();
         if (!master.length) return;
+        syncTaskHudCropNote();
         const snap = state.snapshot;
         if (!snap) {
             master.forEach(m => {

@@ -431,8 +431,9 @@ def forget_turns_for_task_agents() -> None:
 def forget_turns_if_nekopower_is_off() -> None:
     """Drop what was kept for task agents if NekoPower is off now: called the moment a capability switch goes off.
 
-    NekoPower is off with the master switch off, and as much so with
-    the last capability switch off (``nekopower_on``). A capability
+    NekoPower is on with the master switch alone (``nekopower_on``), so a
+    capability switch going off drops nothing while the master switch is
+    on; with the master switch off, what was kept goes. A capability
     switch goes off by the user's hand and by itself (a model that
     cannot be reached, a tool that is not there any more); every
     such place puts it off by ``_shared._put_switch_off``, which
@@ -748,12 +749,12 @@ async def shutdown():
     # seconds, leaving three seconds of cancellation grace below its 45 s cap.
     cancellation_budget = ShutdownCancellationBudget(3.0)
 
-    async def step(factory, what):
+    async def step(factory, what, *, deadline_monotonic: float | None = None):
         nonlocal cancellation
         cancellation = await run_shutdown_step(
             factory,
             what=what,
-            deadline_monotonic=None,
+            deadline_monotonic=deadline_monotonic,
             pending_cancellation=cancellation,
             cancelled_budget_seconds=3.0,
             cancellation_budget=cancellation_budget,
@@ -884,6 +885,35 @@ async def shutdown():
         await step(save_stats, "Agent token usage save")
     except Exception as exc:
         logger.warning("[Agent] Token usage save failed during shutdown: %s", exc)
+
+    try:
+        from utils.http.pool_utils import is_loop_pool_cleanup_deferred
+
+        defer_pool_cleanup = is_loop_pool_cleanup_deferred()
+    except Exception:
+        defer_pool_cleanup = False
+
+    if not defer_pool_cleanup:
+        try:
+            from utils.llm_client.warm_pool import close_warm_chat_llms
+
+            await step(
+                close_warm_chat_llms,
+                "Agent LLM warm pool cleanup",
+                deadline_monotonic=time.monotonic() + 2.0,
+            )
+        except Exception as exc:
+            logger.debug("[Agent] llm_warm_pool cleanup failed: %s", exc)
+        try:
+            from utils.decision_client.adapters import aclose_decision_http_clients
+
+            await step(
+                aclose_decision_http_clients,
+                "Agent decision HTTP client cleanup",
+                deadline_monotonic=time.monotonic() + 2.0,
+            )
+        except Exception as exc:
+            logger.debug("[Agent] decision_http_client cleanup failed: %s", exc)
 
     logger.info("[Agent] Shutdown cleanup complete")
     await step(_emit_agent_status_update, "Agent final status")
@@ -1087,26 +1117,25 @@ async def _console_write_browser(payload: Dict[str, Any]) -> Dict[str, Any]:
 
 @app.get("/builtin/activity")
 async def builtin_activity():
-    """Return which commission is using the keyboard and mouse, and which the browser, right now.
+    """Return which commission(s) are using the keyboard and mouse, and the browser, right now.
 
     The same payloads the ``builtin_activity`` events carry, for a display
     that starts late and missed them.
     """
     from nekopower.host.capabilities import BUILTIN_GROUPS
 
-    from .nekopower_builtins import activity_payload, occupant
+    from .nekopower_builtins import activity_payload, occupants
 
     items = []
     for group in BUILTIN_GROUPS:
-        commission_id = occupant(group)
-        if commission_id:
+        for commission_id in occupants(group):
             items.append(activity_payload(group, "started", commission_id))
     return {"activity": items}
 
 
 @app.post("/builtin/stop")
 async def stop_builtin(payload: Optional[Dict[str, Any]] = None):
-    """Stop the commission that is using the keyboard and mouse or the browser.
+    """Stop the commission(s) using the keyboard and mouse or the browser.
 
     What the Esc key of the banner calls. ``group`` names one of the two;
     without it both are stopped. Stopping is what cancelling the task from
@@ -1126,7 +1155,7 @@ async def stop_builtin(payload: Optional[Dict[str, Any]] = None):
     """
     from nekopower.host.capabilities import BUILTIN_GROUPS
 
-    from .nekopower_builtins import occupant
+    from .nekopower_builtins import occupants
 
     group = (payload or {}).get("group")
     if group is not None and group not in BUILTIN_GROUPS:
@@ -1137,18 +1166,42 @@ async def stop_builtin(payload: Optional[Dict[str, Any]] = None):
     host = peek_host()
     stopped = []
     not_stopped = []
+    # Each one is asked once, whether or not it could be ended: one that
+    # holds both groups is not stopped twice.
+    tried = set()
     for name in ([group] if group else list(BUILTIN_GROUPS)):
-        commission_id = occupant(name)
-        if not commission_id or commission_id in stopped or host is None:
+        active = occupants(name)
+        if not active or host is None:
             continue
-        if meant is not None and commission_id != meant:
-            not_stopped.append({"group": name, "commission_id": commission_id})
-            logger.info("[Agent] Esc was meant for task %s; %s is used by task %s, which is left alone", meant, name, commission_id)
-            continue
-        commission = await host.abort(commission_id, reason="Stopped with Esc")
-        if commission is not None and commission.status == "cancelled":
-            stopped.append(commission_id)
-            logger.info("[Agent] Task %s stopped with Esc (%s)", commission_id, name)
+        if meant is not None:
+            for other in active:
+                if other != meant:
+                    not_stopped.append({"group": name, "commission_id": other})
+                    logger.info(
+                        "[Agent] Esc was meant for task %s; %s is used by task %s, which is left alone",
+                        meant,
+                        name,
+                        other,
+                    )
+            if meant not in active:
+                continue
+            targets = [meant]
+        else:
+            targets = active
+        for commission_id in targets:
+            if commission_id in tried:
+                continue
+            tried.add(commission_id)
+            try:
+                commission = await host.abort(commission_id, reason="Stopped with Esc")
+            except Exception:  # noqa: BLE001 - one that cannot be ended does not keep the other groups going
+                # (Its task agent could not be closed, say: it is not said to be
+                # stopped, and the next Esc tries it again.)
+                logger.warning("[Agent] Esc could not end task %s (%s)", commission_id, name, exc_info=True)
+                continue
+            if commission is not None and commission.status == "cancelled":
+                stopped.append(commission_id)
+                logger.info("[Agent] Task %s stopped with Esc (%s)", commission_id, name)
     answer: Dict[str, Any] = {"success": True, "stopped": stopped}
     if meant is not None:
         answer["not_stopped"] = not_stopped

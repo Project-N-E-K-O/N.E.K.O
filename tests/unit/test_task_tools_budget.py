@@ -3,7 +3,8 @@
 The opening sentence and the definitions of the two task tools ride on every
 request of the main dialogue model. These tests hold their size: the Chinese
 total to the limit the design set, the other languages to what they measure
-today, and the opening sentence of a session without NekoPower to its own.
+today, and the opening sentence of a session without NekoPower to its own,
+with and without the note that she cannot act on the computer.
 A longer text has to raise a number here on purpose.
 """
 
@@ -13,7 +14,8 @@ import json
 
 import pytest
 
-from config.prompts.prompts_sys import SESSION_INIT_PROMPT, SESSION_INIT_PROMPT_AGENT
+from config.prompts.prompts_nekopower_enable import ENABLE_NEKOPOWER_TOOL_DESCRIPTION, ENABLE_NEKOPOWER_TOOL_NAME
+from config.prompts.prompts_sys import SESSION_INIT_NO_NEKOPOWER, SESSION_INIT_PROMPT, SESSION_INIT_PROMPT_AGENT
 from config.prompts.prompts_task_tools import (
     DISPATCH_TOOL_DESCRIPTION,
     DISPATCH_TOOL_NAME,
@@ -44,6 +46,15 @@ ON_LIMIT = {"zh": 236, "zh-TW": 259, "en": 236, "ja": 317, "ko": 273, "ru": 257,
 # Opening sentence of a session without NekoPower: it carries the one sentence
 # about speaking before a tool call and nothing else of this.
 OFF_LIMIT = {"zh": 34, "zh-TW": 36, "en": 30, "ja": 52, "ko": 43, "ru": 40, "es": 36, "pt": 34}
+# The same opening as it goes out with the master switch off, the default state:
+# followed by SESSION_INIT_NO_NEKOPOWER, so she does not promise what no tool can do
+# (#4147). Measured on 2026-11-26 after it was cut down (Chinese 120, the note +86;
+# the first wording was +124), with two tokens to spare. Remeasured the same day when
+# the owner had her suggest switching NekoPower on and name the built-in tool, and
+# dropped the clause about task tools appearing later (Chinese still 120, the note +86).
+# Since the owner gave her the enable_nekopower tool (2026-11-27) its definition rides
+# along and is counted here too: Chinese 122 for the opening and note, 52 for the tool.
+OFF_WITH_NOTE_LIMIT = {"zh": 176, "zh-TW": 200, "en": 186, "ja": 278, "ko": 232, "ru": 215, "es": 209, "pt": 203}
 
 
 def _registered_tools(lang: str) -> list[dict]:
@@ -79,6 +90,27 @@ def test_opening_sentence_without_nekopower_stays_within_its_limit(lang):
     assert count_tokens(SESSION_INIT_PROMPT[lang]) <= OFF_LIMIT[lang]
 
 
+def _enable_tool_definition(lang: str) -> dict:
+    """enable_nekopower as a session with the master switch off registers and sends it."""
+    manager = object.__new__(ToolCallingMixin)
+    manager.user_language = lang
+    manager.tool_registry = ToolRegistry()
+    manager.agent_flags = {"agent_enabled": False}
+    manager._is_agent_enabled = lambda: False
+    manager._register_task_tools()
+    tool = manager.tool_registry.get(ENABLE_NEKOPOWER_TOOL_NAME)
+    assert tool is not None
+    return tool.to_openai_chat()
+
+
+@pytest.mark.parametrize("lang", LANGUAGES)
+def test_opening_with_the_master_switch_off_stays_within_its_limit(lang):
+    opening = count_tokens(SESSION_INIT_PROMPT[lang] + SESSION_INIT_NO_NEKOPOWER[lang])
+    definition = count_tokens(_compact(_enable_tool_definition(lang)))
+
+    assert opening + definition <= OFF_WITH_NOTE_LIMIT[lang], (lang, opening, definition)
+
+
 @pytest.mark.parametrize("lang", LANGUAGES)
 def test_both_opening_sentences_end_with_the_same_sentence_about_speaking_first(lang):
     plain, agent = SESSION_INIT_PROMPT[lang], SESSION_INIT_PROMPT_AGENT[lang]
@@ -100,6 +132,8 @@ def test_both_opening_sentences_end_with_the_same_sentence_about_speaking_first(
     [
         SESSION_INIT_PROMPT,
         SESSION_INIT_PROMPT_AGENT,
+        SESSION_INIT_NO_NEKOPOWER,
+        ENABLE_NEKOPOWER_TOOL_DESCRIPTION,
         DISPATCH_TOOL_DESCRIPTION,
         DISPATCH_TOOL_TASK_DESCRIPTION,
         QUERY_TOOL_DESCRIPTION,

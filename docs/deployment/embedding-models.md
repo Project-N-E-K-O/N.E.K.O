@@ -61,7 +61,7 @@ Source runs use this bundled development cache when the user's app-data profile 
 
 The cross-platform nightly workflow (`.github/workflows/build-desktop.yml`) builds the backend with Nuitka on Windows, macOS, and Linux. Before invoking Nuitka it runs `scripts/prepare_embedding_model.py` against the pinned `EMBEDDING_MODEL_REVISION`, warms the `tiktoken` o200k_base cache into `data/tiktoken_cache/`, and bundles both directories into the standalone artifact. After build it verifies that every required embedding file (`tokenizer.json`, both fp32 and int8 ONNX variants, and their `*.onnx_data` sidecars) is present and non-empty, and that the tiktoken cache has at least one blob.
 
-`specs/launcher.spec` declares the same `data/embedding_models/` and `data/tiktoken_cache/` directories, so a manual PyInstaller run can match the nightly's offline behavior — but only if both directories were populated beforehand. Run `scripts/prepare_embedding_model.py` to fill the embedding profile, and warm the tiktoken cache with:
+A local Nuitka build (see the Nuitka packaging page) bundles the same `data/embedding_models/` and `data/tiktoken_cache/` directories, so it can match the nightly's offline behavior — but only if both directories were populated beforehand. Run `scripts/prepare_embedding_model.py` to fill the embedding profile, and warm the tiktoken cache with:
 
 ```bash
 mkdir -p data/tiktoken_cache
@@ -69,4 +69,21 @@ TIKTOKEN_CACHE_DIR="$(pwd)/data/tiktoken_cache" \
   uv run python -c "import tiktoken; tiktoken.get_encoding('o200k_base')"
 ```
 
-The spec file refuses to build when `data/embedding_models/` is present but `onnxruntime` / `tokenizers` cannot be collected — shipping weights without the runtime that loads them would silently sticky-disable vectors at first use.
+On Windows, run the same warm-up in PowerShell:
+
+```powershell
+New-Item -ItemType Directory -Force data/tiktoken_cache | Out-Null
+$prevTiktokenCacheDir = $env:TIKTOKEN_CACHE_DIR
+try {
+    $env:TIKTOKEN_CACHE_DIR = "$(Get-Location)\data\tiktoken_cache"
+    uv run python -c "import tiktoken; tiktoken.get_encoding('o200k_base')"
+} finally {
+    if ($null -eq $prevTiktokenCacheDir) {
+        Remove-Item Env:TIKTOKEN_CACHE_DIR -ErrorAction SilentlyContinue
+    } else {
+        $env:TIKTOKEN_CACHE_DIR = $prevTiktokenCacheDir
+    }
+}
+```
+
+`scripts/check_nuitka_dist.py` verifies `tokenizer.json` and the INT8 model with its sidecar in the finished distribution (not the FP32 files, which only CI enforces), and does not check the tiktoken cache or the inference modules compiled into the executable. After a local build, check that `data/tiktoken_cache/` in the runtime directory holds at least one blob (the workflow makes the same check) and start the app once to confirm vector memory loads: shipping weights without the runtime that loads them would silently sticky-disable vectors at first use.

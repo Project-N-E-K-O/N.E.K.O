@@ -30,20 +30,42 @@ make_home() {
     state="$home/.local/share/N.E.K.O"
     # 目录名必须与 storage_roots.py 一致（character_cards 不是 characters，
     # .cloudsave_staging 带点），否则测试会"验证"一个不存在的布局。
-    mkdir -p "$state/config" "$state/memory" "$state/knowledge" "$state/plugins" \
+    mkdir -p "$state/config" "$state/memory" "$state/chat_sync" "$state/knowledge" \
+             "$state/nekopower/task_agent_space" "$state/nekopower/task_agents/agent1" \
+             "$state/plugins" "$state/plugin_shared" \
              "$state/live2d" "$state/vrm" "$state/mmd" "$state/pngtuber" \
-             "$state/avatar_tools" "$state/workshop" "$state/character_cards" \
-             "$state/card_faces" "$state/state" "$state/cloudsave" \
-             "$state/.cloudsave_staging" "$state/cloudsave_backups" \
+             "$state/emote_templates" \
+             "$state/avatar_tools" "$state/chat_avatars" "$state/workshop" \
+             "$state/theater" "$state/jukebox" "$state/watch_together" \
+             "$state/character_cards" "$state/card_faces" \
+             "$state/runtimes" "$state/embedding_models" "$state/state" \
+             "$state/cloudsave" "$state/.cloudsave_staging" "$state/cloudsave_backups" \
              "$state/.neko-plugin-installations/demo/vendor" "$home/ssl"
-    printf 'core\n'   > "$state/config/core_config.json"
-    printf 'cat\n'    > "$state/character_cards/cat.json"
-    printf 'model\n'  > "$state/live2d/model.moc3"
-    printf 'pack\n'   > "$state/workshop/pack.json"
-    printf 'recent\n' > "$state/memory/recent.json"
-    printf 'facts\n'  > "$state/memory/facts.json"
-    printf 'secret\n' > "$state/instance_access.key"
-    printf 'cert\n'   > "$home/ssl/N.E.K.O.crt"
+    printf 'core\n'      > "$state/config/core_config.json"
+    printf 'sync\n'      > "$state/chat_sync/sync.db"
+    printf 'ledger\n'    > "$state/nekopower/ledger.db"
+    printf '{}\n'        > "$state/nekopower/role_models.json"
+    printf '{}\n'        > "$state/nekopower/usage_limit.json"
+    printf '{}\n'        > "$state/nekopower/landing.json"
+    printf 'space\n'     > "$state/nekopower/task_agent_space/rules.md"
+    printf 'scratch\n'   > "$state/nekopower/task_agents/agent1/secret.txt"
+    printf 'tpl\n'       > "$state/emote_templates/tpl.zip"
+    printf 'shared\n'    > "$state/plugin_shared/data.json"
+    printf 'lock\n'      > "$state/plugins.lock.json"
+    printf 'slock\n'     > "$state/plugins.0123456789abcdef.lock.json"
+    printf 'cat\n'       > "$state/character_cards/cat.json"
+    printf 'avatar\n'    > "$state/chat_avatars/a.png"
+    printf 'model\n'     > "$state/live2d/model.moc3"
+    printf 'pack\n'      > "$state/workshop/pack.json"
+    printf 'theater\n'   > "$state/theater/scene.json"
+    printf 'jukebox\n'   > "$state/jukebox/list.json"
+    printf 'watch\n'     > "$state/watch_together/lib.json"
+    printf 'runtime\n'   > "$state/runtimes/ocr.bin"
+    printf 'embed\n'     > "$state/embedding_models/model.bin"
+    printf 'recent\n'    > "$state/memory/recent.json"
+    printf 'facts\n'     > "$state/memory/facts.json"
+    printf 'secret\n'    > "$state/instance_access.key"
+    printf 'cert\n'      > "$home/ssl/N.E.K.O.crt"
     # 可重建的东西：必须被排除
     printf 'big\n'    > "$state/.neko-plugin-installations/demo/vendor/lib.py"
     mkdir -p "$state/memory/__pycache__"
@@ -78,14 +100,31 @@ if sh "$BACKUP" --home "$WORK/t2home" --out "$WORK/t2out" --no-stop >"$WORK/t2.l
         # 覆盖每一类用户资产：配置、角色卡、记忆、模型、工坊、密钥、证书。
         # 少一类就是"恢复了但东西没了"，而这正是评审抓到的原始问题。
         for want in .local/share/N.E.K.O/config/core_config.json \
+                    .local/share/N.E.K.O/chat_sync/sync.db \
+                    .local/share/N.E.K.O/nekopower/ledger.db \
+                    .local/share/N.E.K.O/nekopower/role_models.json \
+                    .local/share/N.E.K.O/nekopower/usage_limit.json \
+                    .local/share/N.E.K.O/nekopower/landing.json \
+                    .local/share/N.E.K.O/nekopower/task_agent_space/rules.md \
+                    .local/share/N.E.K.O/plugin_shared/data.json \
+                    .local/share/N.E.K.O/plugins.lock.json \
+                    .local/share/N.E.K.O/plugins.0123456789abcdef.lock.json \
                     .local/share/N.E.K.O/character_cards/cat.json \
-                    .local/share/N.E.K.O/memory/facts.json \
+                    .local/share/N.E.K.O/chat_avatars/a.png \
                     .local/share/N.E.K.O/live2d/model.moc3 \
+                    .local/share/N.E.K.O/emote_templates/tpl.zip \
+                    .local/share/N.E.K.O/memory/facts.json \
                     .local/share/N.E.K.O/workshop/pack.json \
+                    .local/share/N.E.K.O/theater/scene.json \
+                    .local/share/N.E.K.O/jukebox/list.json \
+                    .local/share/N.E.K.O/watch_together/lib.json \
+                    .local/share/N.E.K.O/runtimes/ocr.bin \
+                    .local/share/N.E.K.O/embedding_models/model.bin \
                     .local/share/N.E.K.O/instance_access.key \
                     ssl/N.E.K.O.crt; do
             printf '%s\n' "$entries" | grep -qF "$want" || fail "主副本缺失: $want"
         done
+        printf '%s\n' "$entries" | grep -qF 'nekopower/task_agents/' && fail "nekopower/task_agents 不应被打包" || pass "nekopower/task_agents 已正确排除"
         # 插件 vendor/ 是插件的 Python 依赖，容器启动时不会重建：默认必须备份，
         # 否则恢复出来的插件会报依赖缺失并被跳过。
         printf '%s\n' "$entries" | grep -qF 'vendor' \
@@ -125,11 +164,58 @@ else
     fail "同一秒内连续两次备份只留下 $both 份（归档名冲突，前一份被覆盖）"
 fi
 sh "$BACKUP" --home "$WORK/t4home" --out "$WORK/t4out" --no-stop --keep 1 >/dev/null 2>&1
-left=$(ls -1 "$WORK/t4out"/neko-backup-*.tar.gz 2>/dev/null | wc -l | tr -d ' ')
+left=$(ls -1 "$WORK/t4out"/neko-backup-neko-*.tar.gz 2>/dev/null | wc -l | tr -d ' ')
 if [ "$left" = "1" ]; then
     pass "--keep 1 之后只剩 1 份"
 else
     fail "--keep 1 之后剩了 $left 份"
+fi
+
+echo
+echo "== T4b 多实例轮转互不误删（neko vs neko-2 前缀隔离）=="
+make_home "$WORK/t4b_home1"
+make_home "$WORK/t4b_home2"
+sh "$BACKUP" --container neko --home "$WORK/t4b_home1" --out "$WORK/t4bout" --no-stop >/dev/null 2>&1
+sh "$BACKUP" --container neko-2 --home "$WORK/t4b_home2" --out "$WORK/t4bout" --no-stop >/dev/null 2>&1
+sh "$BACKUP" --container neko --home "$WORK/t4b_home1" --out "$WORK/t4bout" --no-stop --keep 1 >/dev/null 2>&1
+c1_count=$(ls -1 "$WORK/t4bout"/neko-backup-neko-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]T*.tar.gz 2>/dev/null | wc -l | tr -d ' ')
+c2_count=$(ls -1 "$WORK/t4bout"/neko-backup-neko-2-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]T*.tar.gz 2>/dev/null | wc -l | tr -d ' ')
+if [ "$c1_count" = "1" ] && [ "$c2_count" = "1" ]; then
+    pass "neko --keep 1 未误删 neko-2 归档"
+else
+    fail "多实例轮转发生串删: neko=$c1_count neko-2=$c2_count"
+fi
+
+echo
+echo "== T4c 输出目录含空格时的 --keep 轮转 =="
+space_out="$WORK/out with spaces"
+mkdir -p "$space_out"
+old_space_archive="$space_out/neko-backup-neko-20250101T000000Z-100.tar.gz"
+: > "$old_space_archive"
+: > "$old_space_archive.sha256"
+: > "$old_space_archive.manifest.txt"
+touch -t 202501010000 "$old_space_archive"
+sh "$BACKUP" --container neko --home "$WORK/t4home" --out "$space_out" --no-stop --keep 1 >/dev/null 2>&1
+space_count=$(ls -1 "$space_out"/neko-backup-neko-*.tar.gz 2>/dev/null | wc -l | tr -d ' ')
+if [ "$space_count" = "1" ] && [ ! -e "$old_space_archive" ] && [ ! -e "$old_space_archive.sha256" ] && [ ! -e "$old_space_archive.manifest.txt" ]; then
+    pass "含空格 --out 目录的 --keep 1 轮转正确删除旧归档"
+else
+    fail "含空格 --out 目录轮转失败 (count=$space_count)"
+fi
+
+echo
+echo "== T4d 插件锁文件名含空格时的打包 =="
+make_home "$WORK/t4dhome"
+: > "$WORK/t4dhome/.local/share/N.E.K.O/plugins.my role.lock.json"
+if sh "$BACKUP" --container neko --home "$WORK/t4dhome" --out "$WORK/t4dout" --no-stop >/dev/null 2>&1; then
+    t4d_archive=$(ls "$WORK/t4dout"/neko-backup-neko-*.tar.gz 2>/dev/null | head -1)
+    if [ -n "$t4d_archive" ] && tar -tzf "$t4d_archive" | grep -qF '.local/share/N.E.K.O/plugins.my role.lock.json'; then
+        pass "含空格插件锁文件打包成功"
+    else
+        fail "归档中缺少含空格插件锁文件"
+    fi
+else
+    fail "含空格插件锁文件导致备份失败"
 fi
 
 echo
@@ -216,6 +302,120 @@ if [ -n "$archive" ]; then
     fi
 else
     fail "--slim 没有生成归档"
+fi
+
+echo
+echo "== T12 冷备与看门狗协调及运行状态复核（F0105）=="
+make_home "$WORK/t12home"
+mock_bin="$WORK/t12bin"
+mkdir -p "$mock_bin"
+cat > "$mock_bin/docker" <<'MOCKDOCKER'
+#!/bin/sh
+state_file="$MOCK_DOCKER_STATE"
+case "$1" in
+    inspect)
+        cat "$state_file"
+        ;;
+    stop)
+        printf 'false\n' > "$state_file"
+        ;;
+    start)
+        printf 'true\n' > "$state_file"
+        ;;
+    *)
+        exit 0
+        ;;
+esac
+MOCKDOCKER
+chmod +x "$mock_bin/docker"
+
+# (a) Backup creates disabled when absent and removes it on exit, while restarting container
+make_watchdog_backup() {
+    sed "s|^WATCHDOG_STATE_DIR=/opt/neko\$|WATCHDOG_STATE_DIR=$1|" "$BACKUP" > "$2"
+    grep -q "^WATCHDOG_STATE_DIR=$1\$" "$2" || { echo "failed to patch WATCHDOG_STATE_DIR" >&2; exit 1; }
+}
+
+wd_a="$WORK/t12wd_a"
+mkdir -p "$wd_a"
+make_watchdog_backup "$wd_a" "$WORK/backup_t12a.sh"
+printf 'true\n' > "$WORK/t12state_a"
+if PATH="$mock_bin:$PATH" MOCK_DOCKER_STATE="$WORK/t12state_a" \
+    sh "$WORK/backup_t12a.sh" --home "$WORK/t12home" --out "$WORK/t12out_a" >/dev/null 2>&1; then
+    if [ ! -e "$wd_a/disabled" ] && [ "$(cat "$WORK/t12state_a")" = "true" ]; then
+        pass "冷备新建 disabled 并在重启容器后清理"
+    else
+        fail "冷备后 disabled 未清理或容器未重启"
+    fi
+else
+    fail "带看门狗协调的冷备失败"
+fi
+
+# (b) Pre-existing disabled file is preserved on exit
+wd_b="$WORK/t12wd_b"
+mkdir -p "$wd_b"
+make_watchdog_backup "$wd_b" "$WORK/backup_t12b.sh"
+: > "$wd_b/disabled"
+printf 'true\n' > "$WORK/t12state_b"
+if PATH="$mock_bin:$PATH" MOCK_DOCKER_STATE="$WORK/t12state_b" \
+    sh "$WORK/backup_t12b.sh" --home "$WORK/t12home" --out "$WORK/t12out_b" >/dev/null 2>&1; then
+    if [ -e "$wd_b/disabled" ]; then
+        pass "冷备保留了预先存在的 disabled 文件"
+    else
+        fail "冷备误删了预先存在的 disabled 文件"
+    fi
+else
+    fail "预置 disabled 时冷备失败"
+fi
+
+# (c) Container resuming mid-tar invalidates backup
+wd_c="$WORK/t12wd_c"
+mkdir -p "$wd_c"
+make_watchdog_backup "$wd_c" "$WORK/backup_t12c.sh"
+mock_bin_race="$WORK/t12bin_race"
+mkdir -p "$mock_bin_race"
+cat > "$mock_bin_race/docker" <<'MOCKRACE'
+#!/bin/sh
+count_file="$MOCK_RACE_COUNT"
+n=0
+[ -f "$count_file" ] && n=$(cat "$count_file")
+n=$((n + 1))
+printf '%s\n' "$n" > "$count_file"
+case "$1" in
+    inspect)
+        # 1st: initial=true, 2nd: after stop=false, 3rd: pre-tar=false, 4th: post-tar=true
+        if [ "$n" -eq 1 ] || [ "$n" -ge 5 ]; then
+            printf 'true\n'
+        else
+            printf 'false\n'
+        fi
+        ;;
+    stop|start)
+        ;;
+esac
+MOCKRACE
+chmod +x "$mock_bin_race/docker"
+printf '0\n' > "$WORK/t12race_cnt"
+if PATH="$mock_bin_race:$PATH" MOCK_RACE_COUNT="$WORK/t12race_cnt" \
+    sh "$WORK/backup_t12c.sh" --home "$WORK/t12home" --out "$WORK/t12out_c" >/dev/null 2>&1; then
+    fail "打包期间容器运行竟未报错"
+else
+    left_c=$(ls -1 "$WORK/t12out_c"/neko-backup-*.tar.gz 2>/dev/null | wc -l | tr -d ' ')
+    if [ "$left_c" = "0" ] && [ ! -e "$wd_c/disabled" ]; then
+        pass "打包期间容器重启导致冷备作废并删除残档"
+    else
+        fail "打包期间容器重启未作废归档 (left=$left_c)"
+    fi
+fi
+
+# (d) Symlinked/inaccessible watchdog state dir fails cold backup cleanly
+ln -s "$wd_a" "$WORK/t12wd_link"
+make_watchdog_backup "$WORK/t12wd_link" "$WORK/backup_t12d.sh"
+printf 'true\n' > "$WORK/t12state_d"
+if PATH="$mock_bin:$PATH" MOCK_DOCKER_STATE="$WORK/t12state_d" \
+    sh "$WORK/backup_t12d.sh" --home "$WORK/t12home" --out "$WORK/t12out_d" >/dev/null 2>&1; then
+    fail "不安全的看门狗状态目录未拒绝冷备"
+else
+    pass "不安全的看门狗状态目录拒绝冷备"
 fi
 
 echo

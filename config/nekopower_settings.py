@@ -282,6 +282,12 @@ UNDER_WAY_READ_ENDED_ROWS = 4
 """How many of her commissions that ended lately (``FOLLOW_UP_RECENT_SECONDS``)
 it is shown, newest first: what a sentence may go on with."""
 
+RECEIPT_LEFT_RUNNING_TITLES = 3
+"""How many of what goes on, not stopped, a stop's receipt names: a stop of the
+items it names while more of their project's, familiar's or plugin's work was
+left out of the reading (past ``UNDER_WAY_READ_ROWS``). Past this many, the
+receipt says how many there are."""
+
 UNDER_WAY_READ_LINE_MAX_TOKENS = 120
 """How much of each item it is shown, besides its question: the title, its
 project, the familiar on it, what its members are at, what came of it."""
@@ -880,6 +886,13 @@ BESIDE_JUDGE_AT_HAND_MAX_TOKENS = 400
 (``LexicalDecisionModel.goes_on_with``): more than that, and it is not asked,
 the commission waiting for the member as it would have."""
 
+DECISION_QUESTION_TIMEOUT_SECONDS = 5.0
+"""How long a decision question (on a native decision model, or rehosted on a
+chat model that returns token probabilities) may take before the small model's
+chat prompt is asked instead (``ConfiguredDecisionLLM.decide``): the coarse
+screen, the side question, where a commission belongs and the turn check's
+second look. Decision calls answered in 0.1-2 s in the evaluation."""
+
 SIDE_QUESTION_OUTPUT_MAX_TOKENS = 64
 """What the small model may write when it is asked whether a commission is a
 side question (``LexicalDecisionModel.side_question``): one line of JSON, with
@@ -888,13 +901,11 @@ room to spare."""
 TASK_AGENT_FORK_CONTINUE_HOT_SECONDS = 300.0
 """A session whose last model request was made this recently has the head of
 its requests in a provider's cache, most likely (Anthropic keeps it five
-minutes, OpenAI five to ten): a copy reads it from there, whatever its length."""
-
-TASK_AGENT_FORK_CONTINUE_COLD_MAX_TOKENS = 60000
-"""Past that time, a session whose conversation is longer than this is not
-copied, and the commission waits for it: every request of the copy would send
-all of it at full price, where waiting sends it from the cache of the
-commission at work before it."""
+minutes, OpenAI five to ten): a copy reads it from there, whatever its length.
+Past that time it is not copied however short it is, and the commission waits
+for it (owner decision D19): every request of the copy would send all of it at
+full price, where waiting sends it from the cache of the commission at work
+before it."""
 
 TASK_AGENT_FORK_HAND_BACK_TOOLS = ("write", "edit", "bash", "pwsh", "subagent", "capability_call")
 """The tools whose call in a copy hands the commission back to the session
@@ -1395,8 +1406,39 @@ SPACE_PROJECT_IDLE_SECONDS = 30 * 24 * 3600.0
 
 SPACE_TRANSCRIPT_KEPT_SECONDS = 30 * 24 * 3600.0
 """How long after a commission ended what was said in its session
-(``transcript.jsonl`` and ``outputs/``) is kept. Its working directory is
-never removed, nor are its review and the entries made from it."""
+(``transcript.jsonl`` and ``outputs/``) is kept. Its review and the entries
+made from it are kept permanently; its working directory has its own
+retention setting (``SPACE_WORK_DIR_KEPT_DAYS``)."""
+
+SPACE_WORK_DIR_KEPT_DAYS = 30
+"""Default days after a session was last active (and its files last changed)
+before its host-owned ``work/`` directory is automatically removed during
+background upkeep. Configurable by the user in ``storage.json``."""
+
+SPACE_WORKTREE_KEPT_DAYS = 14
+"""Default days after a left-over git worktree (``held``, ``unlanded`` or
+``kept``) was last updated (and its files last changed) before it is
+automatically removed during background upkeep. Configurable in ``storage.json``."""
+
+STORAGE_RETENTION_MIN_DAYS = 1
+STORAGE_RETENTION_MAX_DAYS = 365
+"""Bounds for user-configured retention days in ``storage.json``."""
+
+STORAGE_SCAN_BUDGET_SECONDS = 3.0
+"""Total wall-clock budget for measuring directory sizes in ``GET /console/storage``."""
+
+STORAGE_ITEM_BUDGET_SECONDS = 0.25
+"""Per-directory measurement budget when scanning many work directories or worktrees,
+so a single huge folder does not starve the remaining items."""
+
+STORAGE_AUTO_CLEAN_SCAN_SECONDS = 30.0
+"""Per-directory freshness scan budget during background upkeep (``reap_work_dirs``
+and ``reap_worktrees``). Runs off the request path so large folders such as
+``node_modules`` or ``.venv`` can be scanned completely before automatic cleanup."""
+
+STORAGE_MAX_ITEMS = 200
+"""Most items returned per cleanable section (worktrees, working directories) in
+``GET /console/storage``; additional items are counted in ``more``."""
 
 SPACE_UPKEEP_INTERVAL_SECONDS = 6 * 3600.0
 """Least time between two rounds of tidying the space (archiving idle
@@ -1707,6 +1749,16 @@ BROWSER_SNAPSHOT_MAX_TOKENS = 3000
 """Cap on one page snapshot handed to a task agent. A longer one is cut and
 ends with a line saying so and how to see the rest."""
 
+DESKTOP_UI_TREE_MAX_TOKENS = 1200
+"""Cap on one Windows UI Automation control tree returned by ``computer``
+action ``ui_tree``. A longer tree is cut by line and says which offset reads
+on."""
+
+DESKTOP_SCREENSHOT_UI_TREE_MAX_TOKENS = 600
+"""Cap on the compact Windows UI Automation control tree appended to desktop
+screenshots and uid-driven actions so the model can act by control uid without
+an extra round trip."""
+
 BROWSER_DIALOG_TEXT_MAX_TOKENS = 200
 BROWSER_PAGE_URL_MAX_TOKENS = 40
 """Caps on text a page writes that goes into a tool result outside the
@@ -1740,6 +1792,13 @@ HOST_SHUTDOWN_BUDGET_SECONDS = 4.0
 on with the rest of its own shutdown. The host's steps keep running after
 that until the process exits; nothing is lost by it, because every status is
 already in the ledger and unsent reports go out with the next start."""
+
+AGENT_CONNECTION_DRAIN_SECONDS = 1.0
+"""How long the agent server's uvicorn drains open HTTP connections before
+running lifespan shutdown hooks (including the browser shutdown timer).
+Matches ``MERGED_CONNECTION_DRAIN_TIMEOUT`` so standalone and multiprocess
+launches on macOS and Linux reach the browser kill timer well within the
+launcher's 8-second graceful shutdown budget."""
 
 BROWSER_KILL_AT_SHUTDOWN_SECONDS = 5.0
 """How long after the agent process began to shut down the browser the
@@ -1984,11 +2043,11 @@ DSH_CLOSE_SECONDS = 15.0
 """How long a dsh process gets to exit after it was told to before it is
 killed; closing a session waits this long too."""
 
-DSH_MODEL_RETRIES = 2
+DSH_MODEL_RETRIES = 1
 """How often dsh repeats a model request that failed in a way worth
 repeating; the built-in runtime's ``ModelConfig.max_retries``."""
 
-DSH_FORWARD_CONNECT_SECONDS = 30.0
+DSH_FORWARD_CONNECT_SECONDS = 15.0
 """How long the model endpoint gets to accept a forwarded request. How long
 it may take to send the next piece of its answer is the session's
 ``ModelConfig.request_timeout_seconds``."""

@@ -396,3 +396,65 @@ async def test_config_template_set_does_not_use_profile_write_api() -> None:
 
     cfg = core_config.PluginConfig(_CtxSetFail())
     await cfg.set("feature.flag", True)
+
+
+@pytest.mark.asyncio
+async def test_profile_update_targets_resolved_registered_name_for_numeric_alias() -> None:
+    class _CtxNumericAlias(_CtxFull):
+        def __init__(self) -> None:
+            super().__init__()
+            self.profile_cfgs = {"1": {"a": 1}}
+            self.profiles_state = {
+                "config_profiles": {
+                    "active": "1",
+                    "files": {"1": {"path": "profiles/one.toml"}},
+                }
+            }
+            self.upsert_calls: list[tuple[str, dict[str, object], bool]] = []
+
+        async def get_own_profile_config(self, profile_name: str, timeout: float = 5.0):
+            del timeout
+            files = self.profiles_state["config_profiles"]["files"]
+            if profile_name in files:
+                resolved = profile_name
+            elif str(int(profile_name)) in files:
+                resolved = str(int(profile_name))
+            else:
+                resolved = None
+            return {
+                "data": {
+                    "profile": {"name": profile_name, "resolved_name": resolved},
+                    "config": dict(self.profile_cfgs.get(resolved or profile_name, {})),
+                }
+            }
+
+        async def upsert_own_profile_config(
+            self,
+            profile_name: str,
+            config: dict[str, object],
+            *,
+            make_active: bool = False,
+            timeout: float = 10.0,
+        ):
+            self.upsert_calls.append((profile_name, dict(config), make_active))
+            return await super().upsert_own_profile_config(
+                profile_name,
+                config,
+                make_active=make_active,
+                timeout=timeout,
+            )
+
+    ctx = _CtxNumericAlias()
+    cfg = core_config.PluginConfig(ctx)
+    updated = await cfg.profile_update("01", {"b": 2})
+    assert updated == {"a": 1, "b": 2}
+    assert ctx.upsert_calls == [("1", {"a": 1, "b": 2}, False)]
+    assert set(ctx.profiles_state["config_profiles"]["files"]) == {"1"}
+
+    # Explicit create with "01" still creates distinct key "01", and subsequent updates hit "01".
+    await cfg.profile_create("01", {"x": 10})
+    assert set(ctx.profiles_state["config_profiles"]["files"]) == {"1", "01"}
+    updated_exact = await cfg.profile_update("01", {"y": 20})
+    assert updated_exact == {"x": 10, "y": 20}
+    assert ctx.upsert_calls[-1] == ("01", {"x": 10, "y": 20}, False)
+    assert ctx.profile_cfgs["1"] == {"a": 1, "b": 2}

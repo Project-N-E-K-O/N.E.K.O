@@ -11,6 +11,35 @@ from app.main_server import web_app
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('method,path,timeout', [('POST', 'knowledge/publish', 245.0),
+                                               ('GET', 'knowledge/status', 30.0), ('POST', 'oauth/start', 30.0)])
+async def test_only_knowledge_publication_proxy_waits_for_its_full_operation(monkeypatch, method, path, timeout):
+    real_client = httpx.AsyncClient
+    timeouts = []
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *_args):
+            return None
+        async def request(self, *_args, **kwargs):
+            content = kwargs['content']
+            if not isinstance(content, bytes):
+                async for _block in content:
+                    pass
+            return httpx.Response(200, content=b'{}')
+    def upstream(**kwargs):
+        timeouts.append(kwargs['timeout'].read)
+        return FakeClient()
+    monkeypatch.setattr(web_app.httpx, 'AsyncClient', upstream)
+    monkeypatch.setattr(web_app, '_resolve_user_plugin_base', lambda: 'http://127.0.0.1:48916')
+    app = FastAPI()
+    app.add_api_route('/market/{path:path}', web_app.proxy_user_plugin_market_bridge, methods=['GET', 'POST'])
+    async with real_client(transport=httpx.ASGITransport(app=app), base_url='http://127.0.0.1') as client:
+        response = await client.request(method, '/market/' + path, content=b'{}' if method == 'POST' else b'')
+    assert response.status_code == 200 and timeouts == [timeout]
+
+
+@pytest.mark.asyncio
 async def test_market_proxy_preserves_query_token_and_authorization(monkeypatch):
     import utils.instance_access as access
 
@@ -715,3 +744,141 @@ async def test_market_proxy_slow_internal_upload_survives_proof_expiry_and_revok
         assert spoofed_resp.status_code == 401
         assert spoofed_resp.json() == {"detail": "instance_authorization_required"}
         assert plugin_hits == []
+
+
+def _proxy_only_app(methods: list[str]) -> FastAPI:
+    app = FastAPI()
+    app.add_api_route("/market/{path:path}", web_app.proxy_user_plugin_market_bridge, methods=methods)
+    return app
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "body",
+    [b'{"ok":true}', bytes(range(256)), b"x" * 4096],
+    ids=["json", "non-utf8-binary", "4k"],
+)
+async def test_market_proxy_drops_content_encoding_of_the_decompressed_upstream_body(monkeypatch, body):
+    # httpx decompresses the upstream gzip body, so forwarding the upstream
+    # Content-Encoding would make the browser decode it a second time
+    # (ERR_CONTENT_DECODING_FAILED).
+    import gzip
+
+    real_client = httpx.AsyncClient
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=gzip.compress(body),
+            headers={"Content-Encoding": "gzip", "Content-Type": "application/json", "Cache-Control": "no-store"},
+        )
+
+    def client_factory(*args, **kwargs):
+        kwargs["transport"] = httpx.MockTransport(upstream)
+        return real_client(*args, **kwargs)
+
+    monkeypatch.setattr(web_app, "_resolve_user_plugin_base", lambda: "http://127.0.0.1:48916")
+    monkeypatch.setattr(web_app.httpx, "AsyncClient", client_factory)
+    async with real_client(
+        transport=httpx.ASGITransport(app=_proxy_only_app(["GET"])),
+        base_url="http://127.0.0.1:48911",
+    ) as client:
+        # Read raw bytes: letting the test client auto-decode would turn a
+        # regression into a DecodingError instead of a readable assertion.
+        async with client.stream("GET", "/market/encoding-probe") as response:
+            raw_body = b"".join([chunk async for chunk in response.aiter_raw()])
+
+    assert response.status_code == 200
+    assert raw_body == body
+    assert "content-encoding" not in response.headers
+    assert response.headers["cache-control"] == "no-store"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("path", "request_headers", "upstream_headers"),
+    [
+        ("/market/status?x=1", {}, {}),
+        (
+            "/market/feedback?kind=issue",
+            {"Authorization": "Bearer bridge-token", "X-Market-Feedback-Session": "test-session"},
+            {
+                "X-Market-Feedback-Session": "test-session",
+                "X-Market-Web-Url": "https://market.example.com",
+                "Cache-Control": "no-store",
+            },
+        ),
+    ],
+)
+async def test_market_proxy_uses_runtime_user_plugin_server_port(monkeypatch, path, request_headers, upstream_headers):
+    real_client = httpx.AsyncClient
+    seen_urls: list[str] = []
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        seen_urls.append(str(request.url))
+        for name, value in request_headers.items():
+            assert request.headers[name] == value
+        return httpx.Response(200, json={"ok": True}, headers=upstream_headers)
+
+    def client_factory(*args, **kwargs):
+        kwargs["transport"] = httpx.MockTransport(upstream)
+        return real_client(*args, **kwargs)
+
+    # The real resolver, not a stub: the port comes from the environment at
+    # request time.
+    monkeypatch.setenv("NEKO_USER_PLUGIN_SERVER_PORT", "49123")
+    monkeypatch.setattr(web_app.httpx, "AsyncClient", client_factory)
+    async with real_client(
+        transport=httpx.ASGITransport(app=_proxy_only_app(["GET"])),
+        base_url="http://127.0.0.1:48911",
+    ) as client:
+        response = await client.get(path, headers=request_headers)
+
+    assert response.status_code == 200
+    assert seen_urls == [f"http://127.0.0.1:49123{path}"]
+    for name, value in upstream_headers.items():
+        assert response.headers[name] == value
+
+
+@pytest.mark.asyncio
+async def test_market_proxy_through_the_real_app_drops_content_encoding(monkeypatch):
+    # Same check as above, but through app.main_server.app and its middleware
+    # stack (host/origin guard, body limits): nothing on the way may put a
+    # Content-Encoding header back on the already-decompressed body.
+    import gzip
+
+    from app import main_server
+    from app.main_server import app as main_app
+
+    # The storage limited-mode guard is module state that a startup test on the
+    # same worker may leave on (409 storage_startup_blocked); this test is about
+    # the proxy, so it runs as after a completed startup.
+    monkeypatch.setattr(main_server, "_runtime_startup_init_completed", True)
+    monkeypatch.setattr(main_server, "_main_runtime_limited_mode_enabled", False)
+
+    real_client = httpx.AsyncClient
+    body = b'{"ok":true}'
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=gzip.compress(body),
+            headers={"Content-Encoding": "gzip", "Content-Type": "application/json"},
+        )
+
+    def client_factory(*args, **kwargs):
+        kwargs["transport"] = httpx.MockTransport(upstream)
+        return real_client(*args, **kwargs)
+
+    monkeypatch.setattr(web_app, "_resolve_user_plugin_base", lambda: "http://127.0.0.1:48916")
+    monkeypatch.setattr(web_app.httpx, "AsyncClient", client_factory)
+    async with real_client(
+        transport=httpx.ASGITransport(app=main_app),
+        base_url="http://127.0.0.1:48911",
+    ) as client:
+        async with client.stream("GET", "/market/encoding-probe") as response:
+            raw_body = b"".join([chunk async for chunk in response.aiter_raw()])
+
+    assert response.status_code == 200
+    assert raw_body == body
+    assert "content-encoding" not in response.headers

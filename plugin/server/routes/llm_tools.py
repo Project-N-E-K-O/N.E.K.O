@@ -156,12 +156,16 @@ async def llm_tool_callback(
         arguments = dict(arguments)
         # This reserved context comes from the host, never from model arguments.
         arguments["_ctx"] = {
-            "host_reply": dict(host_reply), "lanlan_name": host_reply.get("role"),
+            "host_reply": dict(host_reply),
+            "lanlan_name": host_reply.get("role"),
+            "channel": "chat_tool",
         }
-    elif isinstance(arguments.get("_ctx"), dict) and "host_reply" in arguments["_ctx"]:
+    elif "_ctx" in arguments:
+        raw_ctx = arguments.get("_ctx")
         arguments = dict(arguments)
-        arguments["_ctx"] = dict(arguments["_ctx"])
+        arguments["_ctx"] = dict(raw_ctx) if isinstance(raw_ctx, dict) else {}
         arguments["_ctx"].pop("host_reply", None)
+        arguments["_ctx"]["channel"] = "chat_tool"
     call_id = body.get("call_id") or ""
 
     # First sanity check: do we even know about this tool? Without this,

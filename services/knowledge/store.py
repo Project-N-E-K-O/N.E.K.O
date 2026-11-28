@@ -1,0 +1,1139 @@
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""SQLite index of installed packs (``knowledge.db``).
+
+Everything in this database is derived from ``registry.json`` and the raw
+files under ``packs/``; losing it costs a rebuild, never user data. All methods
+are synchronous and meant to run in a worker thread. Each call opens its own
+connection, so readers never share a connection with the single writer.
+"""
+
+from __future__ import annotations
+
+import json
+import hashlib
+import re
+import logging
+import sqlite3
+from collections import Counter
+from contextlib import contextmanager
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Callable, Collection, Iterable, Iterator, Mapping, Sequence
+
+import numpy as np
+
+from .chunking import MAX_EMBED_CHARS, MAX_HEADER_CHARS, KnowledgeChunk, derive_chunks
+from .models import KnowledgeEntry, KnowledgePack
+from .text import fts_match_expression, loose_surface, search_tokens, strict_surface, title_key
+
+# Tags compare like titles: width- and case-insensitive.
+tag_key = title_key
+
+logger = logging.getLogger("N.E.K.O.Knowledge")
+
+
+SCHEMA_VERSION = 4
+MAX_CHUNKS_PER_PACK = 10_000
+MAX_TOTAL_CHUNKS = 20_000
+MAX_EMBED_ATTEMPTS = 3
+_BUSY_TIMEOUT_SECONDS = 5.0
+
+_SCHEMA = (
+    "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+    "CREATE TABLE IF NOT EXISTS packs ("
+    " pack_id TEXT PRIMARY KEY, pack_sha256 TEXT NOT NULL,"
+    # How many search rows the import wrote, to tell a complete index from
+    # one that lost rows (see ``search_row_counts``).
+    " surfaces INTEGER NOT NULL DEFAULT 0)",
+    "CREATE TABLE IF NOT EXISTS entries ("
+    # AUTOINCREMENT: ids are never reused, so a vector snapshot loaded before
+    # a pack update can only miss rows, never point at an unrelated entry.
+    " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+    " pack_id TEXT NOT NULL,"
+    " title TEXT NOT NULL,"
+    " title_key TEXT NOT NULL,"
+    " terms_json TEXT NOT NULL,"
+    " tags_json TEXT NOT NULL,"
+    # Tags as compared (see tag_key), for exact tag lookups in SQL.
+    " tag_keys_json TEXT NOT NULL,"
+    " summary TEXT NOT NULL,"
+    " content TEXT NOT NULL,"
+    " disabled INTEGER NOT NULL DEFAULT 0,"
+    " UNIQUE (pack_id, title_key))",
+    "CREATE INDEX IF NOT EXISTS entries_pack_idx ON entries (pack_id, title_key)",
+    "CREATE TABLE IF NOT EXISTS surfaces ("
+    " surface TEXT NOT NULL,"
+    " entry_id INTEGER NOT NULL REFERENCES entries(id) ON DELETE CASCADE)",
+    "CREATE INDEX IF NOT EXISTS surfaces_idx ON surfaces (surface)",
+    "CREATE INDEX IF NOT EXISTS surfaces_entry_idx ON surfaces (entry_id)",
+    "CREATE VIRTUAL TABLE IF NOT EXISTS entries_fts USING fts5("
+    " tokens, tokenize='unicode61 remove_diacritics 2')",
+    "CREATE TABLE IF NOT EXISTS chunks ("
+    " id INTEGER PRIMARY KEY,"
+    " entry_id INTEGER NOT NULL REFERENCES entries(id) ON DELETE CASCADE,"
+    " pack_id TEXT NOT NULL,"
+    " chunk_index INTEGER NOT NULL,"
+    " text_hash TEXT NOT NULL,"
+    " embed_text TEXT NOT NULL,"
+    " model_id TEXT,"
+    " vector BLOB,"
+    " spec_sha256 TEXT,"
+    " attempts INTEGER NOT NULL DEFAULT 0)",
+    "CREATE TABLE IF NOT EXISTS vector_specs ("
+    " spec_sha256 TEXT PRIMARY KEY, model_id TEXT NOT NULL, specification TEXT NOT NULL)",
+    "CREATE INDEX IF NOT EXISTS chunks_pack_idx ON chunks (pack_id, model_id)",
+    "CREATE INDEX IF NOT EXISTS chunks_entry_idx ON chunks (entry_id)",
+)
+
+
+_REQUIRED_TABLES = frozenset({"meta", "packs", "entries", "surfaces", "entries_fts", "chunks", "vector_specs"})
+
+
+# Passive naming: a name is looked up among message spans of at most this
+# many characters, each starting and ending on a word or a CJK character.
+NAME_SPAN_MAX_CHARS = 40
+NAMED_CANDIDATES = 64
+_NAME_UNIT_RE = re.compile(
+    r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af\uf900-\ufaff]|[^\W_\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af\uf900-\ufaff]+|[^\w\s]+"
+)
+
+
+def _alnum_count(unit: str) -> int:
+    return sum(1 for ch in unit if ch.isalnum())
+
+
+class KnowledgeStoreError(Exception):
+    """The index could not be used as it is; the caller rebuilds it."""
+
+
+@dataclass(frozen=True, slots=True)
+class StoredEntry:
+    entry_id: int
+    pack_id: str
+    title: str
+    terms: dict[str, list[str]]
+    tags: list[str]
+    summary: str
+    content: str
+    disabled: bool
+
+
+@dataclass(frozen=True, slots=True)
+class VectorSnapshot:
+    model_id: str
+    entry_ids: np.ndarray
+    pack_ids: tuple[str, ...]
+    chunk_pack_index: np.ndarray
+    matrix: np.ndarray
+    chunk_indexes: np.ndarray | None = None
+    # (chunk id, blob) of stored vectors that were unusable; the service
+    # clears them under its write lock so they get computed again.
+    damaged: tuple[tuple[int, bytes], ...] = ()
+    # The indexed version of every pack when the vectors were read; ``None``
+    # when unknown.
+    pack_versions: dict[str, str] | None = None
+    # Actual encoder resources used by this matrix, beyond its profile name.
+    specification: dict | None = None
+
+
+def _row_to_entry(row: sqlite3.Row) -> StoredEntry:
+    return StoredEntry(
+        entry_id=int(row["id"]),
+        pack_id=str(row["pack_id"]),
+        title=str(row["title"]),
+        terms=json.loads(row["terms_json"]),
+        tags=json.loads(row["tags_json"]),
+        summary=str(row["summary"]),
+        content=str(row["content"]),
+        disabled=bool(row["disabled"]),
+    )
+
+
+def _entry_tokens(entry: KnowledgeEntry) -> str:
+    parts = [entry.title, entry.summary, entry.content]
+    for values in entry.terms.values():
+        parts.extend(values)
+    parts.extend(entry.tags)
+    return " ".join(search_tokens("\n".join(parts)))
+
+
+def _entry_surfaces(entry: KnowledgeEntry) -> set[str]:
+    """Strict (``s:``) and loose (``l:``) exact-match keys of an entry."""
+    values = [entry.title, *entry.terms.get("alias", ()), *entry.terms.get("recognition", ())]
+    surfaces = {f"s:{strict}" for strict in map(strict_surface, values) if strict}
+    surfaces |= {f"l:{loose}" for loose in map(loose_surface, values) if loose}
+    return surfaces
+
+
+def normalize_vector(values: Sequence[float]) -> bytes | None:
+    vector = np.asarray(values, dtype=np.float32)
+    if vector.ndim != 1 or vector.size == 0 or not np.all(np.isfinite(vector)):
+        return None
+    norm = float(np.linalg.norm(vector))
+    if norm <= 0.0:
+        return None
+    return (vector / norm).astype("<f4").tobytes()
+
+
+# Stored vectors are normalized on write; anything further off is damage.
+_UNIT_NORM_TOLERANCE = 1e-3
+
+
+def _is_unit_vector(blob: bytes) -> bool:
+    """Finite and of length one: lookups take the dot product as cosine."""
+    vector = np.frombuffer(blob, dtype="<f4")
+    if not np.isfinite(vector).all():
+        return False
+    return abs(float(np.linalg.norm(vector)) - 1.0) <= _UNIT_NORM_TOLERANCE
+
+
+def _plan_pack_chunks(
+    pack: KnowledgePack, *, fit: Callable[[str], bool] | None = None,
+    seed_vectors: Sequence[Mapping] = (), should_cancel: Callable[[], bool] | None = None,
+) -> Iterator[tuple[KnowledgeEntry, tuple[KnowledgeChunk, ...]]]:
+    """Share admission/install inputs; seeds must come from a validated archive."""
+    archived: dict[str, list[Mapping]] = {}
+    for row in seed_vectors:
+        archived.setdefault(row["entry_title"], []).append(row)
+    for entry in pack.entries:
+        if should_cancel is not None and should_cancel():
+            raise InterruptedError("cancelled")
+        rows = sorted(archived.get(entry.title, ()), key=lambda row: row["chunk_index"])
+        header = entry.title + ("\n" + entry.summary if entry.summary else "")
+        # read_archive already proves complete source coverage. Keep its exact
+        # inputs when they fit locally, rather than invalidating proven vectors
+        # through a different paragraph plan. Replan the whole entry otherwise.
+        if (rows and [row["chunk_index"] for row in rows] == list(range(len(rows)))
+                and all(
+                    len(row["embedding_text"]) <= MAX_EMBED_CHARS
+                    and row["embedding_text"].startswith(
+                        (header if row["chunk_index"] == 0 else entry.title)[:MAX_HEADER_CHARS] + "\n")
+                    and hashlib.sha256(row["embedding_text"].encode("utf-8")).hexdigest() == row["text_hash"]
+                    and (fit is None or fit(row["embedding_text"])) for row in rows)):
+            chunks = tuple(KnowledgeChunk(row["chunk_index"], row["embedding_text"], row["text_hash"])
+                           for row in rows)
+        else:
+            chunks = derive_chunks(entry, fit=fit)
+        yield entry, chunks
+
+
+def count_pack_chunks(
+    pack: KnowledgePack, *, fit: Callable[[str], bool] | None = None,
+    seed_vectors: Sequence[Mapping] = (),
+) -> int:
+    """Count the same verified archive/local plan that replace_pack installs."""
+    return sum(len(chunks) for _entry, chunks in _plan_pack_chunks(pack, fit=fit, seed_vectors=seed_vectors))
+
+
+class KnowledgeStore:
+    def __init__(self, database_path: Path) -> None:
+        self.database_path = Path(database_path)
+        # Bumped after every write that can change the name surfaces; the
+        # longest-name cache (``_name_lengths``) is valid for one generation.
+        self._names_generation = 0
+        self._name_lengths_cache: tuple[int, tuple[int, int]] | None = None
+
+    # ── connections ─────────────────────────────────────────────────
+
+    def _connect(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(
+            str(self.database_path),
+            timeout=_BUSY_TIMEOUT_SECONDS,
+            isolation_level=None,
+            check_same_thread=True,
+        )
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys=ON")
+        return conn
+
+    @contextmanager
+    def _read(self) -> Iterator[sqlite3.Connection]:
+        conn = self._connect()
+        try:
+            yield conn
+        finally:
+            conn.close()
+
+    @contextmanager
+    def _write(self, *, names: bool = False) -> Iterator[sqlite3.Connection]:
+        """One write transaction; ``names`` marks one that may change the
+        name surfaces, so the longest-name cache is dropped once it ends."""
+        conn = self._connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                yield conn
+            except BaseException:
+                conn.execute("ROLLBACK")
+                raise
+            conn.execute("COMMIT")
+        finally:
+            conn.close()
+            if names:
+                self._names_generation += 1
+
+    # ── lifecycle ───────────────────────────────────────────────────
+
+    def initialize(self) -> None:
+        """Create or verify the schema; raise ``KnowledgeStoreError`` if unusable."""
+        self.database_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with self._read() as conn:
+                conn.execute("PRAGMA journal_mode=WAL")
+                if conn.execute("PRAGMA quick_check").fetchone()[0] != "ok":
+                    raise KnowledgeStoreError("integrity_check_failed")
+                tables = {
+                    row[0]
+                    for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+                }
+                if "meta" in tables:
+                    row = conn.execute(
+                        "SELECT value FROM meta WHERE key='schema_version'"
+                    ).fetchone()
+                    if row is not None and row[0] == "3":
+                        # Add provenance without discarding cached vectors. A
+                        # legacy vector remains searchable, but cannot be
+                        # exported as if its exact resource identity were known.
+                        columns = {value[1] for value in conn.execute("PRAGMA table_info(chunks)")}
+                        if "spec_sha256" not in columns:
+                            conn.execute("ALTER TABLE chunks ADD COLUMN spec_sha256 TEXT")
+                        conn.execute("CREATE TABLE IF NOT EXISTS vector_specs (spec_sha256 TEXT PRIMARY KEY, model_id TEXT NOT NULL, specification TEXT NOT NULL)")
+                        conn.execute("UPDATE meta SET value=? WHERE key='schema_version'", (str(SCHEMA_VERSION),))
+                        tables.add("vector_specs")
+                        row = (str(SCHEMA_VERSION),)
+                    if row is None or row[0] != str(SCHEMA_VERSION):
+                        raise KnowledgeStoreError("schema_version_mismatch")
+                    # quick_check passes after a table is dropped; a derived
+                    # database missing any part is rebuilt rather than trusted.
+                    if not _REQUIRED_TABLES <= tables:
+                        raise KnowledgeStoreError("schema_incomplete")
+                    return
+                if tables:
+                    raise KnowledgeStoreError("unknown_database")
+            with self._write(names=True) as conn:
+                for statement in _SCHEMA:
+                    conn.execute(statement)
+                conn.execute(
+                    "INSERT INTO meta (key, value) VALUES ('schema_version', ?)",
+                    (str(SCHEMA_VERSION),),
+                )
+        except sqlite3.DatabaseError as exc:
+            raise KnowledgeStoreError(type(exc).__name__) from exc
+
+    def remove_files(self) -> None:
+        """Delete the database and its WAL side files so it can be rebuilt."""
+        for suffix in ("", "-wal", "-shm", "-journal"):
+            path = self.database_path.with_name(self.database_path.name + suffix)
+            path.unlink(missing_ok=True)
+        self._names_generation += 1
+
+    # ── pack writes ─────────────────────────────────────────────────
+
+    def search_row_counts(self) -> dict[str, tuple[int, int, int]]:
+        """Per pack: (full-text rows, surface rows, surface rows written at import)."""
+        with self._read() as conn:
+            fts = dict(
+                conn.execute(
+                    "SELECT e.pack_id, COUNT(*) FROM entries_fts f JOIN entries e ON e.id=f.rowid"
+                    " GROUP BY e.pack_id"
+                ).fetchall()
+            )
+            surfaces = dict(
+                conn.execute(
+                    "SELECT e.pack_id, COUNT(*) FROM surfaces s JOIN entries e ON e.id=s.entry_id"
+                    " GROUP BY e.pack_id"
+                ).fetchall()
+            )
+            expected = dict(conn.execute("SELECT pack_id, surfaces FROM packs").fetchall())
+        return {
+            str(pack_id): (int(fts.get(pack_id, 0)), int(surfaces.get(pack_id, 0)), int(count))
+            for pack_id, count in expected.items()
+        }
+
+    def entry_ids_by_title(
+        self, titles: Mapping[str, Iterable[str]], *, enabled_only: bool = False
+    ) -> set[int]:
+        """Ids of the entries named by ``{pack_id: title keys}``.
+
+        ``enabled_only`` keeps only entries not disabled in the index, which
+        are the few a stale registry snapshot still disables.
+        """
+        flag = " AND disabled=0" if enabled_only else ""
+        ids: set[int] = set()
+        with self._read() as conn:
+            for pack_id, keys in titles.items():
+                keys = list(keys)
+                if not keys:
+                    continue
+                ids.update(
+                    int(row[0])
+                    for row in conn.execute(
+                        "SELECT id FROM entries WHERE pack_id=?"
+                        f" AND title_key IN (SELECT value FROM json_each(?)){flag}",
+                        (pack_id, json.dumps(keys, ensure_ascii=False)),
+                    )
+                )
+        return ids
+
+    def pack_versions(self) -> dict[str, str]:
+        with self._read() as conn:
+            return {
+                str(row["pack_id"]): str(row["pack_sha256"])
+                for row in conn.execute("SELECT pack_id, pack_sha256 FROM packs")
+            }
+
+    def replace_pack(
+        self,
+        pack: KnowledgePack,
+        *,
+        pack_sha256: str,
+        disabled_keys: Iterable[str] = (),
+        should_cancel: Callable[[], bool] | None = None,
+        commit_gate: Callable[[], bool] | None = None,
+        fit: Callable[[str], bool] | None = None,
+        seed_vectors: Sequence[Mapping] = (),
+    ) -> int:
+        """Replace one pack's rows atomically; returns the number of chunks.
+
+        ``commit_gate`` is asked once, right before COMMIT; ``False`` rolls the
+        replacement back, ``True`` means it is committed from the caller's view.
+
+        Vectors of chunks whose embedding text did not change are carried over,
+        so updating a pack only re-embeds what actually changed.
+        Verified archive seeds retain their original inputs when they fit locally.
+        """
+        disabled = set(disabled_keys)
+        prepared = []
+        for entry, chunks in _plan_pack_chunks(pack, fit=fit, seed_vectors=seed_vectors,
+                                              should_cancel=should_cancel):
+            prepared.append((entry, _entry_tokens(entry), _entry_surfaces(entry), chunks))
+        if should_cancel is not None and should_cancel():
+            raise InterruptedError("cancelled")
+        with self._write(names=True) as conn:
+            reusable: dict[str, tuple[str, bytes, str | None]] = {}
+            for row in conn.execute(
+                "SELECT text_hash, model_id, vector, spec_sha256 FROM chunks"
+                " WHERE pack_id=? AND vector IS NOT NULL AND model_id IS NOT NULL",
+                (pack.pack_id,),
+            ):
+                reusable.setdefault(str(row[0]), (str(row[1]), bytes(row[2]), row[3]))
+            # Seeds bind exact entry, chunk and input hash; unrelated package
+            # vectors cannot be attached by position alone.
+            seeds = {(value["entry_title"], value["chunk_index"], value["text_hash"]): value
+                     for value in seed_vectors}
+            self._delete_pack_rows(conn, pack.pack_id)
+            chunk_total = 0
+            surface_total = 0
+            for entry, tokens, surfaces, chunks in prepared:
+                # Raising here rolls the whole transaction back.
+                if should_cancel is not None and should_cancel():
+                    raise InterruptedError("cancelled")
+                cursor = conn.execute(
+                    "INSERT INTO entries (pack_id, title, title_key, terms_json, tags_json,"
+                    " tag_keys_json, summary, content, disabled) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        pack.pack_id,
+                        entry.title,
+                        entry.key,
+                        json.dumps({k: list(v) for k, v in entry.terms.items()}, ensure_ascii=False),
+                        json.dumps(list(entry.tags), ensure_ascii=False),
+                        json.dumps(sorted({tag_key(tag) for tag in entry.tags}), ensure_ascii=False),
+                        entry.summary,
+                        entry.content,
+                        1 if entry.key in disabled else 0,
+                    ),
+                )
+                entry_id = int(cursor.lastrowid)
+                conn.execute(
+                    "INSERT INTO entries_fts (rowid, tokens) VALUES (?, ?)", (entry_id, tokens)
+                )
+                conn.executemany(
+                    "INSERT INTO surfaces (surface, entry_id) VALUES (?, ?)",
+                    [(surface, entry_id) for surface in surfaces],
+                )
+                surface_total += len(surfaces)
+                for chunk in chunks:
+                    carried = reusable.get(chunk.text_hash, (None, None, None))
+                    seed = seeds.get((entry.title, chunk.chunk_index, chunk.text_hash))
+                    if seed is not None and seed.get("embedding_text") == chunk.embed_text:
+                        spec_hash = self._bind_spec(conn, seed.get("model_id"), seed.get("specification"))
+                        blob = seed.get("vector")
+                        dimension = seed.get("specification", {}).get("dimension")
+                        if (spec_hash and type(dimension) is int and isinstance(blob, bytes)
+                                and len(blob) == dimension * 4 and _is_unit_vector(blob)):
+                            carried = (seed["model_id"], blob, spec_hash)
+                    conn.execute(
+                        "INSERT INTO chunks (entry_id, pack_id, chunk_index, text_hash,"
+                        " embed_text, model_id, vector, spec_sha256) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                        (
+                            entry_id,
+                            pack.pack_id,
+                            chunk.chunk_index,
+                            chunk.text_hash,
+                            chunk.embed_text,
+                            carried[0],
+                            carried[1],
+                            carried[2],
+                        ),
+                    )
+                chunk_total += len(chunks)
+            conn.execute(
+                "INSERT INTO packs (pack_id, pack_sha256, surfaces) VALUES (?, ?, ?)"
+                " ON CONFLICT(pack_id) DO UPDATE SET"
+                " pack_sha256=excluded.pack_sha256, surfaces=excluded.surfaces",
+                (pack.pack_id, pack_sha256, surface_total),
+            )
+            # Last chance: a cancel that arrived during the final writes still
+            # rolls the whole replacement back.
+            if should_cancel is not None and should_cancel():
+                raise InterruptedError("cancelled")
+            if commit_gate is not None and not commit_gate():
+                raise InterruptedError("cancelled")
+        return chunk_total
+
+    @staticmethod
+    def _delete_pack_rows(conn: sqlite3.Connection, pack_id: str) -> None:
+        conn.execute(
+            "DELETE FROM entries_fts WHERE rowid IN (SELECT id FROM entries WHERE pack_id=?)",
+            (pack_id,),
+        )
+        conn.execute("DELETE FROM entries WHERE pack_id=?", (pack_id,))
+        conn.execute("DELETE FROM packs WHERE pack_id=?", (pack_id,))
+
+    def delete_pack(self, pack_id: str) -> None:
+        with self._write(names=True) as conn:
+            self._delete_pack_rows(conn, pack_id)
+
+    def set_disabled(self, pack_id: str, title: str, disabled: bool) -> bool:
+        with self._write() as conn:
+            cursor = conn.execute(
+                "UPDATE entries SET disabled=? WHERE pack_id=? AND title_key=?",
+                (1 if disabled else 0, pack_id, title_key(title)),
+            )
+            return cursor.rowcount > 0
+
+    def sync_disabled(self, pack_id: str, disabled_keys: Iterable[str]) -> int:
+        """Make the pack's disabled flags exactly ``disabled_keys``; return rows changed."""
+        keys = sorted(set(disabled_keys))
+        with self._write() as conn:
+            conn.execute("CREATE TEMP TABLE IF NOT EXISTS wanted_disabled (title_key TEXT PRIMARY KEY)")
+            conn.execute("DELETE FROM wanted_disabled")
+            conn.executemany("INSERT INTO wanted_disabled (title_key) VALUES (?)", [(k,) for k in keys])
+            cursor = conn.execute(
+                "UPDATE entries SET disabled ="
+                " CASE WHEN title_key IN (SELECT title_key FROM wanted_disabled) THEN 1 ELSE 0 END"
+                " WHERE pack_id=? AND disabled !="
+                " CASE WHEN title_key IN (SELECT title_key FROM wanted_disabled) THEN 1 ELSE 0 END",
+                (pack_id,),
+            )
+            return cursor.rowcount
+
+    def disabled_entry_ids(self, pack_ids: Sequence[str]) -> set[int]:
+        """Ids of disabled entries in ``pack_ids``."""
+        if not pack_ids:
+            return set()
+        placeholders = ",".join("?" for _ in pack_ids)
+        with self._read() as conn:
+            return {
+                int(row[0])
+                for row in conn.execute(
+                    f"SELECT id FROM entries WHERE disabled=1 AND pack_id IN ({placeholders})",
+                    tuple(pack_ids),
+                )
+            }
+
+    # ── management reads ────────────────────────────────────────────
+
+    def entry_counts(self) -> dict[str, tuple[int, int]]:
+        """Per pack: (entries, disabled entries)."""
+        with self._read() as conn:
+            return {
+                str(row[0]): (int(row[1]), int(row[2] or 0))
+                for row in conn.execute(
+                    "SELECT pack_id, COUNT(*), SUM(disabled) FROM entries GROUP BY pack_id"
+                )
+            }
+
+    def count_entries(self, *, pack_ids: Sequence[str] | None = None) -> int:
+        """Entries of ``pack_ids`` (all packs when ``None``)."""
+        if pack_ids is not None and not pack_ids:
+            return 0
+        clause, args = self._pack_clause(pack_ids, include_disabled=True)
+        with self._read() as conn:
+            row = conn.execute(f"SELECT COUNT(*) FROM entries e WHERE 1=1{clause}", args).fetchone()
+            return int(row[0])
+
+    def list_entries(
+        self, *, pack_ids: Sequence[str] | None = None, limit: int, offset: int
+    ) -> list[StoredEntry]:
+        if pack_ids is not None and not pack_ids:
+            return []
+        clause, args = self._pack_clause(pack_ids, include_disabled=True)
+        with self._read() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM entries e WHERE 1=1{clause}"
+                " ORDER BY e.pack_id, e.title_key LIMIT ? OFFSET ?",
+                (*args, limit, offset),
+            )
+            return [_row_to_entry(row) for row in rows]
+
+    def search_entries(
+        self, query: str, *, pack_ids: Sequence[str] | None = None, limit: int, offset: int
+    ) -> list[StoredEntry]:
+        """Management search: exact surface hits first, then BM25 order."""
+        with self._read() as conn:
+            exact = self._exact_ids(
+                conn, query, pack_ids=pack_ids, include_disabled=True, limit=offset + limit
+            )
+            ranked = self._ranked_ids(
+                conn,
+                query,
+                pack_ids=pack_ids,
+                include_disabled=True,
+                limit=offset + limit + len(exact),
+            )
+            ordered = list(dict.fromkeys([*exact, *ranked]))
+            rows = self._fetch(conn, ordered)
+        entries = [rows[i] for i in ordered if i in rows]
+        return entries[offset:offset + limit]
+
+    def get_entry(self, pack_id: str, title: str) -> StoredEntry | None:
+        with self._read() as conn:
+            row = conn.execute(
+                "SELECT * FROM entries WHERE pack_id=? AND title_key=?",
+                (pack_id, title_key(title)),
+            ).fetchone()
+        return _row_to_entry(row) if row is not None else None
+
+    # ── retrieval reads ─────────────────────────────────────────────
+
+    @staticmethod
+    def _fetch(conn: sqlite3.Connection, entry_ids: Sequence[int]) -> dict[int, StoredEntry]:
+        result: dict[int, StoredEntry] = {}
+        ids = list(entry_ids)
+        for start in range(0, len(ids), 500):
+            batch = ids[start:start + 500]
+            placeholders = ",".join("?" for _ in batch)
+            for row in conn.execute(f"SELECT * FROM entries WHERE id IN ({placeholders})", batch):
+                entry = _row_to_entry(row)
+                result[entry.entry_id] = entry
+        return result
+
+    def fetch_entries(self, entry_ids: Sequence[int]) -> dict[int, StoredEntry]:
+        with self._read() as conn:
+            return self._fetch(conn, entry_ids)
+
+    def entry_embedding_inputs(self, entry_id: int) -> list[str]:
+        """Read the exact indexed order used by semantic chunk positions."""
+        with self._read() as conn:
+            return [str(row[0]) for row in conn.execute(
+                "SELECT embed_text FROM chunks WHERE entry_id=? ORDER BY chunk_index", (entry_id,)
+            )]
+
+    @staticmethod
+    def _pack_clause(
+        pack_ids: Sequence[str] | None,
+        include_disabled: bool,
+        exclude_ids: Collection[int] = (),
+    ) -> tuple[str, tuple]:
+        clauses: list[str] = []
+        args: tuple = ()
+        if not include_disabled:
+            clauses.append("e.disabled=0")
+        if pack_ids is not None:
+            clauses.append(f"e.pack_id IN ({','.join('?' for _ in pack_ids)})")
+            args = tuple(pack_ids)
+        if exclude_ids:
+            # One JSON parameter, however many ids: no SQL variable limit.
+            clauses.append("e.id NOT IN (SELECT value FROM json_each(?))")
+            args = (*args, json.dumps(sorted(exclude_ids)))
+        return "".join(f" AND {clause}" for clause in clauses), args
+
+    def _exact_ids(
+        self,
+        conn: sqlite3.Connection,
+        query: str,
+        *,
+        pack_ids: Sequence[str] | None,
+        include_disabled: bool,
+        limit: int = -1,
+        exclude_ids: Collection[int] = (),
+    ) -> list[int]:
+        if pack_ids is not None and not pack_ids:
+            return []
+        clause, args = self._pack_clause(pack_ids, include_disabled, exclude_ids)
+        # Strict first, so "C" does not pull in "C++"; the loose form (inner
+        # separators dropped) only answers when nothing matches strictly, e.g.
+        # a recognition phrase typed with different punctuation. Names that
+        # begin or end with a symbol have no loose form at all.
+        for key in (f"s:{strict_surface(query)}", f"l:{loose_surface(query)}"):
+            if len(key) <= 2:
+                continue
+            ids = [
+                int(row[0])
+                for row in conn.execute(
+                    "SELECT DISTINCT s.entry_id FROM surfaces s JOIN entries e ON e.id=s.entry_id"
+                    f" WHERE s.surface=?{clause} LIMIT ?",
+                    (key, *args, limit),
+                )
+            ]
+            if ids:
+                return ids
+        return []
+
+    def _ranked_ids(
+        self,
+        conn: sqlite3.Connection,
+        query: str,
+        *,
+        pack_ids: Sequence[str] | None,
+        include_disabled: bool,
+        limit: int,
+        exclude_ids: Collection[int] = (),
+    ) -> list[int]:
+        expression = fts_match_expression(query)
+        if not expression or (pack_ids is not None and not pack_ids):
+            return []
+        clause, args = self._pack_clause(pack_ids, include_disabled, exclude_ids)
+        # Filter before LIMIT: otherwise matches from other packs (or disabled
+        # entries) fill the window and push the wanted ones out.
+        return [
+            int(row[0])
+            for row in conn.execute(
+                "SELECT f.rowid FROM entries_fts f JOIN entries e ON e.id=f.rowid"
+                f" WHERE entries_fts MATCH ?{clause} ORDER BY bm25(entries_fts) LIMIT ?",
+                (expression, *args, limit),
+            )
+        ]
+
+    def _name_lengths(self) -> tuple[int, int]:
+        """Characters in the longest strict and the longest loose name surface.
+
+        Read once per names generation (a full pass over ``surfaces``), so a
+        lookup can stop extending a span past any name it could still match.
+        """
+        generation = self._names_generation
+        cached = self._name_lengths_cache
+        if cached is not None and cached[0] == generation:
+            return cached[1]
+        with self._read() as conn:
+            row = conn.execute(
+                "SELECT MAX(CASE WHEN substr(surface, 1, 2)='s:' THEN length(surface) END),"
+                " MAX(CASE WHEN substr(surface, 1, 2)='l:' THEN length(surface) END)"
+                " FROM surfaces"
+            ).fetchone()
+        lengths = (max(int(row[0] or 2) - 2, 0), max(int(row[1] or 2) - 2, 0))
+        # A write that finished while this read ran may not be in it.
+        if self._names_generation == generation:
+            self._name_lengths_cache = (generation, lengths)
+        return lengths
+
+    def named_candidates(
+        self,
+        text: str,
+        *,
+        pack_ids: Sequence[str],
+        exclude_ids: Collection[int] = (),
+        max_name_chars: int = NAME_SPAN_MAX_CHARS,
+        limit: int = NAMED_CANDIDATES,
+    ) -> list[int]:
+        """Entries whose title, alias or recognition phrase appears in ``text``.
+
+        Every span of the message that starts and ends on a word (a CJK
+        character counts as one) is looked up among the strict exact-match
+        keys, so a named entry is found however many keyword matches outrank
+        it. The caller still applies its own naming rules to what comes back.
+
+        A span stops growing once it is longer than every strict name and
+        holds more letters and digits than every loose name (a span's loose
+        form keeps all of its letters and digits), so the work follows the
+        longest name in the index rather than ``max_name_chars``.
+        """
+        if not pack_ids:
+            return []
+        view = strict_surface(text)
+        units = [(match.span(), _alnum_count(match.group())) for match in _NAME_UNIT_RE.finditer(view)]
+        if not units:
+            return []
+        max_strict, max_loose = self._name_lengths()
+        if max_strict <= 0 and max_loose <= 0:
+            return []
+        keys: set[str] = set()
+        for first, ((start, _end), _alnum) in enumerate(units):
+            alnum = 0
+            for (_start, end), unit_alnum in units[first:]:
+                if end - start > max_name_chars:
+                    break
+                alnum += unit_alnum
+                strict_fits = end - start <= max_strict
+                loose_fits = alnum <= max_loose
+                if not strict_fits and not loose_fits:
+                    break
+                span = view[start:end]
+                if strict_fits:
+                    keys.add(f"s:{span}")
+                if loose_fits and not span.isalnum():
+                    # Separator variants ("New York" for "New-York") match
+                    # by their loose form, as the naming rule accepts them.
+                    loose = loose_surface(span)
+                    if loose:
+                        keys.add(f"l:{loose}")
+        if not keys:
+            return []
+        clause, args = self._pack_clause(pack_ids, False, exclude_ids)
+        with self._read() as conn:
+            return [
+                int(row[0])
+                for row in conn.execute(
+                    "SELECT DISTINCT s.entry_id FROM surfaces s JOIN entries e ON e.id=s.entry_id"
+                    f" WHERE s.surface IN (SELECT value FROM json_each(?)){clause} LIMIT ?",
+                    (json.dumps(sorted(keys), ensure_ascii=False), *args, limit),
+                )
+            ]
+
+    def lexical_candidates(
+        self,
+        query: str,
+        *,
+        pack_ids: Sequence[str],
+        limit: int,
+        exclude_ids: Collection[int] = (),
+    ) -> tuple[list[int], list[int]]:
+        """Return (exact surface hits, BM25-ranked hits) among enabled entries of ``pack_ids``.
+
+        ``exclude_ids`` are left out before ``limit`` applies.
+        """
+        with self._read() as conn:
+            exact = self._exact_ids(
+                conn, query, pack_ids=pack_ids, include_disabled=False, limit=limit,
+                exclude_ids=exclude_ids,
+            )
+            ranked = self._ranked_ids(
+                conn, query, pack_ids=pack_ids, include_disabled=False, limit=limit,
+                exclude_ids=exclude_ids,
+            )
+        return exact, ranked
+
+    def entries_with_tag(self, tag: str, pack_ids: Sequence[str]) -> list[tuple[int, str, str]]:
+        """Enabled entries carrying ``tag``: (id, pack_id, title)."""
+        if not pack_ids:
+            return []
+        placeholders = ",".join("?" for _ in pack_ids)
+        # A whole tag, compared like titles (width- and case-insensitive): a
+        # substring of the JSON text would also hit longer tags, or other
+        # tags through a quote.
+        with self._read() as conn:
+            return [
+                (int(row[0]), str(row[1]), str(row[2]))
+                for row in conn.execute(
+                    f"SELECT id, pack_id, title FROM entries WHERE disabled=0 AND pack_id IN ({placeholders})"
+                    " AND EXISTS (SELECT 1 FROM json_each(tag_keys_json) WHERE value = ?)",
+                    (*pack_ids, tag_key(tag)),
+                )
+            ]
+
+    # ── vectors ─────────────────────────────────────────────────────
+
+    def pending_chunks(
+        self, *, model_id: str, pack_ids: Sequence[str], limit: int, require_spec: bool = False,
+        specification: Mapping | None = None,
+    ) -> list[tuple[int, str, str]]:
+        """Chunks that lack a vector for ``model_id``: (id, text_hash, text)."""
+        if not pack_ids:
+            return []
+        placeholders = ",".join("?" for _ in pack_ids)
+        # A model name is a hardware profile, not proof of identical weights.
+        # Re-encode stale resource identities even when that name is unchanged.
+        spec_clause = " OR spec_sha256 IS NOT ?" if specification else (" OR spec_sha256 IS NULL" if require_spec else "")
+        spec_args = (self._spec_hash(specification),) if specification else ()
+        with self._read() as conn:
+            return [
+                (int(row[0]), str(row[1]), str(row[2]))
+                for row in conn.execute(
+                    f"SELECT id, text_hash, embed_text FROM chunks WHERE pack_id IN ({placeholders})"
+                    " AND (model_id IS NOT ? OR vector IS NULL" + spec_clause + ") AND attempts < ?"
+                    " ORDER BY id LIMIT ?",
+                    (*pack_ids, model_id, *spec_args, MAX_EMBED_ATTEMPTS, limit),
+                )
+            ]
+
+    def store_vectors(
+        self,
+        *,
+        model_id: str,
+        rows: Sequence[tuple[int, str, bytes | None]],
+        pack_ids: Sequence[str] | None = None,
+        specification: Mapping | None = None,
+    ) -> tuple[int, int]:
+        """Write vectors for unchanged chunks; return (stored, failed).
+
+        With ``pack_ids``, chunks of other packs are left untouched (their
+        pack stopped allowing vectors while the batch was embedding).
+        """
+        if pack_ids is not None and not pack_ids:
+            return 0, 0
+        clause = f" AND pack_id IN ({','.join('?' for _ in pack_ids)})" if pack_ids is not None else ""
+        extra = tuple(pack_ids) if pack_ids is not None else ()
+        stored = failed = 0
+        with self._write() as conn:
+            spec_hash = self._bind_spec(conn, model_id, specification)
+            for chunk_id, text_hash, blob in rows:
+                if blob is None:
+                    cursor = conn.execute(
+                        f"UPDATE chunks SET attempts=attempts+1 WHERE id=? AND text_hash=?{clause}",
+                        (chunk_id, text_hash, *extra),
+                    )
+                    failed += cursor.rowcount
+                    continue
+                cursor = conn.execute(
+                    f"UPDATE chunks SET model_id=?, vector=?, spec_sha256=?, attempts=0 WHERE id=? AND text_hash=?{clause}",
+                    (model_id, blob, spec_hash, chunk_id, text_hash, *extra),
+                )
+                stored += cursor.rowcount
+        return stored, failed
+
+    @staticmethod
+    def _spec_hash(specification: Mapping) -> str:
+        """Fingerprint the full immutable identity, including resource hashes."""
+        raw = json.dumps(dict(specification), sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(raw.encode()).hexdigest()
+
+    @staticmethod
+    def _bind_spec(conn: sqlite3.Connection, model_id: str | None, specification: Mapping | None) -> str | None:
+        """Record proven resource identity; legacy/unknown vectors stay unbound."""
+        if not model_id or not specification or specification.get("model_id") != model_id:
+            return None
+        raw = json.dumps(dict(specification), sort_keys=True, separators=(",", ":"))
+        digest = KnowledgeStore._spec_hash(specification)
+        conn.execute("INSERT OR IGNORE INTO vector_specs VALUES (?, ?, ?)", (digest, model_id, raw))
+        return digest
+
+    def vector_specification(self, model_id: str | None, *, pack_id: str | None = None) -> dict | None:
+        """Only return an unambiguous identity recorded by actual encoding."""
+        with self._read() as conn:
+            if pack_id is None:
+                rows = conn.execute("SELECT specification FROM vector_specs WHERE model_id=?", (model_id,)).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT DISTINCT s.specification FROM vector_specs s JOIN chunks c ON c.spec_sha256=s.spec_sha256 "
+                    "WHERE c.pack_id=?" + (" AND c.model_id=?" if model_id else ""),
+                    (pack_id, model_id) if model_id else (pack_id,),
+                ).fetchall()
+        return json.loads(rows[0][0]) if len(rows) == 1 else None
+
+    def vectors_for_pack(self, pack_id: str, model_id: str) -> list[dict]:
+        """Snapshot complete, proven vectors without expanding float32 blobs."""
+        with self._read() as conn:
+            rows = conn.execute(
+                "SELECT e.title,c.chunk_index,c.text_hash,c.embed_text,c.vector,c.model_id,c.spec_sha256 "
+                "FROM chunks c JOIN entries e ON e.id=c.entry_id WHERE c.pack_id=? ORDER BY e.title_key,c.chunk_index",
+                (pack_id,),
+            ).fetchall()
+        if not rows or any(row[4] is None or row[5] != model_id or not row[6] for row in rows):
+            return []
+        if len({row[6] for row in rows}) != 1:
+            return []
+        return [{"entry_title": row[0], "chunk_index": row[1], "text_hash": row[2],
+                 "embedding_text": row[3], "vector": bytes(row[4])} for row in rows]
+
+    def seed_pack_vectors(self, pack_id: str, seeds: Sequence[Mapping]) -> int:
+        """Attach retained package vectors only to the exact currently indexed input."""
+        stored = 0
+        with self._write() as conn:
+            for seed in seeds:
+                specification, blob = seed.get("specification"), seed.get("vector")
+                dimension = specification.get("dimension") if specification else None
+                if (type(dimension) is not int or not isinstance(blob, bytes)
+                        or len(blob) != dimension * 4 or not _is_unit_vector(blob)):
+                    continue
+                spec_hash = self._bind_spec(conn, seed.get("model_id"), specification)
+                if spec_hash is None:
+                    continue
+                cursor = conn.execute(
+                    "UPDATE chunks SET vector=?,model_id=?,spec_sha256=?,attempts=0 "
+                    "WHERE pack_id=? AND chunk_index=? AND text_hash=? AND embed_text=? "
+                    "AND entry_id IN (SELECT id FROM entries WHERE pack_id=? AND title=?) "
+                    "AND (vector IS NULL OR model_id IS NOT ? OR spec_sha256 IS NOT ?)",
+                    (blob, seed["model_id"], spec_hash, pack_id, seed["chunk_index"], seed["text_hash"],
+                     seed["embedding_text"], pack_id, seed["entry_title"], seed["model_id"], spec_hash),
+                )
+                stored += cursor.rowcount
+        return stored
+
+    def reset_attempts(self, pack_id: str = "") -> int:
+        """Give chunks that hit ``MAX_EMBED_ATTEMPTS`` another chance."""
+        with self._write() as conn:
+            if pack_id:
+                cursor = conn.execute(
+                    "UPDATE chunks SET attempts=0 WHERE attempts > 0 AND pack_id=?", (pack_id,)
+                )
+            else:
+                cursor = conn.execute("UPDATE chunks SET attempts=0 WHERE attempts > 0")
+            return cursor.rowcount
+
+    def exhaust_attempts(self, rows: Sequence[tuple[int, str, str]]) -> int:
+        """Count rows that cannot be encoded as failed until the next reset.
+
+        ``rows`` are (chunk id, text hash, pack id) from an earlier read; like
+        ``store_vectors``, a row replaced since then (its id reused by new
+        text or another pack) is left untouched.
+        """
+        if not rows:
+            return 0
+        marked = 0
+        with self._write() as conn:
+            for chunk_id, text_hash, pack_id in rows:
+                marked += conn.execute(
+                    "UPDATE chunks SET attempts=? WHERE id=? AND text_hash=? AND pack_id=? AND attempts < ?",
+                    (MAX_EMBED_ATTEMPTS, chunk_id, text_hash, pack_id, MAX_EMBED_ATTEMPTS),
+                ).rowcount
+        return marked
+
+    def chunk_pack_ids(self, chunk_ids: Sequence[int]) -> dict[int, str]:
+        """Resolve batch ownership without exposing SQLite to the index runner."""
+        if not chunk_ids:
+            return {}
+        # A single JSON parameter avoids SQLite's variable-count limit for large batches.
+        with self._read() as conn:
+            return {int(row[0]): str(row[1]) for row in conn.execute(
+                "SELECT id, pack_id FROM chunks WHERE id IN (SELECT value FROM json_each(?))",
+                (json.dumps(list(chunk_ids)),),
+            )}
+
+    def chunks_current(self, pack_id: str, rows: Sequence[tuple[int, str]]) -> bool:
+        """Whether every ``(id, text_hash)`` row still belongs to ``pack_id``.
+
+        No rows is never current, so an empty trigger cannot start a rebuild.
+        """
+        if not rows:
+            return False
+        with self._read() as conn:
+            current = {(int(row[0]), str(row[1])) for row in conn.execute(
+                "SELECT id, text_hash FROM chunks WHERE pack_id = ? AND id IN (SELECT value FROM json_each(?))",
+                (pack_id, json.dumps([int(row_id) for row_id, _hash in rows])),
+            )}
+        return all((int(row_id), str(text_hash)) in current for row_id, text_hash in rows)
+
+    def chunk_stats(
+        self, model_id: str | None, *, specification: Mapping | None = None, include_export_readiness: bool = False,
+    ) -> dict[str, dict[str, int]]:
+        """Per pack: total, resource-compatible ready chunks, and failed chunks."""
+        # Legacy callers know only the profile; verified callers must also bind
+        # readiness to the exact resources, just like pending_chunks/load_vectors.
+        spec_clause = " AND c.spec_sha256=?" if specification is not None else ""
+        spec_args = (self._spec_hash(specification),) if specification is not None else ()
+        # Export needs one complete stored provenance identity, independently
+        # of the loaded encoder. Reuse this scan without fetching vector BLOBs
+        # into Python or issuing another query for every listed pack.
+        export_columns = (", SUM(c.vector IS NOT NULL), COUNT(s.spec_sha256), COUNT(DISTINCT c.spec_sha256)"
+                          if include_export_readiness else "")
+        export_join = (" LEFT JOIN vector_specs s ON s.spec_sha256=c.spec_sha256 AND s.model_id=c.model_id"
+                       if include_export_readiness else "")
+        with self._read() as conn:
+            rows = conn.execute(
+                "SELECT c.pack_id, COUNT(*),"
+                " SUM(CASE WHEN c.vector IS NOT NULL AND c.model_id IS ?" + spec_clause + " THEN 1 ELSE 0 END),"
+                " SUM(CASE WHEN c.attempts >= ? THEN 1 ELSE 0 END)" + export_columns
+                + " FROM chunks c" + export_join + " GROUP BY c.pack_id",
+                (model_id, *spec_args, MAX_EMBED_ATTEMPTS),
+            )
+            return {
+                str(row[0]): {
+                    "total": int(row[1]),
+                    "ready": int(row[2] or 0) if model_id else 0,
+                    "failed": int(row[3] or 0),
+                    **({"export_ready": int(row[1] > 0 and row[4] == row[1] and row[5] == row[1] and row[6] == 1)}
+                       if include_export_readiness else {}),
+                }
+                for row in rows
+            }
+
+    def clear_vectors(self, damaged: Sequence[tuple[int, bytes]]) -> int:
+        """Forget unusable vectors so the indexer computes them again.
+
+        Only a row still holding the blob that was read is cleared: one
+        rewritten (or reused by a replaced pack) in the meantime is left alone.
+        """
+        logger.warning("[Knowledge] clearing %d damaged vector(s)", len(damaged))
+        with self._write() as conn:
+            cursor = conn.executemany(
+                "UPDATE chunks SET vector=NULL, model_id=NULL, attempts=0 WHERE id=? AND vector=?",
+                [(chunk_id, blob) for chunk_id, blob in damaged],
+            )
+            return cursor.rowcount
+
+    def load_vectors(self, model_id: str, *, specification: Mapping | None = None) -> VectorSnapshot | None:
+        """Load every ready vector of ``model_id`` into one normalized matrix."""
+        with self._read() as conn:
+            # One read transaction: the versions describe exactly these rows.
+            conn.execute("BEGIN")
+            try:
+                rows = conn.execute(
+                    "SELECT id, entry_id, pack_id, vector, chunk_index FROM chunks"
+                    " WHERE model_id=? AND vector IS NOT NULL" + (" AND spec_sha256=?" if specification else "") + " ORDER BY id",
+                    (model_id, self._spec_hash(specification)) if specification else (model_id,),
+                ).fetchall()
+                versions = {
+                    str(row["pack_id"]): str(row["pack_sha256"])
+                    for row in conn.execute("SELECT pack_id, pack_sha256 FROM packs")
+                }
+            finally:
+                conn.rollback()
+        if not rows:
+            return None
+        # The model's dimension is what most vectors have, never just the
+        # first row's: one damaged blob must not disqualify all the others.
+        # Empty blobs or ones that are not whole float32 values cannot be a
+        # vector at all; they are damaged and do not vote on the dimension.
+        lengths = Counter(len(row[3]) for row in rows if len(row[3]) and len(row[3]) % 4 == 0)
+        size = max(lengths, key=lambda length: (lengths[length], length)) if lengths else 0
+        dim = size // 4
+        pack_ids: list[str] = []
+        pack_index: dict[str, int] = {}
+        entry_ids: list[int] = []
+        chunk_pack: list[int] = []
+        chunk_indexes: list[int] = []
+        blobs: list[bytes] = []
+        damaged: list[tuple[int, bytes]] = []
+        for chunk_id, entry_id, pack_id, blob, chunk_index in rows:
+            if not size or len(blob) != size or not _is_unit_vector(blob):
+                damaged.append((int(chunk_id), bytes(blob)))
+                continue
+            if pack_id not in pack_index:
+                pack_index[pack_id] = len(pack_ids)
+                pack_ids.append(pack_id)
+            entry_ids.append(int(entry_id))
+            chunk_pack.append(pack_index[pack_id])
+            chunk_indexes.append(int(chunk_index))
+            blobs.append(blob)
+        if not blobs and not damaged:
+            return None
+        matrix = (
+            np.frombuffer(b"".join(blobs), dtype="<f4").reshape(len(blobs), dim)
+            if blobs
+            else np.zeros((0, dim), dtype=np.float32)
+        )
+        return VectorSnapshot(
+            model_id=model_id,
+            entry_ids=np.asarray(entry_ids, dtype=np.int64),
+            pack_ids=tuple(pack_ids),
+            chunk_pack_index=np.asarray(chunk_pack, dtype=np.int32),
+            matrix=np.ascontiguousarray(matrix, dtype=np.float32),
+            chunk_indexes=np.asarray(chunk_indexes, dtype=np.int32),
+            damaged=tuple(damaged),
+            pack_versions=versions,
+            specification=dict(specification) if specification else None,
+        )

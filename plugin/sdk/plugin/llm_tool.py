@@ -74,6 +74,12 @@ def validate_tool_name(name: str) -> str:
         raise ValueError(
             f"LLM tool name {name!r} must match {_TOOL_NAME_PATTERN.pattern}"
         )
+    # "." / ".." match the pattern but are normalised away in the callback
+    # URL path (they turn into a parent path), so such a tool could never be
+    # called. One rule for every path: decorator, sync and async calls, and
+    # the host's own check (``llm_tool_registry._valid_tool_name``).
+    if set(name) == {"."}:
+        raise ValueError(f"LLM tool name {name!r} must not consist only of dots")
     return name
 
 
@@ -322,14 +328,25 @@ def collect_llm_tool_methods(instance: Any) -> list[tuple[LlmToolMeta, Callable[
 #                 request could not reach main_server: connect failure or
 #                 no pooled connection), "main_server_error" (HTTP status >= 400),
 #                 "rejected" (register: no role accepted the tool),
+#                 "plugin_stopped" (register: the plugin was stopped while
+#                 the register was in flight; what main_server may have
+#                 stored is withdrawn by its registration id on a best-effort
+#                 basis: if that fails it may remain until the plugin's next
+#                 cleanup),
 #                 "partial_failure" (unregister: some roles failed).
 #   both       -- "timeout" (no usable answer: none from the host within
 #                 ``request_timeout``, or none from main_server after the
 #                 request was sent, or one that is not a JSON object; the
-#                 outcome on main_server is unknown).
+#                 outcome on main_server is unknown; for a register whose
+#                 answer the host lost, the host first tries to withdraw it
+#                 by its registration id).
 #   SDK side   -- "host_unavailable" (the request could not reach the host or
 #                 the host failed to handle it), "busy" (earlier calls for
-#                 the same name used up the budget; nothing was sent),
+#                 the same name used up the budget, or the calling entry's
+#                 deadline ran out before the request was sent; nothing was
+#                 sent; also an unregister, or a register's cleanup, whose
+#                 requests already sent left too little budget to remove a
+#                 reported stale registration: that removal was not sent),
 #                 "not_registered"
 #                 (unregister: no local record and main_server removed
 #                 nothing of this plugin's under that name; with a local
@@ -360,7 +377,10 @@ class LlmToolUnregisterResult(TypedDict):
     plugin than the one targeted. Such a registration is stale; the
     cleanup after a failed register and ``unregister_llm_tool_async`` then
     remove each one by the ``registration_id`` reported with it, and
-    ``ok`` requires all of them gone."""
+    ``ok`` requires all of them gone. Exception: the cleanup leaves them
+    when the plugin holds a handler for the name again (registered
+    meanwhile through the sync call), and is then ``ok`` with them still
+    listed here."""
 
     ok: bool
     removed: bool

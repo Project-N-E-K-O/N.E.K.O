@@ -324,7 +324,7 @@ class MessagePlaneRpcClient:
                 return None
             except Exception:
                 return None
-            if isinstance(resp, dict) and resp.get("req_id") == req_id and resp.get("v") == 1 and isinstance(resp.get("success"), bool):
+            if isinstance(resp, dict) and resp.get("req_id") == req_id and resp.get("v") == 1 and isinstance(resp.get("ok"), bool):
                 return resp
 
     async def batch_request(self, requests: list[JsonObject], *, timeout: float = 5.0) -> list[JsonObject | None]:

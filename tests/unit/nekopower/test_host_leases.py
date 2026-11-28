@@ -101,20 +101,20 @@ async def test_the_first_commission_gets_the_group_at_once_and_the_listener_hear
 async def test_declined_call_rolls_back_only_its_claim_on_the_group(keep_sibling):
     leases = _leases()
     declined, sibling = object(), object()
-    assert await leases.acquire(BROWSER, "c1", claim=declined) is None
-    assert await leases.acquire(BROWSER, "c1", claim=sibling) is None
-    other = await _waiting(leases, BROWSER, "other")
-    leases.finish_claim(BROWSER, "c1", declined, keep=False)
-    assert leases.occupied() == {BROWSER: "c1"} and not other.done()
-    leases.finish_claim(BROWSER, "c1", sibling, keep=keep_sibling)
+    assert await leases.acquire(DESKTOP, "c1", claim=declined) is None
+    assert await leases.acquire(DESKTOP, "c1", claim=sibling) is None
+    other = await _waiting(leases, DESKTOP, "other")
+    leases.finish_claim(DESKTOP, "c1", declined, keep=False)
+    assert leases.occupied() == {DESKTOP: "c1"} and not other.done()
+    leases.finish_claim(DESKTOP, "c1", sibling, keep=keep_sibling)
     if keep_sibling:
-        assert leases.occupied() == {BROWSER: "c1"} and not other.done()
+        assert leases.occupied() == {DESKTOP: "c1"} and not other.done()
         late = object()
-        assert await leases.acquire(BROWSER, "c1", claim=late) is None
-        leases.finish_claim(BROWSER, "c1", late, keep=False)
-        assert leases.release("c1") == [BROWSER]
+        assert await leases.acquire(DESKTOP, "c1", claim=late) is None
+        leases.finish_claim(DESKTOP, "c1", late, keep=False)
+        assert leases.release("c1") == [DESKTOP]
     assert await asyncio.wait_for(other, 5) is None
-    assert leases.occupied() == {BROWSER: "other"}
+    assert leases.occupied() == {DESKTOP: "other"}
 
 
 async def test_a_group_nobody_uses_has_no_holder():
@@ -136,64 +136,64 @@ async def test_the_desktop_and_the_browser_are_occupied_apart():
 async def test_a_commission_of_another_team_waits_and_gets_the_group_when_the_first_lets_go():
     heard = Heard()
     leases = _leases(on_activity=heard, wait_seconds=NEVER)
-    await leases.acquire(BROWSER, "c1", title="first")
+    await leases.acquire(DESKTOP, "c1", title="first")
 
-    second = await _waiting(leases, BROWSER, "c2", title="second")
-    assert leases.holder(BROWSER).team == "c1"
+    second = await _waiting(leases, DESKTOP, "c2", title="second")
+    assert leases.holder(DESKTOP).team == "c1"
     freed = leases.release("c1")
 
-    assert freed == [BROWSER]
+    assert freed == [DESKTOP]
     assert await asyncio.wait_for(second, 5) is None
-    assert leases.holder(BROWSER) == Occupation(team="c2", title="second", members={"c2"})
-    assert heard.events == [(BROWSER, "started", "c1"), (BROWSER, "ended", "c1"), (BROWSER, "started", "c2")]
+    assert leases.holder(DESKTOP) == Occupation(team="c2", title="second", members={"c2"})
+    assert heard.events == [(DESKTOP, "started", "c1"), (DESKTOP, "ended", "c1"), (DESKTOP, "started", "c2")]
 
 
 async def test_teams_that_wait_get_the_group_one_after_the_other():
     heard = Heard()
     leases = _leases(on_activity=heard, wait_seconds=NEVER)
-    await leases.acquire(BROWSER, "c1")
-    second = await _waiting(leases, BROWSER, "c2")
-    third = await _waiting(leases, BROWSER, "c3")
+    await leases.acquire(DESKTOP, "c1")
+    second = await _waiting(leases, DESKTOP, "c2")
+    third = await _waiting(leases, DESKTOP, "c3")
 
     leases.release("c1")
     done, pending = await asyncio.wait({second, third}, timeout=5, return_when=asyncio.FIRST_COMPLETED)
 
     # One of the two has it now; the other still waits, for that one.
     assert len(done) == 1 and len(pending) == 1
-    winner = leases.holder(BROWSER).team
+    winner = leases.holder(DESKTOP).team
     assert winner in ("c2", "c3")
     leases.release(winner)
     assert await asyncio.wait_for(pending.pop(), 5) is None
     loser = "c3" if winner == "c2" else "c2"
-    assert leases.holder(BROWSER).team == loser
+    assert leases.holder(DESKTOP).team == loser
     assert heard.events == [
-        (BROWSER, "started", "c1"),
-        (BROWSER, "ended", "c1"),
-        (BROWSER, "started", winner),
-        (BROWSER, "ended", winner),
-        (BROWSER, "started", loser),
+        (DESKTOP, "started", "c1"),
+        (DESKTOP, "ended", "c1"),
+        (DESKTOP, "started", winner),
+        (DESKTOP, "ended", winner),
+        (DESKTOP, "started", loser),
     ]
 
 
 async def test_the_wait_is_bounded_and_then_returns_the_occupation_in_the_way():
     heard = Heard()
     leases = _leases(on_activity=heard, wait_seconds=0.05)
-    await leases.acquire(BROWSER, "c1", title="book the flight")
+    await leases.acquire(DESKTOP, "c1", title="book the flight")
 
-    in_the_way = await asyncio.wait_for(leases.acquire(BROWSER, "c2", title="read the news"), 5)
+    in_the_way = await asyncio.wait_for(leases.acquire(DESKTOP, "c2", title="read the news"), 5)
 
     assert in_the_way == Occupation(team="c1", title="book the flight", members={"c1"})
     # Nothing changed hands, and nobody is left waiting.
-    assert leases.holder(BROWSER) is in_the_way
+    assert leases.holder(DESKTOP) is in_the_way
     assert leases._waiters == set()
-    assert heard.events == [(BROWSER, "started", "c1")]
+    assert heard.events == [(DESKTOP, "started", "c1")]
 
 
 async def test_with_no_time_to_wait_the_occupation_in_the_way_comes_back_at_once():
     leases = _leases(wait_seconds=0)
-    await leases.acquire(BROWSER, "c1")
+    await leases.acquire(DESKTOP, "c1")
 
-    in_the_way = await asyncio.wait_for(leases.acquire(BROWSER, "c2"), 5)
+    in_the_way = await asyncio.wait_for(leases.acquire(DESKTOP, "c2"), 5)
 
     assert in_the_way is not None and in_the_way.team == "c1"
 
@@ -208,11 +208,54 @@ async def test_the_wait_comes_from_the_settings_when_none_is_given(monkeypatch):
     assert leases._wait_limit() == settings.BUILTIN_OCCUPIED_WAIT_SECONDS == 120.0
     # Read when a commission has to wait, so a change applies from then on.
     monkeypatch.setattr(settings, "BUILTIN_OCCUPIED_WAIT_SECONDS", 0.05)
-    await leases.acquire(BROWSER, "c1")
+    await leases.acquire(DESKTOP, "c1")
 
-    in_the_way = await asyncio.wait_for(leases.acquire(BROWSER, "c2"), 5)
+    in_the_way = await asyncio.wait_for(leases.acquire(DESKTOP, "c2"), 5)
 
     assert in_the_way is not None and in_the_way.team == "c1"
+
+
+async def test_browser_group_allows_multiple_teams_concurrently():
+    heard = Heard()
+    cleanups = Cleanups()
+    leases = _leases({"child-a": "team-a"}, on_activity=heard, on_released=cleanups, wait_seconds=0)
+
+    assert await leases.acquire(BROWSER, "team-a", title="flight") is None
+    assert await leases.acquire(BROWSER, "team-b", title="hotel") is None
+    assert await leases.acquire(BROWSER, "child-a", title="seat") is None
+
+    assert leases.occupied_teams(BROWSER) == ["team-a", "team-b"]
+    assert [occ.team for occ in leases.holders(BROWSER)] == ["team-a", "team-b"]
+    assert leases.team_of(BROWSER, "child-a") == "team-a"
+    assert leases.team_of(BROWSER, "team-b") == "team-b"
+    assert heard.events == [(BROWSER, "started", "team-a"), (BROWSER, "started", "team-b")]
+
+    # Releasing one member of team-a leaves team-a and team-b active.
+    assert leases.release("team-a") == []
+    assert leases.occupied_teams(BROWSER) == ["team-a", "team-b"]
+    assert leases.release("child-a") == [BROWSER]
+    assert leases.occupied_teams(BROWSER) == ["team-b"]
+    assert leases.release("team-b") == [BROWSER]
+    assert leases.occupied() == {}
+    await leases.settle()
+    assert heard.events == [
+        (BROWSER, "started", "team-a"),
+        (BROWSER, "started", "team-b"),
+        (BROWSER, "ended", "team-a"),
+        (BROWSER, "ended", "team-b"),
+    ]
+    assert cleanups.done == [(BROWSER, "team-a"), (BROWSER, "team-b")]
+
+
+async def test_browser_declined_claim_rolls_back_only_that_teams_occupation():
+    leases = _leases(wait_seconds=0)
+    claim_a, claim_b = object(), object()
+    assert await leases.acquire(BROWSER, "team-a", claim=claim_a) is None
+    assert await leases.acquire(BROWSER, "team-b", claim=claim_b) is None
+    leases.finish_claim(BROWSER, "team-a", claim_a, keep=False)
+    assert leases.occupied_teams(BROWSER) == ["team-b"]
+    leases.finish_claim(BROWSER, "team-b", claim_b, keep=True)
+    assert leases.occupied() == {BROWSER: "team-b"}
 
 
 # ---------------------------------------------------------------------------
@@ -249,28 +292,28 @@ async def test_a_team_is_named_after_its_lead_whoever_of_it_comes_first():
 async def test_the_group_comes_free_only_when_the_last_of_the_team_lets_go():
     heard = Heard()
     leases = _leases({"child": "lead"}, on_activity=heard, wait_seconds=NEVER)
-    await leases.acquire(BROWSER, "lead")
-    assert await asyncio.wait_for(leases.acquire(BROWSER, "child"), 5) is None
-    other = await _waiting(leases, BROWSER, "other")
+    await leases.acquire(DESKTOP, "lead")
+    assert await asyncio.wait_for(leases.acquire(DESKTOP, "child"), 5) is None
+    other = await _waiting(leases, DESKTOP, "other")
 
     assert leases.release("lead") == []
 
     # The child still uses it: nothing came free and nothing was announced.
-    assert leases.holder(BROWSER).members == {"child"}
-    assert heard.events == [(BROWSER, "started", "lead")]
+    assert leases.holder(DESKTOP).members == {"child"}
+    assert heard.events == [(DESKTOP, "started", "lead")]
     assert not other.done()
 
-    assert leases.release("child") == [BROWSER]
+    assert leases.release("child") == [DESKTOP]
 
     assert await asyncio.wait_for(other, 5) is None
-    assert heard.events == [(BROWSER, "started", "lead"), (BROWSER, "ended", "lead"), (BROWSER, "started", "other")]
+    assert heard.events == [(DESKTOP, "started", "lead"), (DESKTOP, "ended", "lead"), (DESKTOP, "started", "other")]
 
 
 async def test_a_task_agent_of_another_team_waits_like_any_other_commission():
     leases = _leases({"child": "lead", "stranger": "elsewhere"}, wait_seconds=0.05)
-    await leases.acquire(BROWSER, "child")
+    await leases.acquire(DESKTOP, "child")
 
-    in_the_way = await asyncio.wait_for(leases.acquire(BROWSER, "stranger"), 5)
+    in_the_way = await asyncio.wait_for(leases.acquire(DESKTOP, "stranger"), 5)
 
     assert in_the_way is not None and in_the_way.team == "lead"
 
@@ -293,15 +336,15 @@ async def test_releasing_a_commission_that_holds_nothing_frees_nothing():
     heard = Heard()
     cleanups = Cleanups()
     leases = _leases(on_activity=heard, on_released=cleanups, wait_seconds=NEVER)
-    await leases.acquire(BROWSER, "c1")
-    other = await _waiting(leases, BROWSER, "c2")
+    await leases.acquire(DESKTOP, "c1")
+    other = await _waiting(leases, DESKTOP, "c2")
 
     assert leases.release("c2") == []
     assert leases.release("nobody") == []
     await leases.settle()
 
-    assert leases.holder(BROWSER).team == "c1"
-    assert heard.events == [(BROWSER, "started", "c1")]
+    assert leases.holder(DESKTOP).team == "c1"
+    assert heard.events == [(DESKTOP, "started", "c1")]
     assert cleanups.done == []
     assert not other.done()
     leases.release("c1")

@@ -43,6 +43,7 @@ import httpx
 from .shared_state import get_session_manager, get_config_manager
 from .system_router._shared import _validate_local_mutation_request
 from config import TOOL_SERVER_PORT, USER_PLUGIN_BASE
+from main_logic import nekopower_enable
 from main_logic.activity.system_signals import is_remote_backend_deployment
 from utils.desktop_capture import native_wayland_capture_available
 
@@ -589,8 +590,11 @@ async def redirect_plugin_dashboard(request: Request):
     else:
         user_plugin_base = await _resolve_user_plugin_base()
         target_url = f"{user_plugin_base}/ui"
-    if request.query_params.get("page") == "model-api":
-        target_url += "/model-api"
+    # Only named built-in manager pages may influence this redirect. Reuse the
+    # same runtime endpoint for desktop knowledge entry without a fixed port.
+    page = {"model-api": "/model-api", "knowledge": "/knowledge"}.get(request.query_params.get("page"))
+    if page:
+        target_url += page
     query_params: dict[str, str] = {}
     if "v" in request.query_params:
         v = request.query_params["v"].strip()
@@ -693,7 +697,9 @@ async def proxy_questions():
     A page that opens, or comes back after its connection was away, missed
     the questions put meanwhile; and a task agent's own task agent is not
     among the tasks of the HUD. Read from the agent process's
-    ``/console/questions``.
+    ``/console/questions``; the cards of ``enable_nekopower`` that wait
+    (``main_logic/nekopower_enable.py``) are added, or a page that comes back
+    would take them down.
     """
     from config import AUTOSTART_CSRF_TOKEN
 
@@ -706,9 +712,66 @@ async def proxy_questions():
         )
         if not r.is_success:
             return JSONResponse({"questions": [], "error": f"tool_server responded {r.status_code}"}, status_code=502)
-        return {"questions": r.json().get("questions") or []}
+        return {"questions": (r.json().get("questions") or []) + nekopower_enable.waiting_rows()}
     except Exception as e:
         return JSONResponse({"questions": [], "error": f"proxy error: {e}"}, status_code=502)
+
+
+async def _switch_nekopower_on(mgr, lanlan: str) -> str:
+    """Switch NekoPower on as the panel switch does (``post_agent_command``, ``set_agent_enabled``).
+
+    The session's switches are written first and taken back if the command never
+    reached the agent process; after a timeout of its answer they are left, as the
+    panel switch leaves them. Returns "" once the agent process took it, else why
+    not: "unreachable", "refused" or "unknown" (``ENABLE_FAILURE_REASONS``).
+    """
+    from utils.internal_http_client import InternalServiceSigningError
+
+    mine = object()
+    taken = True
+    _unconfirmed.write(mgr, mine, {"agent_enabled": True, "user_plugin_enabled": True})
+    try:
+        r = await _get_http_client().post(
+            f"{TOOL_SERVER_BASE}/agent/command",
+            json={
+                "request_id": f"enable-card-{uuid.uuid4().hex[:12]}",
+                "command": "set_agent_enabled",
+                "enabled": True,
+                "lanlan_name": lanlan,
+            },
+            timeout=8.0,
+        )
+        taken = r.is_success
+        return "" if taken else "refused"
+    except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout, InternalServiceSigningError):
+        taken = False
+        return "unreachable"
+    except Exception as e:
+        logger.warning("[%s] enable_nekopower: switching on not known to be taken: %s", lanlan, type(e).__name__)
+        return "unknown"
+    finally:
+        _unconfirmed.settle(mgr, mine, taken=taken)
+
+
+async def _answer_enable_nekopower_card(task_id: str, payload: dict):
+    """The user answered the card of ``enable_nekopower``; on "yes", NekoPower is switched on here."""
+    lanlan = nekopower_enable.lanlan_of(task_id)
+    mgr = get_session_manager().get(lanlan) if lanlan else None
+    not_taken = JSONResponse({"success": False, "detail": {"code": "not_taken"}}, status_code=409)
+    if mgr is None or not isinstance(payload, dict):
+        return not_taken
+    text = str(payload.get("text") or payload.get("note") or "")
+    outcome = await mgr.answer_enable_nekopower_card(
+        str(payload.get("question_id") or ""),
+        choice=str(payload.get("choice") or ""),
+        text=text,
+    )
+    if outcome == nekopower_enable.STALE:
+        return not_taken
+    if outcome == nekopower_enable.ACCEPTED:
+        failure = await _switch_nekopower_on(mgr, lanlan)
+        mgr._fire_task(mgr.after_nekopower_enabled(failure, note=text))
+    return {"success": True, "outcome": outcome}
 
 
 @router.post('/commissions/{commission_id}/answer')
@@ -722,7 +785,14 @@ async def proxy_commission_answer(commission_id: str, payload: dict = Body(...))
     ``detail.code`` ``not_taken`` says the question was answered, withdrawn
     or replaced by another meanwhile. 502 says the answer never got there;
     504 that it was sent and nothing is known of what came of it.
+
+    The card of ``enable_nekopower`` (its id starts with
+    ``nekopower_enable.TASK_ID_PREFIX``) is no commission: it is answered
+    here, in this process.
     """
+    if nekopower_enable.is_task_id(commission_id):
+        return await _answer_enable_nekopower_card(commission_id, payload)
+
     from urllib.parse import quote
 
     from config import AUTOSTART_CSRF_TOKEN

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import threading
 import time
 from collections.abc import Mapping
+
+from pydantic import BaseModel, Field
 
 from plugin.sdk.plugin import NekoPluginBase, custom_event, plugin_entry, ui
 from plugin.sdk.shared.core.context import SdkContext
@@ -128,6 +131,31 @@ class BareModelDumpUiContextFixturePlugin(NekoPluginBase):
     @ui.context(id="main")
     async def main_context(self, **_: object) -> object:
         return _BareDumpState()
+
+
+class _NonFiniteFloatState(BaseModel):
+    finite: float = 1.0
+    nan_val: float = Field(default=float("nan"))
+    inf_val: float = Field(default=float("inf"))
+
+
+class NonFiniteFloatUiContextFixturePlugin(NekoPluginBase):
+    @ui.action(
+        id="ping",
+        label="Ping",
+        confirm={"title": "Proceed?", "threshold": float("nan")},
+    )
+    @plugin_entry(id="ping", name="Ping")
+    async def ping(self, **_: object) -> dict[str, object]:
+        return {"ok": True}
+
+    @ui.context(id="main")
+    async def main_context(self, **_: object) -> object:
+        return _NonFiniteFloatState(
+            finite=2.5,
+            nan_val=float("nan"),
+            inf_val=float("-inf"),
+        )
 
 
 class _ConfirmMapping(Mapping):

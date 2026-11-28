@@ -169,11 +169,12 @@ async def proxy():
 
 async def test_reads_are_forwarded_and_refresh_the_tool_flag(proxy, memory_server):
     client = memory_server(lambda request: httpx.Response(200, json={"ok": True, "items": [], "tool_available": True}))
-    response = await proxy.get("/api/public-knowledge/entries", params={"query": "猫", "limit": 5})
+    response = await proxy.get("/api/public-knowledge/entries", params={"limit": 5, "query": "private legacy query"}, headers={"X-Knowledge-Query": "%E7%8C%AB"})
     assert response.status_code == 200
     forwarded = client.requests[0]
     assert forwarded.url.path == "/internal/knowledge/entries"
-    assert forwarded.url.params["query"] == "猫"
+    assert "query" not in forwarded.url.params
+    assert forwarded.headers["x-knowledge-query"] == "%E7%8C%AB"
     assert public_knowledge.tool_available() is True
 
 
@@ -209,6 +210,18 @@ async def test_write_bodies_are_streamed_through_unparsed(proxy, memory_server):
     assert forwarded.url.path == "/internal/knowledge/packs/import"
     assert forwarded.headers["content-type"].startswith("multipart/form-data; boundary=")
     assert b'{"schema_version": 1}' in forwarded.content
+
+
+async def test_export_delete_reaches_memory_with_the_existing_write_protection(proxy, memory_server):
+    """Export cleanup must traverse the same authenticated proxy as imports."""
+    client = memory_server(lambda request: httpx.Response(200, json={"ok": True, "artifact_retained": False}))
+    body = {"job_id": "a" * 32}
+    refused = await proxy.post("/api/public-knowledge/packs/exports/delete", json=body)
+    assert refused.status_code == 403 and not client.requests
+    response = await proxy.post("/api/public-knowledge/packs/exports/delete", headers=_AUTH, json=body)
+    assert response.json() == {"ok": True, "artifact_retained": False}
+    assert client.requests[0].url.path == "/internal/knowledge/packs/exports/delete"
+    assert json.loads(client.requests[0].content) == body
 
 
 async def test_oversized_bodies_are_refused(proxy, memory_server, monkeypatch):

@@ -11,7 +11,6 @@ N.E.K.O/
 ├── launcher.py               # Thin public launcher entrypoint
 ├── launcher_core/            # Bootstrap, ports, process lifecycle
 ├── config/                   # Defaults, prompts, provider/network data
-├── knowledge/                # Public knowledge packs (runs in the Memory Server)
 ├── main_logic/               # Conversation, clients, TTS, buses
 ├── main_routers/             # Main FastAPI route packages/modules
 ├── memory/                   # Facts, recall, persona, reflection, event/outbox
@@ -20,7 +19,7 @@ N.E.K.O/
 │   ├── runtime/              # Agent runtime in which task agents run
 │   └── builtin/              # Keyboard-and-mouse and browser tools
 ├── plugin/                   # SDK, host/server, built-ins, tooling
-├── services/                 # Domain services: chat sync, theater runtime
+├── services/                 # Domain services: chat sync, theater runtime, public knowledge (services/knowledge, Memory Server)
 ├── utils/
 │   └── config_manager/       # Writable config/storage package
 ├── frontend/
@@ -30,7 +29,6 @@ N.E.K.O/
 ├── templates/                # Main/chat/subtitle/settings/feature pages
 ├── docker/                   # Dockerfiles, Compose, entrypoint
 ├── scripts/                  # CI, validation, packaging, assets
-├── specs/                    # PyInstaller specifications
 ├── tests/                    # Unit/integration/frontend/e2e/contracts
 ├── docs/                     # VitePress site
 ├── pyproject.toml            # Python metadata/dependency groups
@@ -46,14 +44,23 @@ N.E.K.O/
 - `main_logic/voice_turn/` owns provider-neutral voice contracts; local
   Silero/Smart Turn code and model assets live under
   `main_logic/asr_client/endpointing/`.
-- `services/` is an L2 package next to `main_logic/`, `memory/` and
-  `knowledge/`: `main_logic/`, `main_routers/` and `app/` may import it, but it
+- `services/` is an L2 package next to `main_logic/` and `memory/`:
+  `main_logic/`, `main_routers/` and `app/` may import it, but it
   never imports `main_logic/`, `main_routers/` or anything above L2. What it
   needs from those layers (saved community session, live session manager,
   character rename) is registered into `services/chat_sync/host.py` by the
   owning module when that module is imported.
-- `knowledge/` runs inside the Memory Server; Main-side code, `services/`
-  included, reaches it over HTTP only.
+- Where a new module goes: unlike `utils/` (generic helpers that know nothing
+  about the product) and `main_logic/` (logic tied to the live chat session), a
+  package belongs in `services/` only if it meets all three conditions: (1) it
+  owns concrete domain state, a protocol or a lifecycle, beyond a generic
+  helper; (2) it never imports `main_logic/`, `main_routers/` or `app/`, and
+  gets host capabilities through `host.py` hooks; (3) it is a standalone
+  subsystem or shared by several subsystems/routers.
+  `services/theater_workshop/` is a source-only author SDK and is not shipped
+  in the desktop bundle.
+- `services/knowledge/` runs inside the Memory Server. `check_module_layering.py` treats it as its own `knowledge` node, so Main-side code,
+  other `services/` packages included, reaches it over HTTP only.
 - `scripts/check_module_layering.py` enforces these layers. A new top-level
   directory with Python code must be added to its `LAYERS`, or CI fails.
 - Docker files are under `docker/`, not the repository root.

@@ -321,7 +321,12 @@ async def storage_limited_mode_guard(request: Request, call_next):
 
 # Global inbound-body guard (issue #1586): mirror main_server; memory_server endpoints
 # (chat cache / reflections, etc.) use small JSON, so apply the same consistent guard.
-app.add_middleware(InboundBodySizeLimitMiddleware)
+# Raw package ZIPs have a larger bounded transport contract; other memory
+# endpoints retain the global 16 MiB request guard.
+from utils.http.knowledge_proxy import PACK_BODY_MAX_BYTES
+app.add_middleware(InboundBodySizeLimitMiddleware, json_path_limits={
+    "/internal/knowledge/packs/import": PACK_BODY_MAX_BYTES,
+})
 from utils.instance_access import InstanceAccessMiddleware
 app.add_middleware(InstanceAccessMiddleware)
 app.add_middleware(HostOriginGuardMiddleware)
@@ -1621,6 +1626,27 @@ async def shutdown_event_handler():
         await release_embedding_service()
     except Exception as e:
         logger.warning("[Memory] embedding service release 失败: %s", e)
+    try:
+        from utils.http.pool_utils import is_loop_pool_cleanup_deferred
+
+        defer_pool_cleanup = is_loop_pool_cleanup_deferred()
+    except Exception:
+        defer_pool_cleanup = False
+    if not defer_pool_cleanup:
+        try:
+            from utils.llm_client.warm_pool import close_warm_chat_llms
+
+            async with asyncio.timeout(2.0):
+                await close_warm_chat_llms()
+        except Exception as e:
+            logger.debug("[Memory] llm_warm_pool 清理失败: %s", e)
+        try:
+            from utils.decision_client.adapters import aclose_decision_http_clients
+
+            async with asyncio.timeout(2.0):
+                await aclose_decision_http_clients()
+        except Exception as e:
+            logger.debug("[Memory] decision_http_client 清理失败: %s", e)
     # Waited for only now, so persistence cannot delay worker stop or
     # embedding/SQLite cleanup; it was queued before them (see above). The wait
     # is bounded (a stuck fsync, or a periodic report queued ahead of it) and

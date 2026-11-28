@@ -108,17 +108,22 @@ def _error_code(text: Any) -> str | None:
     return "dsh_install"
 
 
-def _measure(paths: list[Path], budget: float) -> list[tuple[int | None, bool]]:
+def _measure(paths: list[Path | None], budget: float) -> list[tuple[int | None, bool]]:
     """Blocking: return ``(bytes, whole)`` for each directory; None for one that is not there."""
     deadline = time.monotonic() + budget
     measured: list[tuple[int | None, bool]] = []
     for path in paths:
-        if not path.is_dir():
+        if path is None or not path.is_dir():
             measured.append((None, True))
             continue
         total, whole = 0, True
+
+        def _on_walk_error(_exc: OSError) -> None:
+            nonlocal whole
+            whole = False
+
         try:
-            for directory, _names, files in os.walk(path):
+            for directory, _names, files in os.walk(path, onerror=_on_walk_error):
                 if time.monotonic() > deadline:
                     whole = False
                     break
@@ -126,6 +131,7 @@ def _measure(paths: list[Path], budget: float) -> list[tuple[int | None, bool]]:
                     try:
                         total += os.lstat(os.path.join(directory, name)).st_size
                     except OSError:
+                        whole = False
                         continue
         except OSError:
             whole = False
@@ -384,9 +390,29 @@ def build_console_router(
     @router.get("/places")
     async def get_places() -> dict[str, Any]:
         """Return the directories the host keeps things in, and how much each holds."""
+        from nekopower.host.storage import _classify_path_safety
+
         host = await get_host()
         places = host.places()
-        measured = await asyncio.to_thread(_measure, [Path(place["path"]) for place in places], _SIZE_BUDGET_SECONDS)
+
+        def _safe_targets() -> list[Path | None]:
+            targets: list[Path | None] = []
+            host_paths = getattr(host, "paths", None)
+            host_root = host_paths.root() if host_paths is not None and callable(getattr(host_paths, "root", None)) else None
+            for place in places:
+                p = Path(place["path"])
+                if place["key"] in ("worktrees", "task_agents"):
+                    allowed = host_root if host_root is not None else p.parent
+                    if _classify_path_safety(p, allowed) != "ok":
+                        targets.append(None)
+                        continue
+                targets.append(p)
+            return targets
+
+        def _measure_places() -> list[tuple[int | None, bool]]:
+            return _measure(_safe_targets(), _SIZE_BUDGET_SECONDS)
+
+        measured = await asyncio.to_thread(_measure_places)
         return {
             "success": True,
             "places": [
@@ -403,6 +429,23 @@ def build_console_router(
         path = next((Path(place["path"]) for place in host.places() if place["key"] == key), None)
         if path is None:
             raise _refuse(400, "bad_place")
+        if key in ("worktrees", "task_agents"):
+            resolve_open = getattr(host, "resolve_storage_open_path", None)
+            if callable(resolve_open):
+                try:
+                    path = await resolve_open("place", key)
+                except FileNotFoundError:
+                    raise _refuse(404, "place_missing") from None
+                except ValueError:
+                    raise _refuse(400, "bad_place") from None
+            else:
+                from nekopower.host.storage import _classify_path_safety
+
+                safety = await asyncio.to_thread(_classify_path_safety, path, path.parent)
+                if safety == "missing":
+                    raise _refuse(404, "place_missing")
+                if safety != "ok":
+                    raise _refuse(400, "bad_place")
         if not await asyncio.to_thread(path.is_dir):
             raise _refuse(404, "place_missing")
         opener = open_directory
@@ -412,6 +455,113 @@ def build_console_router(
             await asyncio.to_thread(opener, path)
         except Exception as exc:  # noqa: BLE001 - NativeDirectoryError, with its own code
             logger.warning("showing a directory failed (exc_type=%s)", type(exc).__name__)
+            raise _refuse(500, "open_failed") from None
+        return {"success": True}
+
+    # -- disk space management --------------------------------------------
+
+    @router.get("/storage")
+    async def get_storage() -> dict[str, Any]:
+        """Return the disk space breakdown, cleanable items, and automatic cleanup settings."""
+        host = await get_host()
+        return {"success": True, **(await host.storage_overview())}
+
+    @router.post("/storage/settings")
+    async def set_storage_settings(payload: dict[str, Any]) -> dict[str, Any]:
+        """Update automatic cleanup switches and retention days for working folders and worktrees."""
+        payload = payload or {}
+        given: dict[str, Any] = {}
+        for flag_name in ("auto_clean_work_dirs", "auto_clean_worktrees"):
+            if flag_name in payload:
+                value = payload[flag_name]
+                if not isinstance(value, bool):
+                    raise _refuse(400, "bad_flag", field=flag_name)
+                given[flag_name] = value
+        for days_name in ("work_dir_kept_days", "worktree_kept_days"):
+            if days_name in payload:
+                value = payload[days_name]
+                if isinstance(value, bool) or not isinstance(value, int):
+                    raise _refuse(400, "bad_number", field=days_name)
+                given[days_name] = value
+        if not given:
+            raise _refuse(400, "nothing_to_change")
+        host = await get_host()
+        try:
+            updated = await host.set_storage_settings(**given)
+        except ValueError as exc:
+            code = str(exc)
+            raise _refuse(400, code if code in ("bad_flag", "out_of_range") else "out_of_range") from None
+        except OSError as exc:
+            logger.warning("storage settings could not be saved: %s", type(exc).__name__)
+            raise _refuse(409, "storage_not_saved") from None
+        return {"success": True, "settings": updated}
+
+    @router.post("/storage/work-dirs/clean")
+    async def clean_storage_work_dirs(payload: dict[str, Any]) -> dict[str, Any]:
+        """Remove selected host-owned working directories, skipping any that are in use."""
+        ids = (payload or {}).get("ids")
+        if not isinstance(ids, list) or not ids or len(ids) > 500 or not all(isinstance(x, str) and x for x in ids):
+            raise _refuse(400, "bad_ids")
+        host = await get_host()
+        try:
+            result = await host.clean_work_dirs(ids)
+        except ValueError as exc:
+            code = str(exc)
+            raise _refuse(400, code if code in ("bad_ids", "bad_work_dir") else "bad_work_dir") from None
+        return {"success": True, **result}
+
+    @router.post("/storage/worktrees/clean")
+    async def clean_storage_worktrees(payload: dict[str, Any]) -> dict[str, Any]:
+        """Discard selected left-over worktrees, retry previously discarded ones, or remove orphans."""
+        ids = (payload or {}).get("ids")
+        if not isinstance(ids, list) or not ids or len(ids) > 500 or not all(isinstance(x, str) and x for x in ids):
+            raise _refuse(400, "bad_ids")
+        host = await get_host()
+        try:
+            result = await host.clean_worktrees(ids)
+        except ValueError as exc:
+            code = str(exc)
+            raise _refuse(400, "bad_ids" if code == "bad_ids" else "bad_worktree") from None
+        return {"success": True, **result}
+
+    @router.post("/storage/transcripts/clean")
+    async def clean_storage_transcripts(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Clean expired session transcripts or inactive tool output caches right away."""
+        mode = (payload or {}).get("mode", "expired")
+        if mode not in ("expired", "outputs"):
+            raise _refuse(400, "bad_mode")
+        host = await get_host()
+        result = await host.clean_transcripts(mode)
+        return {"success": True, **result}
+
+    @router.post("/storage/open")
+    async def open_storage_item(payload: dict[str, Any]) -> dict[str, Any]:
+        """Show a validated host directory, working folder, or worktree in the system file manager."""
+        payload = payload or {}
+        kind = payload.get("kind")
+        item_id = payload.get("id")
+        if kind not in ("place", "work_dir", "worktree"):
+            raise _refuse(400, "bad_kind")
+        if not isinstance(item_id, str) or not item_id.strip():
+            raise _refuse(400, "bad_name")
+        host = await get_host()
+        try:
+            path = await host.resolve_storage_open_path(kind, item_id)
+        except FileNotFoundError:
+            raise _refuse(404, "place_missing") from None
+        except ValueError as exc:
+            code = str(exc)
+            if code == "no_worktree":
+                raise _refuse(404, code) from None
+            known = ("bad_place", "bad_work_dir", "bad_worktree", "bad_kind", "bad_name")
+            raise _refuse(400, code if code in known else "bad_name") from None
+        opener = open_directory
+        if opener is None:
+            from utils.native_directory import open_directory as opener
+        try:
+            await asyncio.to_thread(opener, path)
+        except Exception as exc:  # noqa: BLE001 - NativeDirectoryError, with its own code
+            logger.warning("showing a storage directory failed (exc_type=%s)", type(exc).__name__)
             raise _refuse(500, "open_failed") from None
         return {"success": True}
 
@@ -748,6 +898,29 @@ def build_console_router(
         if session is None:
             raise _refuse(404, "no_familiar")
         return {"success": True, "written": list(written)}
+
+    @router.post("/familiars/{session_id}/duty")
+    async def change_duty(session_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """Change what kind of task agent a session is (its preset), as the user asks.
+
+        It holds from the task agent's next start; ``at_work`` in the
+        answer says a run of it is under way, which goes on as it was.
+        """
+        preset = text_of(payload or {}, "preset", required=True)
+        if not preset.strip():
+            raise _refuse(400, "bad_preset")
+        host = await get_host()
+        try:
+            changed = await host.change_duty(session_id, preset.strip())
+        except LookupError:
+            raise _refuse(404, "no_familiar") from None
+        except ValueError as exc:
+            code = str(exc)
+            if code in ("tree_not_landed", "changed_meanwhile", "ended"):
+                # As it stands it cannot be changed; it can once that is seen to, or looked at again.
+                raise _refuse(409, code) from None
+            raise _refuse(400, code if code in ("not_changeable", "bad_preset") else "bad_preset") from None
+        return {"success": True, **changed}
 
     @router.post("/space/projects/description")
     async def describe_project(payload: dict[str, Any]) -> dict[str, Any]:

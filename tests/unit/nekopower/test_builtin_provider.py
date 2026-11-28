@@ -70,6 +70,8 @@ def no_real_desktop(monkeypatch: Any) -> None:
     clipboard.paste = _reached  # type: ignore[attr-defined]
     monkeypatch.setattr(desktop_module, "load_pyautogui", _reached)
     monkeypatch.setattr(desktop_module, "capture_frame", _reached)
+    monkeypatch.setattr(desktop_module, "default_ui_tree", lambda: None)
+    monkeypatch.setattr("nekopower.builtin.uia._ensure_com_for_thread", _reached)
     monkeypatch.setattr(desktop_module, "_pyautogui", None)
     monkeypatch.setattr(native, "capture_desktop_screenshot", _reached)
     monkeypatch.setitem(sys.modules, "pyautogui", None)
@@ -209,10 +211,10 @@ async def until(predicate: Callable[[], Any], what: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_one_computer_tool_and_fifteen_browser_tools_are_listed(rig: Rig) -> None:
+def test_one_computer_tool_and_seventeen_browser_tools_are_listed(rig: Rig) -> None:
     listed = rig.provider.available()
     assert [item.tool_name for item in listed] == ["computer", *BROWSER_TOOL_NAMES]
-    assert len(listed) == 16
+    assert len(listed) == 18
     assert all(item.kind == KIND_BUILTIN and item.available and item.unavailable_reason == "" for item in listed)
     computer = listed[0]
     assert computer.group == computer.permission == BUILTIN_GROUP_KEYBOARD_MOUSE
@@ -232,8 +234,8 @@ def test_the_computer_tool_and_the_browser_screenshot_are_the_tools_that_need_a_
     needing = [item.tool_name for item in rig.provider.available() if item.needs_images]
     assert needing == ["computer", BROWSER_SCREENSHOT_TOOL_NAME]
     assert BROWSER_SCREENSHOT_TOOL_NAME == "browser_take_screenshot"
-    # The other fourteen work from text and are of use to any model.
-    assert len([item for item in rig.provider.available() if not item.needs_images]) == 14
+    # The other sixteen work from text and are of use to any model.
+    assert len([item for item in rig.provider.available() if not item.needs_images]) == 16
 
 
 def test_every_tool_carries_the_state_of_its_group_as_of_now(rig: Rig) -> None:
@@ -246,7 +248,7 @@ def test_every_tool_carries_the_state_of_its_group_as_of_now(rig: Rig) -> None:
     listed = rig.provider.available()
     assert (listed[0].available, listed[0].unavailable_reason) == (True, "")
     assert all(not item.available and item.unavailable_reason == "not ready (AGENT_BROWSER_NOT_FOUND)" for item in listed[1:])
-    assert len(listed) == 16
+    assert len(listed) == 18
 
 
 def test_listing_asks_each_group_once_and_touches_neither_the_desktop_nor_the_browser(rig: Rig) -> None:
@@ -255,7 +257,7 @@ def test_listing_asks_each_group_once_and_touches_neither_the_desktop_nor_the_br
     assert rig.desktop.calls == [] and rig.browser.calls == []
     # Nothing is made for listing either.
     bare = BuiltinToolProvider(state=Switches())
-    assert len(bare.available()) == 16
+    assert len(bare.available()) == 18
     assert bare._desktop is None and bare._browser is None
     assert bare.browser_window() is None
 

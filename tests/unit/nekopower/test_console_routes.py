@@ -380,7 +380,7 @@ async def test_the_places_are_listed_with_what_they_hold_and_only_they_are_opene
     (space / "AGENTS.md").write_text("123", encoding="utf-8")
 
     places = {place["key"]: place for place in (await client.get("/console/places", headers=HEADERS)).json()["places"]}
-    assert list(places) == ["task_agents", "space", "dsh", "browser_profile"]
+    assert list(places) == ["task_agents", "space", "dsh", "browser_profile", "worktrees"]
     assert places["space"] == {"key": "space", "path": str(space), "exists": True, "bytes": 8, "bytes_whole": True}
     assert places["dsh"]["exists"] is False and places["dsh"]["bytes"] is None
 
@@ -393,6 +393,88 @@ async def test_the_places_are_listed_with_what_they_hold_and_only_they_are_opene
         refused = await client.post("/console/places/open", headers=HEADERS, json={"key": key})
         assert refused.status_code == 400 and refused.json()["detail"]["code"] == "bad_place"
     assert opened == [space]
+
+
+async def test_storage_routes_report_inventory_update_policy_open_and_clean(console):
+    client, host, opened = console
+
+    # Requires CSRF token like every other console route.
+    denied = await client.get("/console/storage")
+    assert denied.status_code == 403 and denied.json()["detail"]["code"] == "forbidden"
+
+    # Populate one idle session work/ dir and one orphan worktree dir.
+    sess = await host.ledger.create_session(name="clean-me", lanlan_name="Lan", project="_daily")
+    await host.ledger.update_session(sess.id, status="idle")
+    work_dir = host.paths.work_dir(sess.id, "_daily")
+    work_dir.mkdir(parents=True)
+    (work_dir / "temp.bin").write_bytes(b"a" * 256)
+    orphan_wt = host.paths.worktree_dir("orph9999")
+    orphan_wt.mkdir(parents=True)
+    (orphan_wt / "blob.bin").write_bytes(b"b" * 512)
+
+    overview = (await client.get("/console/storage", headers=HEADERS)).json()
+    assert overview["success"] is True
+    assert overview["total_bytes"] >= 768
+    assert overview["reclaimable_bytes"] >= 768
+    assert any(item["id"] == f"session:_daily/{sess.id}" for item in overview["work_dirs"])
+    assert any(item["id"] == "orph9999" for item in overview["worktrees"])
+
+    # Settings validation and update.
+    for payload, code in (
+        ({}, "nothing_to_change"),
+        ({"auto_clean_work_dirs": "yes"}, "bad_flag"),
+        ({"work_dir_kept_days": True}, "bad_number"),
+        ({"work_dir_kept_days": "10"}, "bad_number"),
+        ({"work_dir_kept_days": 0}, "out_of_range"),
+        ({"worktree_kept_days": 400}, "out_of_range"),
+    ):
+        bad = await client.post("/console/storage/settings", headers=HEADERS, json=payload)
+        assert bad.status_code == 400 and bad.json()["detail"]["code"] == code
+
+    saved = (await client.post(
+        "/console/storage/settings",
+        headers=HEADERS,
+        json={"auto_clean_work_dirs": False, "worktree_kept_days": 21},
+    )).json()
+    assert saved["success"] is True
+    assert saved["settings"]["auto_clean_work_dirs"] is False
+    assert saved["settings"]["worktree_kept_days"] == 21
+
+    # Open by validated id works for work_dir and worktree; rejects bad kinds/traversal.
+    assert (await client.post(
+        "/console/storage/open", headers=HEADERS, json={"kind": "work_dir", "id": f"session:_daily/{sess.id}"}
+    )).json() == {"success": True}
+    assert (await client.post(
+        "/console/storage/open", headers=HEADERS, json={"kind": "worktree", "id": "orph9999"}
+    )).json() == {"success": True}
+    assert opened == [work_dir, orphan_wt]
+
+    assert (await client.post(
+        "/console/storage/open", headers=HEADERS, json={"kind": "unknown", "id": "x"}
+    )).status_code == 400
+    assert (await client.post(
+        "/console/storage/open", headers=HEADERS, json={"kind": "work_dir", "id": "session:../x/y"}
+    )).status_code == 400
+
+    # Clean work_dir, worktree, and transcripts endpoints + validation.
+    assert (await client.post("/console/storage/work-dirs/clean", headers=HEADERS, json={"ids": []})).status_code == 400
+    assert (await client.post("/console/storage/work-dirs/clean", headers=HEADERS, json={"ids": ["bad"]})).status_code == 400
+    wd_clean = (await client.post(
+        "/console/storage/work-dirs/clean", headers=HEADERS, json={"ids": [f"session:_daily/{sess.id}"]}
+    )).json()
+    assert wd_clean == {"success": True, "cleaned": [f"session:_daily/{sess.id}"], "freed_bytes": 256, "failed": []}
+    assert not work_dir.exists()
+
+    assert (await client.post("/console/storage/worktrees/clean", headers=HEADERS, json={"ids": ["../bad"]})).status_code == 400
+    wt_clean = (await client.post(
+        "/console/storage/worktrees/clean", headers=HEADERS, json={"ids": ["orph9999"]}
+    )).json()
+    assert wt_clean["success"] is True and wt_clean["cleaned"] == ["orph9999"]
+    assert not orphan_wt.exists()
+
+    assert (await client.post("/console/storage/transcripts/clean", headers=HEADERS, json={"mode": "bogus"})).status_code == 400
+    tr_clean = (await client.post("/console/storage/transcripts/clean", headers=HEADERS, json={"mode": "expired"})).json()
+    assert tr_clean == {"success": True, "cleaned": 0, "freed_bytes": 0, "skipped": 0}
 
 
 def test_the_sizes_stop_being_added_up_when_their_time_is_over(tmp_path, monkeypatch):
@@ -857,6 +939,44 @@ async def test_the_form_of_a_new_task_agent_is_filled_in_and_a_failure_says_whic
     for payload in ({}, {"text": 3}, {"text": "x", "workdir": 3}):
         bad = await client.post("/console/familiars/draft", headers=HEADERS, json=payload)
         assert bad.status_code == 400 and bad.json()["detail"]["code"] == "bad_text"
+
+
+async def test_the_user_changes_what_kind_of_task_agent_a_session_is(familiars, tmp_path):
+    client, host = familiars
+    session_id = (await client.post("/console/familiars", headers=HEADERS, json={"name": "Ledger tool"})).json()["session_id"]
+
+    async def change(target: str, payload: Any) -> Any:
+        return await client.post(f"/console/familiars/{target}/duty", headers=HEADERS, json=payload)
+
+    changed = await change(session_id, {"preset": " scout "})
+    assert changed.status_code == 200 and changed.json() == {
+        "success": True, "session_id": session_id, "preset": "scout", "was": "general", "seat": "",
+        "changed": True, "widened": False, "at_work": False,
+    }
+    assert (await host.ledger.get_session(session_id)).preset == "scout"
+    # Back to one that changes files: the user says so here, and nobody is asked.
+    back = (await change(session_id, {"preset": "general"})).json()
+    assert (back["preset"], back["widened"], back["changed"]) == ("general", True, True)
+
+    for payload, code in (({}, "bad_text"), ({"preset": 3}, "bad_text"), ({"preset": " "}, "bad_preset"),
+                          ({"preset": "boss"}, "bad_preset"), ({"preset": "no-such-preset"}, "bad_preset")):
+        refused = await change(session_id, payload)
+        assert (refused.status_code, refused.json()["detail"]["code"]) == (400, code)
+    missing = await change("no-such-session", {"preset": "scout"})
+    assert (missing.status_code, missing.json()["detail"]["code"]) == (404, "no_familiar")
+    # A project's leader is not made a member by its preset.
+    leader = (await client.post("/console/familiars", headers=HEADERS, json={"name": "Shop site", "preset": "boss"})).json()
+    led = await change(leader["session_id"], {"preset": "scout"})
+    assert (led.status_code, led.json()["detail"]["code"]) == (400, "not_changeable")
+    # Work of it waits in a git worktree: it is not made one that cannot land it.
+    left = tmp_path / "left"
+    await host.ledger.add_tree(
+        id="left", session_id=session_id, project="Ledger tool", project_dir=str(tmp_path), path=str(left),
+        workdir=str(left), state="unlanded",
+    )
+    waits = await change(session_id, {"preset": "scout"})
+    assert (waits.status_code, waits.json()["detail"]["code"]) == (409, "tree_not_landed")
+    assert (await host.ledger.get_session(session_id)).preset == "general"
 
 
 async def test_the_user_writes_a_card_and_a_project_description_which_stay_the_users(familiars):

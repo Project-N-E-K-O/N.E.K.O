@@ -268,3 +268,40 @@ async def test_auto_start_route_preserves_domain_error_shape(
     assert response.status_code == 404
     assert response.headers["X-Error-Code"] == "PLUGIN_NOT_FOUND"
     assert response.json() == {"detail": "Plugin 'demo' not found"}
+
+
+@pytest.mark.asyncio
+async def test_plugins_refresh_returns_409_when_operation_lock_busy(
+    plugin_route_test_app: FastAPI,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+    from plugin.server.application.plugins import operation_lock
+
+    monkeypatch.setenv("NEKO_PLUGIN_OPERATION_LOCK_PATH", str(tmp_path / "op.lock"))
+    monkeypatch.setattr(route_module, "_OPERATION_WAIT_BUDGET_SECONDS", 0.05)
+
+    hold_ready = asyncio.Event()
+    release_hold = asyncio.Event()
+
+    async def _holder() -> None:
+        async with operation_lock.plugin_operation_lock.hold():
+            hold_ready.set()
+            await release_hold.wait()
+
+    holder_task = asyncio.create_task(_holder())
+    await hold_ready.wait()
+    try:
+        transport = ASGITransport(app=plugin_route_test_app)
+        async with AsyncClient(
+            transport=transport,
+            base_url="http://127.0.0.1:48916",
+            headers=_mutation_headers(),
+        ) as client:
+            response = await client.post("/plugins/refresh")
+        assert response.status_code == 409
+        assert response.headers["X-Error-Code"] == "PLUGIN_OPERATION_BUSY"
+    finally:
+        release_hold.set()
+        await holder_task

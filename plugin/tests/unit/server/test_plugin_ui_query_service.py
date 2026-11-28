@@ -1438,3 +1438,41 @@ def test_surface_context_reports_provider_failure_as_warning(tmp_path) -> None:
         if warning.get("code") == "ui_context_failed"
     ]
     assert any("not found" in str(message) for message in messages)
+
+
+def test_call_surface_action_authoritatively_tags_channel_in_ctx(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(ui_query_module, "_resolve_hosted_entry_timeout", lambda *_args: 10.0)
+    captured_contexts: list[dict[str, object]] = []
+
+    class _CapturingHost(_BrokenContextHost):
+        async def trigger(self, entry_id: str, args: dict[str, object], timeout: float | None = None) -> object:
+            captured_contexts.append(dict(args.get("_ctx") or {}))
+            return await super().trigger(entry_id, args, timeout=timeout)
+
+    restore = _install_demo_plugin(tmp_path, _CapturingHost(), permissions=["action:call"])
+    try:
+        asyncio.run(
+            PluginUiQueryService().call_surface_action(
+                "demo",
+                action_id="ping",
+                args={"_ctx": {"channel": "run", "lanlan_name": "Alice"}},
+                kind="panel",
+                surface_id="main",
+            )
+        )
+        asyncio.run(
+            PluginUiQueryService().call_surface_action(
+                "demo",
+                action_id="ping",
+                args={},
+                _card_context={"card_id": "c1", "channel": "ui"},
+            )
+        )
+    finally:
+        restore()
+
+    assert len(captured_contexts) == 2
+    assert captured_contexts[0]["channel"] == "ui"
+    assert captured_contexts[0]["lanlan_name"] == "Alice"
+    assert captured_contexts[1]["channel"] == "chat_card"
+    assert captured_contexts[1]["card_id"] == "c1"

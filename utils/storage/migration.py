@@ -85,9 +85,8 @@ MIGRATED_RUNTIME_ENTRY_NAMES = (
     # The external writer witness stays at anchor_root/state; moving it with
     # this directory would wrongly give a retained/copied root new authority.
     "chat_sync",
-    # Public knowledge: user-imported packs and registry, plus knowledge.db.
-    # The database is derived but moves with the rest: migration runs with
-    # every server stopped, exactly like memory's SQLite files.
+    # Unified knowledge: packs, retained originals, versions and durable jobs.
+    # Its derived database moves while every server is stopped, as memory does.
     "knowledge",
     # NekoPower: what it keeps as plain files, each on its own (the ledger of
     # commissions with its write-ahead log, the permission settings, what
@@ -1361,22 +1360,28 @@ def _rollback_interrupted_publish(
         expected_manifest = (
             published_manifests.get(entry_name) if was_published else staged_target_manifests.get(entry_name)
         )
+        if was_published and not isinstance(expected_manifest, dict):
+            expected_manifest = staged_target_manifests.get(entry_name)
         if (
             (was_published or moved_unrecorded)
             # Once marked as restoring, the target is the restored original or
             # something put there since; both are handled below.
             and entry_name not in restoring_entries
-            and isinstance(expected_manifest, dict)
             and os.path.lexists(target_entry)
-            and _snapshot_path(target_entry) != expected_manifest
         ):
-            # Written since it was published (a sync client while the app
-            # was down): rolling back would delete those writes. Keep the
-            # target, the backup and the transaction for a person to decide.
-            raise StorageMigrationError(
-                "migration_publish_conflict",
-                f"迁移目标在发布后又被改动，已保留目标、备份与事务目录，等待人工处理: {entry_name}",
-            )
+            if not isinstance(expected_manifest, dict):
+                raise StorageMigrationError(
+                    "migration_rollback_required",
+                    f"迁移事务缺少已发布目标清单，拒绝回滚: {entry_name}",
+                )
+            if _snapshot_path(target_entry) != expected_manifest:
+                # Written since it was published (a sync client while the app
+                # was down): rolling back would delete those writes. Keep the
+                # target, the backup and the transaction for a person to decide.
+                raise StorageMigrationError(
+                    "migration_publish_conflict",
+                    f"迁移目标在发布后又被改动，已保留目标、备份与事务目录，等待人工处理: {entry_name}",
+                )
 
         if target_existed and os.path.lexists(backup_entry):
             if foreign_at_target():

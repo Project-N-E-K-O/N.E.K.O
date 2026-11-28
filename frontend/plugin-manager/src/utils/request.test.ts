@@ -511,6 +511,24 @@ describe('CSRF bootstrap error policy', () => {
     requestMocks.errorMessage.mockClear()
   })
 
+  it.each([
+    ['put', '/plugin-permissions/plugins/demo/permissions/system.network:connect'],
+    ['delete', '/plugin-permissions/plugins/demo/permissions/system.network:connect'],
+  ] as const)('never sends a permission decision (%s) when token bootstrap fails', async (method, url) => {
+    const fresh = (await import('./request')).default
+    const bootstrap = vi.spyOn(axios, 'get').mockRejectedValue(new Error('bootstrap unavailable'))
+    const adapter = vi.fn()
+    try {
+      const sent = method === 'put'
+        ? fresh.put(url, { state: 'granted', condition: 'in_use' }, { adapter })
+        : fresh.delete(url, { adapter })
+      await expect(sent).rejects.toMatchObject({ config: { csrfBootstrapFailed: true } })
+      expect(adapter).not.toHaveBeenCalled()
+    } finally {
+      bootstrap.mockRestore()
+    }
+  })
+
   it('never sends auto-start preferences when token bootstrap fails', async () => {
     const fresh = (await import('./request')).default
     const bootstrap = vi.spyOn(axios, 'get').mockRejectedValue(new Error('bootstrap unavailable'))

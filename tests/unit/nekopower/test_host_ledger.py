@@ -547,6 +547,58 @@ async def test_a_move_limited_to_some_statuses_is_refused_from_others(ledger):
     assert (await ledger.transition(commission.id, "working", reason="taken up")).applied
 
 
+@pytest.mark.parametrize("state", ["held", "unlanded", "active", "landing", "kept", None])
+async def test_a_move_unless_its_changes_wait_in_a_worktree_is_refused_while_they_do(ledger, tmp_path, state):
+    from nekopower.host.ledger import WAITS_IN_TREE_REFUSAL
+
+    commission = await _file(ledger)
+    await _walk(ledger, commission.id, "working")
+    await ledger.transition(commission.id, "blocked", reason="stuck over its worktree")
+    if state is not None:
+        await ledger.add_tree(
+            id="t1", project_dir=str(tmp_path), path=str(tmp_path / "t1"), workdir=str(tmp_path / "t1"),
+            state=state, commission_id=commission.id,
+        )
+    before = await ledger.events(commission.id)
+
+    moved = await ledger.transition(commission.id, "cancelled", reason="its parent finished", unless_waiting_in_tree=True)
+
+    if state in ("held", "unlanded"):
+        # Its changes wait for the user to have them landed: it stays as it is, with nothing
+        # put on its record for it.
+        assert (moved.applied, moved.refusal, moved.commission.status) == (False, WAITS_IN_TREE_REFUSAL, "blocked")
+        assert (await ledger.get(commission.id)).status == "blocked"
+        assert await ledger.events(commission.id) == before
+        # Not asked to look: it moves as ever.
+        assert (await ledger.transition(commission.id, "cancelled", reason="stopped")).applied
+    else:
+        # A worktree it is at work in, is being landed in, or the user sees to personally; or none.
+        assert moved.applied
+        assert (await ledger.get(commission.id)).status == "cancelled"
+
+
+@pytest.mark.parametrize("taken_up", ["queued", "working"])
+async def test_a_move_unless_its_changes_wait_in_a_worktree_is_not_refused_for_one_taken_up_again(
+    ledger, tmp_path, taken_up
+):
+    commission = await _file(ledger)
+    await _walk(ledger, commission.id, "working")
+    await ledger.transition(commission.id, "blocked", reason="stuck over its worktree")
+    await ledger.add_tree(
+        id="t1", project_dir=str(tmp_path), path=str(tmp_path / "t1"), workdir=str(tmp_path / "t1"),
+        state="held", commission_id=commission.id,
+    )
+    # Taken up again (more was said to it): queued for a place, or at work before it is at work in
+    # its worktree, which stays on record as it was left until then.
+    await ledger.transition(commission.id, taken_up, reason="taken up again")
+
+    moved = await ledger.transition(commission.id, "cancelled", reason="its parent finished", unless_waiting_in_tree=True)
+
+    # It does not wait for the user any more: it is stopped as any other.
+    assert moved.applied
+    assert (await ledger.get(commission.id)).status == "cancelled"
+
+
 async def test_reopening_in_the_same_process_object_is_refused(ledger):
     commission = await _file(ledger)
     await _walk(ledger, commission.id, "working")
@@ -918,7 +970,7 @@ async def test_a_ledger_made_before_a_column_was_added_is_given_it_when_it_is_op
         columns = [row[1] for row in conn.execute("PRAGMA table_info(commissions)")]
         version = conn.execute("PRAGMA user_version").fetchone()[0]
     conn.close()
-    assert columns.count("session_dir") == 1 and version == 9
+    assert columns.count("session_dir") == 1 and version == 10
     # It has every column a new ledger has. A column put into the table and the commission but left out of
     # ``_ADDED_COLUMNS`` shows here: the ledgers there are could then no longer be read.
     from nekopower.host.ledger import _COMMISSION_COLUMNS
@@ -1343,7 +1395,7 @@ async def test_commissions_of_an_earlier_build_are_given_the_sessions_they_had(t
         before = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
         version = conn.execute("PRAGMA user_version").fetchone()[0]
     conn.close()
-    assert version == 9
+    assert version == 10
     again = Ledger(path)
     try:
         await again.open()
@@ -1566,6 +1618,6 @@ async def test_a_ledger_with_sessions_of_the_build_before_gets_the_new_columns_a
         await second.close()
     conn = sqlite3.connect(path)
     try:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 9
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 10
     finally:
         conn.close()

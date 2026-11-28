@@ -154,10 +154,10 @@ packages = [
   "config",
   "main_logic",
   "main_routers",
-  "knowledge",
   "memory",
   "nekopower",
   "plugin",
+  # Includes services.knowledge; legacy corpora remain excluded below.
   "services",
   "steamworks",
   "theme_studio",
@@ -169,8 +169,8 @@ exclude = [
   "services/theater_workshop",
   # Legacy data files kept in the repo; the knowledge subsystem only serves
   # packs the user imports, so they are not shipped.
-  "knowledge/data",
-  "knowledge/moegirl_knowledge",
+  "services/knowledge/data",
+  "services/knowledge/moegirl_knowledge",
   "main_logic/asr_client/endpointing/models/*.onnx",
   "main_logic/asr_client/endpointing/models/*.part",
   "main_logic/asr_client/speaker_shadow/models/*.onnx",
@@ -189,10 +189,10 @@ include = [
   "config",
   "main_logic",
   "main_routers",
-  "knowledge",
   "memory",
   "nekopower",
   "plugin",
+  # Includes services.knowledge; legacy corpora remain excluded below.
   "services",
   "steamworks",
   "theme_studio",
@@ -212,8 +212,8 @@ exclude = [
   "services/theater_workshop",
   # Legacy data files kept in the repo; the knowledge subsystem only serves
   # packs the user imports, so they are not shipped.
-  "knowledge/data",
-  "knowledge/moegirl_knowledge",
+  "services/knowledge/data",
+  "services/knowledge/moegirl_knowledge",
   "main_logic/asr_client/endpointing/models/*.onnx",
   "main_logic/asr_client/endpointing/models/*.part",
   "main_logic/asr_client/speaker_shadow/models/*.onnx",
@@ -265,11 +265,10 @@ dev = [
     # structured output. Nothing at runtime imports it.
     "jsonschema>=4.26.0",
     "nest-asyncio>=1.6.0",
-    "pyinstaller==6.22.3",
     "pytest>=9.0.2",
     "pytest-asyncio>=1.3.0",
     "pytest-cov>=7.1.0",
-    # tests/frontend and plugin/tests/e2e drive a Chromium through Playwright.
+    # tests/frontend drives a Chromium through Playwright.
     # The application itself does not: its browser tools talk to a browser the
     # user already has installed, so this stays a test-only dependency.
     "playwright>=1.58.0",
@@ -291,7 +290,7 @@ dev = [
 ]
 # Marketplace Galgame native deps. NOT installed by default `uv sync` — keeps
 # dev installs lean. Build scripts add `--group galgame` so packaged
-# Nuitka/PyInstaller dist bundles the host-side dependency cohort.
+# Nuitka dist bundles the host-side dependency cohort.
 # The local rapidocr-pillow fork keeps the rapidocr_onnxruntime import package
 # but removes the opencv/shapely transitive dependency chain.
 galgame = [

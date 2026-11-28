@@ -1907,6 +1907,20 @@
                 if (emotionResult && emotionResult.emotion) {
                     if (typeof window.applyMessageReactionFromEmotion === 'function') {
                         try { window.applyMessageReactionFromEmotion(reactionTarget, emotionResult); } catch (_) { }
+                        // The emoji may come after the avatar emotion; collect it without holding the avatar.
+                        if (reactionTarget && emotionResult.reaction_pending
+                                && typeof window.fetchEmotionReaction === 'function') {
+                            window.fetchEmotionReaction(emotionResult.reaction_pending).then(function (reaction) {
+                                if (!reaction) return;
+                                try {
+                                    window.applyMessageReactionFromEmotion(reactionTarget, {
+                                        emotion: emotionResult.emotion,
+                                        confidence: emotionResult.confidence,
+                                        reaction: reaction
+                                    });
+                                } catch (_) { }
+                            });
+                        }
                     }
                     console.log(window.t('console.emotionAnalysisComplete'), emotionResult);
                     if (typeof window.applyEmotion === 'function') window.applyEmotion(emotionResult.emotion);
@@ -3031,6 +3045,45 @@
         // ---- onopen ----
         S.socket.onopen = function () {
             if (S.socket !== _thisSocket) return;
+            // Discard cached builtin activity from any previous connection so a task whose
+            // `ended` event was missed while disconnected cannot be resurrected after reconnect,
+            // then restore any currently active occupations from the backend snapshot without
+            // overwriting fresher live WebSocket events.
+            window._agentBuiltinActivity = {};
+            window._agentBuiltinActivities = Object.create(null);
+            window._agentBuiltinActivitySeen = Object.create(null);
+            window._agentBuiltinActivityEpoch = (window._agentBuiltinActivityEpoch || 0) + 1;
+            var builtinActivityEpoch = window._agentBuiltinActivityEpoch;
+            if (typeof fetch === 'function') {
+                fetch('/api/agent/builtin/activity')
+                    .then(function (r) { return r && r.ok ? r.json() : null; })
+                    .then(function (payload) {
+                        if (S.socket !== _thisSocket || window._agentBuiltinActivityEpoch !== builtinActivityEpoch) return;
+                        if (!payload || !Array.isArray(payload.activity)) return;
+                        var seen = window._agentBuiltinActivitySeen || Object.create(null);
+                        payload.activity.forEach(function (item) {
+                            if (!item || !item.group || item.state !== 'started') return;
+                            if (seen[item.group]) return;
+                            if (item.commission_id != null && seen[item.group + '\0' + String(item.commission_id)]) return;
+                            if (!window._agentBuiltinActivity) window._agentBuiltinActivity = {};
+                            if (!window._agentBuiltinActivities) window._agentBuiltinActivities = Object.create(null);
+                            if (item.group === 'browser') {
+                                var groupMap = window._agentBuiltinActivities[item.group];
+                                if (!groupMap) {
+                                    groupMap = Object.create(null);
+                                    window._agentBuiltinActivities[item.group] = groupMap;
+                                }
+                                if (item.commission_id != null) {
+                                    groupMap[item.commission_id] = item;
+                                }
+                            }
+                            if (!window._agentBuiltinActivity[item.group]) {
+                                window._agentBuiltinActivity[item.group] = item;
+                            }
+                        });
+                    })
+                    .catch(function () { });
+            }
             // 连接断开期间挂起的问话不会补发：连上时读一次现在还在等的。
             if (window.NekoPowerAsk) { try { window.NekoPowerAsk.sync(); } catch (_) {} }
             // session_ended_by_server latches suppressAssistantStreamUntilNextSession
@@ -3327,8 +3380,31 @@
 
         // ---- onmessage ----
         S.socket.onmessage = function (event) {
+            // A retired socket must not keep delivering ordinary chat/audio, but a
+            // stamped character-switch frame is control-plane ordering evidence.
+            // Parse text frames just enough to preserve that evidence before the
+            // socket ownership filter; unversioned legacy frames remain tied to
+            // the live socket and are ignored here.
+            var preParsedResponse = null;
+            if (!(event.data instanceof Blob)) {
+                try {
+                    preParsedResponse = JSON.parse(event.data);
+                } catch (_) { /* parsed normally below for the live socket */ }
+            }
             if (S.socket !== _thisSocket) {
-                console.log('[WS] stale onmessage skipped (socket already replaced)');
+                if (preParsedResponse
+                        && preParsedResponse.type === 'catgirl_switched'
+                        && Number.isSafeInteger(preParsedResponse.switch_revision)
+                        && preParsedResponse.switch_revision > 0
+                        && typeof window.handleCatgirlSwitch === 'function') {
+                    window.handleCatgirlSwitch(
+                        preParsedResponse.new_catgirl,
+                        preParsedResponse.old_catgirl,
+                        { switchRevision: preParsedResponse.switch_revision }
+                    );
+                } else {
+                    console.log('[WS] stale onmessage skipped (socket already replaced)');
+                }
                 return;
             }
 
@@ -3344,7 +3420,7 @@
             }
 
             try {
-                var response = JSON.parse(event.data);
+                var response = preParsedResponse || JSON.parse(event.data);
                 // 串门帧（visit_*）统一再派发一份给 static/visit/ 下的脚本（口型 / pacer）；
                 // 只派发、不 return，各类型的处理分支照常往下走
                 if (typeof response.type === 'string' && response.type.indexOf('visit_') === 0) {
@@ -4013,7 +4089,11 @@
                     console.log(window.t('console.catgirlSwitchNotification'), oldCatgirl, window.t('console.catgirlSwitchTo'), newCatgirl);
                     console.log(window.t('console.currentFrontendCatgirl'), window.lanlan_config.lanlan_name);
                     if (typeof window.handleCatgirlSwitch === 'function') {
-                        window.handleCatgirlSwitch(newCatgirl, oldCatgirl);
+                        window.handleCatgirlSwitch(newCatgirl, oldCatgirl, {
+                            switchRevision: Number.isSafeInteger(response.switch_revision)
+                                ? response.switch_revision
+                                : 0
+                        });
                     }
 
                 // -------- focus_state (凝神 indicator) --------
@@ -5061,8 +5141,7 @@
                     }
                     try {
                         var masterOn = !!flags.agent_enabled;
-                        var anyChildOn = !!(flags.computer_use_enabled || flags.browser_use_enabled || flags.user_plugin_enabled);
-                        if (masterOn && anyChildOn && typeof window.startAgentTaskPolling === 'function' && !isGoodbyeUiSuppressed()) {
+                        if (masterOn && typeof window.startAgentTaskPolling === 'function' && !isGoodbyeUiSuppressed()) {
                             window.startAgentTaskPolling();
                         }
                         var curName2 = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
@@ -5216,8 +5295,45 @@
                     try {
                         var activity = response.activity || {};
                         if (!window._agentBuiltinActivity) window._agentBuiltinActivity = {};
+                        if (!window._agentBuiltinActivities) window._agentBuiltinActivities = Object.create(null);
+                        if (!window._agentBuiltinActivitySeen) window._agentBuiltinActivitySeen = Object.create(null);
                         if (activity.group) {
-                            if (activity.state === 'started') {
+                            if (activity.commission_id != null) {
+                                window._agentBuiltinActivitySeen[activity.group + '\0' + String(activity.commission_id)] = true;
+                            } else {
+                                window._agentBuiltinActivitySeen[activity.group] = true;
+                            }
+                            if (activity.group === 'browser') {
+                                var groupActivities = window._agentBuiltinActivities[activity.group];
+                                if (!groupActivities) {
+                                    groupActivities = Object.create(null);
+                                    window._agentBuiltinActivities[activity.group] = groupActivities;
+                                }
+                                if (activity.state === 'started') {
+                                    if (activity.commission_id != null) {
+                                        groupActivities[activity.commission_id] = activity;
+                                    }
+                                    window._agentBuiltinActivity[activity.group] = activity;
+                                } else {
+                                    if (activity.commission_id != null) {
+                                        delete groupActivities[activity.commission_id];
+                                    } else {
+                                        groupActivities = Object.create(null);
+                                        window._agentBuiltinActivities[activity.group] = groupActivities;
+                                    }
+                                    var remainingIds = Object.keys(groupActivities);
+                                    if (remainingIds.length > 0) {
+                                        window._agentBuiltinActivity[activity.group] = groupActivities[remainingIds[remainingIds.length - 1]];
+                                    } else {
+                                        delete window._agentBuiltinActivities[activity.group];
+                                        var keptBrowserActivity = window._agentBuiltinActivity[activity.group];
+                                        if (!keptBrowserActivity || activity.commission_id == null
+                                            || keptBrowserActivity.commission_id === activity.commission_id) {
+                                            delete window._agentBuiltinActivity[activity.group];
+                                        }
+                                    }
+                                }
+                            } else if (activity.state === 'started') {
                                 window._agentBuiltinActivity[activity.group] = activity;
                             } else {
                                 // 上一个任务的「结束」可能比下一个任务的「开始」晚到：
@@ -6390,6 +6506,10 @@
                 console.log('[WS] stale onclose skipped (socket already replaced)');
                 return;
             }
+            window._agentBuiltinActivity = {};
+            window._agentBuiltinActivities = Object.create(null);
+            window._agentBuiltinActivitySeen = Object.create(null);
+            window._agentBuiltinActivityEpoch = (window._agentBuiltinActivityEpoch || 0) + 1;
             console.log(window.t('console.websocketClosed'));
             if (window.nekoVoiceCaptureReadiness) window.nekoVoiceCaptureReadiness.disconnected();
             removeExternalAsrPreview();

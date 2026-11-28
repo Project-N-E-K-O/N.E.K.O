@@ -189,6 +189,28 @@ describe('how the familiars stood at a moment of what happened', () => {
     expect(sceneAt(turns, 4).get('lead')?.look).toBe('queued')
   })
 
+  it('keeps a pending worktree display intact when an older commission ends and expires', () => {
+    const of = (kind: string, commission: string, at: number, detail: Record<string, unknown> = {}) =>
+      entry(kind, { commission_id: commission, at, detail })
+    const events = [
+      of('started', 'c1', 1),
+      of('landing_held', 'c1', 2, { tree: 'wt-a' }),
+      of('ended', 'c1', 3, { outcome: 'blocked' }),
+      of('started', 'c2', 4),
+      of('landing_held', 'c2', 5, { tree: 'wt-b' }),
+      of('ended', 'c2', 6, { outcome: 'blocked' }),
+      // Older commission c1's worktree expires: emits ended (cancelled) then tree_expired for wt-a.
+      of('ended', 'c1', 7, { outcome: 'cancelled' }),
+      of('tree_expired', 'c1', 8, { tree: 'wt-a' }),
+      // Finally c2's own worktree is resolved.
+      of('tree_expired', 'c2', 9, { tree: 'wt-b' }),
+    ]
+    expect(sceneAt(events, 5).get('lead')?.look).toBe('held')
+    expect(sceneAt(events, 6).get('lead')?.look).toBe('held')
+    expect(sceneAt(events, 7).get('lead')?.look).toBe('held')
+    expect(sceneAt(events, 8).get('lead')?.look).toBe('idle')
+  })
+
   it('knows where each session is first named, and who is named that the board does not hold', () => {
     expect([...firstSeen(story, true)]).toEqual([['lead', 0], ['scout', 2]])
     // Entries that begin later than the record: only the one that was started among them is known to be new.
@@ -240,6 +262,11 @@ describe('how the familiars stood at a moment of what happened', () => {
       .toBe('The boss cat handed this over to Scout')
     expect(say('orchestrated', { peer: { type: 'session', session_id: 'scout', commission_id: null }, detail: { action: 'continue', placed: 'summon_stray' } }))
       .toBe('This went to Scout, not where it was first meant to go')
+    // A familiar that was made another kind: both kinds by the names the page has, a template of the user's by its own.
+    expect(say('duty_changed', { session_id: 'scout', detail: { from: 'scout', to: 'general', by: 'user' } }))
+      .toBe(`Scout was changed from ${words.home.presets.scout} to ${words.home.presets.general}`)
+    expect(say('duty_changed', { session_id: 'scout', detail: { from: 'general', to: 'translator', by: 'user' } }))
+      .toBe(`Scout was changed from ${words.home.presets.general} to translator`)
   })
 
   it('has a line for where a commission was decided to go only when it went elsewhere', () => {

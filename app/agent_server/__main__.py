@@ -35,9 +35,12 @@ if __name__ == "__main__":
     # Add the filter to the uvicorn access logger (uvicorn still uses standard logging)
     logging.getLogger("uvicorn.access").addFilter(create_agent_server_filter())
     
+    from config.nekopower_settings import AGENT_CONNECTION_DRAIN_SECONDS
+
     uvicorn.run(
         app,
         host="127.0.0.1",
         port=TOOL_SERVER_PORT,
+        timeout_graceful_shutdown=AGENT_CONNECTION_DRAIN_SECONDS,
         **uvicorn_proxy_options(),
     )

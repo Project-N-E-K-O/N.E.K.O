@@ -208,6 +208,96 @@ CHECKED = """<!doctype html><html><head><title>Checked</title></head><body>
 </form>
 </body></html>"""
 
+UPLOAD_DRAG = """<!doctype html><html><head><title>Upload and drag</title></head><body>
+<label>Direct file <input id="direct" type="file"
+  onchange="document.getElementById('direct-out').textContent = 'Direct:' + (this.files[0] ? this.files[0].name : '')"></label>
+<p id="direct-out"></p>
+<input id="hidden-file" type="file" style="display:none"
+  onchange="document.getElementById('chooser-out').textContent = 'Chooser:' + (this.files[0] ? this.files[0].name : '')">
+<button type="button" onclick="document.getElementById('hidden-file').click()">Choose attachment</button>
+<p id="chooser-out"></p>
+<div id="source" role="button" tabindex="0" draggable="true" style="width:120px;height:40px;background:#cfc"
+  ondragstart="event.dataTransfer.setData('text/plain', 'payload-42')">Drag card</div>
+<div id="target" role="region" aria-label="Drop zone" style="width:200px;height:80px;margin-top:20px;background:#ccf"
+  ondragover="event.preventDefault()"
+  ondrop="event.preventDefault(); document.getElementById('drop-out').textContent = 'Dropped:' + event.dataTransfer.getData('text/plain')">Drop zone</div>
+<p id="drop-out"></p>
+</body></html>"""
+
+WS_REACHING = """<!doctype html><html><head><title>WS Reaching</title></head><body>
+<p id="page-ws">pending</p>
+<p id="proto-ws">pending</p>
+<p id="worker-ws">pending</p>
+<p id="tamper-ws">pending</p>
+<iframe src="__OTHER_SITE__/ws-frame" title="WS Frame"></iframe>
+<script>
+try {
+  var ws = new WebSocket('ws://127.0.0.1:__OWN_PORT__/ws-page');
+  ws.onerror = function () { document.getElementById('page-ws').textContent = 'page-ws-error'; };
+} catch (e) {
+  document.getElementById('page-ws').textContent = 'page-ws-blocked';
+}
+try {
+  var ProtoWS = WebSocket.prototype.constructor;
+  var ws2 = new ProtoWS('ws://127.0.0.1:__OWN_PORT__/ws-proto');
+  ws2.onerror = function () { document.getElementById('proto-ws').textContent = 'proto-ws-error'; };
+} catch (e) {
+  document.getElementById('proto-ws').textContent = 'proto-ws-blocked';
+}
+try {
+  // Attempt prototype + Function.prototype.call tampering after guard installation; bound intrinsics must still block it.
+  Object.defineProperty(URL.prototype, 'port', { get: function () { return '80'; }, configurable: true });
+  Set.prototype.has = function () { return false; };
+  var origCall = Function.prototype.call;
+  var origPush = Array.prototype.push;
+  Function.prototype.call = function () { return null; };
+  Array.prototype.push = function () { this[0] = 'ws://127.0.0.1:__OWN_PORT__/ws-push-bypass'; return this.length; };
+  try {
+    var ws3 = new WebSocket('ws://127.0.0.1:__OWN_PORT__/ws-tamper', ['chat']);
+    ws3.onerror = function () { document.getElementById('tamper-ws').textContent = 'tamper-ws-error'; };
+  } finally {
+    Function.prototype.call = origCall;
+    Array.prototype.push = origPush;
+  }
+} catch (e) {
+  document.getElementById('tamper-ws').textContent = 'tamper-ws-blocked';
+}
+try {
+  // Also test Array.prototype.push rewrite when initial URL is allowed (exact Codex attack vector).
+  var origPush2 = Array.prototype.push;
+  Array.prototype.push = function () { this[0] = 'ws://127.0.0.1:__OWN_PORT__/ws-push-swap'; return this.length; };
+  try {
+    var ws4 = new WebSocket('ws://127.0.0.1:9/not-blocked', ['chat']);
+    ws4.close();
+  } finally {
+    Array.prototype.push = origPush2;
+  }
+} catch (e) {}
+var w = new Worker('/ws-worker.js');
+w.onmessage = function (ev) { document.getElementById('worker-ws').textContent = ev.data; };
+</script>
+</body></html>"""
+
+WS_FRAME = """<!doctype html><html><head><title>WS Frame</title></head><body>
+<p id="frame-ws">pending</p>
+<script>
+try {
+  var ws = new WebSocket('ws://127.0.0.1:__OWN_PORT__/ws-frame');
+  ws.onerror = function () { document.getElementById('frame-ws').textContent = 'frame-ws-error'; };
+} catch (e) {
+  document.getElementById('frame-ws').textContent = 'frame-ws-blocked';
+}
+</script>
+</body></html>"""
+
+WS_WORKER = """try {
+  var ws = new WebSocket('ws://127.0.0.1:__OWN_PORT__/ws-worker');
+  ws.onerror = function () { postMessage('worker-ws-error'); };
+} catch (e) {
+  postMessage('worker-ws-blocked');
+}
+"""
+
 
 class _Site(http.server.BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802 - the name the base class calls
@@ -246,6 +336,17 @@ class _Site(http.server.BaseHTTPRequestHandler):
             body = CHECKED
         elif url.path == "/guarded":
             body = GUARDED
+        elif url.path == "/upload-drag":
+            body = UPLOAD_DRAG
+        elif url.path in ("/ws-reaching", "/ws-frame", "/ws-worker.js"):
+            port = self.server.server_address[1]
+            own_port = getattr(self.server, "own_port", 9)
+            if url.path == "/ws-worker.js":
+                kind = "text/javascript"
+                body = WS_WORKER
+            else:
+                body = WS_REACHING if url.path == "/ws-reaching" else WS_FRAME
+            body = body.replace("__OTHER_SITE__", f"http://localhost:{port}").replace("__OWN_PORT__", str(own_port))
         elif url.path in ("/report", "/reaching", "/reaching-frame"):
             port = self.server.server_address[1]
             body = {"/report": REPORT, "/reaching": REACHING, "/reaching-frame": REACHING_FRAME}[url.path]
@@ -588,13 +689,23 @@ async def test_a_code_block_a_locked_date_a_field_that_asks_on_focus_and_a_frame
     # The code block is hundreds of lines of text in one element: the snapshot
     # is cut all the same, and says where to read on.
     assert re.search(r"\[The snapshot is cut off here: \d+ of \d+ lines shown\. To read on, call browser_take_snapshot with offset=\d+\.\]", opened.text)
-    # The page of the other site is not in the snapshot, and the snapshot says so.
-    assert "[1 embedded page (iframe) on this page is not listed:" in opened.text
-    assert "Card number" not in opened.text
 
     monkeypatch.setattr(settings, "BROWSER_SNAPSHOT_MAX_TOKENS", 3000)
     whole = await call(tools, "take_snapshot")
     assert "line 0 of the log\\nline 1 of the log" in whole.text or "line 399 of the log" in whole.text
+    # The cross-site iframe (OOPIF) is now included in the snapshot (read past the 400-line log block) and fillable by uid.
+    tail_text = whole.text
+    if 'textbox "Card number"' not in tail_text:
+        more = re.search(r"offset=(\d+)", tail_text)
+        assert more is not None, tail_text
+        rest = await call(tools, "take_snapshot", offset=int(more.group(1)))
+        assert rest.success, rest.text
+        tail_text = rest.text
+    card_uid = uid_of(tail_text, "textbox", "Card number")
+    filled_card = await call(tools, "fill", uid=card_uid, value="4242-0000")
+    assert filled_card.success, filled_card.text
+    after_fill = await call(tools, "take_snapshot", offset=int(more.group(1)) if 'textbox "Card number"' not in whole.text else 0)
+    assert after_fill.success and 'value="4242-0000"' in after_fill.text, after_fill.text
     date = uid_of(whole.text, "Date", "Delivery date") if 'Date "Delivery date"' in whole.text else None
     if date is None:
         found = re.search(r'uid=(\S+) \S+ "Delivery date"', whole.text)
@@ -681,8 +792,10 @@ async def test_the_browser_is_kept_from_the_ports_of_this_application(tmp_path: 
 
 
 async def test_what_was_open_in_a_browser_that_is_taken_over_is_kept_from_the_ports_of_this_application(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: Any
 ) -> None:
+    # Taking over an already-running browser across processes uses DevToolsActivePort (TCP).
+    monkeypatch.setattr(launcher, "_can_use_pipe", lambda: False)
     own = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Own)
     own.reached = []  # type: ignore[attr-defined]
     served = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Site)
@@ -881,3 +994,135 @@ async def test_a_port_file_left_by_a_browser_that_was_killed_does_not_keep_the_n
     # Taken for a running browser, the port would be connected to, and this start and every later one would fail.
     assert opened.success, opened.text
     assert 'heading "Terms of sale"' in opened.text
+
+
+async def test_default_launch_uses_remote_debugging_pipe_without_tcp_port_file(
+    tools: BrowserTools, site: str, tmp_path: Path
+) -> None:
+    opened = await call(tools, "navigate_page", url=site + "/terms")
+    assert opened.success, opened.text
+    browser = tools.session._browser
+    assert browser is not None
+    if launcher._can_use_pipe():
+        assert browser.pipe is not None
+        assert browser.endpoint == ""
+        profile = Path(BrowserSettingsStore(tmp_path / "nekopower").profile_dir())
+        assert not (profile / launcher.ACTIVE_PORT_FILE).exists()
+
+
+async def test_upload_file_and_drag_work_in_real_browser(
+    tools: BrowserTools, site: str, tmp_path: Path
+) -> None:
+    f1 = tmp_path / "alpha.txt"
+    f1.write_text("hello alpha", encoding="utf-8")
+    f2 = tmp_path / "beta.txt"
+    f2.write_text("hello beta", encoding="utf-8")
+
+    opened = await call(tools, "navigate_page", url=site + "/upload-drag")
+    assert opened.success, opened.text
+
+    direct_uid = uid_of(opened.text, "button", "Direct file")
+    up1 = await call(tools, "upload_file", uid=direct_uid, filePath=str(f1), includeSnapshot=True)
+    assert up1.success and "Direct:alpha.txt" in up1.text, up1.text
+
+    chooser_uid = uid_of(up1.text, "button", "Choose attachment")
+    up2 = await call(tools, "upload_file", uid=chooser_uid, filePath=str(f2), includeSnapshot=True)
+    assert up2.success and "Chooser:beta.txt" in up2.text, up2.text
+
+    src_uid = uid_of(up2.text, "button", "Drag card")
+    dst_uid = uid_of(up2.text, "region", "Drop zone")
+    dragged = await call(tools, "drag", from_uid=src_uid, to_uid=dst_uid, includeSnapshot=True)
+    assert dragged.success and "Dropped:payload-42" in dragged.text, dragged.text
+
+
+async def test_websocket_to_own_port_is_blocked_from_page_oopif_and_worker(tmp_path: Path) -> None:
+    import socket
+
+    # Bind a real local TCP socket standing in for an application port; count any accepted connection.
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(16)
+    listener.settimeout(0.2)
+    own_port = listener.getsockname()[1]
+    connections: list[bytes] = []
+    stop_accept = threading.Event()
+
+    def accept_loop() -> None:
+        while not stop_accept.is_set():
+            try:
+                conn, _addr = listener.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            try:
+                conn.settimeout(0.2)
+                connections.append(conn.recv(256))
+            except OSError:
+                connections.append(b"")
+            finally:
+                conn.close()
+
+    accept_thread = threading.Thread(target=accept_loop, daemon=True)
+    accept_thread.start()
+
+    served = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Site)
+    served.own_port = own_port  # type: ignore[attr-defined]
+    site_thread = threading.Thread(target=served.serve_forever, daemon=True)
+    site_thread.start()
+
+    site = f"http://127.0.0.1:{served.server_address[1]}"
+    store = BrowserSettingsStore(tmp_path / "nekopower")
+    store.save(BrowserSettings(headless=True))
+    made = BrowserTools(BrowserSession(settings=store, own_ports=lambda: {own_port}))
+    profile = store.profile_dir()
+    try:
+        opened = await call(made, "navigate_page", url=site + "/ws-reaching")
+        assert opened.success, opened.text
+        waited = await call(made, "wait_for", text=["page-ws-blocked"], timeout=10000)
+        assert waited.success and "page-ws-blocked" in waited.text, waited.text
+        waited_proto = await call(made, "wait_for", text=["proto-ws-blocked"], timeout=10000)
+        assert waited_proto.success and "proto-ws-blocked" in waited_proto.text, waited_proto.text
+        waited_tamper = await call(made, "wait_for", text=["tamper-ws-blocked"], timeout=10000)
+        assert waited_tamper.success and "tamper-ws-blocked" in waited_tamper.text, waited_tamper.text
+        waited_w = await call(made, "wait_for", text=["worker-ws-blocked"], timeout=10000)
+        assert waited_w.success and "worker-ws-blocked" in waited_w.text, waited_w.text
+        waited_f = await call(made, "wait_for", text=["frame-ws-blocked"], timeout=10000)
+        assert waited_f.success and "frame-ws-blocked" in waited_f.text, waited_f.text
+        await asyncio.sleep(0.5)
+        assert connections == [], f"WebSocket reached own port: {connections!r}"
+    finally:
+        stop_accept.set()
+        try:
+            await made.aclose()
+            deadline = time.monotonic() + 15.0
+            while not await asyncio.to_thread(_browser_gone, profile) and time.monotonic() < deadline:
+                await asyncio.sleep(0.2)
+        finally:
+            await asyncio.to_thread(launcher.kill_tree, await asyncio.to_thread(launcher.browser_process_on, profile))
+            listener.close()
+            accept_thread.join(5)
+            served.shutdown()
+            served.server_close()
+            site_thread.join(5)
+
+
+async def test_two_owners_work_concurrently_on_separate_tabs_in_real_browser(
+    tools: BrowserTools, site: str
+) -> None:
+    res_a, res_b = await asyncio.gather(
+        tools.call("browser_navigate_page", {"url": site + "/terms"}, owner="team-a"),
+        tools.call("browser_navigate_page", {"url": site + "/"}, owner="team-b"),
+    )
+    assert res_a.success and 'heading "Terms of sale"' in res_a.text, res_a.text
+    assert res_b.success and 'heading "Order a part"' in res_b.text, res_b.text
+
+    pages_a = await tools.call("browser_list_pages", {}, owner="team-a")
+    pages_b = await tools.call("browser_list_pages", {}, owner="team-b")
+    assert pages_a.success and pages_b.success
+    assert "/terms" in pages_a.text and "/terms" not in pages_b.text
+    assert f"{site}/" in pages_b.text and f"{site}/ [selected]" not in pages_a.text
+
+    await tools.released(owner="team-a")
+    still_b = await tools.call("browser_take_snapshot", {}, owner="team-b")
+    assert still_b.success and 'heading "Order a part"' in still_b.text

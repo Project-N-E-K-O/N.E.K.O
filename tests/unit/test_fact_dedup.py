@@ -2392,3 +2392,105 @@ async def test_aresolve_keeps_the_queued_roles_unless_the_candidate_is_known_to_
         assert await resolver.aresolve("小天") == 1
     assert "[0] candidate: 主人喜欢喝咖啡 | existing: 主人现在不喝咖啡了（以前喜欢喝） |" in prompts[0]
     assert {fact["id"] for fact in await fs.aload_facts("小天")} == {"c1"}
+
+
+@pytest.mark.parametrize(
+    "bad_bytes",
+    [
+        b'{"not": "a list"}',
+        b'"just a string"',
+        b"null",
+        b"true",
+        b"42",
+        b"{not json",
+        b"\xff\xfe\xfd",
+    ],
+)
+def test_fact_store_fails_closed_on_corrupt_or_non_list_facts_file(tmp_path, bad_bytes):
+    """load_facts, _load_facts_locked, and save_facts must fail closed without caching [] or overwriting."""
+    import os
+
+    fs, _ = _install_resolver(str(tmp_path))
+    facts_path = fs._facts_path("小天")
+    os.makedirs(os.path.dirname(facts_path), exist_ok=True)
+    with open(facts_path, "wb") as handle:
+        handle.write(bad_bytes)
+
+    with pytest.raises(RuntimeError):
+        fs.load_facts("小天")
+    assert "小天" not in fs._facts
+
+    with fs._get_lock("小天"):
+        with pytest.raises(RuntimeError):
+            fs._load_facts_locked("小天")
+    assert "小天" not in fs._facts
+
+    fs._facts["小天"] = [_fact("f1", "new fact")]
+    with pytest.raises(RuntimeError):
+        fs.save_facts("小天")
+    assert "小天" not in fs._facts
+    with open(facts_path, "rb") as handle:
+        assert handle.read() == bad_bytes
+
+
+def test_fact_store_fails_closed_on_os_error(tmp_path, monkeypatch):
+    """Non-FileNotFoundError OSError must raise RuntimeError in loaders and refuse overwrite in save_facts."""
+    import os
+
+    fs, _ = _install_resolver(str(tmp_path))
+    facts_path = fs._facts_path("小天")
+    os.makedirs(os.path.dirname(facts_path), exist_ok=True)
+    original_bytes = b'[{"id": "keep", "text": "important fact"}]'
+    with open(facts_path, "wb") as handle:
+        handle.write(original_bytes)
+
+    real_open = open
+
+    def _deny_open(file, *args, **kwargs):
+        if os.fspath(file) == facts_path:
+            raise PermissionError("locked by sync client")
+        return real_open(file, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", _deny_open)
+    with pytest.raises(RuntimeError):
+        fs.load_facts("小天")
+    assert "小天" not in fs._facts
+
+    fs._facts["小天"] = [_fact("f1", "new fact")]
+    with pytest.raises(RuntimeError):
+        fs.save_facts("小天")
+    assert "小天" not in fs._facts
+    monkeypatch.undo()
+    with open(facts_path, "rb") as handle:
+        assert handle.read() == original_bytes
+
+
+def test_load_facts_caches_migrated_v1_facts_when_writeback_os_error(tmp_path, monkeypatch):
+    """Best-effort v1->v2 migration writeback OSError must not fail readable facts or re-trigger on repeat reads."""
+    import os
+    from memory import facts as facts_mod
+
+    fs, _ = _install_resolver(str(tmp_path))
+    facts_path = fs._facts_path("小天")
+    os.makedirs(os.path.dirname(facts_path), exist_ok=True)
+    with open(facts_path, "w", encoding="utf-8") as handle:
+        json.dump([{"id": "v1-1", "entity": "user", "text": "likes tea"}], handle)
+
+    write_attempts = 0
+
+    def _fail_write(*_args, **_kwargs):
+        nonlocal write_attempts
+        write_attempts += 1
+        raise PermissionError("read-only directory")
+
+    monkeypatch.setattr(facts_mod, "atomic_write_json", _fail_write)
+
+    loaded_first = fs.load_facts("小天")
+    assert len(loaded_first) == 1
+    assert loaded_first[0]["entity"] == "master"
+    assert write_attempts == 1
+    assert "小天" in fs._facts
+
+    loaded_second = fs.load_facts("小天")
+    assert loaded_second == loaded_first
+    assert write_attempts == 1

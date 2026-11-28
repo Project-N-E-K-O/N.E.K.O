@@ -73,16 +73,21 @@ def _default_client_factory(**kwargs: Any) -> Any:
     return httpx.AsyncClient(**merged)
 
 
-def _reraise_swallowed_cancellation() -> None:
+def _reraise_swallowed_cancellation(cause: BaseException | None = None) -> None:
     """Raise ``CancelledError`` if this task was cancelled and something below hid it.
 
     A cancellation can surface as an ordinary error from the layer that was
     awaited, or be absorbed there altogether. Carrying on would keep polling a
-    run whose caller is gone, and the run would never be cancelled.
+    run whose caller is gone, and the run would never be cancelled. ``cause``
+    is the error it came up as, kept as the cause of the one raised. Without
+    one nothing is given as the cause, so an error being handled here is
+    still shown as what it happened during (``from None`` would hide it).
     """
     task = asyncio.current_task()
     if task is not None and task.cancelling():
-        raise asyncio.CancelledError
+        if cause is None:
+            raise asyncio.CancelledError
+        raise asyncio.CancelledError from cause
 
 
 def plugin_server_url() -> str:
@@ -597,7 +602,9 @@ class PluginRunner:
 
         Never raises for a failed call; the outcome says what happened. When
         the caller is cancelled while waiting, the run is cancelled on the
-        plugin server as well.
+        plugin server as well, and so is a run the wait for which timed out
+        or whose polling failed: such a run stays among the commission's
+        runs until the plugin server takes the cancel.
 
         ``housekeeping`` is for a call the host makes on its own account and
         no model chose (handing a deferred task's id to the plugin's
@@ -749,13 +756,18 @@ class PluginRunner:
 
         self._active.setdefault(commission_id, set()).add(run_id)
         lost = False
+        # Why the wait for it was given up on, when it was: what the
+        # cancel sent then gives as its reason.
+        given_up = ""
         try:
             if on_run_created is not None:
                 try:
                     await on_run_created(run_id)
                 except asyncio.CancelledError:
                     raise
-                except Exception:  # noqa: BLE001 - a listener never costs the run its result
+                except Exception as exc:  # noqa: BLE001 - a listener never costs the run its result
+                    # A cancellation of the caller that came up as an error is one.
+                    _reraise_swallowed_cancellation(exc)
                     logger.warning("the listener for new runs failed", exc_info=True)
             try:
                 completion = await self._await_completion(
@@ -764,9 +776,22 @@ class PluginRunner:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 - reported, never raised
+                # A cancellation of the caller that came up as an error is one.
+                _reraise_swallowed_cancellation(exc)
                 logger.warning("waiting for run %s failed: %s", run_id, type(exc).__name__)
-                completion = {"status": "unknown", "success": False, "data": None, "error": str(exc)}
-            lost = bool(completion.pop("lost", False))
+                # Nothing says it ended: it is given up on, as one whose polling failed.
+                completion = {
+                    "status": "unknown",
+                    "success": False,
+                    "data": None,
+                    "error": str(exc),
+                    "lost": "waiting failed",
+                }
+            given_up = str(completion.pop("lost", "") or "")
+            # One whose cancel the plugin server took already (the commission
+            # was stopped while it was waited for) is left to the plugin
+            # server, as when its caller goes away: nothing more is asked.
+            lost = bool(given_up) and run_id not in self._cancel_sent
         except asyncio.CancelledError:
             # Whoever waited for this run is gone, at whichever point after
             # the run came to exist; the run must not go on. Until the plugin
@@ -781,11 +806,12 @@ class PluginRunner:
             if not lost:
                 self._untrack(commission_id, run_id)
         if lost:
-            # Nobody follows the run any more, and it may still be going: it
-            # is cancelled, and stays known to the commission until the plugin
+            # Nobody follows the run any more (its polling failed, or the
+            # wait for it timed out), and it may still be going: it is
+            # cancelled, and stays known to the commission until the plugin
             # server accepts that, so stopping the commission asks again.
             self._lost[run_id] = commission_id
-            self._cancel_in_background(run_id, "polling failed")
+            self._cancel_in_background(run_id, given_up)
 
         success = bool(completion.get("success"))
         return RunOutcome(
@@ -882,11 +908,15 @@ class PluginRunner:
                 _reraise_swallowed_cancellation()
                 remaining = None if deadline is None else deadline - loop.time()
                 if remaining is not None and remaining <= 0:
+                    # Given up on, though the run may still be going on the
+                    # plugin server: it is cancelled, as a run whose polling
+                    # failed is.
                     return {
                         "status": "timeout",
                         "success": False,
                         "data": None,
                         "error": f"Timed out waiting for run {run_id} ({timeout}s)",
+                        "lost": "timed out",
                     }
                 try:
                     response = await client.get(f"{base}/runs/{run_id}")
@@ -908,7 +938,7 @@ class PluginRunner:
                                     f"Run {run_id} polling failed "
                                     f"({consecutive_errors} consecutive HTTP {response.status_code})"
                                 ),
-                                "lost": True,
+                                "lost": "polling failed",
                             }
                     else:
                         parsed = response.json()
@@ -937,7 +967,7 @@ class PluginRunner:
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:  # noqa: BLE001 - counted; three in a row end the wait
-                    _reraise_swallowed_cancellation()
+                    _reraise_swallowed_cancellation(exc)
                     consecutive_errors += 1
                     if consecutive_errors >= MAX_CONSECUTIVE_POLL_ERRORS:
                         logger.warning("polling run %s failed: %s", run_id, type(exc).__name__)
@@ -949,7 +979,7 @@ class PluginRunner:
                                 f"Run {run_id} polling failed "
                                 f"({consecutive_errors} consecutive transport errors)"
                             ),
-                            "lost": True,
+                            "lost": "polling failed",
                         }
                 pause = self._poll_interval if remaining is None else min(self._poll_interval, remaining)
                 await asyncio.sleep(pause)
@@ -1023,7 +1053,7 @@ class PluginRunner:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 - the run's status still stands
-                _reraise_swallowed_cancellation()
+                _reraise_swallowed_cancellation(exc)
                 logger.debug("export of run %s could not be read: %s", run_id, type(exc).__name__)
 
             chosen_raw = trigger_raw if trigger_raw is not None else fallback_raw

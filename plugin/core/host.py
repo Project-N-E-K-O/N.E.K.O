@@ -42,6 +42,7 @@ from plugin.core.entry_points import normalize_plugin_entry_point, plugin_packag
 from plugin.core.model_gateway_access import model_gateway_access
 from plugin.core.rpc import request_deadline
 from plugin.core.state import state
+from plugin.core import system_audit
 from plugin.core.source_imports import ensure_plugins_namespace as _ensure_plugins_namespace
 from plugin.logging_config import logger
 from plugin.sdk import PERSIST_ATTR
@@ -79,6 +80,7 @@ from plugin.settings import (
 from utils import process_creation
 
 
+from plugin.core.ui_manifest import sanitize_json_value as _sanitize_json_value
 from plugin.logging_layout import sanitize_log_identifier as _sanitize_plugin_id
 
 
@@ -839,9 +841,11 @@ async def _handle_config_update_command(
     ``res_sender`` is the :class:`ChannelSender` for the result channel.
     """
     req_id = msg.get("req_id", "unknown")
-    new_config = msg.get("config", {})
+    raw_new_config = msg.get("config", {})
+    new_config = dict(raw_new_config) if isinstance(raw_new_config, Mapping) else {}
     mode = msg.get("mode", "temporary")  # temporary | permanent
     profile_name = msg.get("profile")
+    replace = bool(msg.get("replace", False))
     
     ret_payload = {"req_id": req_id, "success": False, "data": None, "error": None}
     
@@ -851,34 +855,254 @@ async def _handle_config_update_command(
             plugin_id, mode, req_id,
         )
         
-        # Deep-copy old configuration for callbacks, avoiding shared nested references.
-        old_config = {}
-        if hasattr(ctx, '_effective_config'):
-            old_config = copy.deepcopy(ctx._effective_config) if ctx._effective_config else {}
-        
-        # Update process-local configuration cache.
-        if hasattr(ctx, '_effective_config') and ctx._effective_config is not None:
-            # Deep-merge configuration.
-            _deep_merge(ctx._effective_config, new_config)
-            logger.debug("[Plugin Process] Config cache updated")
-        else:
-            ctx._effective_config = new_config
-
+        replace_for_host = getattr(ctx, "_replace_effective_config_cache_for_host", None)
+        merge_for_host = getattr(ctx, "_merge_effective_config_cache_for_host", None)
+        apply_hydrated_merge_for_host = getattr(ctx, "_apply_hydrated_merge_for_host", None)
+        rollback_for_host = getattr(ctx, "_rollback_effective_config_cache_for_host", None)
+        wait_write_settled = getattr(ctx, "_wait_for_in_flight_config_write", None)
+        uses_context_publisher = (
+            callable(replace_for_host)
+            and callable(merge_for_host)
+            and callable(apply_hydrated_merge_for_host)
+            and callable(rollback_for_host)
+            and callable(wait_write_settled)
+        )
+        bump_gen = getattr(ctx, "_bump_effective_config_gen", None)
         refresh_runtime_config = getattr(ctx, "_refresh_instance_runtime_config", None)
-        if callable(refresh_runtime_config) and isinstance(ctx._effective_config, dict):
-            refresh_runtime_config(ctx._effective_config)
-        
-        # Trigger config_change lifecycle callbacks when present.
         lifecycle_events = events_by_type.get("lifecycle", {})
         config_change_handler = lifecycle_events.get("config_change")
+        register_pending_on_publish = bool(uses_context_publisher and config_change_handler)
+        pending_host_change_registered = False
+        applied_config: dict[str, Any] | None = None
+        applied_owner_token = 0
+        rollback_runtime_snapshot: dict[str, Any] | None = None
+
+        if uses_context_publisher:
+            if replace:
+                (
+                    had_cached_config,
+                    had_uncertain_config,
+                    old_config,
+                    applied_config,
+                    applied_owner_token,
+                    rollback_runtime_snapshot,
+                ) = replace_for_host(
+                    new_config,
+                    register_pending_change=register_pending_on_publish,
+                )
+                pending_host_change_registered = register_pending_on_publish
+                logger.debug("[Plugin Process] Config cache replaced")
+            else:
+                merge_budget = 8.0
+                raw_timeout = msg.get("timeout")
+                if (
+                    isinstance(raw_timeout, (int, float))
+                    and not isinstance(raw_timeout, bool)
+                    and math.isfinite(raw_timeout)
+                ):
+                    merge_budget = min(8.0, float(raw_timeout))
+                merge_deadline = time.monotonic() + merge_budget
+                applied_ok = False
+                for _ in range(8):
+                    if time.monotonic() >= merge_deadline:
+                        break
+                    (
+                        merge_status,
+                        had_cached_config,
+                        had_uncertain_config,
+                        old_config,
+                        applied_config,
+                        applied_owner_token,
+                        expected_gen,
+                        pre_runtime_snapshot,
+                    ) = merge_for_host(
+                        new_config,
+                        merge_fn=_deep_merge,
+                        register_pending_change=register_pending_on_publish,
+                    )
+                    if merge_status == "merged":
+                        pending_host_change_registered = register_pending_on_publish
+                        rollback_runtime_snapshot = (
+                            pre_runtime_snapshot
+                            if isinstance(pre_runtime_snapshot, dict)
+                            else copy.deepcopy(old_config)
+                        )
+                        applied_ok = True
+                        logger.debug("[Plugin Process] Config cache updated")
+                        break
+                    if merge_status == "wait_write":
+                        if not await wait_write_settled(deadline=merge_deadline):
+                            ret_payload["error"] = (
+                                "Timed out waiting for in-flight config write to settle"
+                            )
+                            res_sender.put(ret_payload, timeout=10.0)
+                            return
+                        continue
+
+                    remaining_budget = merge_deadline - time.monotonic()
+                    if remaining_budget <= 0.0:
+                        ret_payload["error"] = (
+                            "Timed out waiting to hydrate config before temporary update"
+                        )
+                        res_sender.put(ret_payload, timeout=10.0)
+                        return
+                    hydrated_base: dict[str, Any] | None = None
+                    get_own_config = getattr(ctx, "get_own_config", None)
+                    if callable(get_own_config):
+                        try:
+                            accepts_timeout = False
+                            try:
+                                sig = inspect.signature(get_own_config)
+                                accepts_timeout = "timeout" in sig.parameters or any(
+                                    param.kind == inspect.Parameter.VAR_KEYWORD
+                                    for param in sig.parameters.values()
+                                )
+                            except (TypeError, ValueError):
+                                accepts_timeout = False
+                            loaded = (
+                                get_own_config(timeout=remaining_budget)
+                                if accepts_timeout
+                                else get_own_config()
+                            )
+                            if inspect.isawaitable(loaded):
+                                loaded = await asyncio.wait_for(loaded, timeout=remaining_budget)
+                            if isinstance(loaded, Mapping) and isinstance(loaded.get("config"), Mapping):
+                                hydrated_base = copy.deepcopy(dict(loaded["config"]))
+                        except TimeoutError:
+                            ret_payload["error"] = (
+                                "Timed out hydrating config before temporary update"
+                            )
+                            res_sender.put(ret_payload, timeout=10.0)
+                            return
+                        except Exception:
+                            logger.debug(
+                                "[Plugin Process] Failed to hydrate base config before temporary update",
+                                exc_info=True,
+                            )
+                    if time.monotonic() >= merge_deadline:
+                        ret_payload["error"] = (
+                            "Timed out hydrating config before temporary update"
+                        )
+                        res_sender.put(ret_payload, timeout=10.0)
+                        return
+                    (
+                        apply_status,
+                        had_cached_config,
+                        had_uncertain_config,
+                        old_config,
+                        applied_config,
+                        applied_owner_token,
+                        _post_gen,
+                        rollback_runtime_snapshot,
+                    ) = apply_hydrated_merge_for_host(
+                        base_config=hydrated_base,
+                        new_config=new_config,
+                        merge_fn=_deep_merge,
+                        expected_gen=expected_gen,
+                        fallback_uncertain=had_uncertain_config,
+                        pre_runtime_snapshot=pre_runtime_snapshot,
+                        register_pending_change=register_pending_on_publish,
+                    )
+                    if apply_status == "merged":
+                        pending_host_change_registered = register_pending_on_publish
+                        applied_ok = True
+                        logger.debug("[Plugin Process] Config cache updated")
+                        break
+                    if apply_status == "hydrate_failed":
+                        ret_payload["error"] = (
+                            "Failed to hydrate base config before temporary update"
+                        )
+                        res_sender.put(ret_payload, timeout=10.0)
+                        return
+                    if apply_status == "wait_write":
+                        if not await wait_write_settled(deadline=merge_deadline):
+                            ret_payload["error"] = (
+                                "Timed out waiting for in-flight config write to settle"
+                            )
+                            res_sender.put(ret_payload, timeout=10.0)
+                            return
+                        continue
+                    if time.monotonic() >= merge_deadline:
+                        ret_payload["error"] = (
+                            "Timed out hydrating config before temporary update"
+                        )
+                        res_sender.put(ret_payload, timeout=10.0)
+                        return
+                if not applied_ok:
+                    ret_payload["error"] = (
+                        "Timed out hydrating config before temporary update"
+                        if time.monotonic() >= merge_deadline
+                        else "Config cache changed concurrently; temporary update could not be applied"
+                    )
+                    res_sender.put(ret_payload, timeout=10.0)
+                    return
+        else:
+            had_cached_config = hasattr(ctx, "_effective_config") and ctx._effective_config is not None
+            had_uncertain_config = bool(getattr(ctx, "_effective_config_uncertain", False))
+            if replace:
+                old_config = copy.deepcopy(ctx._effective_config) if had_cached_config else {}
+                ctx._effective_config = copy.deepcopy(new_config)
+                if callable(bump_gen):
+                    bump_gen()
+                if hasattr(ctx, "_effective_config_uncertain"):
+                    ctx._effective_config_uncertain = False
+                logger.debug("[Plugin Process] Config cache replaced")
+            elif had_cached_config:
+                old_config = copy.deepcopy(ctx._effective_config)
+                _deep_merge(ctx._effective_config, new_config)
+                if callable(bump_gen):
+                    bump_gen()
+                logger.debug("[Plugin Process] Config cache updated")
+            else:
+                base_config: dict[str, Any] = {}
+                get_own_config = getattr(ctx, "get_own_config", None)
+                if callable(get_own_config):
+                    hydrated_base_fallback: dict[str, Any] | None = None
+                    try:
+                        loaded = get_own_config()
+                        if inspect.isawaitable(loaded):
+                            loaded = await loaded
+                        if isinstance(loaded, Mapping) and isinstance(loaded.get("config"), Mapping):
+                            hydrated_base_fallback = copy.deepcopy(dict(loaded["config"]))
+                    except Exception:
+                        logger.debug(
+                            "[Plugin Process] Failed to hydrate base config before temporary update",
+                            exc_info=True,
+                        )
+                    if hydrated_base_fallback is None:
+                        ret_payload["error"] = (
+                            "Failed to hydrate base config before temporary update"
+                        )
+                        res_sender.put(ret_payload, timeout=10.0)
+                        return
+                    base_config = hydrated_base_fallback
+                old_config = copy.deepcopy(base_config)
+                _deep_merge(base_config, new_config)
+                ctx._effective_config = base_config
+                if callable(bump_gen):
+                    bump_gen()
+            applied_config = ctx._effective_config
+            if callable(refresh_runtime_config) and isinstance(applied_config, dict):
+                refresh_runtime_config(applied_config)
         
+        # Trigger config_change lifecycle callbacks when present.
         if config_change_handler:
             logger.debug("[Plugin Process] Triggering config_change lifecycle event")
+            begin_host_change = getattr(ctx, "_begin_host_config_change", None)
+            end_host_change = getattr(ctx, "_end_host_config_change", None)
+            host_change_owner_token = applied_owner_token if uses_context_publisher else None
+            handler_error: Exception | None = None
             try:
+                if not pending_host_change_registered and callable(begin_host_change):
+                    if host_change_owner_token is not None:
+                        begin_host_change(host_change_owner_token)
+                    else:
+                        begin_host_change()
+                    pending_host_change_registered = True
                 with ctx._handler_scope("lifecycle.config_change"):
                     result = config_change_handler(
-                        old_config=old_config,
-                        new_config=ctx._effective_config,
+                        old_config=copy.deepcopy(old_config),
+                        new_config=copy.deepcopy(applied_config),
                         mode=mode,
                     )
                     if inspect.isawaitable(result):
@@ -886,12 +1110,40 @@ async def _handle_config_update_command(
                 logger.info("[Plugin Process] config_change handler executed successfully")
             except Exception as e:
                 logger.exception("[Plugin Process] config_change handler failed")
-                # Restore prechange configuration.
-                ctx._effective_config = old_config
-                if callable(refresh_runtime_config) and isinstance(old_config, dict):
-                    refresh_runtime_config(old_config)
-                logger.debug("[Plugin Process] Config rolled back after handler failure")
-                ret_payload["error"] = f"config_change handler failed: {e}"
+                handler_error = e
+                # Restore prechange configuration while pending host guard and lineage remain active.
+                if uses_context_publisher:
+                    rolled_back = rollback_for_host(
+                        expected_owner_token=applied_owner_token,
+                        had_cached=had_cached_config,
+                        old_config=old_config,
+                        uncertain=had_uncertain_config,
+                        fallback_notify_config=rollback_runtime_snapshot,
+                    )
+                    if rolled_back:
+                        logger.debug("[Plugin Process] Config rolled back after handler failure")
+                    else:
+                        logger.debug(
+                            "[Plugin Process] Skipped config rollback after handler failure because a newer snapshot was published"
+                        )
+                else:
+                    ctx._effective_config = old_config if had_cached_config else None
+                    if callable(bump_gen):
+                        bump_gen()
+                    if hasattr(ctx, "_effective_config_uncertain"):
+                        ctx._effective_config_uncertain = had_uncertain_config
+                    if callable(refresh_runtime_config) and isinstance(old_config, dict):
+                        refresh_runtime_config(old_config)
+                    logger.debug("[Plugin Process] Config rolled back after handler failure")
+            finally:
+                if pending_host_change_registered and callable(end_host_change):
+                    pending_host_change_registered = False
+                    if host_change_owner_token is not None:
+                        end_host_change(host_change_owner_token)
+                    else:
+                        end_host_change()
+            if handler_error is not None:
+                ret_payload["error"] = f"config_change handler failed: {handler_error}"
                 res_sender.put(ret_payload, timeout=10.0)
                 return
         
@@ -967,7 +1219,12 @@ def _deep_merge(base: dict, updates: dict) -> None:
         updates: Updates dictionary.
     """
     for key, value in updates.items():
-        if key in base and isinstance(base[key], dict) and isinstance(value, dict):
+        if value == "__DELETE__":
+            base.pop(key, None)
+            continue
+        if isinstance(value, dict):
+            if not isinstance(base.get(key), dict):
+                base[key] = {}
             _deep_merge(base[key], value)
         else:
             base[key] = value
@@ -980,8 +1237,11 @@ class _ContextCopyingThreadPoolExecutor(concurrent.futures.ThreadPoolExecutor):
     and asyncio's own executor work (``loop.getaddrinfo``) see the context
     variables of the task that scheduled them, like ``asyncio.to_thread`` does.
     The copy is taken at submit time, so each call gets its own snapshot.
+    Its ``submit`` only passes the job on: the system.* audit counts the job
+    as its caller's (``system_audit.pass_through``).
     """
 
+    @system_audit.pass_through
     def submit(self, fn, /, *args, **kwargs):
         ctx = contextvars.copy_context()
         return super().submit(ctx.run, fn, *args, **kwargs)
@@ -1007,6 +1267,53 @@ async def _run_with_model_client_cleanup(ctx: PluginContext, awaitable: Any) -> 
             except Exception as exc:
                 # Cleanup must not replace a plugin result or hide its error.
                 logger.warning("[Plugin Process] Model client cleanup failed: {}", type(exc).__name__)
+
+
+async def _persist_plugin_state(
+    instance: object,
+    freezable_keys: list[str],
+    reason: str,
+    log: Any = logger,
+) -> None:
+    """Persist freezable plugin state and raise on explicit Result failure."""
+    sp = getattr(instance, "_state_persistence", None) or getattr(instance, "_freeze_checkpoint", None)
+    if not sp:
+        return
+
+    save_method = getattr(sp, "save", None)
+    if not callable(save_method):
+        return
+
+    use_legacy_sig = False
+    try:
+        sig = inspect.signature(save_method)
+    except (ValueError, TypeError):
+        sig = None
+
+    if sig is not None:
+        try:
+            sig.bind(instance)
+        except TypeError:
+            sig.bind(instance, freezable_keys, reason=reason)
+            use_legacy_sig = True
+
+    if use_legacy_sig:
+        save_result = save_method(instance, freezable_keys, reason=reason)
+    else:
+        save_result = save_method(instance)
+
+    if inspect.isawaitable(save_result):
+        save_result = await save_result
+
+    is_ok = getattr(save_result, "is_ok", None)
+    if callable(is_ok) and not is_ok():
+        error_obj = getattr(save_result, "error", None)
+        log.warning(
+            "[Plugin Process] State persistence save failed (reason={}): {}",
+            reason,
+            error_obj,
+        )
+        raise RuntimeError(f"state persistence save failed: {error_obj}")
 
 
 def _resolve_persist_mode(
@@ -1446,7 +1753,13 @@ def _plugin_process_runner(
             # including action whitelists, from sending, leaving parents waiting until timeout.
             # Custom classes unavailable to parent imports also fail pickle.loads. Failing here
             # becomes ordinary context_error at callers, symmetric with provider exceptions.
-            data = json.loads(json.dumps(data, default=str, ensure_ascii=False))
+            data = json.loads(
+                json.dumps(_sanitize_json_value(data), default=str, ensure_ascii=False, allow_nan=False)
+            )
+            if schema is not None:
+                schema = json.loads(
+                    json.dumps(_sanitize_json_value(schema), default=str, ensure_ascii=False, allow_nan=False)
+                )
             return {"state": data, "state_schema": schema}
 
         def _get_ui_action_meta(member: Any) -> dict[str, Any] | None:
@@ -1502,7 +1815,12 @@ def _plugin_process_runner(
             # json.dumps would let default=str turn it into
             # a useless string.
             return json.loads(
-                json.dumps(normalize_structured_data(actions), default=str, ensure_ascii=False)
+                json.dumps(
+                    _sanitize_json_value(normalize_structured_data(actions)),
+                    default=str,
+                    ensure_ascii=False,
+                    allow_nan=False,
+                )
             )
 
         def _rebuild_entry_map() -> None:
@@ -1722,21 +2040,7 @@ def _plugin_process_runner(
 
 
         async def _save_plugin_state(reason: str) -> None:
-            sp = getattr(instance, "_state_persistence", None) or getattr(instance, "_freeze_checkpoint", None)
-            if not sp:
-                return
-
-            save_method = getattr(sp, "save", None)
-            if not callable(save_method):
-                return
-
-            try:
-                save_result = save_method(instance)
-            except TypeError:
-                save_result = save_method(instance, freezable_keys, reason=reason)
-
-            if inspect.isawaitable(save_result):
-                await save_result
+            await _persist_plugin_state(instance, freezable_keys, reason, log=logger)
 
         # run_id → asyncio.Task – used by CANCEL_RUN to propagate cancellation
         _run_tasks: Dict[str, asyncio.Task] = {}
@@ -2595,7 +2899,8 @@ class PluginHost:
         config: Dict[str, Any],
         mode: str = "temporary",
         profile: str | None = None,
-        timeout: float = 10.0
+        timeout: float = 10.0,
+        replace: bool = False,
     ) -> Dict[str, Any]:
         """
         Send CONFIG_UPDATE to children for hot updates.
@@ -2605,6 +2910,8 @@ class PluginHost:
             mode: "temporary" | "permanent"
             profile: Profile name in permanent mode.
             timeout: Timeout.
+            replace: When True, replace the child's effective config cache
+                instead of deep-merging into it.
         
         Returns:
             {
@@ -2614,13 +2921,20 @@ class PluginHost:
             }
         """
         req_id = str(uuid.uuid4())
-        cmd = {
+        cmd: Dict[str, Any] = {
             "type": "CONFIG_UPDATE",
             "req_id": req_id,
             "config": config,
             "mode": mode,
             "profile": profile,
+            "replace": bool(replace),
         }
+        if (
+            isinstance(timeout, (int, float))
+            and not isinstance(timeout, bool)
+            and math.isfinite(timeout)
+        ):
+            cmd["timeout"] = float(timeout)
         return await self.comm_manager._send_command_and_wait(req_id, cmd, timeout, "CONFIG_UPDATE")
 
     async def get_ui_context(self, context_id: str = "main", timeout: float = 5.0) -> Any:

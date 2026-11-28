@@ -48,7 +48,7 @@ EXTRA_BODY_OPENAI_THINKING = {"enable_thinking": True}
 #   - Nested {"reasoning": {"effort": ...}} belongs to OpenRouter / Responses API; Chat
 #     Completions returns 400 Unknown parameter: 'reasoning'; native accepts top-level reasoning_effort only.
 #   - Effort levels vary by model; there is no universal minimum:
-#       gpt-5.6-luna / gpt-5.6-terra → none / low / medium / high / xhigh (no minimal).
+#       gpt-5.6-luna / gpt-5.6-terra / gpt-6-luna → none / low / medium / high / xhigh (no minimal).
 #       gpt-5-nano                   → minimal / low / medium / high (no none).
 #     Thus thinking-off requires two constant groups; focused cognition uses low for both, supported by both families.
 EXTRA_BODY_OPENAI_NATIVE = {"reasoning_effort": "none"}
@@ -144,6 +144,8 @@ MODELS_EXTRA_BODY_MAP: dict[str, dict] = {
     "gpt-5.6-terra": EXTRA_BODY_OPENAI_NATIVE,
     "gpt-5.6-sol": EXTRA_BODY_OPENAI_NATIVE,
     "gpt-5-nano": EXTRA_BODY_OPENAI_NATIVE_MINIMAL,
+    # gpt-5-nano's replacement (it shuts down 2026-12-11): none / low / medium / high / xhigh.
+    "gpt-6-luna": EXTRA_BODY_OPENAI_NATIVE,
     # Qwen family.
     "qwen-flash": EXTRA_BODY_OPENAI,
     "qwen3.6-flash": EXTRA_BODY_OPENAI,

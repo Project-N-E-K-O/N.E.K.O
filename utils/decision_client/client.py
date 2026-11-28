@@ -88,6 +88,28 @@ def _is_native_in_cooldown(key: tuple[str, str, str, str]) -> bool:
     return True
 
 
+def native_decision_in_cooldown(config: Mapping[str, Any] | None) -> bool:
+    """Whether a native decision request for *config* would be skipped for a recent error.
+
+    Uses the same key as :meth:`DecisionClient.decide` (protocol, endpoint,
+    model, API key), so a caller can tell a request that was not sent from
+    one that was sent and failed.
+    """
+    if not isinstance(config, Mapping):
+        return False
+    model = str(config.get("model") or "").strip()
+    base_url = str(config.get("base_url") or "").strip()
+    decision_url = str(config.get("decision_url") or "").strip()
+    protocol = str(config.get("decision_protocol") or "").strip().lower()
+    if not protocol:
+        protocol = infer_decision_protocol(model, decision_url or base_url)
+    if not is_native_decision_protocol(protocol):
+        return False
+    endpoint = resolve_decision_endpoint(protocol, base_url, decision_url)
+    key = (protocol, endpoint, model, _api_key_fingerprint(str(config.get("api_key") or "")))
+    return _is_native_in_cooldown(key)
+
+
 def _mark_native_cooldown(
     key: tuple[str, str, str, str],
     duration: float = _NATIVE_COOLDOWN_SECONDS,
