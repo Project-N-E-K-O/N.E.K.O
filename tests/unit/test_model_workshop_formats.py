@@ -752,6 +752,27 @@ def test_vrm_node_constraints_check_dependencies_along_ancestors(tmp_path, paren
             validate_vrm_bundle(path)
 
 
+@pytest.mark.parametrize("limit,accepted", [(9, True), (8, False)])
+def test_vrm_constraint_dependency_depth_includes_sibling_constraints(tmp_path, limit, accepted):
+    def graph(data):
+        data["nodes"] = [{
+            "extensions": {"VRMC_node_constraint": {
+                "specVersion": "1.0", "constraint": {"rotation": {"source": index + 1}},
+            }},
+        } for index in range(4)] + [{}]
+        data["scenes"][0]["nodes"] = list(range(5))
+        data["extensionsUsed"].append("VRMC_node_constraint")
+
+    raw = vrm_bytes(change=graph)
+    path = make_native_bundle(tmp_path, kind="vrm", entry="Avatar.vrm", files={"Avatar.vrm": raw})
+    limits = FormatLimits(hierarchy_depth=limit)
+    if accepted:
+        assert validate_vrm_bundle(path, format_limits=limits).model_format == "vrm"
+    else:
+        with pytest.raises(ModelFormatError, match="^model_accessor_budget_exceeded$"):
+            validate_vrm_bundle(path, format_limits=limits)
+
+
 @pytest.mark.parametrize("version,declared,accepted", [
     ("1.0-beta", True, False), ("1.0", False, True), ("2.0", True, True),
 ])
@@ -901,11 +922,11 @@ def test_vrm_legacy_spring_bones_check_the_loader_dependencies(tmp_path, case, a
 
 
 @pytest.mark.parametrize("version,case,work", [
-    ("1.0", "repeated_colliders", 8),
-    ("1.0", "repeated_groups", 10),
-    ("1.0", "multiple_springs", 16),
-    ("1.0", "missing_colliders", 4),
-    ("1.0", "empty_groups", 6),
+    ("1.0", "repeated_colliders", 9),
+    ("1.0", "repeated_groups", 11),
+    ("1.0", "multiple_springs", 18),
+    ("1.0", "missing_colliders", 5),
+    ("1.0", "empty_groups", 7),
     ("0.0", "descendants", 9),
     ("0.0", "overlapping_roots", 15),
     ("0.0", "multiple_springs", 18),
@@ -945,6 +966,50 @@ def test_vrm_spring_bone_budget_counts_expanded_work(tmp_path, version, case, wo
     assert validate_vrm_bundle(path, format_limits=FormatLimits(vrm_spring_bone_work=work)).model_format == "vrm"
     with pytest.raises(ModelFormatError, match="^model_physics_budget_exceeded$"):
         validate_vrm_bundle(path, format_limits=FormatLimits(vrm_spring_bone_work=work - 1))
+
+
+def test_vrm_spring_update_counts_descendants_for_every_head(tmp_path):
+    def graph(data):
+        data["nodes"] = [{"children": [1, 2, 3]}, {"children": [4]}, {}, {}, {"children": [5]}, {}]
+        data["extensionsUsed"].append("VRMC_springBone")
+        data["extensions"]["VRMC_springBone"] = {
+            "specVersion": "1.0",
+            "colliders": [{"node": 3, "shape": {"sphere": {}}}],
+            "springs": [{"joints": [{"node": 0}, {"node": 1}]}] * 2
+                       + [{"joints": [{"node": 1}, {"node": 4}]}],
+        }
+
+    raw = vrm_bytes(change=graph)
+    path = make_native_bundle(tmp_path, kind="vrm", entry="Avatar.vrm", files={"Avatar.vrm": raw})
+    # Two joints on node 0 each refresh nodes 2 and 3 and the attached collider.
+    # Node 1 has its own joint and refreshes only nodes 4 and 5.
+    assert validate_vrm_bundle(path, format_limits=FormatLimits(vrm_spring_bone_work=11)).model_format == "vrm"
+    with pytest.raises(ModelFormatError, match="^model_physics_budget_exceeded$"):
+        validate_vrm_bundle(path, format_limits=FormatLimits(vrm_spring_bone_work=10))
+
+
+@pytest.mark.parametrize("version,work", [("0.0", 37), ("1.0", 9)])
+def test_vrm_spring_init_counts_ancestor_visits(tmp_path, version, work):
+    def graph(data):
+        data["nodes"] = [{"children": [1]}, {"children": [2]}, {"children": [3]}, {}, {}]
+        data["scenes"][0]["nodes"] = [0, 4]
+        if version == "0.0":
+            data["extensions"]["VRM"]["secondaryAnimation"] = {"boneGroups": [{"bones": [0, 1]}]}
+        else:
+            data["extensionsUsed"].append("VRMC_springBone")
+            data["extensions"]["VRMC_springBone"] = {
+                "specVersion": "1.0",
+                "colliders": [{"node": 3, "shape": {"sphere": {}}}],
+                "colliderGroups": [{"colliders": [0]}],
+                "springs": [{"joints": [{"node": 0}, {"node": 1}]},
+                            {"joints": [{"node": 4}, {"node": 4}], "colliderGroups": [0]}],
+            }
+
+    raw = vrm_bytes(version=version, change=graph)
+    path = make_native_bundle(tmp_path, kind="vrm", entry="Avatar.vrm", files={"Avatar.vrm": raw})
+    assert validate_vrm_bundle(path, format_limits=FormatLimits(vrm_spring_bone_init_work=work)).model_format == "vrm"
+    with pytest.raises(ModelFormatError, match="^model_physics_budget_exceeded$"):
+        validate_vrm_bundle(path, format_limits=FormatLimits(vrm_spring_bone_init_work=work - 1))
 
 
 @pytest.mark.parametrize("interleaved", [False, True])
@@ -2043,7 +2108,8 @@ def mmd_runtime_bytes(kind, *, vertices=3, morph_kinds=(), iterations=(), links=
     grants = grants or {}
     if kind == 'pmd':
         raw = b'Pmd' + struct.pack('<f', 1.0) + bytes(276)
-        raw += struct.pack('<I', vertices) + bytes(vertices * 38) + struct.pack('<2I', 0, 0)
+        raw += struct.pack('<I', vertices) + bytes(vertices * 38) + struct.pack('<2I', 0, materials)
+        raw += (bytes(44) + struct.pack('<b', -1) + bytes(25)) * materials
         raw += struct.pack('<H', len(parents))
         for index, parent in enumerate(parents):
             raw += bytes(20) + struct.pack('<hhBh', parent, grants.get(index, 0),
@@ -2089,6 +2155,19 @@ def mmd_runtime_bytes(kind, *, vertices=3, morph_kinds=(), iterations=(), links=
     if rigid_bone is None:
         return raw + struct.pack('<2i', 0, 0)
     return raw + struct.pack('<i', 1) + text('') * 2 + struct.pack('<' + bone_code, rigid_bone) + bytes(61) + struct.pack('<i', 0)
+
+
+@pytest.mark.parametrize('kind', ['pmx', 'pmd'])
+@pytest.mark.parametrize('materials,accepted', [(4096, True), (4097, False)])
+def test_mmd_material_table_has_a_loader_budget(tmp_path, kind, materials, accepted):
+    entry = 'Avatar.' + kind
+    raw = mmd_runtime_bytes(kind, materials=materials)
+    path = make_native_bundle(tmp_path, kind='mmd', entry=entry, files={entry: raw})
+    if accepted:
+        assert validate_model_bundle(path).model_format == 'mmd'
+    else:
+        with pytest.raises(ModelFormatError, match='^model_binary_too_complex$'):
+            validate_model_bundle(path)
 
 
 @pytest.mark.parametrize('kind', ['pmx', 'pmd'])
