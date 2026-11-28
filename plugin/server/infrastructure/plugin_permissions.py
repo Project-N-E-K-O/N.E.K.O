@@ -387,9 +387,17 @@ def _supersede_legacy_denial(record: dict) -> None:
         record[LEGACY_DENIAL_SUPERSEDED] = True
 
 
-def _restore_legacy_denial(record: dict) -> None:
-    """Undo :func:`_supersede_legacy_denial` once no permission is granted
-    any more, so taking the last grant back restores the denial."""
+def _is_granted(record: dict, permission_id: str) -> bool:
+    entry = (record.get("permissions") or {}).get(permission_id)
+    return isinstance(entry, dict) and entry.get("state") == STATE_GRANTED
+
+
+def _restore_legacy_denial(record: dict, took_back_grant: bool) -> None:
+    """Undo :func:`_supersede_legacy_denial` when the user just took back
+    the last granted permission (``took_back_grant``: the changed permission
+    was granted before). Grants dropped by a source change keep the mark."""
+    if not took_back_grant:
+        return
     if record.get(LEGACY_DENIAL_SUPERSEDED) and not any(
         isinstance(entry, dict) and entry.get("state") == STATE_GRANTED
         for entry in (record.get("permissions") or {}).values()
@@ -848,6 +856,7 @@ class PluginPermissionStore:
                 self._apply_source(record, source)
             now = _now()
             record.pop(GRANTS_RESET, None)
+            was_granted = _is_granted(record, permission_id)
             record.setdefault("permissions", {})[permission_id] = {
                 "state": state,
                 "condition": condition,
@@ -857,7 +866,7 @@ class PluginPermissionStore:
             if state == STATE_GRANTED:
                 _supersede_legacy_denial(record)
             else:
-                _restore_legacy_denial(record)
+                _restore_legacy_denial(record, was_granted)
             record["updated_at"] = now
             self._commit(manager, document)
             return copy.deepcopy(record)
@@ -926,6 +935,7 @@ class PluginPermissionStore:
             self._apply_source(record, source)
             now = _now()
             record.pop(GRANTS_RESET, None)
+            was_granted = _is_granted(record, known_id or permission_id)
             permissions = record.setdefault("permissions", {})
             if known_id is None:
                 # A source change above may have dropped it already.
@@ -936,7 +946,7 @@ class PluginPermissionStore:
                     "scope": SCOPE_ALL,
                     "decided_at": now,
                 }
-            _restore_legacy_denial(record)
+            _restore_legacy_denial(record, was_granted)
             record["updated_at"] = now
             self._commit(manager, document)
             return copy.deepcopy(record)

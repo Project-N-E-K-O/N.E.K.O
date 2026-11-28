@@ -2096,3 +2096,33 @@ def test_taking_one_of_two_grants_back_keeps_the_denial_lifted(decision_flow, ta
 
     assert decision_flow["permissions"].read("demo")[LEGACY_DENIAL_SUPERSEDED] is True
     assert consent_service.denied_plugin_ids(["demo"]) == set()
+
+
+@pytest.mark.parametrize(
+    "decide",
+    [
+        lambda store: store.decide("x", MEMORY_READ, "denied", source=MANUAL),
+        lambda store: store.clear("x", MEMORY_READ, source=MANUAL),
+        lambda store: store.clear("x", CONVERSATIONS_READ, source=MANUAL),
+    ],
+    ids=["deny", "clear_granted_before", "clear_other"],
+)
+def test_grants_dropped_by_a_source_change_keep_the_denial_lifted(manager, decide):
+    store = _denied_store(manager, source_resolver=lambda _pid: MARKET)
+    store.decide("x", MEMORY_READ, "granted", source=MARKET)
+    assert store.sync_source("x", MANUAL)["permissions"] == {}
+
+    record = decide(store)
+
+    assert record[LEGACY_DENIAL_SUPERSEDED] is True
+    assert permission_service.consent_decision(record) == {}
+
+
+def test_a_source_change_within_the_call_keeps_the_denial_lifted(manager):
+    store = _denied_store(manager, source_resolver=lambda _pid: MARKET)
+    store.decide("x", MEMORY_READ, "granted", source=MARKET)
+
+    # The grant was made for the old source; the new one never had it.
+    record = store.decide("x", MEMORY_READ, "denied", source=MANUAL)
+
+    assert record[LEGACY_DENIAL_SUPERSEDED] is True
