@@ -199,6 +199,11 @@ class LLMStreamChunk:
     # text into history twice (it already exists in ``assistant.tool_calls.content``).
     #
     tool_round_persisted: bool = False
+    # Candidate tokens of each content token in this chunk, when the request asked
+    # for ``logprobs`` with ``top_logprobs``: one ``[(token, logprob), ...]`` list per
+    # token, in order. Volcengine Ark puts the first token's candidates on the very
+    # first content chunk, so a caller can read a choice before the reply finishes.
+    top_logprobs: list[list[tuple[str, float]]] | None = None
 
 @dataclass
 class ToolCallAggregate:
